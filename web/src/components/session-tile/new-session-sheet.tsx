@@ -42,7 +42,7 @@ export interface NewSessionSheetProps {
   onCreated: (name: string) => void
 }
 
-/** The single boot panel. A `Claude | Codex | Kimi` toggle selects an equivalent
+/** The single boot panel. A `Claude | Codex` toggle selects an equivalent
  *  single-agent launch form. The "+" opens this directly — no intermediate
  *  menu. The inner panel only mounts while the sheet is open, so its state
  *  starts fresh each time. */
@@ -73,7 +73,7 @@ export function NewSessionSheet({
   )
 }
 
-type Kind = 'claude' | 'codex' | 'kimi'
+type Kind = 'claude' | 'codex'
 
 function NewSessionPanel({
   defaultDir,
@@ -102,7 +102,7 @@ function NewSessionPanel({
   )
 }
 
-// ── Claude | Codex | Kimi segmented toggle ────────────────────────────────────
+// ── Claude | Codex segmented toggle ──────────────────────────────────────────
 // Mirrors the overview ViewToggle: a muted pill rail with an animated `bg-card`
 // thumb (shared layoutId) sliding under the active label. No `transition: all`.
 function KindToggle({
@@ -115,13 +115,12 @@ function KindToggle({
   const items: { id: Kind; label: string }[] = [
     { id: 'claude', label: 'Claude' },
     { id: 'codex', label: 'Codex' },
-    { id: 'kimi', label: 'Kimi' },
   ]
   return (
     <div
       role="group"
       aria-label="Session kind"
-      className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1"
+      className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
     >
       {items.map((it) => {
         const active = value === it.id
@@ -163,14 +162,14 @@ function KindToggle({
   )
 }
 
-// ── Agent form — shared by Claude, Codex and Kimi ─────────────────────────────
+// ── Agent form — shared by Claude and Codex ───────────────────────────────────
 function AgentForm({
   provider,
   defaultDir,
   onCancel,
   onCreated,
 }: {
-  provider: 'claude' | 'codex' | 'kimi'
+  provider: 'claude' | 'codex'
   defaultDir: string | undefined
   onCancel: () => void
   onCreated: (name: string) => void

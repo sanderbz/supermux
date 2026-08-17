@@ -149,7 +149,7 @@ export const ROSTER_NAMES = [
   'git-stack',
   'remote-ssh',
   'scrollback',
-  'kimi-code',
+  'device-auth',
   'night-watch',
 ] as const
 

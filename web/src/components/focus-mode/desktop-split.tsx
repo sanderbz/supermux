@@ -899,19 +899,17 @@ export function DesktopSplit({
           }}
           onAttach={attach.handleFiles}
           // "Edit in native editor" relies on the Ctrl+G ($EDITOR bridge). Claude
-          // (`chat:externalEditor`), Codex (`open_external_editor`) and Kimi all
-          // bind Ctrl+G to open $EDITOR, so each opens the same supermux-edit
-          // bridge → same `external-edit` SSE. It's a no-op on shell panes — hide
-          // it there.
+          // (`chat:externalEditor`) and Codex (`open_external_editor`) both bind
+          // Ctrl+G to open $EDITOR, so each opens the same supermux-edit bridge →
+          // same `external-edit` SSE. It's a no-op on shell panes — hide it
+          // there.
           //
           // The Ctrl+G bridge is a terminal-only path too (the key is not in
           // `KEY_ALLOWLIST`), so it is absent under chat — where the composer
           // IS the editor.
           onEdit={
             !chatActive &&
-            (current?.provider === 'claude' ||
-              current?.provider === 'codex' ||
-              current?.provider === 'kimi')
+            (current?.provider === 'claude' || current?.provider === 'codex')
               ? onEdit
               : undefined
           }

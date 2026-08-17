@@ -87,30 +87,6 @@ export const MOCK_TILES: TileSession[] = [
     updated_at: new Date().toISOString(),
   },
   {
-    // A Kimi-provider session so the dev harness can review Kimi-only
-    // affordances (e.g. "Edit in native editor", which Kimi opens with the
-    // same Ctrl+G $EDITOR bridge as Claude/Codex). Visit /dev/focus/kimi-app.
-    name: 'kimi-app',
-    task_summary: 'Trace the K2.7 tool-call streaming regression',
-    status: 'waiting',
-    dir: '/opt/projects/kimi-app',
-    provider: 'kimi',
-    tokens: 18700,
-    branch: 'fix/stream-tool-calls',
-    preview_lines: [
-      '🌙 Kimi · K2.7 Coding',
-      '',
-      '• Proposed patch: flush the tool-call buffer before the final chunk.',
-      '',
-      '  ▶ Apply these edits?',
-      '  ▶ 1. Approve once',
-      '    2. Approve for this session',
-      '    3. Reject',
-      '  ↑/↓ select · 1/2/3/4 choose · ↵ confirm',
-    ],
-    updated_at: new Date().toISOString(),
-  },
-  {
     name: 'web-app',
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',
@@ -125,8 +101,8 @@ export const MOCK_TILES: TileSession[] = [
     // FASE A5 — a chat-eligible session WITH a tail. With the experiment on
     // this tile shows the conversation instead of the ANSI screen; with it off
     // (the shipped default) it is byte-identical to before. The guard is
-    // visible in one frame on /dev/tiles because `codex-app` and `kimi-app`
-    // above are ineligible and `api-server` below is eligible with NO tail.
+    // visible in one frame on /dev/tiles because `codex-app` above is
+    // ineligible and `api-server` below is eligible with NO tail.
     chat_tail: {
       user: 'merge the delta key-by-key, absent means unchanged',
       agent: 'Done — `applyDelta` now merges per key and never clears a tile.',

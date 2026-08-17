@@ -452,7 +452,7 @@ export interface NewSession {
    *  from this typed text. */
   display_name?: string
   dir: string
-  provider?: 'claude' | 'codex' | 'kimi' | 'shell'
+  provider?: 'claude' | 'codex' | 'shell'
   desc?: string
   worktree?: boolean
   command?: string

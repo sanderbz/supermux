@@ -86,7 +86,7 @@ export interface DesktopDockProps {
   onSnippets?: () => void
   /** ✎ Edit — lift the agent's current `❯` input into the native editor sheet
    *  (feat-edit-in-native-editor). The caller sends Ctrl+G — the key Claude
-   *  (`chat:externalEditor`), Codex (`open_external_editor`) and Kimi all bind to
+   *  (`chat:externalEditor`) and Codex (`open_external_editor`) both bind to
    *  open $EDITOR; the sheet opens on the resulting `external-edit` SSE event,
    *  pre-filled. Absent for shell docks (no $EDITOR-driven composer). */
   onEdit?: () => void

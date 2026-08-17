@@ -26,7 +26,7 @@
  *     ↓ else
  *   updated_at               (RFC3339)
  *
- * Every row gets a tier, whatever its provider (claude, codex, kimi), whatever
+ * Every row gets a tier, whatever its provider (claude, codex), whatever
  * its host, team-ness or chat eligibility. `tierFor` has no `undefined` return
  * path, and there is no fourth eligibility gate here: `chat/flag.ts::chatEligible`
  * and `chat/ws.rs::chat_eligible` stay the only ones, and an INELIGIBLE session

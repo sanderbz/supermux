@@ -20,7 +20,7 @@
 // first: a short drag changes nothing, a committed drag switches session, and
 // only then does a tap open the sheet.
 //
-// A `shell` provider is deliberate: `onEdit` is wired only for claude/codex/kimi
+// A `shell` provider is deliberate: `onEdit` is wired only for claude/codex
 // under the terminal (`routes/focus/mobile.tsx:828-834`), so on shell — exactly
 // as under the chat renderer, where the composer IS the editor — the pill's tap
 // falls through to `onTap`, which opens the session sheet T7 rebuilds. That is

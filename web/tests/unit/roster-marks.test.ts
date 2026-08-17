@@ -42,7 +42,7 @@ const NAMES14 = [
   'git-stack',
   'remote-ssh',
   'scrollback',
-  'kimi-code',
+  'device-auth',
   'night-watch',
 ] as const
 

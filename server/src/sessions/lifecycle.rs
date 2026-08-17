@@ -386,62 +386,9 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             // `--resume`, so `wait_for_agent_ready` treats it as a fresh start.
             (agent, false)
         }
-        "kimi" => {
-            // Kimi Code CLI (Moonshot). It runs INLINE in the normal terminal
-            // buffer by default (no alternate screen), so the browser terminal
-            // keeps its scrollback with no extra flag. Bypass/approval mode flows
-            // through the flags string (`--yolo` skips most approvals) exactly
-            // like Codex's approval flag — no special-casing here.
-            let mut parts = vec!["kimi".to_string()];
-            let defaults = config.provider_defaults.kimi_flags.trim();
-            if !defaults.is_empty() {
-                parts.push(defaults.to_string());
-            }
-            if !s.flags.trim().is_empty() {
-                parts.push(s.flags.trim().to_string());
-            }
-            let kimi = parts.join(" ");
-
-            // Optional provider → make first launch self-contained for the
-            // service user. The official installer is user-scoped and bundles a
-            // Node runtime, so it needs no system Node. Download to a file (a
-            // failed curl must never look like a successful empty install), then
-            // add Kimi's user bin to PATH so the freshly-installed binary is
-            // found in this same non-login pane. Auth happens IN the pane via
-            // `kimi login` — the device-code flow (headless-friendly, shows the
-            // URL/code in the terminal). `kimi login` is IDEMPOTENT: when already
-            // authenticated it prints "Logged in…" and exits 0 immediately, so we
-            // gate the launch on it unconditionally (no separate status probe) and
-            // `&&` into the TUI only on success.
-            let agent = format!(
-                "export PATH=\"$HOME/.kimi-code/bin:$PATH\"; \
-                 if ! command -v kimi >/dev/null 2>&1; then \
-                   printf '\\nKimi Code CLI is not installed; installing it for this user…\\n'; \
-                   _supermux_kimi_installer=$(mktemp) && \
-                   curl -fsSL https://code.kimi.com/kimi-code/install.sh \
-                     -o \"$_supermux_kimi_installer\" && \
-                   bash \"$_supermux_kimi_installer\"; \
-                   _supermux_kimi_install_status=$?; \
-                   if [ -n \"${{_supermux_kimi_installer:-}}\" ]; then \
-                     rm -f \"$_supermux_kimi_installer\"; \
-                   fi; \
-                   export PATH=\"$HOME/.kimi-code/bin:$PATH\"; hash -r 2>/dev/null || true; \
-                   if [ \"$_supermux_kimi_install_status\" -ne 0 ]; then \
-                     printf '\\nKimi Code CLI installation failed. Check the output above, then retry this session.\\n'; \
-                   fi; \
-                 fi; \
-                 if command -v kimi >/dev/null 2>&1; then \
-                   kimi login && {kimi}; \
-                 else \
-                   printf '\\nKimi Code CLI is unavailable. Install it and retry this session.\\n'; \
-                 fi"
-            );
-            // Like Codex, Kimi carries no supermux-driven `--resume`, so
-            // `wait_for_agent_ready` treats it as a fresh start.
-            (agent, false)
-        }
-        // `shell` never reaches this builder; retaining Claude as the fallback
-        // keeps legacy/unknown non-shell rows launchable.
+        // `shell` never reaches this builder, and a RETIRED provider is refused
+        // in `start` long before it gets here (see `is_retired_provider`), so
+        // this fallback only ever serves Claude rows.
         _ => {
             let mut parts = vec!["claude".to_string()];
             let defaults = config.provider_defaults.claude_flags.trim();
@@ -751,6 +698,24 @@ pub async fn start(
     let _guard = lock.lock().await;
 
     let mut s = require_session(state, name).await?;
+
+    // RETIRED PROVIDER GUARD. A row whose provider supermux no longer ships
+    // (see `sessions::RETIRED_PROVIDERS`) survives in deployed databases and
+    // must stay listable and renderable — but it can never be launched again:
+    // the launch builder's fallback arm would boot CLAUDE inside a pane named
+    // after the retired agent, which is worse than a refusal. Answer with a
+    // 400 that says what happened and what to do, BEFORE any tmux/native spawn,
+    // any hook-token rotation or any DB write. Every start path (the HTTP
+    // route, `restart`, the scheduler tick, the board's start-agent) funnels
+    // through here, so one guard covers all of them.
+    if crate::sessions::is_retired_provider(&s.provider) {
+        return Err(AppError::BadRequest(format!(
+            "session '{name}' uses the retired '{}' provider and can no longer be started; \
+             its history stays readable — archive it, or duplicate it onto a supported provider",
+            s.provider
+        )));
+    }
+
     // NATIVE-BY-DEFAULT MIGRATION. The tmux-less runtime is the product default;
     // a legacy `runtime='tmux'` row upgrades AT THE FIRST FRESH START — i.e. when
     // its tmux pane is gone, so a live pane (and its scrollback) is never yanked
@@ -1305,29 +1270,11 @@ pub async fn send_harness_text(
         start(state, name, None).await?;
     }
 
-    // Kimi's TUI uses TIMING-based paste detection: a literal-text send followed
-    // immediately by Enter is absorbed as one paste (the Enter becomes a newline
-    // in the composer, not a submit — the message just sits there unsent). A short
-    // gap lets Kimi's input loop settle out of paste mode so the Enter registers
-    // as a submit. ~150ms is the observed threshold; 200ms is a safe margin.
-    // Claude/Codex accept the back-to-back Enter, so this is scoped to kimi.
-    let is_kimi = db::sessions::get(&state.pool, name)
-        .await?
-        .map(|s| s.provider == "kimi")
-        .unwrap_or(false);
-
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
     rt.send_text(text).await?;
     // Backend-declared gap between the text and its submit (see `submit_gap`).
-    // Kimi overrides it with a larger 200ms one: its TUI's TIMING-based paste
-    // detection swallows an Enter landing within ~150ms of the text (measured
-    // live) — a provider property, independent of which runtime hosts it.
-    if is_kimi {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    } else {
-        submit_gap(rt.as_ref()).await;
-    }
+    submit_gap(rt.as_ref()).await;
     rt.send_key("Enter").await?;
     let (preview, at) =
         db::sessions::set_last_send(&state.pool, name, preview_text.unwrap_or(text)).await?;
@@ -2227,62 +2174,6 @@ mod build_env_tests {
         assert!(!command.contains("--resume"));
     }
 
-    #[test]
-    fn kimi_launch_uses_its_binary_defaults_and_inline_terminal() {
-        let mut config = cfg();
-        config.provider_defaults.kimi_flags = "--model kimi-for-coding".into();
-        let session = Session {
-            name: "kimi-worker".into(),
-            display_name: "Kimi worker".into(),
-            dir: "/tmp".into(),
-            desc: String::new(),
-            provider: "kimi".into(),
-            // bypass mode flows through the flags string, exactly like Codex.
-            flags: "--yolo".into(),
-            pinned: 0,
-            archived: 0,
-            auto_continue: 0,
-            auto_continue_msg: String::new(),
-            rate_limit_resume_text: String::new(),
-            tags: "[]".into(),
-            creator: String::new(),
-            branch: String::new(),
-            worktree: 0,
-            worktree_repo: String::new(),
-            mcp: String::new(),
-            created_at: 0,
-            start_count: 0,
-            last_started: 0,
-            last_send: 0,
-            last_send_text: String::new(),
-            task_summary: String::new(),
-            cc_session_name: String::new(),
-            cc_conversation_id: String::new(),
-            codex_session_id: String::new(),
-            start_error: String::new(),
-            team_name: None,
-            host_id: None,
-            mark_pin: None,
-            runtime: "tmux".into(),
-            notif: "inherit".into(),
-            seen_ts: None,
-            seen_count: None,
-            seen_epoch: None,
-        };
-
-        let (command, resume_intended) = build_launch_command(&config, &session);
-        // Kimi runs inline (no alt-screen flag); bypass rides in via `--yolo`.
-        let invocation = "kimi --model kimi-for-coding --yolo";
-        assert!(command.contains("https://code.kimi.com/kimi-code/install.sh"));
-        assert!(command.contains("kimi login && "), "login gates the launch");
-        assert!(!command.contains("--no-alt-screen"), "kimi is inline by default");
-        assert_eq!(command.matches(invocation).count(), 1);
-        assert!(!command.contains("claude"));
-        // Like Codex, Kimi carries no supermux `--resume`.
-        assert!(!resume_intended, "kimi launch must not be resume-intended");
-        assert!(!command.contains("--resume"));
-    }
-
     /// `resume_intended` mirrors whether the Claude launch actually carries
     /// `--resume` — the single source of truth `wait_for_agent_ready` reads to
     /// decide the picker-escape is safe. A cc_session_name OR a cc_conversation_id
@@ -2398,55 +2289,6 @@ mod build_env_tests {
             .status()
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "generated Codex bootstrap must parse as shell");
-    }
-
-    #[test]
-    fn kimi_bootstrap_is_valid_shell() {
-        let config = cfg();
-        let session = Session {
-            name: "kimi-shell-check".into(),
-            display_name: "Kimi shell check".into(),
-            dir: "/tmp".into(),
-            desc: String::new(),
-            provider: "kimi".into(),
-            flags: "--yolo".into(),
-            pinned: 0,
-            archived: 0,
-            auto_continue: 0,
-            auto_continue_msg: String::new(),
-            rate_limit_resume_text: String::new(),
-            tags: "[]".into(),
-            creator: String::new(),
-            branch: String::new(),
-            worktree: 0,
-            worktree_repo: String::new(),
-            mcp: String::new(),
-            created_at: 0,
-            start_count: 0,
-            last_started: 0,
-            last_send: 0,
-            last_send_text: String::new(),
-            task_summary: String::new(),
-            cc_session_name: String::new(),
-            cc_conversation_id: String::new(),
-            codex_session_id: String::new(),
-            start_error: String::new(),
-            team_name: None,
-            host_id: None,
-            mark_pin: None,
-            runtime: "tmux".into(),
-            notif: "inherit".into(),
-            seen_ts: None,
-            seen_count: None,
-            seen_epoch: None,
-        };
-
-        let (command, _resume) = build_launch_command(&config, &session);
-        let status = std::process::Command::new("bash")
-            .args(["-n", "-c", &command])
-            .status()
-            .expect("bash must be available to validate the launch command");
-        assert!(status.success(), "generated Kimi bootstrap must parse as shell");
     }
 }
 

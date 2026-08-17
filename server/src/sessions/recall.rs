@@ -13,7 +13,6 @@
 //! even on multi-MB transcripts.
 
 mod codex;
-mod kimi;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -244,7 +243,7 @@ pub fn classify_prompt_body(body: &str) -> WrapperClass {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct RecallResponse {
     pub entries: Vec<RecallEntry>,
     #[serde(rename = "hasMore")]
@@ -286,25 +285,23 @@ pub async fn handler(
     let provider = session.provider.clone();
     let last_started = session.last_started;
 
+    // A RETIRED provider's row keeps answering (no 500, no panic) but has no
+    // transcript reader left to answer WITH. Return the empty list rather than
+    // falling through to the Claude reader, which would hand back some other
+    // agent's conversations for the same directory — an honest empty state
+    // beats a confident wrong one.
+    if crate::sessions::is_retired_provider(&provider) {
+        return Ok(Json(Envelope {
+            ok: true,
+            data: RecallResponse::default(),
+        }));
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         if provider == "codex" {
             codex::gather(
                 &dir,
                 &codex_id,
-                last_started,
-                q.scope,
-                &q.q,
-                q.before.as_deref(),
-                limit,
-            )
-        } else if provider == "kimi" {
-            // The DB carries no `kimi_session_id` yet, so Session scope resolves
-            // to the newest Kimi session for the working dir (see kimi.rs). Pass
-            // an empty id; the lead can thread a real id through here once the
-            // column lands, mirroring `codex_id`.
-            kimi::gather(
-                &dir,
-                "",
                 last_started,
                 q.scope,
                 &q.q,

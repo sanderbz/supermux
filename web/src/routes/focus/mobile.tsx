@@ -832,8 +832,8 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               keyBarOpen={keyBar.open}
               onOpenSnippets={() => setSnippetsOpen(true)}
               // Edit-in-native-editor uses the Ctrl+G $EDITOR bridge. Claude
-              // (`chat:externalEditor`), Codex (`open_external_editor`) and Kimi
-              // all bind Ctrl+G to open $EDITOR → same supermux-edit bridge /
+              // (`chat:externalEditor`) and Codex (`open_external_editor`) both
+              // bind Ctrl+G to open $EDITOR → same supermux-edit bridge /
               // `external-edit` SSE. No-op on shell — surface it for every agent
               // provider.
               //
@@ -843,8 +843,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               onEdit={
                 !chatActive &&
                 (current.provider === 'claude' ||
-                  current.provider === 'codex' ||
-                  current.provider === 'kimi')
+                  current.provider === 'codex')
                   ? onEdit
                   : undefined
               }

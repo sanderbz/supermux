@@ -72,7 +72,7 @@ const SLUGS_20 = [
   'term-fix',
   'chat-renderer',
   'marks-b0',
-  'kimi-code',
+  'device-auth',
   'native-runtime',
   'updater',
   'readme-hero',

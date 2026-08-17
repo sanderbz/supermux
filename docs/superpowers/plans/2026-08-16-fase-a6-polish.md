@@ -65,7 +65,7 @@ provably false (#4 below). So T0.3's triage is a re-verification, not a transcri
 | 15 | The `T` renderer hotkey is desktop-only — `routes/focus/mobile.tsx` has no keydown capture | A5 deviation table `:120` | user-visible (HW keyboard on phone) | later |
 | 16 | Quick-peek has no chat lens | A5 `:114`, `:846` | polish | later (B5) |
 | 17 | **The default flip itself (A7)** — `chatRenderer` ships default-OFF | `a5:850` | — | **A7** |
-| 18 | chat for codex/kimi/remote/team — excluded by the Global Constraints guard | `a5:853` | feature | later |
+| 18 | chat for codex/remote/team — excluded by the Global Constraints guard | `a5:853` | feature | later |
 | 19 | Roster context % — needs a `statuslines` field on the sessions delta | `b2:101,338,719,733` | infra→feature | later |
 | 20 | **The dark `statusline` delta key** — broadcast since A2 (`statusline.rs:593`), no TS type, no consumer. Cheap: typing + consuming it unlocks #10 and #19 | `b2:111`, `:752-753` | infra | A6 if cheap, else later |
 | 21 | No typed Rust struct for the sessions delta — thirteen hand-built `json!` sites | `b2:749-751` | infra | later |
@@ -998,7 +998,7 @@ re-worded.
   *hazard* is tested by T9.1 even though the refactor is deferred.
 - **Board API deprecation** (#25) and the **hook-token delegate endpoint** (#3) — each needs its own
   owner gate, as `b4-security-checklist.md` records.
-- **Track A's provider guard stays**: codex/kimi/remote/team are not made chat-eligible.
+- **Track A's provider guard stays**: codex/remote/team are not made chat-eligible.
 - **Token-level streaming** and any change to transcript flush behaviour — A0 settled this; A6
   polishes the workarounds, it does not relitigate them.
 - **Any new chat primitive.** The vocabulary is closed at A4's set + B4's system lines.

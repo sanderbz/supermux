@@ -8,7 +8,7 @@
 //
 // `sessionName` carries the focused session whose project scope to resolve. The
 // sheet looks up the session provider + cwd: Claude receives its editable
-// registry manager, Codex and Kimi receive native slash-panel actions. `null`
+// registry manager, Codex receives native slash-panel actions. `null`
 // keeps the Settings / ⌘K entry point on Claude's global registry.
 //
 // Deliberately NOT in `useUI` (which is localStorage-persisted) — a sheet should

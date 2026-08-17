@@ -553,7 +553,7 @@ async fn the_wrapper_is_the_exact_shape_the_reader_parses_and_only_claude_gets_i
         "<supermux-delegation from=\"b4-sender\">\nplease rebase\n</supermux-delegation>"
     );
     assert!(wraps_for_provider("claude"));
-    assert!(!wraps_for_provider("codex") && !wraps_for_provider("kimi"));
+    assert!(!wraps_for_provider("codex") && !wraps_for_provider("shell"));
 }
 
 // ── 4. the ordinary send door (the forgery the guard used to miss) ───────────

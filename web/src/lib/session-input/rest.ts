@@ -6,7 +6,7 @@
 //
 //   submit  → POST /api/sessions/{name}/send   {text}
 //             `lifecycle.rs send_text` appends the Enter ITSELF (plus the
-//             provider submit gap — kimi's TUI needs 200 ms or the Enter is
+//             provider submit gap — a TUI can need one or the Enter is
 //             absorbed as part of the paste), stamps `last_send_at` and
 //             broadcasts a delta. So the caller passes the RAW text: a trailing
 //             '\r' here would be a second submit.

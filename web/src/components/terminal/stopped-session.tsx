@@ -27,6 +27,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Archive, History, PlayCircle, PowerOff, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { isRetiredProvider, retiredProviderNote } from '@/lib/retired-providers'
 import { motionOff, springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EMPTY } from '@/brand/copy'
@@ -113,8 +114,17 @@ export function StoppedSessionActions({
     () => sessions.find((s) => s.name === name) ?? null,
     [sessions, name],
   )
+  // A row whose provider supermux no longer ships (see lib/retired-providers).
+  // The server refuses `POST /start` with a 400, so the honest surface is a
+  // sentence explaining why — not a Start button that can only fail. Archive
+  // stays: it is the one action such a row still has.
+  const retired = isRetiredProvider(currentRow?.provider)
   const canMakeTeam =
-    showMakeTeam && !isAlreadyLead && !!currentRow && currentRow.provider === 'claude'
+    showMakeTeam &&
+    !isAlreadyLead &&
+    !!currentRow &&
+    !retired &&
+    currentRow.provider === 'claude'
   // Resume is a Claude-only affordance: `resumable` reads Claude conversation
   // transcripts, and the launch builder only turns a picked id into
   // `claude --resume <id>`. Codex has NO supermux resume path (its own
@@ -182,7 +192,9 @@ export function StoppedSessionActions({
   const canResume = isClaude && conversations.length > 0
 
   const onStart = React.useCallback(() => {
-    if (busy || !name) return
+    // Also guards the IMPERATIVE path: the overview peek maps Enter to this
+    // handle, and a keystroke must not reach an endpoint that will 400.
+    if (busy || !name || retired) return
     setBusy(true)
     setFailed(false)
     // The session row's SSE `status` delta flips it to running once tmux boots;
@@ -191,7 +203,7 @@ export function StoppedSessionActions({
       .start(name)
       .catch(() => setFailed(true))
       .finally(() => setBusy(false))
-  }, [busy, name])
+  }, [busy, name, retired])
 
   const onArchive = React.useCallback(() => {
     if (archiving || !name) return
@@ -240,15 +252,27 @@ export function StoppedSessionActions({
       // this so the Start / Archive buttons remain isolated targets.
       onClick={(e) => e.stopPropagation()}
     >
-      <Button
-        onClick={onStart}
-        disabled={busy || archiving}
-        // 44pt HIG hit-target floor — not the compact button size.
-        className="h-11"
-      >
-        <PlayCircle aria-hidden />
-        {busy ? 'Starting…' : EMPTY.stoppedSession.cta}
-      </Button>
+      {retired ? (
+        // Inert, and it says why. `role="note"` rather than `alert`: nothing
+        // just went wrong, this is a standing property of the session.
+        <p
+          role="note"
+          data-retired-provider={currentRow?.provider}
+          className="basis-full text-center text-xs text-muted-foreground"
+        >
+          {retiredProviderNote(currentRow?.provider)}
+        </p>
+      ) : (
+        <Button
+          onClick={onStart}
+          disabled={busy || archiving}
+          // 44pt HIG hit-target floor — not the compact button size.
+          className="h-11"
+        >
+          <PlayCircle aria-hidden />
+          {busy ? 'Starting…' : EMPTY.stoppedSession.cta}
+        </Button>
+      )}
 
       {/* Resume — only when the dir has past Claude conversations (no empty
           picker). Opens the <ResumePicker> sheet; Start stays = fresh. */}
@@ -391,6 +415,13 @@ export function StoppedSessionActions({
  *  CONFIRM-style guard. */
 export function StoppedSession({ name, className }: StoppedSessionProps) {
   const reduce = useReducedMotion()
+  const { sessions } = useSessions()
+  // "Start it again to reattach the live terminal" is a promise this surface
+  // cannot keep for a retired provider, so swap the sentence rather than let
+  // the standard copy lie. The actions cluster below carries the full note.
+  const retired = isRetiredProvider(
+    sessions.find((s) => s.name === name)?.provider,
+  )
 
   return (
     <div
@@ -413,7 +444,9 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
           {EMPTY.stoppedSession.title}
         </h2>
         <p className="max-w-xs text-sm text-muted-foreground">
-          {EMPTY.stoppedSession.body}
+          {retired
+            ? 'Its process is no longer running, and the agent it ran no longer ships with supermux.'
+            : EMPTY.stoppedSession.body}
         </p>
 
         {/* Action row — Resume primary, Archive secondary, Make team (when

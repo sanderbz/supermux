@@ -925,7 +925,9 @@ mod tests {
         // a remote host's transcript, or a team lead's spliced pane.
         assert!(chat_eligible("claude", None, None));
         assert!(!chat_eligible("codex", None, None), "provider must be claude");
-        assert!(!chat_eligible("kimi", None, None));
+        // A legacy row carrying a provider supermux no longer ships must be
+        // handled as "not eligible", never as an unknown that falls through.
+        assert!(!chat_eligible("a-retired-provider", None, None));
         assert!(!chat_eligible("shell", None, None));
         assert!(
             !chat_eligible("claude", Some(3), None),

@@ -25,7 +25,7 @@
 // writes — there is no dev-only fork of the seam decision, because the point of
 // this page is to review the real one. Only `web-app` / `api-server` / the
 // other local Claude mocks are eligible; `build-runner` (shell) and the Codex
-// and Kimi mocks stay terminal-only, which is itself worth a screenshot.
+// mock stay terminal-only, which is itself worth a screenshot.
 //
 // Usage: /dev/focus-mobile/web-app   ·   /dev/focus-mobile/web-app?chat=1
 

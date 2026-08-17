@@ -15,7 +15,7 @@
 //! construction**: there is no code path from it to [`crate::push`].
 //!
 //! Scope consequence, stated rather than hidden: push is HOOK-ANCHORED, so
-//! Claude sessions, the board hook and the scheduler push; codex / kimi / shell
+//! Claude sessions, the board hook and the scheduler push; codex / shell
 //! sessions do not. Their roster tier in-app still works off status — the
 //! roster may say "waiting", the phone stays silent. Nothing fires off a regex.
 //!
@@ -532,7 +532,7 @@ fn cap(s: &str) -> String {
 ///
 /// Only `claude` installs the hook set supermux reads (`PermissionRequest`,
 /// `Stop`, `StopFailure`, `SessionEnd`, …); board and scheduler sessions are
-/// Claude sessions and so are covered by the same `true`. A `codex` / `kimi` /
+/// Claude sessions and so are covered by the same `true`. A `codex` /
 /// `shell` pane emits nothing, so for those the 2 s status detector remains the
 /// ONLY thing that can notice a turn boundary — and therefore stays live as the
 /// explicit fallback (`auto_actions::maybe_push_on_transition`).

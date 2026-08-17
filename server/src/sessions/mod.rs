@@ -457,7 +457,25 @@ fn last_n_lines(capture: &str, n: usize) -> Vec<String> {
 // ── validation helpers ───────────────────────────────────────────────────────
 
 static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
-const PROVIDERS: [&str; 4] = ["claude", "codex", "kimi", "shell"];
+const PROVIDERS: [&str; 3] = ["claude", "codex", "shell"];
+
+/// Providers supermux once shipped and has since RETIRED. Their rows still exist
+/// in deployed databases (the `provider` column is free-form TEXT, and the
+/// sessions CHECK was relaxed to accept them), so every read path — list, get,
+/// status, the tile render — must keep tolerating the string exactly as it is
+/// stored. What must NOT happen is a retired row being started: the launch
+/// builder's fallback arm would boot CLAUDE under a Kimi row's name, which is a
+/// silent lie. [`lifecycle::start`] refuses them with a 400 instead.
+///
+/// Deliberately NOT in [`PROVIDERS`]: creating a new session with a retired
+/// provider is a 400 at the HTTP boundary, so the set can only shrink over time.
+const RETIRED_PROVIDERS: [&str; 1] = ["kimi"];
+
+/// True when `provider` names a retired provider — a row that may be listed and
+/// rendered but can never be launched again. See [`RETIRED_PROVIDERS`].
+pub(crate) fn is_retired_provider(provider: &str) -> bool {
+    RETIRED_PROVIDERS.contains(&provider)
+}
 
 /// Session-name slug rule: `[a-zA-Z0-9_.-]+`, bounded. The FIRST char must NOT
 /// be `-` — the session name flows through to argv for the provider CLI

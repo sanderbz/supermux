@@ -902,7 +902,7 @@ the phone just stays quiet).
 ### Who raises a push
 
 Pushes are **hook-anchored**: raised at the hook arms in `hooks::apply_payload`,
-never as a side effect of the status detector. `codex` / `kimi` / `shell` emit no
+never as a side effect of the status detector. `codex` / `shell` emit no
 hooks, so for those the detector remains the only path and stays live as an
 explicit fallback. There is exactly ONE writer of `pending_pushes` per session;
 a second is a silent dropped notification.

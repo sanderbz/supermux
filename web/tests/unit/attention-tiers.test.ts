@@ -49,7 +49,7 @@ describe('every row gets a tier — whatever it is', () => {
     expect(tierFor(s, seen(), NOW)).toBe('working')
   })
 
-  test('a kimi session with no store and nothing recent is quiet, not undefined', () => {
+  test('a session with no store and nothing recent is quiet, not undefined', () => {
     const s = session({ status: 'idle', activity_at: NOW - 86_400_000 })
     expect(tierFor(s, seen(), NOW)).toBe('quiet')
   })

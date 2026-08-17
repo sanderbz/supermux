@@ -18,7 +18,7 @@
 //!
 //! **The resolution.** The hook path is the only writer for providers that emit
 //! hooks; the detector path returns early for them and survives as the explicit
-//! fallback for providers that do NOT (codex / kimi / shell), so nobody loses
+//! fallback for providers that do NOT (codex / shell), so nobody loses
 //! notifications. The two behaviours `main` grew inside the detector — the 15 s
 //! team-finish window and `push_should_fire`'s subagent gate — move INTO the
 //! hook path (T2.3) before the detector is demoted, never after.
@@ -212,7 +212,7 @@ async fn a_finish_followed_by_a_permission_ask_shows_the_dialog_not_both() {
 /// the owner to accept is bounded by this assertion.
 #[tokio::test]
 async fn a_provider_without_hooks_still_pushes_from_the_detector() {
-    for provider in ["codex", "kimi", "shell"] {
+    for provider in ["codex", "shell"] {
         let (state, dir) = setup("fallback", provider).await;
         db::sessions::set_last_status(&state.pool, "fallback", "waiting").await.ok();
 

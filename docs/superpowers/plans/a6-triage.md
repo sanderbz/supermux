@@ -41,7 +41,7 @@ headroom number was stale by a factor of twenty** — both found by this pass, n
 | 15 | The `T` renderer hotkey is desktop-only | user-visible | later | Hardware keyboard on a phone; the mobile route has no keydown capture at all, so this is a surface-sized change |
 | 16 | Quick-peek has no chat lens | polish | B5 | B5 owns quick-peek → `ResponsiveSheet` |
 | 17 | The default flip | — | **A7** | A separate small PR, after the owner's hands-on. A6 changes no default |
-| 18 | chat for codex/kimi/remote/team | feature | later | Excluded by the Global Constraints provider guard; §5 keeps it |
+| 18 | chat for codex/remote/team | feature | later | Excluded by the Global Constraints provider guard; §5 keeps it |
 | 19 | Roster context % | infra→feature | later | Needs a `statuslines` field on the sessions delta |
 | 20 | The dark `statusline` delta key | infra | **later** (was "A6 if cheap") | It is not cheap any more: 0.21 KB of headroom, and a type + a consumer does not fit. The measured reason is recorded here, per T5.3's own instruction |
 | 21 | No typed Rust struct for the sessions delta | infra | later | Thirteen `json!` sites; too wide for a hardening fase |

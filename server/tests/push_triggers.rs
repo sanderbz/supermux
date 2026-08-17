@@ -384,7 +384,7 @@ async fn a_subagent_finishing_is_never_announced_as_the_turn_being_done() {
 ///
 /// The harvest's version asserted that the detector could not reach the push
 /// module AT ALL, which it achieved by deleting the detector path outright.
-/// That was rejected: `codex` / `kimi` / `shell` panes emit no hooks, so the
+/// That was rejected: `codex` / `shell` panes emit no hooks, so the
 /// detector is their ONLY route to a notification, and deleting it would have
 /// silently ended notifications for every non-Claude session. It also would
 /// have taken the 15 s team-finish window and the subagent gate with it.

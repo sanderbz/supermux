@@ -281,7 +281,7 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     };
     // Only a Claude target gets the `<supermux-schedule>` wrapper — the same
     // provider gate delegation delivery uses (§0.2): `recall.rs`'s JSONL
-    // classification and the chat renderer are Claude-only, so on a codex/kimi
+    // classification and the chat renderer are Claude-only, so on a codex
     // pane the tag is literal XML noise with no transcript to redeem it. A
     // lookup that fails degrades to the unwrapped bytes this has always sent.
     let wrap = db::sessions::get(&state.pool, &sched.session)
@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn deliveries_without_the_wrapper_are_todays_bytes() {
-        // A codex/kimi target gets the raw prompt: no transcript there can parse
+        // A codex target gets the raw prompt: no transcript there can parse
         // the tag, so it would be literal XML noise in the TUI.
         let mut s = sched_with("/cso", "look at it");
         s.confirm_finish = 1;

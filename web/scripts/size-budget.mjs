@@ -191,6 +191,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // is a gate. This one is an awareness ceiling: every PR that moves it must still
 // justify its bytes in the PR body, which is the rule that has actually been
 // doing the work all along.
+//
+// 223 held at chore/remove-kimi: measured 219.26 against 219.49 for origin/main
+// at 2809001 — the Kimi provider's removal returns 0.23 KB (the tools sheet's
+// KIMI_ACTIONS + KimiToolsBody and nine now-unused lucide icons, the New Session
+// third option, the provider branches in the two focus headers and the two
+// external-editor gates, the dev mock tile; the new `lib/retired-providers`
+// module and its note are ~0.15 KB of that back). The entry chunk moved down
+// too: 153.11 / 160 (96%) from 153.39.
+//
+// The ceiling does NOT move. Applied literally, measured × 1.02 = 223.65 would
+// RAISE it — a removal buying future headroom is the one thing this ledger has
+// never been for, and the whole point of the fix-wave-1 ratchet was that a
+// ceiling should track real cost rather than drift upward. So the rule for a
+// subtractive PR is: the ceiling ratchets DOWN or stands still, never up. 223
+// stands, and it is now 3.74 KB of genuine headroom instead of 3.51.
 const BUDGET_APP_JS = 223 * KB
 const BUDGET_CSS = 30 * KB
 

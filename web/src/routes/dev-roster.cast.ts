@@ -95,7 +95,7 @@ export const ROSTER_NAMES = [
   'git-stack',
   'remote-ssh',
   'scrollback',
-  'kimi-code',
+  'device-auth',
   'night-watch',
 ] as const
 
@@ -115,7 +115,7 @@ const PREVIEWS: Readonly<Record<string, string>> = {
   'git-stack': 'rebased onto origin/main; 2 conflicts, both in lockfiles',
   'remote-ssh': 'host unreachable for 40s, then back',
   scrollback: 'width shrank to 88 cols and Claude re-emitted the frame',
-  'kimi-code': 'moonshot device auth still valid until 2026-09',
+  'device-auth': 'device auth still valid until 2026-09',
   'night-watch': 'quiet since 03:12',
 }
 
@@ -132,7 +132,7 @@ const TIMES: Readonly<Record<string, string>> = {
   'git-stack': '9:57 AM',
   'remote-ssh': 'Yesterday',
   scrollback: 'Yesterday',
-  'kimi-code': 'Tuesday',
+  'device-auth': 'Tuesday',
   'night-watch': 'Tuesday',
 }
 

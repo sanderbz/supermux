@@ -94,7 +94,7 @@ export const GROUP_BY_META: Record<
 > = {
   none: { label: 'No grouping', hint: 'One list — or your own groups in Custom', Icon: Layers },
   dir: { label: 'Folder', hint: 'By working directory', Icon: Folder },
-  provider: { label: 'Provider', hint: 'Claude, Codex, Kimi…', Icon: Sparkles },
+  provider: { label: 'Provider', hint: 'Claude, Codex…', Icon: Sparkles },
   host: { label: 'Host', hint: 'Local and each remote host', Icon: Server },
   status: { label: 'Status', hint: 'Needs input, running, stopped…', Icon: Signal },
 }

@@ -359,7 +359,7 @@ pub struct AppState {
     ///   which includes board and scheduler sessions).
     /// * [`crate::sessions::auto_actions::maybe_push_on_transition`] — the
     ///   status-detector fallback. Owns it for every other provider
-    ///   (`codex` / `kimi` / `shell`), which have no hooks at all.
+    ///   (`codex` / `shell`), which have no hooks at all.
     ///
     /// Both do `remove(name).abort()` + `insert(...)`. If both are live for one
     /// session they cancel each other's timers in whichever order they happen

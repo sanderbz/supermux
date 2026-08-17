@@ -1169,7 +1169,7 @@ fn spawn_auto_heal(state: &AppState, name: &str, reason: &str) {
 ///   is worse than an honest "Terminal died" badge with a Resume button.
 /// * `shell` — a shell has no conversation to lose; a restart is just a fresh
 ///   prompt, which is exactly what the user would do by hand.
-/// * everything else (`codex`, `kimi`, …) — restarted fresh. Their launchers
+/// * everything else (`codex`, …) — restarted fresh. Their launchers
 ///   own their own session continuity; supermux's job is to get the terminal
 ///   back.
 ///
@@ -1833,7 +1833,7 @@ fn push_should_fire(cat: crate::db::push::NotifCategory, last_status: &str, suba
 ///
 /// * `claude` (including board / scheduler sessions) → the hook path owns it.
 ///   This function returns early, having touched nothing.
-/// * `codex` / `kimi` / `shell` → no hooks exist, so this remains their ONLY
+/// * `codex` / `shell` → no hooks exist, so this remains their ONLY
 ///   route to a notification and stays fully live.
 ///
 /// The two behaviours this path had grown that the hook path lacked — the 15 s

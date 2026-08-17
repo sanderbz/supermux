@@ -12,8 +12,8 @@
 // writes — no dev-only fork of the decision), so the chat-tail preview is
 // screenshot-able offline. It is worth one frame precisely because the guard is
 // visible in it: `web-app` is eligible AND has a `chat_tail`, so it shows the
-// conversation; `api-server` is eligible with NO tail, and `codex-app` /
-// `kimi-app` are ineligible — all three keep the ANSI screen. With the param
+// conversation; `api-server` is eligible with NO tail, and `codex-app` is
+// ineligible — both keep the ANSI screen. With the param
 // absent (the shipped default) every tile is byte-identical to before A5.
 
 import * as React from 'react'

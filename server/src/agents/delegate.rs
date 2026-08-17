@@ -120,7 +120,7 @@ pub fn wrap_delegation(from: &str, prompt: &str) -> Result<String, &'static str>
 
 /// Whether a target session's provider gets the wrapper. Only `claude`:
 /// `recall.rs`'s JSONL classification and the chat renderer are Claude-only, so
-/// for `codex`/`kimi` the tag would be literal XML noise in their TUI with no
+/// for `codex` the tag would be literal XML noise in its TUI with no
 /// transcript to redeem it.
 pub fn wraps_for_provider(provider: &str) -> bool {
     provider == "claude"
@@ -382,10 +382,10 @@ mod tests {
 
     #[test]
     fn only_claude_targets_get_the_wrapper() {
-        // Literal XML in a codex/kimi TUI is pure noise: their transcripts are
+        // Literal XML in a codex TUI is pure noise: its transcript is
         // not parsed by `recall.rs`, so the tag would buy provenance nowhere.
         assert!(wraps_for_provider("claude"));
         assert!(!wraps_for_provider("codex"));
-        assert!(!wraps_for_provider("kimi"));
+        assert!(!wraps_for_provider("shell"));
     }
 }
