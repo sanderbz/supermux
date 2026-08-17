@@ -250,7 +250,27 @@ function ChoiceButton({
  * it is honest at rest (a short command's fade sits over blank card), and the
  * alternative is a ResizeObserver inside a primitive.
  */
-export function CardCode({ children, label = 'Details' }: { children: ReactNode; label?: string }) {
+export function CardCode({
+  children,
+  label = 'Details',
+  wrap,
+}: {
+  children: ReactNode
+  label?: string
+  /**
+   * The body is PROSE, not a command — soft-wrap it (states audit).
+   *
+   * The no-wrap rule above is about commands, and it stays the default. But the
+   * paused/consent card's body is Claude Code's own sentence, hard-wrapped at 80
+   * columns, and this is the one card the build deliberately refuses to act on —
+   * its verbatim body is its entire evidence base. At 390px the fixed columns cut
+   * "Continue with Fable 5 on usage credits, or switch models for the rest of
+   * this session." down to "Continue with Fable 5 on usage credits, / session." —
+   * a complete-looking sentence that hides the second option's existence. A
+   * clipped sentence that still reads as finished is worse than a wrapped one.
+   */
+  wrap?: boolean
+}) {
   return (
     <div className="relative mt-[9px]">
       <pre
@@ -265,14 +285,23 @@ export function CardCode({ children, label = 'Details' }: { children: ReactNode;
         role="region"
         aria-label={label}
         tabIndex={0}
-        className="max-h-[132px] overflow-auto overscroll-contain whitespace-pre rounded-[10px] border-[0.5px] border-hairline-soft bg-code-bg px-[11px] py-2 font-mono text-[12.4px] leading-[1.55] tracking-[-0.1px] text-ink"
+        data-wrap={wrap ? 'prose' : undefined}
+        className={cn(
+          'max-h-[132px] overflow-auto overscroll-contain rounded-[10px] border-[0.5px] border-hairline-soft bg-code-bg px-[11px] py-2 font-mono text-[12.4px] leading-[1.55] tracking-[-0.1px] text-ink',
+          wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
+        )}
       >
         {children}
       </pre>
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-y-px right-px w-6 rounded-r-[10px] bg-gradient-to-l from-code-bg to-transparent"
-      />
+      {/* The horizontal-scroll hint, and only where there is one to give: a
+          wrapped body never scrolls sideways, so the fade would sit over the
+          last characters of every line for nothing. */}
+      {!wrap && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-px right-px w-6 rounded-r-[10px] bg-gradient-to-l from-code-bg to-transparent"
+        />
+      )}
     </div>
   )
 }

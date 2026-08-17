@@ -103,9 +103,15 @@ export function ProvisionalTailView({
         >
           Live terminal · unconfirmed
         </div>
-        {/* The capture's own columns, at B0's code metrics — the ANSI spans are
-            the terminal's colours and carry their own inline style. */}
-        <pre className="overflow-x-auto whitespace-pre font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]">
+        {/* B0's code metrics, and the ANSI spans are the terminal's colours
+            carrying their own inline style — but the capture's own COLUMNS are
+            not preserved. A 128-col pty inside a 230px phone bubble hid 74% of
+            every line off-screen behind a hairline scrollbar, during the one
+            phase where the surface is genuinely live and the reader most wants
+            to read it. The dashed edge is what says "unconfirmed"; the fixed
+            column grid never was. So it soft-wraps, and a word longer than the
+            bubble breaks rather than pushing a scrollbar under the whole block. */}
+        <pre className="whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]">
           {lines.map((l, i) => (
             <div key={i}>
               {parseAnsiLine(l).map((s, j) => (

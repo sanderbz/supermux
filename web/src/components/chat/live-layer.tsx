@@ -95,6 +95,17 @@ const SWAP_S = 0.26
  */
 const PAGE_RING = 'var(--sm-paper)'
 
+/**
+ * Dialog families whose `body` is PROSE rather than a command, and may therefore
+ * be soft-wrapped in the evidence block (states audit — the phone clipped the
+ * paused card's second option out of a sentence that still read as finished).
+ *
+ * `permission` is deliberately absent: its body is the command being approved.
+ * `unknown` too — an unrecognised screen is the one place to assume the strictest
+ * reading of what the bytes mean.
+ */
+const PROSE_BODY_FAMILIES: ReadonlySet<string> = new Set(['paused', 'plan', 'startup'])
+
 export interface LiveLayerProps {
   /** The focused session's immutable slug — the seed for every face here. */
   name: string
@@ -575,7 +586,14 @@ export function DialogCard({
           view.family === 'question' ? (
             <OptionMeanings view={view} />
           ) : view.body?.length ? (
-            <CardCode>{view.body.join('\n')}</CardCode>
+            // WHICH BODIES MAY WRAP. A permission body is a shell command and a
+            // soft break there could change what a reader believes they are
+            // approving, so it keeps the pty's columns and scrolls (see
+            // `CardCode`). The paused/plan/startup bodies are prose Claude Code
+            // already hard-wrapped at 80 columns — on a 390px phone those clipped
+            // mid-sentence with no ellipsis and no scroll affordance, which reads
+            // as a different, complete sentence.
+            <CardCode wrap={PROSE_BODY_FAMILIES.has(view.family)}>{view.body.join('\n')}</CardCode>
           ) : undefined
         }
         why={why || undefined}
