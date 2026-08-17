@@ -40,7 +40,7 @@ fn corpus() -> Vec<Value> {
         .filter(|v: &Value| v.get("_").is_none())
         .collect();
     assert!(
-        rows.len() >= 17,
+        rows.len() >= 18,
         "the corpus is the contract — it must not shrink (got {})",
         rows.len()
     );
@@ -105,9 +105,11 @@ fn the_url_survives_every_wrap_width_byte_for_byte() {
         let Some(want) = row.get("url").and_then(Value::as_str) else {
             continue;
         };
-        let cap = capture(&row);
-        let lines: Vec<&str> = cap.lines().collect();
-        let got = reassemble_url(&lines)
+        // Through the real path (`read_login`), not the raw helper: one of these
+        // captures is the colour-true channel, and stripping is part of the
+        // contract rather than something the caller is expected to remember.
+        let got = read_login(&capture(&row))
+            .and_then(|s| s.url)
             .unwrap_or_else(|| panic!("{}: no URL reassembled at all", name(&row)));
         assert_eq!(got, want, "{}: reassembled URL", name(&row));
         seen.push((name(&row).to_string(), got));

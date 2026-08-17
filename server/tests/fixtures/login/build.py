@@ -279,7 +279,29 @@ case(
     waiting=False,
 )
 
-# ── 14-16. the other providers ───────────────────────────────────────────────
+# ── 14. THE COLOUR-TRUE CHANNEL ──────────────────────────────────────────────
+# `?ansi=1` is what the chat surface polls, and the native VT re-emits SGR PER
+# ROW — every line ends in `\x1b[0m`. A lens that matched on raw rows read the
+# paste prompt as `… > \x1b[0m`, failed its end-of-row anchor, and drew nothing
+# against a live session while its plain-channel twin reported a login. Found
+# live in `login-flow.spec.ts`; pinned here so it stays fixed on both planes.
+_wrapped = grid(banner() + url_block() + [PASTE], 80)
+_ansi = "\n".join(f"\x1b[0m{l}\x1b[0m" if l else "" for l in _wrapped)
+with open(os.path.join(HERE, "paste-prompt-ansi.txt"), "w") as fh:
+    fh.write(_ansi)
+CASES.append(
+    {
+        "name": "paste-prompt-ansi",
+        "file": "paste-prompt-ansi.txt",
+        "width": 80,
+        "stage": "paste_prompt",
+        "flow": "account",
+        "url": URL,
+        "waiting": True,
+    }
+)
+
+# ── 15-17. the other providers ───────────────────────────────────────────────
 # Detected and EXPLAINED, not driven: codex's and kimi's device lifecycles are
 # their own, and a half-automation that gets the timing wrong is worse than a
 # card that says what is happening and hands over.

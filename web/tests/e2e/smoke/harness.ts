@@ -113,6 +113,15 @@ function spawnBackend(opts: {
   port: number
   dataDir: string
   token: string
+  /** Extra environment for the BACKEND process only.
+   *
+   *  It exists for the one spec that has to control what the launcher finds on
+   *  PATH (`login-flow.spec.ts` installs a fake OAuth provider under the name
+   *  `claude`). Mutating `process.env` cannot do that job: the pane's shell
+   *  sources the developer's `~/.bashrc`, which re-prepends `~/.local/bin` and
+   *  puts the real binary back in front. Applied LAST, so a caller can also
+   *  override `HOME` and get a shell with no rc file at all. */
+  env?: Record<string, string>
 }): ChildProcess {
   const child = spawn(opts.bin, [], {
     cwd: REPO_ROOT,
@@ -143,6 +152,7 @@ function spawnBackend(opts: {
       SUPERMUX_BIND: `127.0.0.1:${opts.port}`,
       SUPERMUX_AUTH_TOKEN: opts.token,
       RUST_LOG: process.env.RUST_LOG ?? 'warn',
+      ...opts.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -181,7 +191,10 @@ function killProc(child: ChildProcess | null): Promise<void> {
  * Boot a backend binary + a Vite dev server proxied to it. Returns a {@link Backend}
  * the test drives. Call `dispose()` in `afterEach`/`finally`.
  */
-export async function startBackend(): Promise<Backend> {
+export async function startBackend(opts?: {
+  /** Extra environment for the backend process only — see `spawnBackend`. */
+  env?: Record<string, string>
+}): Promise<Backend> {
   const bin = binaryPath()
   const backendPort = await freePort()
   const vitePort = await freePort()
@@ -195,6 +208,7 @@ export async function startBackend(): Promise<Backend> {
     port: backendPort,
     dataDir,
     token,
+    env: opts?.env,
   })
   await waitForHealth(backendUrl)
 
@@ -226,7 +240,7 @@ export async function startBackend(): Promise<Backend> {
     },
     async restartBackend() {
       if (backend) await killProc(backend)
-      backend = spawnBackend({ bin, port: backendPort, dataDir, token })
+      backend = spawnBackend({ bin, port: backendPort, dataDir, token, env: opts?.env })
       await waitForHealth(backendUrl, 30_000)
     },
     async dispose() {

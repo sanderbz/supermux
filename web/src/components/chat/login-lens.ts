@@ -51,6 +51,29 @@ export const URL_HOSTS = ['claude.com', 'console.anthropic.com', 'platform.claud
 /** How far above the bottom of the capture the lens looks. */
 const LOOKBACK = 60
 
+/**
+ * SGR (and every other escape) removed, because BOTH channels reach this
+ * function and only one of them is plain.
+ *
+ * The server reads `capture_plain`; the chat surface polls `?ansi=1` (the
+ * colour-true channel the Attention card's mini-view needs), and the native VT
+ * re-emits SGR PER ROW — every line of that capture ends in `\x1b[0m`. So a
+ * lens that matched on raw rows saw `Paste code here if prompted > \x1b[0m`,
+ * failed its end-of-row anchor, and drew no card at all against a live session
+ * while the server-side twin — reading the plain channel — happily reported
+ * `waiting`. Found exactly that way, live, in `login-flow.spec.ts`.
+ *
+ * Stripping is a no-op on a plain capture, which is what keeps the two planes
+ * reading the SAME corpus and agreeing.
+ */
+const ANSI_RE =
+  // eslint-disable-next-line no-control-regex
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|\x1b\[[0-?]*[ -/]*[@-~]/g
+
+function stripAnsi(s: string): string {
+  return s.includes('\x1b') ? s.replace(ANSI_RE, '') : s
+}
+
 /** U+276F at column 0 with no digit after it — the TUI's own composer. Its
  *  presence BELOW a login marker proves the flow is over: Claude Code does not
  *  draw the composer under a live login dialog. (An option row is
@@ -198,7 +221,7 @@ function readOptions(lines: readonly string[]): string[] {
 /** Read one `/peek` capture. Pure and total: no capture throws, and a capture
  *  with no login on it reads as `null` rather than as a failure. */
 export function readLogin(capture: string): LoginSighting | null {
-  const lines = capture ? capture.split('\n') : []
+  const lines = capture ? stripAnsi(capture).split('\n') : []
   const w = windowOf(lines)
   if (!w) return null
   const [start, tail] = w
@@ -332,7 +355,7 @@ function looksLikeDeviceCode(line: string): boolean {
 
 /** Twin of `login.rs::read_provider_auth`, same window rule as `readLogin`. */
 export function readProviderAuth(capture: string): ProviderAuth | null {
-  const lines = capture ? capture.split('\n') : []
+  const lines = capture ? stripAnsi(capture).split('\n') : []
   const w = windowOf(lines)
   if (!w) return null
   const win = lines.slice(w[0], w[1] + 1)

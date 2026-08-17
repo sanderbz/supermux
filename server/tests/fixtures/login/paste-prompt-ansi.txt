@@ -1,0 +1,15 @@
+[0m▐▛███▜▌ Claude Code v2.1.227[0m
+[0m▝▜█████▛▘ Sonnet 4.5 · Claude Max[0m
+[0m  ▘▘ ▝▝  ~/projects/supermux[0m
+
+[0mOpening browser to sign in…[0m
+
+[0mBrowser didn't open? Use the url below to sign in  (c to copy)[0m
+
+[0mhttps://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88[0m
+[0med-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.co[0m
+[0mm%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainf[0m
+[0merence&code_challenge=PZKq0mF1WSQ0oYtqO3xVvT4WhK3nGmqLzUvNq2sWQ1k&code_challenge[0m
+[0m_method=S256&state=hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa[0m
+
+[0mPaste code here if prompted > [0m

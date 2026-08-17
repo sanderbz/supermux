@@ -59,7 +59,7 @@ const capture = (row: CorpusRow) => readFileSync(new URL(row.file, DIR), 'utf8')
 
 describe('the shared /login corpus', () => {
   test('is present and has not shrunk', () => {
-    expect(CORPUS.length).toBeGreaterThanOrEqual(17)
+    expect(CORPUS.length).toBeGreaterThanOrEqual(18)
   })
 
   test('still covers every stage, both flows, several wrap widths and the negatives', () => {
@@ -98,8 +98,9 @@ describe('the URL', () => {
     const withUrl = CORPUS.filter((r) => r.url)
     expect(withUrl.length).toBeGreaterThanOrEqual(5)
     for (const row of withUrl) {
-      const lines = capture(row).split('\n')
-      expect(reassembleUrl(lines)).toBe(row.url!)
+      // Through the real path, not the raw helper: one of these captures is the
+      // colour-true channel, and stripping is part of the contract.
+      expect(readLogin(capture(row))?.url).toBe(row.url!)
     }
   })
 

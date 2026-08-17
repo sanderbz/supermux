@@ -128,6 +128,55 @@ const METHOD_SELECT: &str = "Select login method:";
 /// that still says so silently discards the URL and the card renders empty.
 pub const URL_HOSTS: &[&str] = &["claude.com", "console.anthropic.com", "platform.claude.com"];
 
+/// SGR (and every other escape) removed, because BOTH capture channels reach
+/// these readers and only one of them is plain.
+///
+/// The detector tick hands over `capture_plain`; the chat surface polls
+/// `?ansi=1` (the colour-true channel), and the native VT re-emits SGR PER ROW —
+/// every line of that capture ends in `\x1b[0m`. A reader that matched on raw
+/// rows saw `Paste code here if prompted > \x1b[0m`, failed its end-of-row
+/// anchor and reported nothing, while its twin on the plain channel reported a
+/// login. Stripping is a no-op on a plain capture, which is what keeps the two
+/// planes reading the SAME corpus and agreeing.
+fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\x1b') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            // CSI: parameters and intermediates, then one final byte.
+            Some('[') => {
+                for c in it.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs to BEL or ST.
+            Some(']') => {
+                while let Some(c) = it.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            // Any other two-byte escape.
+            _ => {}
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// How far above the bottom of the capture the lens looks. Bounded, and bounded
 /// again by the composer rule below — the capture is scrollback plus viewport,
 /// and a login that finished an hour ago is not a login that is waiting.
@@ -322,6 +371,7 @@ fn read_options(lines: &[&str]) -> Vec<String> {
 /// Read one capture. Pure, total, cheap — no capture ever panics, and a capture
 /// with no login on it reads as `None` rather than as a failure.
 pub fn read_login(capture: &str) -> Option<LoginSighting> {
+    let capture = strip_ansi(capture);
     let lines: Vec<&str> = capture.lines().collect();
     let (start, tail) = window(&lines)?;
     let win = &lines[start..=tail];
@@ -451,6 +501,7 @@ fn looks_like_device_code(line: &str) -> bool {
 
 /// Read a non-Claude provider device-auth screen. Same window rule as [`read_login`].
 pub fn read_provider_auth(capture: &str) -> Option<ProviderAuth> {
+    let capture = strip_ansi(capture);
     let lines: Vec<&str> = capture.lines().collect();
     let (start, tail) = window(&lines)?;
     let win = &lines[start..=tail];

@@ -13,6 +13,7 @@
 {"name": "negative-idle-composer", "file": "negative-idle-composer.txt", "width": 80, "stage": null, "waiting": false}
 {"name": "negative-login-in-scrollback", "file": "negative-login-in-scrollback.txt", "width": 80, "stage": null, "waiting": false}
 {"name": "negative-prose-quotes-the-prompt", "file": "negative-prose-quotes-the-prompt.txt", "width": 80, "stage": null, "waiting": false}
+{"name": "paste-prompt-ansi", "file": "paste-prompt-ansi.txt", "width": 80, "stage": "paste_prompt", "flow": "account", "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference&code_challenge=PZKq0mF1WSQ0oYtqO3xVvT4WhK3nGmqLzUvNq2sWQ1k&code_challenge_method=S256&state=hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa", "waiting": true}
 {"name": "codex-device-code", "file": "codex-device-code.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "device_code", "url": "https://chatgpt.com/deviceauth?user_code=FKDL-XMQP", "code": "FKDL-XMQP"}}
 {"name": "codex-apikey-paste", "file": "codex-apikey-paste.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "api_key"}}
 {"name": "codex-method-picker", "file": "codex-method-picker.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "method_picker"}}
