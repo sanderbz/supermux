@@ -57,6 +57,15 @@ export interface ComposerNotice {
      *  the prompt. Pointing at a card that is not there is the one thing a
      *  refusal must not do (A4 review). */
     | 'dialog-terminal'
+    /** An AskUserQuestion is up. Its own free-text row (`Type something.`)
+     *  exists, so "answer it in the terminal" is not the whole truth — but a
+     *  composer send is a PASTE at the TUI prompt, and a0 §3 verified what that
+     *  does to an open dialog: the paste is ignored and the appended Enter picks
+     *  whatever row the caret is on. Sending free text here would therefore
+     *  answer the question with an option the user never chose, silently. So the
+     *  refusal names the buttons above, which answer the same question with the
+     *  caret verified between every key. */
+    | 'dialog-question'
     /** Stop was pressed while a dialog is on screen. `Escape` there DENIES the
      *  dialog (a0 §3, live-verified) — it does not interrupt the turn — so the
      *  keystroke is not sent and the composer says what it would have done. */
@@ -153,6 +162,15 @@ export interface SendContext {
 
 export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate {
   const dialogKind = ctx.dialogCard ? ('dialog' as const) : ('dialog-terminal' as const)
+  // A QUESTION is the one dialog whose refusal needs its own sentence: it HAS a
+  // free-text row, so a user who typed an answer is not doing anything unusual —
+  // they are answering, in the way the terminal itself offers. What they cannot
+  // know is that a chat send is a paste, and that a paste into an open dialog is
+  // dropped while the Enter after it picks the highlighted row (a0 §3). The
+  // buttons above do the same job with the caret checked between every key.
+  if (lens?.dialog?.family === 'question') {
+    return { send: false, notice: { kind: 'dialog-question' } }
+  }
   if (lens?.dialog) return { send: false, notice: { kind: dialogKind } }
   // A FULL-SCREEN PANEL (`/status`, `/cost`, `/config`) — nothing to answer, but
   // it owns the screen and it will eat the Enter `send_text` appends. There is

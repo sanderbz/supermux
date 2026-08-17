@@ -29,8 +29,13 @@ export interface DialogSighting {
    *  a fingerprint miss would then degrade to a send (invisible) instead of to
    *  the Attention card (visible). Read/WebFetch/MCP permission prompts have no
    *  `Tab to amend` footer — nothing to amend — so they land here. */
-  family: 'permission' | 'plan' | 'unknown'
-  variant?: 'bash' | 'edit' | 'write'
+  family: 'permission' | 'plan' | 'question' | 'startup' | 'unknown'
+  /** Which shape inside the family. `bash`/`edit`/`write` are the permission
+   *  variants; `trust`/`apikey` are the two STARTUP wedges that draw numbered
+   *  rows (`peek-lens` reports the other two — the first-run wizard and codex's
+   *  hooks review — through `notice`, because neither has a captured row list
+   *  this app is willing to press a key into). */
+  variant?: 'bash' | 'edit' | 'write' | 'trust' | 'apikey'
   /** Whitespace-normalised option labels, in TUI order.
    *  Wrapped continuation lines are folded back into their option (options wrap
    *  at 52 cols — a0 §3 "wrap hazard"), which also folds in a sub-hint that sits
@@ -72,6 +77,73 @@ export interface DialogSighting {
    * "helpful" rewrite here would be the bug.
    */
   body?: string[]
+  /**
+   * The AskUserQuestion HEADER CHIP, verbatim — `Fruit choice`.
+   *
+   * Claude Code draws it on a reverse-video line of its own (` ☐ <header> `,
+   * U+2610) directly above the question. It is the model's own two-word name for
+   * the decision, it is the ONLY thing the phone push and the card can share, and
+   * before this it appeared on no supermux surface at all: the card was headed
+   * ``Run `AskUserQuestion` ?`` and the sentence the user was being asked was
+   * nowhere (verify matrix, 03-chat-askq.png).
+   *
+   * `question` family only.
+   */
+  header?: string
+  /**
+   * Per-option DESCRIPTION lines, parallel to `options` (`undefined` where an
+   * option has none).
+   *
+   * AskUserQuestion prints a dim description indented under each label, and it is
+   * indistinguishable from a 52-column WRAP by indentation alone — so the
+   * ordinary fold produced chips reading `Apple A crisp and refreshing fruit`
+   * and a `rowPattern` written against them would be half description text
+   * (verify matrix, finding 8). The discriminator is the LABEL LINE'S LENGTH: a
+   * row that ended well short of the wrap column did not wrap, so what follows is
+   * a description. Split out here rather than folded, so the chip says `Apple`
+   * and the card can still show what Apple means.
+   */
+  descriptions?: (string | undefined)[]
+  /**
+   * The `N. Type something.` row — AskUserQuestion's own free-text hatch.
+   *
+   * Reported so the composer can say what it is doing: free text typed into chat
+   * is not a NEW prompt while this dialog is up, it is an answer to it.
+   */
+  freeTextIndex?: number
+}
+
+/**
+ * Something on the live screen that BLOCKS or WARNS but is not a dialog.
+ *
+ * The dialog reader above answers "what is asking?". This answers the question
+ * the verify matrix found nothing in the product asking at all: *can this session
+ * do the next turn?* A usage-limit banner is not modal, nothing waits on a key,
+ * the turn simply ends — so every existing signal reads the session as healthy
+ * (`Idle`, green dot, composer enabled) while it is dead until the reset time
+ * (05-chat-limits.png / 06-overview-limits.png). A startup wedge is the mirror
+ * image: the session never got to a first turn at all, and there is no transcript
+ * for the other plane to read, so the pty is the ONLY witness there is.
+ *
+ * Verbatim in, verbatim out: the banner already carries the reset time and the
+ * remediation, and this app has no better sentence than Claude Code's own.
+ */
+export interface PtyNotice {
+  /** `limit-blocked` — the account's bucket is exhausted; the next turn fails.
+   *  `limit-warning` — the dim footer line at ≥70 % utilisation, or the
+   *  `Approaching …` form. A chip, never a block.
+   *  `startup-wedge` — the session is parked on a startup gate before its first
+   *  turn (see `wedge`). */
+  kind: 'limit-blocked' | 'limit-warning' | 'startup-wedge'
+  /** Claude Code's own line, verbatim (whitespace-normalised, nothing else). */
+  text: string
+  /** The remediation subline CC prints under a hard block (`/upgrade or
+   *  /usage-credits …`), when it is on screen. */
+  detail?: string
+  /** Which startup gate. `trust`/`apikey` also raise a DIALOG (they have rows);
+   *  `onboarding` and `hooks-review` do not — they are reported here only, so a
+   *  session parked on the theme picker stops reading as a green Idle. */
+  wedge?: 'trust' | 'apikey' | 'onboarding' | 'hooks-review'
 }
 
 /* ── the two-phase fingerprint ────────────────────────────────────────────────
@@ -118,7 +190,7 @@ export interface DialogSighting {
 /** The caret-INVARIANT half of a strict sighting: what must still hold while an
  *  answer sequence walks the caret down the dialog. */
 export interface DialogContinuity {
-  family: 'permission' | 'plan'
+  family: Exclude<DialogSighting['family'], 'unknown'>
   variant?: DialogSighting['variant']
   question: string
   options: readonly string[]
@@ -213,6 +285,15 @@ export interface PeekLens {
    * session, which is why it sits on the lens beside the banner version.
    */
   transcriptOff: boolean
+   * The session cannot do the next turn, or is close to not being able to (see
+   * `PtyNotice`).
+   *
+   * ORTHOGONAL to `dialog`, unlike `modal`: a screen may be both, and the two
+   * say different things. A trust dialog is a question AND a wedge; a limit
+   * banner is a wedge and no question at all. Nothing here is ever a reason to
+   * press a key — it is a reason to stop drawing the session as healthy.
+   */
+  notice: PtyNotice | null
 }
 
 /** U+276F — the glyph a0 proved is NEVER a fingerprint on its own: the composer
@@ -254,8 +335,30 @@ interface OptionRow {
   /** Column the label starts at — where a wrapped continuation lines up. */
   labelCol: number
   caret: boolean
+  /** The row as every family before `question` has always read it: the label
+   *  with its continuation lines folded in. Unchanged, on purpose — the
+   *  permission and plan `rowPattern`s are written against this string. */
   text: string
+  /** The label LINE only, nothing folded. */
+  label: string
+  /** The indented lines under the label, in order. */
+  folds: string[]
+  /** Did the label line reach the wrap column? (see `WRAP_COL`.) */
+  wrapped: boolean
 }
+
+/**
+ * The column Claude Code wraps an option label at (a0 §3, "wrap hazard").
+ *
+ * Used as a DISCRIMINATOR and only here: a label line that stopped well short of
+ * it did not wrap, so an indented line under it is the option's DESCRIPTION, not
+ * the rest of its sentence. That is the whole fix for finding 8 — chips that read
+ * `Apple A crisp and refreshing fruit` — and it is deliberately consulted by the
+ * `question` family alone, because the permission/plan families' `rowPattern`s
+ * were captured against the folded string and folding a `(shift+tab)` sub-hint
+ * into option 2 is behaviour those entries already document.
+ */
+const WRAP_COL = 52
 
 /** Collect the numbered rows, folding wrapped continuations back in. */
 function readOptions(lines: readonly string[]): OptionRow[] {
@@ -270,12 +373,16 @@ function readOptions(lines: readonly string[]): OptionRow[] {
       if (n === 1) rows.length = 0
       else continue
     }
+    const label = norm(m[4])
     rows.push({
       index: n - 1,
       line: i,
       labelCol: m[0].length - m[4].length,
       caret: Boolean(m[2]),
-      text: norm(m[4]),
+      text: label,
+      label,
+      folds: [],
+      wrapped: lines[i].trimEnd().length >= WRAP_COL,
     })
   }
   // Continuations: a non-blank, non-option line indented to (about) the label
@@ -289,10 +396,30 @@ function readOptions(lines: readonly string[]): OptionRow[] {
       if (!raw.trim()) break
       if (OPTION_RE.test(raw)) break
       if (raw.length - raw.trimStart().length < minIndent) break
+      rows[r].folds.push(norm(raw))
       rows[r].text = `${rows[r].text} ${norm(raw)}`
     }
   }
   return rows
+}
+
+/** The rule Claude Code draws UNDER an AskUserQuestion's own options, separating
+ *  them from the out-of-box affordance (`5. Chat about this`) below it.
+ *
+ *  That row is numbered in sequence, so the ordinary scan absorbs it as a fifth
+ *  option (finding 8) — and it is not one: it takes the conversation somewhere
+ *  else instead of answering. Cutting the list at the rule is what keeps the
+ *  card's rows and the tool's `options[]` the same list. */
+function stopAtRule(rows: readonly OptionRow[], lines: readonly string[]): OptionRow[] {
+  const cut = rows.findIndex((r, i) => {
+    if (i === 0) return false
+    const prev = rows[i - 1]
+    for (let j = prev.line + 1; j < r.line; j++) {
+      if (SECTION_RULE_RE.test(lines[j])) return true
+    }
+    return false
+  })
+  return cut > 0 ? rows.slice(0, cut) : rows.slice()
 }
 
 /** Which of the two act-on families this is, if either. Order matters: the two
@@ -333,6 +460,97 @@ function readFamily(
   return null
 }
 
+/* ── the question family (AskUserQuestion) ───────────────────────────────────
+ *
+ * The state the owner asked about first, and the one with the widest blast
+ * radius: the transcript is EMPTY while the dialog is up — Claude Code writes
+ * the `tool_use` line only AFTER the answer — so a transcript-only renderer
+ * cannot see it at all, and the pty is the entire evidence base. Before this,
+ * `readLens()` returned `family:'unknown'` for it, `entryForSighting()` returned
+ * null, and the card was headed ``Run `AskUserQuestion` ?`` with five disabled
+ * chips whose labels were half description text (verify matrix finding 4 + 8,
+ * screenshot 03-chat-askq.png).
+ *
+ * The fingerprint is the dialog's own furniture, all four tokens required
+ * (live capture, CC 2.1.233, `tests/fixtures/tui/askq/ask-user-question.txt`):
+ *
+ *   ` ☐ Fruit choice `            the reverse-video header chip (U+2610)
+ *   `Which fruit do you want?`   the bold question line under it
+ *   `❯ 1. Apple` + description   numbered rows with dim descriptions
+ *   `Enter to select · ↑/↓ to navigate · Esc to cancel`
+ *
+ * `Enter to select` alone is NOT enough — Claude Code's own pickers (`/model`,
+ * the resume list) print it too, and those are `modal`, not answerable. The
+ * header chip is what separates them, because only AskUserQuestion draws one.
+ */
+const HEADER_CHIP_RE = /^\s*☐\s+(\S.*?)\s*$/
+/** The question dialog's key legend, as one token pair. Both halves required. */
+const QUESTION_FOOTER = 'Enter to select'
+const QUESTION_NAV = 'to navigate'
+
+/** The header chip's own line index, or −1. Searched only ABOVE the first
+ *  option and inside the dialog's own block, so a ballot box in assistant prose
+ *  cannot invent a question. */
+function headerChipLine(lines: readonly string[], from: number, optionLine: number): number {
+  for (let i = optionLine - 1; i >= from; i--) {
+    if (HEADER_CHIP_RE.test(lines[i])) return i
+  }
+  return -1
+}
+
+/**
+ * The question's own sentence — the line the user is actually being asked.
+ *
+ * Between the header chip and the first option, the last non-blank, non-rule
+ * line. `undefined` when the chip has scrolled out of the window, which is a
+ * refusal rather than a guess: without the chip there is nothing to prove the
+ * line above the options belongs to this dialog rather than to the reply above
+ * it.
+ */
+function readHeadline(
+  lines: readonly string[],
+  chipLine: number,
+  optionLine: number,
+): string | undefined {
+  let last: string | undefined
+  for (let i = chipLine + 1; i < optionLine; i++) {
+    const t = norm(lines[i])
+    if (!t || SECTION_RULE_RE.test(lines[i]) || RULE_ONLY_RE.test(lines[i])) continue
+    last = t
+  }
+  return last
+}
+
+/* ── the startup wedges ──────────────────────────────────────────────────────
+ *
+ * Everything here happens BEFORE the session's first turn, which has two
+ * consequences that make the pty the only witness: no transcript file exists
+ * yet, and no boot banner has been printed yet either (the trust dialog renders
+ * ABOVE the welcome box — see the capture). The second one is why
+ * `registry/claude.ts` gives these entries a pin exemption: requiring a version
+ * that structurally cannot be on screen would make the card permanently
+ * unanswerable, which is the wedge, not a fix for it.
+ */
+/** `Accessing workspace:` — the trust gate, on first run in an untrusted
+ *  directory and (2.1.232+) on entering a nested repo mid-session. */
+const TRUST_TITLE = 'Accessing workspace:'
+/** The custom-API-key gate, whose focus DEFAULTS TO `No (recommended)` — a
+ *  wrapper that just presses Enter here silently declines the key. */
+const APIKEY_TITLE = 'Detected a custom API key in your environment'
+
+/** Which startup gate is on screen, if any. Title + a matching option-1 row:
+ *  the title alone can appear in prose about the dialog (this repo does it), and
+ *  the row is what proves the dialog itself is drawn. */
+function readStartupVariant(
+  block: string,
+  options: readonly OptionRow[],
+): Extract<DialogSighting['variant'], 'trust' | 'apikey'> | null {
+  const first = options[0]?.label ?? ''
+  if (block.includes(TRUST_TITLE) && /^yes, i trust this folder\b/i.test(first)) return 'trust'
+  if (block.includes(APIKEY_TITLE) && /^yes\b/i.test(first)) return 'apikey'
+  return null
+}
+
 /** The permission families' question line. Bounded so a `?` far down the
  *  scrollback cannot be dragged into one. */
 const PERMISSION_QUESTION_RE = /Do you want[^?]{0,200}\?/g
@@ -348,8 +566,17 @@ const SECTION_RULE_RE = /─{8,}/
 /** The dialog's own question, for the sighting to carry. The LAST match wins:
  *  the block reaches back over the prompt that provoked the dialog, and the
  *  question the user is being asked is the one nearest its options. */
-function readQuestion(block: string, family: 'permission' | 'plan'): string | undefined {
+function readQuestion(block: string, family: DialogSighting['family']): string | undefined {
   if (family === 'plan') return block.includes(PLAN_QUESTION) ? PLAN_QUESTION : undefined
+  // The two startup gates' questions are the titles themselves — fixed prose
+  // rather than a per-target sentence, exactly like the plan dialog's.
+  if (family === 'startup') {
+    if (block.includes(TRUST_TITLE)) return TRUST_TITLE
+    if (block.includes(APIKEY_TITLE)) return APIKEY_TITLE
+    return undefined
+  }
+  // `question` carries its own headline (`readHeadline`), set by the caller.
+  if (family !== 'permission') return undefined
   let last: string | undefined
   for (const m of block.matchAll(PERMISSION_QUESTION_RE)) last = m[0]
   return last
@@ -366,16 +593,39 @@ function readQuestion(block: string, family: 'permission' | 'plan'): string | un
 function continues(
   block: string,
   rows: readonly OptionRow[],
+  lines: readonly string[],
   prior: DialogContinuity,
 ): boolean {
-  if (rows.length !== prior.options.length) return false
-  if (!rows.every((r, i) => r.text === prior.options[i])) return false
-  if (!SECTION_RULE_RE.test(block)) return false
+  // The `question` family cuts its option list at the rule above the out-of-box
+  // row, so the anchor must be compared against the SAME list the sighting
+  // published — otherwise every continuity read of a question dialog fails on a
+  // row count this reader deliberately does not carry.
+  const kept = prior.family === 'question' ? stopAtRule(rows, lines) : rows.slice()
+  if (kept.length !== prior.options.length) return false
+  const shown = prior.family === 'question' ? kept.map((r) => r.label) : kept.map((r) => r.text)
+  if (!shown.every((t, i) => t === prior.options[i])) return false
+  // A `question` dialog's box has no `─` rule above its options — the one it
+  // draws sits BELOW them, between the options and the out-of-box row — so the
+  // rule is required for the families whose box has one and only those.
+  if (prior.family !== 'question' && prior.family !== 'startup' && !SECTION_RULE_RE.test(block)) {
+    return false
+  }
   if (!block.includes(prior.question)) return false
   // The title is caret-invariant too, and it is what decides WHICH option 2 the
   // registry believes in — so a frame whose title stopped saying `Create file`
   // is not this dialog, whatever else still matches.
-  return readVariant(block) === prior.variant
+  return variantFor(prior.family, block, kept) === prior.variant
+}
+
+/** The caret-invariant variant token, per family. */
+function variantFor(
+  family: DialogSighting['family'],
+  block: string,
+  rows: readonly OptionRow[],
+): DialogSighting['variant'] {
+  if (family === 'permission') return readVariant(block)
+  if (family === 'startup') return readStartupVariant(block, rows) ?? undefined
+  return undefined
 }
 
 /**
@@ -400,9 +650,20 @@ function continues(
  * `why` line already names the tool), CC's dashed rules, the blank edges, and
  * the common indent. Every remaining glyph is the pty's.
  */
-const VARIANT_TITLES = ['Bash command', 'Edit file', 'Create file']
+const VARIANT_TITLES = [
+  'Bash command',
+  'Edit file',
+  'Create file',
+  // The startup gates' own titles. Same rule, same reason: the card's question
+  // line already says them, so repeating them inside the body would print the
+  // sentence twice.
+  TRUST_TITLE,
+  APIKEY_TITLE,
+]
 /** A line that is only box-drawing — CC's own framing, at terminal width. */
 const RULE_ONLY_RE = /^[\s─━╌┄┈╍-]+$/
+/** AskUserQuestion's free-text hatch row (`4. Type something.`). */
+const FREE_TEXT_ROW_RE = /^type something\.?$/i
 
 function readBody(
   lines: readonly string[],
@@ -410,7 +671,7 @@ function readBody(
   optionLine: number,
   family: DialogSighting['family'],
 ): string[] | undefined {
-  if (family !== 'permission') return undefined
+  if (family !== 'permission' && family !== 'startup') return undefined
   let start = -1
   for (let i = optionLine - 1; i >= from; i--) {
     if (SECTION_RULE_RE.test(lines[i])) {
@@ -524,23 +785,53 @@ function readDialog(
   // PHASE 2 sits between the two: only when the caller is already answering a
   // strictly-sighted dialog, and only for that dialog. With no anchor this line
   // is not reachable, which is why an ambient read can never be relaxed.
+  const chip = headerChipLine(lines, from, rows[0].line)
+  const isQuestion =
+    chip >= 0 && block.includes(QUESTION_FOOTER) && block.includes(QUESTION_NAV)
+  const startup = readStartupVariant(block, rows)
+
   const family: DialogSighting['family'] | null =
     readFamily(block, rows) ??
-    (continuing && continues(block, rows, continuing) ? continuing.family : null) ??
+    (isQuestion ? 'question' : null) ??
+    (startup ? 'startup' : null) ??
+    (continuing && continues(block, rows, lines, continuing) ? continuing.family : null) ??
     (looksModal(block, rows) ? 'unknown' : null)
   if (!family) return null
 
-  const caret = rows.find((r) => r.caret)
+  // The `question` family reads its rows differently — the out-of-box row below
+  // the rule is not an option, and an indented line under a short label is a
+  // description rather than a wrap. Every other family keeps the reading it was
+  // captured with, byte for byte.
+  const kept = family === 'question' ? stopAtRule(rows, lines) : rows
+  const caret = kept.find((r) => r.caret)
   const sighting: DialogSighting = {
     family,
-    options: rows.map((r) => r.text),
+    options: kept.map((r) => (family === 'question' ? r.label : r.text)),
     caretIndex: caret ? caret.index : null,
   }
   if (family !== 'unknown') {
     const question = readQuestion(block, family)
     if (question) sighting.question = question
   }
-  if (family === 'permission') {
+  if (family === 'question') {
+    const header = HEADER_CHIP_RE.exec(lines[chip])
+    if (header) sighting.header = header[1]
+    const headline = readHeadline(lines, chip, kept[0].line)
+    if (headline) sighting.question = headline
+    // A description only where the label line proves it did not wrap.
+    sighting.descriptions = kept.map((r) =>
+      !r.wrapped && r.folds.length ? r.folds.join(' ') : undefined,
+    )
+    const free = kept.findIndex((r) => FREE_TEXT_ROW_RE.test(r.label))
+    if (free >= 0) sighting.freeTextIndex = free
+  } else if (family === 'startup') {
+    if (startup) sighting.variant = startup
+    // The gate's own copy is what the user is being asked to trust — the path,
+    // the rule count, the masked key suffix — so it goes on the card verbatim,
+    // the same way a permission dialog's command does.
+    const body = readBody(lines, from, kept[0].line, family)
+    if (body) sighting.body = body
+  } else if (family === 'permission') {
     const variant = readVariant(block)
     if (variant) sighting.variant = variant
     // What the user is actually agreeing to (QA #11).
@@ -553,6 +844,120 @@ function readDialog(
     if (m) sighting.planPath = m[0]
   }
   return sighting
+}
+
+/* ── the notice reader (the blocked/wedged session) ──────────────────────────
+ *
+ * WHY THIS IS NOT A DIALOG, and why it still had to be read here.
+ *
+ * A usage-limit banner blocks nothing on the screen: it is drawn as a
+ * tool-result continuation row (`⎿ You've hit your weekly limit · resets …`),
+ * the turn simply ends, the composer comes back, and Claude Code prints its
+ * ordinary `✻ Baked for 0s` completion marker underneath. So every signal this
+ * product had said the session was fine — `IDLE_BANK` matched the completion
+ * marker, the tile went green, the composer stayed enabled — while the account
+ * could not do another turn for five hours (verify matrix finding 1, captures
+ * `limit-weekly.txt` / `limit-used-pct.txt`).
+ *
+ * The wire plane learns this from the transcript's `isApiErrorMessage`. That
+ * plane is blind for exactly the sessions that need it most: a session whose
+ * transcript is off, and a session that never reached a first turn at all
+ * (every startup wedge). The pty is the only witness both cases share, so the
+ * reading lives here and both planes publish the same fact.
+ *
+ * Tail-anchored, like every other live reading in this module: `/peek` returns
+ * scrollback + viewport, and a banner from a bucket that has since reset is
+ * history, not a condition.
+ */
+
+/** How far above the last printed row a notice may sit and still be LIVE. The
+ *  banner's own tail on the production capture is 7 rows (subline, completion
+ *  marker, the two composer rules, the mode line); 20 is slack. It is also what
+ *  keeps this reading equal to the server's, which only ever holds
+ *  `status::CAPTURE_LINES` (30) rows at all. */
+const NOTICE_TAIL_SLACK = 20
+
+/** HARD BLOCK. `hit` (a bucket ran out) and `reached` (the model-specific /
+ *  usage-credit form) are the two verbs the bundle emits; `used`/`Approaching`
+ *  are the warning verbs and are deliberately not here. */
+const LIMIT_BLOCK_RE = /\byou['’]ve (?:hit|reached) your\b.*$/i
+/** WARNING. Three shapes: the captured `You've used N% of your …` footer
+ *  (suppressed by CC below 70 % utilisation), and the two `Approaching …` /
+ *  `You're close to …` branches recorded from the bundle's own strings. */
+const LIMIT_WARN_RE =
+  /\b(?:you['’]ve used \d+% of your\b|approaching (?:session|weekly|opus|usage)\b|you['’]re close to your\b).*$/i
+/** The tool-result gutter CC draws the banner in, plus the leading indent. */
+const CONTINUATION_PREFIX = /^[\s⎿·└│]+/
+
+/** The startup gates that have NO captured option list — reported as a notice
+ *  so the session stops reading as a green Idle, never as something to press a
+ *  key into. */
+const WEDGE_TOKENS: readonly {
+  wedge: NonNullable<PtyNotice['wedge']>
+  tokens: readonly string[]
+}[] = [
+  // Claude Code's first-run wizard. A fresh host (or one whose onboarding flags
+  // were lost) parks here before any prompt exists.
+  { wedge: 'onboarding', tokens: ["Let's get started.", 'Choose the text style'] },
+  // Codex's startup gate — and supermux INSTALLS hooks into sessions, so this
+  // product is what triggers it.
+  { wedge: 'hooks-review', tokens: ['Hooks need review'] },
+]
+
+function noticeLine(line: string): string {
+  return norm(line.replace(CONTINUATION_PREFIX, ''))
+}
+
+/**
+ * What is blocking or warning on the live screen, or null.
+ *
+ * Precedence is by consequence: a hard block outranks a wedge (a wedged session
+ * that also hit its limit is blocked twice, and the limit is the one with a
+ * clock on it), and both outrank a warning.
+ */
+function readNotice(
+  lines: readonly string[],
+  dialog: DialogSighting | null,
+): PtyNotice | null {
+  const tail = lastContentLine(lines)
+  if (tail < 0) return null
+  const from = Math.max(0, tail - NOTICE_TAIL_SLACK + 1)
+
+  for (let i = tail; i >= from; i--) {
+    const m = LIMIT_BLOCK_RE.exec(lines[i])
+    if (!m) continue
+    const text = noticeLine(m[0])
+    // The remediation subline CC prints under the banner (`/upgrade or
+    // /usage-credits …`), when the next row is still the banner's own.
+    const next = i + 1 <= tail ? lines[i + 1] : ''
+    const detail =
+      next.trim() && !OPTION_RE.test(next) && !RULE_ONLY_RE.test(next)
+        ? noticeLine(next)
+        : undefined
+    return detail ? { kind: 'limit-blocked', text, detail } : { kind: 'limit-blocked', text }
+  }
+
+  // A wedge the DIALOG reader already claimed reports the same fact from the
+  // same screen — the card can answer it, and this is what makes the roster say
+  // so without having to understand the registry.
+  if (dialog?.family === 'startup' && (dialog.variant === 'trust' || dialog.variant === 'apikey')) {
+    return {
+      kind: 'startup-wedge',
+      wedge: dialog.variant,
+      text: dialog.question ?? dialog.options[0] ?? '',
+    }
+  }
+  const block = lines.slice(from, tail + 1).join('\n')
+  for (const { wedge, tokens } of WEDGE_TOKENS) {
+    const hit = tokens.find((t) => block.includes(t))
+    if (hit) return { kind: 'startup-wedge', wedge, text: hit }
+  }
+
+  for (let i = tail; i >= from; i--) {
+    const m = LIMIT_WARN_RE.exec(lines[i])
+    if (m) return { kind: 'limit-warning', text: noticeLine(m[0]) }
+  }
+  return null
 }
 
 /** A composer drawn INSIDE a box — `│ ❯ half a thought          │`. Not seen on
@@ -755,6 +1160,7 @@ export function readLens(
     dialog,
     modal,
     transcriptOff: readTranscriptOff(lines),
+    notice: readNotice(lines, dialog),
   }
 }
 
@@ -781,6 +1187,7 @@ export const EMPTY_LENS: PeekLens = {
   // reported as "this session is blind" — that is the honesty rule the whole
   // attention layer is built on.
   transcriptOff: false,
+  notice: null,
 }
 
 /** Live turn, or a dialog on screen: the caret can move under us, and the whole

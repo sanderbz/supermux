@@ -87,7 +87,10 @@ export function entryFor(
   const entry = entryForSighting(sighting)
   if (!entry) return { entry: null, degraded: true, attention: 'dialog-unmapped' }
 
-  if (!pinnedVersion || !entry.verifiedVersions.includes(pinnedVersion)) {
+  // A gate that draws BEFORE the boot banner has no version to be pinned
+  // against — see `RegistryEntry.pinExempt`, which is claimed by exactly the
+  // entries whose every row is pinned to an exact sentence instead.
+  if (!entry.pinExempt && (!pinnedVersion || !entry.verifiedVersions.includes(pinnedVersion))) {
     return {
       entry: disabled(
         entry,

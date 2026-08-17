@@ -517,6 +517,13 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // whole of the honesty rule here.
   'dialog-terminal':
     'The terminal is showing a prompt chat can’t answer — answer it there.',
+  // The one refusal that has to explain a mechanism, because the user's action
+  // was reasonable: the dialog above offers a "Type something." row, so typing
+  // an answer is what it invites. What chat can't do is TYPE — a send is a
+  // paste, and a paste into an open dialog is dropped while the Enter behind it
+  // picks the highlighted row.
+  'dialog-question':
+    'Pick one of the answers above — typed text would be pasted past that question, not into it.',
   'stop-dialog':
     'Escape would answer that prompt, not stop the turn — so it wasn’t sent.',
   'send-failed': 'That message didn’t reach the session.',

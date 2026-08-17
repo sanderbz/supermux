@@ -395,6 +395,24 @@ export interface DialogCardView {
    * the card links it instead.
    */
   body?: readonly string[]
+  /**
+   * The dialog's OWN sentence, when it has one this app can show as the ask.
+   *
+   * Used by the `question` family, where it is the whole point: the model wrote
+   * a question, and before this it reached no surface a human reads (the card
+   * said ``Run `AskUserQuestion` ?``, verify matrix finding 4). Straight through
+   * from `DialogSighting.question`, unrewritten.
+   */
+  question?: string
+  /** The AskUserQuestion header chip — the model's own two-word name for the
+   *  decision (`Fruit choice`). Rendered as the card's eyebrow. */
+  header?: string
+  /** Per-option descriptions, parallel to `options`. */
+  descriptions?: readonly (string | undefined)[]
+  /** The `Type something.` row's index, when the dialog has one — what lets the
+   *  composer say that free text answers THIS question instead of queueing a new
+   *  prompt. */
+  freeTextIndex?: number
   /** The Claude Code versions this fingerprint was CAPTURED against — what the
    *  version-mismatch sentence quotes (`attention.ts` `versionClause`). */
   verifiedVersions?: readonly string[]
@@ -449,6 +467,10 @@ export function dialogCardView(
         reason: DIALOG_TERMINAL_NOTE,
       })),
       body: sighting.body,
+      question: sighting.question,
+      header: sighting.header,
+      descriptions: sighting.descriptions,
+      freeTextIndex: sighting.freeTextIndex,
       disabled: true,
       note: DIALOG_TERMINAL_NOTE,
       attention: match.attention ?? 'dialog-unmapped',
@@ -478,6 +500,10 @@ export function dialogCardView(
     },
     planPath: sighting.planPath,
     body: sighting.body,
+    question: sighting.question,
+    header: sighting.header,
+    descriptions: sighting.descriptions,
+    freeTextIndex: sighting.freeTextIndex,
     verifiedVersions: entry.verifiedVersions,
     disabled: match.degraded,
     note: match.degraded ? DIALOG_TERMINAL_NOTE : undefined,
@@ -592,7 +618,12 @@ export function resolutionLine(
   effect: OptionEffect,
   view: Pick<DialogCardView, 'family' | 'variant'>,
 ): string {
-  const what = view.family === 'plan' ? 'plan' : (view.variant ?? 'request')
+  const what =
+    view.family === 'plan'
+      ? 'plan'
+      : view.family === 'question'
+        ? 'question'
+        : (view.variant ?? 'request')
   switch (effect) {
     case 'accept':
       return `Allowed · ${what}`

@@ -417,9 +417,14 @@ export function DialogCard({
   const why =
     view.family === 'plan'
       ? view.planPath
-      : [summary && request?.tool ? request.tool : '', dir ? `in ${shortDir(dir)}` : '', modeClause(mode)]
-          .filter(Boolean)
-          .join(' · ')
+      : view.family === 'question'
+        ? // A question is not about a tool, a directory or a mode — it is about
+          // the sentence above it. Naming the tool here would put
+          // `AskUserQuestion` back on the card, one line lower.
+          undefined
+        : [summary && request?.tool ? request.tool : '', dir ? `in ${shortDir(dir)}` : '', modeClause(mode)]
+            .filter(Boolean)
+            .join(' · ')
   return (
     <div
       data-testid="chat-dialog-card"
@@ -427,11 +432,20 @@ export function DialogCard({
       data-state={answering ? 'answering' : view.disabled ? 'degraded' : 'idle'}
     >
       <ChoiceCard
+        eyebrow={view.header}
         question={dialogQuestion(view, summary || request?.tool)}
         // What is actually being approved, verbatim off the pty (QA #11). The
         // question is a sentence — a truncated description, at worst — and this
-        // is the evidence under it.
-        detail={view.body?.length ? <CardCode>{view.body.join('\n')}</CardCode> : undefined}
+        // is the evidence under it. A question dialog's evidence is its OPTIONS'
+        // descriptions, which are prose rather than code, so they get the prose
+        // block instead of the mono one.
+        detail={
+          view.family === 'question' ? (
+            <OptionMeanings view={view} />
+          ) : view.body?.length ? (
+            <CardCode>{view.body.join('\n')}</CardCode>
+          ) : undefined
+        }
         why={why || undefined}
         options={options}
         onChoose={
@@ -465,7 +479,30 @@ export function DialogCard({
  */
 function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode {
   if (view.family === 'plan') return 'Claude has a plan. Ready to go ahead?'
-  if (command) {
+  // THE MODEL'S OWN SENTENCE, when it wrote one. AskUserQuestion's question is
+  // the entire content of the ask, and until this branch existed it reached no
+  // surface a human reads: the hook's `tool` won the frame below and the card
+  // was headed ``Run `AskUserQuestion` ?`` (verify matrix finding 4).
+  if (view.family === 'question') {
+    return view.question ?? 'Claude is asking you to choose.'
+  }
+  if (view.family === 'startup') {
+    if (view.variant === 'trust') return 'Claude Code needs your OK to work in this folder.'
+    if (view.variant === 'apikey') {
+      return 'Claude Code found an API key in this session’s environment.'
+    }
+    return 'Claude Code is asking something before it starts.'
+  }
+  // THE `Run …?` FRAME IS FOR A MAPPED PERMISSION DIALOG, and for nothing else.
+  //
+  // It used to be reached by any card that had a hook to quote, including the
+  // UNMAPPED one — and the hook fires for AskUserQuestion too, so a question
+  // dialog rendered as ``Run `AskUserQuestion` ?`` with the question itself
+  // nowhere on the card. A card this app has already admitted it cannot map must
+  // not then assert what the terminal is about to run: the hook says which tool
+  // ASKED, and the screen (which this app failed to read) says what it is
+  // asking. Those are not the same claim.
+  if (view.id && command) {
     return (
       <>
         Run <InlineCode>{commandChip(command)}</InlineCode>?
@@ -476,6 +513,36 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   if (view.variant === 'write') return 'Claude wants to create a file.'
   if (view.variant === 'bash') return 'Claude wants to run a command.'
   return 'Claude is asking something in the terminal.'
+}
+
+/**
+ * What each option MEANS — AskUserQuestion's per-option description line.
+ *
+ * The model writes one under each label, and the lens splits it off the label
+ * rather than folding it in (`peek-lens.ts` `descriptions`), because a chip
+ * reading `Apple A crisp and refreshing fruit` is neither the label nor the
+ * description. Drawn as prose under the question so the pills stay one line and
+ * the meaning is still on the card — a `title` tooltip would be neither
+ * keyboard- nor phone-reachable.
+ *
+ * Renders nothing when no option has a description, which is the common case for
+ * a short question.
+ */
+function OptionMeanings({ view }: { view: DialogCardView }) {
+  const rows = view.options
+    .map((o, i) => ({ label: o.label, text: view.descriptions?.[i] }))
+    .filter((r): r is { label: string; text: string } => !!r.text)
+  if (!rows.length) return null
+  return (
+    <dl data-testid="chat-dialog-meanings" className="mt-[9px] space-y-[3px]">
+      {rows.map((r) => (
+        <div key={r.label} className="text-[13.2px] leading-[1.45]">
+          <dt className="inline font-medium text-ink-2">{r.label}</dt>
+          <dd className="inline text-ink-3"> — {r.text}</dd>
+        </div>
+      ))}
+    </dl>
+  )
 }
 
 /**

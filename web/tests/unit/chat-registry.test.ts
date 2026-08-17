@@ -30,16 +30,32 @@ const a4cOf = (name: string) => readLens(readFileSync(join(DIR, 'a4c', name), 'u
 const cc233Raw = (name: string) => readFileSync(join(DIR, 'cc233', name), 'utf8')
 const cc233Of = (name: string) => readLens(cc233Raw(name))
 
+/** The shared pty corpus — the same captures `server/tests/pty_state_parity.rs`
+ *  reads, so a fingerprint cannot be true on one plane and false on the other
+ *  (provenance: `server/tests/fixtures/pty/README.md`). */
+const PTY = join(import.meta.dir, '../../../server/tests/fixtures/pty')
+const ptyOf = (name: string) => readLens(readFileSync(join(PTY, name), 'utf8'))
+
 /** Every act-on claim in the registry is backed by one of these files — the
- *  provenance of each is in `tests/fixtures/tui/README.md`. */
-const FIXTURES: Record<RegistryId, string> = {
-  'permission.bash': 'perm-bash.txt',
-  'permission.edit': 'perm-edit.txt',
-  'permission.write': 'perm-write.txt',
-  'plan.approval': 'plan-approval.txt',
+ *  provenance of each is in `tests/fixtures/tui/README.md` (the two startup
+ *  gates live in the shared pty corpus instead, because the server plane has to
+ *  recognise the same screens). */
+const FIXTURES: Record<RegistryId, () => ReturnType<typeof readLens>> = {
+  'permission.bash': () => lensOf('perm-bash.txt'),
+  'permission.edit': () => lensOf('perm-edit.txt'),
+  'permission.write': () => lensOf('perm-write.txt'),
+  'plan.approval': () => lensOf('plan-approval.txt'),
+  'question.ask': () => ptyOf('ask-user-question.txt'),
+  'startup.trust': () => ptyOf('trust-folder.txt'),
+  'startup.apikey': () => ptyOf('api-key.txt'),
 }
 
-const pinned = (entry: RegistryEntry) => entry.verifiedVersions[0]
+/** The version to check an entry against. A pin-exempt entry (a gate that draws
+ *  BEFORE the boot banner) has no version to be checked against by construction
+ *  — see `RegistryEntry.pinExempt` — so it is asked with none, which is exactly
+ *  the state a real session presents it in. */
+const pinned = (entry: RegistryEntry) =>
+  entry.pinExempt ? null : entry.verifiedVersions[0]
 
 describe('registry — what may be acted on, and what may not', () => {
   test('bash option 2 is rendered but never actionable', () => {
@@ -113,7 +129,7 @@ describe('registry — what may be acted on, and what may not', () => {
     // The meta-rule from the plan: no option is enabled without a fixture. This
     // is that rule, executable — an entry whose rows drifted cannot stay green.
     for (const entry of ENTRIES) {
-      const lens = lensOf(FIXTURES[entry.id])
+      const lens = FIXTURES[entry.id]()
       const match = entryFor(lens, pinned(entry))
       expect(match.degraded).toBe(false)
       for (const o of match.entry!.options.filter((x) => x.actOn)) {
@@ -229,7 +245,12 @@ describe('registry — the version pin', () => {
     // number and the list that trusts it have to be the same string.
     const pin = pinFor(cc233Of('00-boot-banner.txt'))
     expect(pin).toBe('2.1.233')
-    for (const entry of ENTRIES) expect(entry.verifiedVersions).toContain(pin!)
+    // Pin-exempt entries are excluded, and only they: a startup gate draws
+    // before the banner exists, so naming a version it was checked against would
+    // be a claim about a string that is not on the screen (`pinExempt`).
+    for (const entry of ENTRIES.filter((e) => !e.pinExempt)) {
+      expect(entry.verifiedVersions).toContain(pin!)
+    }
   })
 })
 
@@ -524,7 +545,7 @@ describe('optionLabel — the live row wins', () => {
 
   test('no option label names a key this app cannot send', () => {
     for (const entry of ENTRIES) {
-      const lens = lensOf(FIXTURES[entry.id])
+      const lens = FIXTURES[entry.id]()
       for (const o of entry.options) {
         expect(optionLabel(o, lens.dialog)).not.toMatch(/shift\+tab|ctrl\+[a-z]/i)
       }

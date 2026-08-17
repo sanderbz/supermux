@@ -57,6 +57,15 @@ export interface ChoiceOption {
 }
 
 export interface ChoiceCardProps {
+  /**
+   * A small label ABOVE the ask — the dialog's own name for the decision.
+   *
+   * Added for AskUserQuestion, which draws one on a reverse-video line of its
+   * own (` ☐ Fruit choice `) and is the only source of a two-word summary the
+   * card, the roster and the phone push can all share. Absent everywhere else,
+   * and the card renders byte-identically without it.
+   */
+  eyebrow?: ReactNode
   /** The ask. Pass `<InlineCode>` inside it for the command. */
   question: ReactNode
   /**
@@ -78,6 +87,7 @@ export interface ChoiceCardProps {
 }
 
 export function ChoiceCard({
+  eyebrow,
   question,
   detail,
   why,
@@ -103,6 +113,14 @@ export function ChoiceCard({
         className,
       )}
     >
+      {eyebrow && (
+        <div
+          data-testid="chat-dialog-eyebrow"
+          className="mb-[3px] text-[11.5px] font-medium uppercase leading-[1.3] tracking-[0.5px] text-ink-3"
+        >
+          {eyebrow}
+        </div>
+      )}
       <div id={qid} className="text-[15px] font-medium leading-[1.4] tracking-[-0.15px] text-ink">
         {question}
       </div>
