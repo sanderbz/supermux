@@ -671,7 +671,17 @@ pub async fn tick(
     // Alive again (a Resume, or a holder that came back): drop the "holder died"
     // badge this loop raised, so the card is not stuck on a stale crash notice
     // for a session that has no Claude hooks to clear it.
-    clear_holder_death_badge(state, name);
+    //
+    // …UNLESS the last auto-heal came back WITHOUT its agent (`auto_heal`'s
+    // `Ok(false)` arm). A failed `claude --resume` leaves a bash prompt on the
+    // pty, so "the terminal is alive" is true and meaningless — clearing on it
+    // is precisely what turned a ghost session green again one tick after the
+    // heal admitted failure. While that latch is set the badge only clears on
+    // real evidence: a PROGRAM owning the pty (`shell_is_foreground() == false`)
+    // is the agent back at the wheel.
+    if !heal_failed_pending(name) || rt.shell_is_foreground().await == Some(false) {
+        clear_holder_death_badge(state, name);
+    }
 
     // Heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
     // the detector's heartbeat branch fires) and is normally spawned on the
@@ -1162,11 +1172,31 @@ fn spawn_auto_heal(state: &AppState, name: &str, reason: &str) {
 /// * everything else (`codex`, `kimi`, …) — restarted fresh. Their launchers
 ///   own their own session continuity; supermux's job is to get the terminal
 ///   back.
+///
+/// A resume LINK is not the same thing as a resumable CONVERSATION. When the
+/// link is a bare conversation id, `claude --resume <id>` reads
+/// `<project>/<id>.jsonl`; if that file is not there — a stale id, a `/clear`, a
+/// session whose transcript persistence was off — claude prints "No conversation
+/// found with session ID: …" and EXITS, leaving a bash prompt wearing the dead
+/// session's name. So the file's existence is the cheapest available proof that
+/// the link still means something, checked here rather than discovered after we
+/// have already reported success. (A `cc_session_name` link resolves through
+/// claude's own name index, which we do not own, so it is left to the
+/// post-restart readiness proof in [`auto_heal`].)
 fn heal_is_supported(s: &db::sessions::Session) -> bool {
     if s.provider != "claude" {
         return true;
     }
-    !s.cc_session_name.trim().is_empty() || !s.cc_conversation_id.trim().is_empty()
+    if !s.cc_session_name.trim().is_empty() {
+        return true;
+    }
+    let conv = s.cc_conversation_id.trim();
+    if conv.is_empty() {
+        return false;
+    }
+    crate::sessions::resumable::project_dir_for(&s.dir)
+        .join(format!("{conv}.jsonl"))
+        .exists()
 }
 
 /// Attempt ONE automatic recovery of `name` after its terminal died.
@@ -1197,6 +1227,10 @@ fn heal_is_supported(s: &db::sessions::Session) -> bool {
 /// worst version of this feature.
 pub fn clear_heal_cooldown(name: &str) {
     LAST_HEAL.remove(name);
+    // A human driving the recovery ladder starts from a clean slate: the
+    // "the last heal came back without its agent" latch is about the AUTOMATIC
+    // layer's own history, not about what the user is entitled to try.
+    HEAL_FAILED.remove(name);
 }
 
 pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
@@ -1268,14 +1302,42 @@ pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
 
     tracing::warn!("auto-heal: restarting '{name}' after terminal death ({reason})");
     match run_heal_start(state, name).await {
-        Ok(()) => {
-            // The session is serving again: drop the crash badge the detector
+        // A SPAWN IS NOT A HEAL. `start` returns Ok as soon as the pane exists,
+        // and its `ready` flag — the poll that waits for the provider's own UI
+        // (the `❯` prompt / "? for shortcuts"), i.e. provider-level proof the
+        // agent is at the wheel — used to be DISCARDED here. When the resume
+        // link was stale, `claude --resume` printed "No conversation found with
+        // session ID: …" and exited, leaving bash on the pty; we cleared the
+        // badge anyway, the API reported idle with error=null, the tile went
+        // green and the chat panel mounted a composer over a session with no
+        // agent in it. Delegated prompts were then swallowed by that bash
+        // ("GHOST-DELEGATE-PROBE: command not found") while the product claimed
+        // health — work destroyed silently, which is the one failure mode a
+        // recovery feature must never have.
+        Ok(true) => {
+            // The AGENT is serving again: drop the crash badge the detector
             // raised. `start` already broadcast `starting → active`.
             clear_holder_death_badge(state, name);
             tracing::info!(name = %name, "auto-heal: '{name}' is back up");
             Heal::Healed
         }
+        Ok(false) => {
+            // The terminal came back; the agent did not. Keep the honest badge
+            // (the frontend renders `holder_died` as "Terminal died" WITH the
+            // inline Resume affordance — the one error a user can act on) and
+            // say why, naming the link that failed so the next step is obvious.
+            stamp_heal_failed(state, name, &s);
+            tracing::error!(
+                name = %name,
+                cc_conversation_id = %s.cc_conversation_id,
+                cc_session_name = %s.cc_session_name,
+                "auto-heal: the pane came back but the agent never did — NOT clearing the \
+                 badge; the session is a bare shell wearing its name",
+            );
+            Heal::Failed
+        }
         Err(e) => {
+            stamp_heal_failed(state, name, &s);
             tracing::error!(
                 name = %name,
                 error = %e,
@@ -1283,6 +1345,44 @@ pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
             );
             Heal::Failed
         }
+    }
+}
+
+/// Sessions whose last heal ran but did NOT bring the agent back.
+///
+/// The latch exists because the detector's alive tick clears the `holder_died`
+/// badge on any live terminal — and after a failed resume the terminal IS live,
+/// it is just a bash prompt. Without this the honest badge survived for one tick
+/// (~2s) and the ghost went green again. Cleared the moment a program actually
+/// owns the pty again (the alive tick probes it), on a successful heal, and on a
+/// manual recovery.
+static HEAL_FAILED: once_cell::sync::Lazy<dashmap::DashMap<String, ()>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+/// Is `name` sitting on a heal that came back without its agent?
+fn heal_failed_pending(name: &str) -> bool {
+    HEAL_FAILED.contains_key(name)
+}
+
+/// Re-raise the terminal-died badge with the reason a heal failed, and latch it
+/// so the next alive tick does not wipe it off a pane that is only a shell.
+fn stamp_heal_failed(state: &AppState, name: &str, s: &db::sessions::Session) {
+    HEAL_FAILED.insert(name.to_string(), ());
+    let link = if !s.cc_session_name.trim().is_empty() {
+        s.cc_session_name.trim()
+    } else {
+        s.cc_conversation_id.trim()
+    };
+    let message = if s.provider == "claude" && !link.is_empty() {
+        format!("terminal died; resume failed: {link}")
+    } else {
+        "terminal died; the restart ran but the agent did not come back".to_string()
+    };
+    if state.set_error(name, HOLDER_DIED.to_string(), message.clone()) {
+        broadcast(state, "sessions", json!({ "delta": [{
+            "name": name,
+            "error": { "type": HOLDER_DIED, "message": message },
+        }] }));
     }
 }
 
@@ -1309,7 +1409,11 @@ async fn still_death_stamped(state: &AppState, name: &str) -> bool {
 /// The restart itself — the very same entry point the user's Resume button
 /// takes, so a healed claude session resumes its conversation exactly as a
 /// manual Resume would.
-async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<()> {
+///
+/// Returns `start`'s `ready` flag: whether the provider's own UI was observed
+/// within the wait-for-ready window. That is the provider-level proof the heal
+/// is judged on — see [`auto_heal`] for what discarding it cost.
+async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<bool> {
     #[cfg(test)]
     {
         HEAL_ATTEMPTS
@@ -1320,14 +1424,21 @@ async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<()> {
         // `pty-holder` binary to spawn, and the guard semantics (one attempt,
         // then a cooldown) are what the tests are about — not `start`'s own
         // behaviour, which has its own tests. Defaults to ON so no unrelated
-        // test can accidentally launch a session from a heal.
+        // test can accidentally launch a session from a heal. The dry run
+        // reports READY: it stands in for a restart that worked, so a test about
+        // the guards is not also a test about a failed resume.
         if HEAL_DRY_RUN.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(());
+            return Ok(HEAL_DRY_RUN_READY.load(std::sync::atomic::Ordering::Relaxed));
         }
     }
-    crate::sessions::lifecycle::start(state, name, None).await?;
-    Ok(())
+    Ok(crate::sessions::lifecycle::start(state, name, None).await?.ready)
 }
+
+/// Test-only: what the dry-run restart reports for `ready`. Flipped false by the
+/// test that drives the "the pane came back, the agent did not" path.
+#[cfg(test)]
+static HEAL_DRY_RUN_READY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 /// Test-only: how many times [`run_heal_start`] was entered, per session.
 #[cfg(test)]
@@ -1351,6 +1462,7 @@ static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 pub(crate) fn reset_heal_state(name: &str) {
     LAST_HEAL.remove(name);
     HEAL_ATTEMPTS.remove(name);
+    HEAL_FAILED.remove(name);
 }
 
 /// Test-only: how many heal attempts `name` has had.
@@ -1530,8 +1642,10 @@ async fn is_mid_start(state: &AppState, name: &str) -> bool {
 /// different fact with a different lifecycle (cleared by the next prompt).
 fn clear_holder_death_badge(state: &AppState, name: &str) {
     // The terminal is alive again: the death is history — release the
-    // DEATH_SEEN edge so a FUTURE death of this session is a fresh heal edge.
+    // DEATH_SEEN edge so a FUTURE death of this session is a fresh heal edge,
+    // and the failed-heal latch with it.
     DEATH_SEEN.remove(name);
+    HEAL_FAILED.remove(name);
     let ours = state
         .session_activity(name)
         .and_then(|a| a.error)
@@ -2745,6 +2859,36 @@ mod recovery_tests {
             .unwrap();
     }
 
+    /// Give a claude row a REAL resumable conversation.
+    ///
+    /// `heal_is_supported` now requires the transcript `claude --resume <id>`
+    /// would read: a link to a conversation that is not on disk is exactly how
+    /// the ghost session was born (claude prints "No conversation found with
+    /// session ID: …" and exits, leaving bash on the pty). Points
+    /// `CLAUDE_CONFIG_DIR` at a scratch root — every caller holds `test_serial`,
+    /// and hands the root back so it can be unset.
+    fn with_transcript(session_dir: &str, conv: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "supermux-cc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("CLAUDE_CONFIG_DIR", &root);
+        let proj = crate::sessions::resumable::project_dir_for(session_dir);
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join(format!("{conv}.jsonl")), b"{}\n").unwrap();
+        root
+    }
+
+    /// Undo [`with_transcript`].
+    fn drop_transcript(root: PathBuf) {
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// `/proc/<pid>/stat` field 4. Used to WAIT for the orphan to be reparented
     /// to `init`, which is the fact that makes it an orphan.
     fn ppid(pid: u32) -> Option<u32> {
@@ -3136,6 +3280,9 @@ mod recovery_tests {
         db::sessions::set_cc_conversation_id(&state.pool, "flapper", "conv-1")
             .await
             .unwrap();
+        // A resume LINK is not a resumable CONVERSATION — the heal now requires
+        // the transcript the link names to exist. See `with_transcript`.
+        let cc = with_transcript("/tmp", "conv-1");
         reset_heal_state("flapper");
 
         assert_eq!(
@@ -3157,6 +3304,7 @@ mod recovery_tests {
         );
 
         reset_heal_state("flapper");
+        drop_transcript(cc);
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3223,6 +3371,112 @@ mod recovery_tests {
 
         reset_heal_state("linkless");
         reset_heal_state("tmuxy");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A SPAWN IS NOT A HEAL.
+    ///
+    /// `start` returns Ok the moment the pane exists; its `ready` flag is the
+    /// provider-level proof (the poll for claude's own `❯` / "? for shortcuts")
+    /// and it used to be discarded. With a stale resume link, `claude --resume`
+    /// printed "No conversation found with session ID: …" and exited, leaving
+    /// bash on the pty — and the heal cleared the crash badge anyway. The API
+    /// then reported idle with error=null, the tile went green, the chat panel
+    /// mounted a composer, and a delegated prompt was swallowed by that bash
+    /// (`GHOST-DELEGATE-PROBE: command not found`) while the product claimed
+    /// health. This pins the honest outcome instead.
+    #[tokio::test]
+    async fn a_restart_that_does_not_bring_the_agent_back_is_not_a_heal() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "ghost", "claude", "stopped").await;
+        db::sessions::set_cc_conversation_id(&state.pool, "ghost", "conv-stale")
+            .await
+            .unwrap();
+        let cc = with_transcript("/tmp", "conv-stale");
+        reset_heal_state("ghost");
+        // The detector's badge, exactly as `force_stopped_on_death` raises it.
+        state.set_error("ghost", HOLDER_DIED.to_string(), "terminal died: panic".into());
+
+        // The restart runs; the agent does not come up.
+        HEAL_DRY_RUN_READY.store(false, std::sync::atomic::Ordering::Relaxed);
+        let outcome = auto_heal(&state, "ghost", "panic: boom").await;
+        HEAL_DRY_RUN_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(
+            outcome,
+            Heal::Failed,
+            "a pane with no agent in it is not a recovered session",
+        );
+        assert_eq!(heal_attempts("ghost"), 1, "the restart was still attempted");
+
+        let (kind, message) = state
+            .session_activity("ghost")
+            .and_then(|a| a.error)
+            .expect("the terminal-died badge must SURVIVE a failed heal");
+        assert_eq!(kind, HOLDER_DIED, "…as holder_died, so the Resume affordance shows");
+        assert!(
+            message.contains("resume failed") && message.contains("conv-stale"),
+            "the badge must name what failed, got {message:?}",
+        );
+        assert!(
+            heal_failed_pending("ghost"),
+            "the latch must hold the badge against the next alive tick — a failed \
+             resume leaves a LIVE bash prompt, so 'the terminal is alive' is true \
+             and meaningless",
+        );
+
+        // The agent coming back for real (or a human driving the ladder) releases it.
+        clear_holder_death_badge(&state, "ghost");
+        assert!(!heal_failed_pending("ghost"));
+        assert!(state.session_activity("ghost").and_then(|a| a.error).is_none());
+
+        reset_heal_state("ghost");
+        drop_transcript(cc);
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A resume LINK is not a resumable CONVERSATION.
+    ///
+    /// The cheap guard that stops the ghost before a pane is even spawned: when
+    /// the link is a bare conversation id, `claude --resume <id>` reads
+    /// `<project>/<id>.jsonl` — no file, no resume, and a heal would hand the
+    /// user a bash prompt wearing the session's name. An honest "Terminal died"
+    /// card with a Resume button is strictly better than that.
+    #[tokio::test]
+    async fn a_conversation_id_with_no_transcript_is_not_a_resume_link() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "stale", "claude", "stopped").await;
+        db::sessions::set_cc_conversation_id(&state.pool, "stale", "conv-gone")
+            .await
+            .unwrap();
+        // A project dir that exists but does NOT hold this conversation — the
+        // `/clear`-then-die case, and the stale-id case.
+        let cc = with_transcript("/tmp", "some-other-conversation");
+        reset_heal_state("stale");
+
+        assert_eq!(
+            auto_heal(&state, "stale", "panic: boom").await,
+            Heal::Unsupported,
+            "a link to a conversation that is not on disk must not earn a restart",
+        );
+        assert_eq!(heal_attempts("stale"), 0, "nothing was spawned");
+
+        // Put the conversation where claude would look for it: now it heals.
+        let proj = crate::sessions::resumable::project_dir_for("/tmp");
+        std::fs::write(proj.join("conv-gone.jsonl"), b"{}\n").unwrap();
+        reset_heal_state("stale");
+        assert_eq!(
+            auto_heal(&state, "stale", "panic: boom").await,
+            Heal::Healed,
+            "…and a link that still means something does",
+        );
+
+        reset_heal_state("stale");
+        drop_transcript(cc);
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3411,6 +3665,9 @@ mod recovery_tests {
         db::sessions::set_cc_conversation_id(&state.pool, "audit-heal", "conv-9")
             .await
             .unwrap();
+        // `audit-heal` is the one that CAN be restored: its conversation is on
+        // disk. `audit-lost` has no link at all and stays unrestorable.
+        let cc = with_transcript("/tmp", "conv-9");
         native_row(&state, "audit-lost", "claude", "active").await;
         reset_heal_state("audit-heal");
         reset_heal_state("audit-lost");
@@ -3478,6 +3735,7 @@ mod recovery_tests {
 
         reset_heal_state("audit-heal");
         reset_heal_state("audit-lost");
+        drop_transcript(cc);
         crate::sessions::native::forget("audit-up");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
