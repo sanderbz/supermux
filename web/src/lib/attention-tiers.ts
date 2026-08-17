@@ -79,6 +79,7 @@ export type AttentionSession = Pick<
   | 'name'
   | 'status'
   | 'error'
+  | 'blocked'
   | 'permission_request'
   | 'chat_tail'
   | 'activity_at'
@@ -192,6 +193,18 @@ function needsYou(s: AttentionSession): boolean {
   // NOTE the field, not a status: the Rust `Status` enum has no Error variant —
   // errors ride the separate `error:{type,message}` delta key.
   if (s.error) return true
+  // A BLOCKED session — a usage limit reached, or a startup gate nobody has
+  // answered. Same promotion as `error`, for a stronger reason: this is the one
+  // condition the roster was structurally unable to see. It rides no status
+  // (a limit-hit turn ends with a `Stop`, so the detector says `idle`) and no
+  // hook (`StopFailure` does not fire for the banner), so before this field the
+  // row sat green and quiet while the session was dead for five hours — and a
+  // startup wedge sat green and quiet forever (verify matrix finding 1).
+  //
+  // NEEDS-YOU rather than merely "not quiet", because both halves want a human:
+  // a wedge needs an answer, and a limit needs a decision about what to do for
+  // the next five hours.
+  if (s.blocked) return true
   return false
 }
 

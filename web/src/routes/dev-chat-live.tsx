@@ -206,6 +206,12 @@ function Surface({
       attention={state.attention ?? null}
       attentionCapture={state.attentionCapture}
       attentionExpanded={state.attentionExpanded}
+      // The raiser's own evidence, which for the blocked card is the terminal's
+      // banner verbatim — reset time included. Without it the card still reads
+      // as a sentence (`attention.ts` drops what it does not have), and a bench
+      // that only ever showed the sentence-without-evidence would be reviewing
+      // the wrong half.
+      attentionCtx={state.attentionDetail ? { detail: state.attentionDetail } : undefined}
       onOpenTerminal={() => {}}
       onRetryPending={() => {}}
       onDismissPending={() => {}}

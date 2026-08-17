@@ -437,18 +437,25 @@ export default function ChatPanel({
   // card's evidence is the SAME capture every other consumer reads (one poller,
   // T2), so what it shows is what the refusal was decided on.
   // ── THE BLOCKED AGENT (states audit) ───────────────────────────────────────
-  // A quota/auth banner outlives its turn, so it cannot be a status (see
-  // `blocked.ts`) — it is derived from the transcript and it outranks every
-  // other cause on this surface: the other four are about what THIS APP cannot
-  // do, and this one is about the session being unable to work at all.
-  const blocked = React.useMemo(() => blockedState(entries), [entries])
+  // Two planes publish the same fact, and each covers the other's blind spot.
+  // The TRANSCRIPT plane (`blocked.ts`): a quota/auth banner outlives its turn,
+  // so it cannot be a status — derived from entries, it gates the composer and
+  // survives lens gaps. The LENS plane: the peek ticks every 1–4 s and still
+  // works when the transcript does not — which is the case that cause exists
+  // for. A WARNING never raises a card (`limit-warning` is a header chip and
+  // nothing more); a startup wedge draws a dialog card of its own, which is the
+  // thing that can actually resolve it.
+  const wireBlocked = React.useMemo(() => blockedState(entries), [entries])
+  const lensBlocked =
+    peek.lens.notice?.kind === 'limit-blocked' ? peek.lens.notice : null
   // …and the other silence: a live pty with an empty transcript. The lens sees
   // Claude Code's own footer warning; without it the chat surface renders an
   // empty conversation for a session that is actively talking.
   const blind = peek.lens.transcriptOff && entries.length === 0
   const attention = topAttention([
-    blocked ? ('agent-blocked' as const) : null,
+    wireBlocked ? ('agent-blocked' as const) : null,
     blind ? ('transcript-blind' as const) : null,
+    lensBlocked ? ('session-blocked' as const) : null,
     pending.attention,
     dialog.attention,
   ])
@@ -460,18 +467,27 @@ export default function ChatPanel({
   // Scoped to the cause that WON the ranking — `detailFor` is that rule, and it
   // has its own test: the two raisers can fire in the same second and this
   // sentence must not end up inside the other one's card.
-  const detail = detailFor(attention, dialog.attention, dialog.attentionDetail)
+  const detail =
+    detailFor(attention, dialog.attention, dialog.attentionDetail) ??
+    // The blocked card's evidence is Claude Code's own banner, verbatim — it
+    // carries the reset time, and the remediation line when the terminal
+    // printed one.
+    detailFor(
+      attention,
+      lensBlocked ? 'session-blocked' : null,
+      lensBlocked ? [lensBlocked.text, lensBlocked.detail].filter(Boolean).join(' — ') : null,
+    )
   const attentionCtx = React.useMemo(
     () => ({
-      blockedLabel: blocked?.label,
-      blockedResets: blocked?.resets,
+      blockedLabel: wireBlocked?.label,
+      blockedResets: wireBlocked?.resets,
       version: peek.lens.bannerVersion,
       // What the sighted fingerprint WAS captured against, so the version
       // sentence can name both halves rather than "some other versions".
       verifiedVersions: dialog.card?.verifiedVersions,
       detail: detail ?? undefined,
     }),
-    [blocked?.label, blocked?.resets, detail, dialog.card?.verifiedVersions, peek.lens.bannerVersion],
+    [wireBlocked?.label, wireBlocked?.resets, detail, dialog.card?.verifiedVersions, peek.lens.bannerVersion],
   )
   // Dismissing the card dismisses what raised it: the undelivered echoes are
   // the failure, and a card that could be closed while its rows stayed on
@@ -568,7 +584,7 @@ export default function ChatPanel({
           // which limit and when it lifts, rather than accepting a message
           // that Claude Code will never pick up (verify matrix:
           // `limit.hit.*` shipped with the composer live under a green dot).
-          blocked={blocked ? blockedComposerNote(blocked) : undefined}
+          blocked={wireBlocked ? blockedComposerNote(wireBlocked) : undefined}
           onOpenTerminal={onOpenTerminal}
           // The popover's three lists (fase A4 T9) — the sessions among them
           // ride the shared query this component already subscribes to, the

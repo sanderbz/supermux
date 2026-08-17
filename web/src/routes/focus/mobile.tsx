@@ -626,6 +626,8 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               activity={current.activity}
               subagents={current.subagents}
               error={current.error}
+              blocked={current.blocked ?? undefined}
+              rateLimits={current.rate_limits ?? undefined}
               onBack={goOverviewMorph}
               // Manual resync — re-pull a clean screen on the live handle. Omitted
               // for a stopped session (no live WS to resync) so the control hides.

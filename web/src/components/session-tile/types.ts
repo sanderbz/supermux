@@ -1,5 +1,6 @@
 import type { SessionSummary } from '@/lib/api'
 import type { ChatTail, PermissionRequestInfo } from '@/lib/api/sessions'
+import type { RateLimits } from '@/lib/rate-limits'
 
 /** Display fields the hero tile layers on top of the canonical `SessionSummary`.
  *  All optional, so a plain `SessionSummary` from
@@ -52,6 +53,17 @@ export interface TileSession extends SessionSummary {
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number
+  /** The session cannot do the next turn — a usage-limit banner or a startup
+   *  gate on the live capture (server `sessions::pty_state`). A CONDITION, not a
+   *  status: a limit-hit turn ends with an ordinary `Stop`, so `status` reads
+   *  `idle` and the tile drew green while the account was cut off for five hours
+   *  (verify matrix finding 1). */
+  blocked?: { kind: string; text: string; detail?: string; wedge?: string } | null
+  /** The dim ≥70 % footer warning Claude Code prints, verbatim. A quiet chip. */
+  limit_warning?: string | null
+  /** Usage headroom from the opt-in statusline tap. Absent on every host without
+   *  it, which is every host by default. */
+  rate_limits?: RateLimits | null
   /** Chat one-liner pair (last prompt + last assistant line) from the session's
    *  chat ring — fase A2, carried on the `sessions` SSE delta. Absent means
    *  UNCHANGED, never "empty": a delta without the key must leave whatever the

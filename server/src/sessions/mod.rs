@@ -23,6 +23,7 @@ pub mod chat;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
+pub mod pty_state;
 pub mod recall;
 pub mod resumable;
 pub mod status;
@@ -265,6 +266,37 @@ pub struct SessionView {
     /// an optimistic guess. Cheap (a pure string scan over the held capture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// **The session cannot do the next turn** — a usage-limit banner or a
+    /// startup gate on the held capture ([`pty_state`]).
+    ///
+    /// A CONDITION, not a status, and that distinction is the whole point: a
+    /// limit-hit turn ends with a `Stop` hook, so `status` is `idle` and every
+    /// surface drew the session green while the account was cut off for five
+    /// hours (verify matrix finding 1). Derived from the capture on every read,
+    /// like [`mode`](Self::mode) — so it clears by itself the moment the banner
+    /// scrolls out of the live window, and no state has to be invalidated.
+    /// Omitted when the session is fine, so a healthy row's wire shape is
+    /// unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<pty_state::Blocked>,
+    /// The dim footer line Claude Code prints at ≥70 % utilisation, verbatim
+    /// (`You've used 77% of your … limit · resets …`). A quiet chip — the
+    /// session still works — and the ONLY warning plane there is: this line
+    /// never appears in the transcript JSONL at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_warning: Option<String>,
+    /// Usage headroom from the opt-in Claude **statusline tap**
+    /// ([`chat::statusline`]), when one is installed on this host.
+    ///
+    /// The only poll-free, machine-readable source of "how much is left" — as
+    /// opposed to [`blocked`](Self::blocked), which is the after-the-fact banner.
+    /// Absent for every session on a host without the tap, which is every host
+    /// by default (`config.statusline_tap` is `false`, and this change does not
+    /// touch that default). Also absent on a fresh boot: Claude Code omits
+    /// `rate_limits` from the payload until a response has carried the headers
+    /// behind it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<RateLimits>,
     /// The user's last sent prompt to this session (≤200 chars, control chars
     /// stripped), as captured by `db::sessions::set_last_send`. `None` when the
     /// session has never received a submission. Drives the last-prompt recall
@@ -293,6 +325,71 @@ pub struct ErrorInfo {
     pub message: String,
 }
 
+/// The `SessionView.rate_limits` shape — the two buckets Claude Code's
+/// statusline payload carries, typed at last.
+///
+/// `statusline::Statusline` holds `rate_limits` as an opaque `Value` because its
+/// internals drift across versions, and that opacity is why nothing ever read
+/// it: `AppState::statusline()` had ZERO call sites, so a 900-line tap that
+/// works correctly was built and left dark (verify matrix finding 7). This is
+/// the narrowest possible typing of it — the two fields the documented recipe
+/// names, both optional at every level, with anything unrecognised dropped
+/// rather than guessed.
+///
+/// KNOWN LIMITS, stated because a gauge that overclaims is worse than none:
+/// there is no `blocked` flag here, no Opus/Sonnet split and no overage bucket,
+/// and the whole key is absent on a fresh boot. It says how full the window is;
+/// it cannot say the session is cut off. That is [`SessionView::blocked`]'s job.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct RateLimits {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<RateWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<RateWindow>,
+    /// Server-clock ms at which the tap last reported. The payload has no
+    /// timestamp of its own and the tap is per-turn, so a stale gauge has to be
+    /// recognisable as one.
+    pub at_ms: i64,
+}
+
+/// One usage window.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RateWindow {
+    /// `used_percentage`, 0–100.
+    pub used_pct: f64,
+    /// `resets_at`, UNIX epoch SECONDS (Claude Code's unit, passed through
+    /// rather than converted — a silent unit change here is a countdown that is
+    /// wrong by a factor of 1000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+impl RateLimits {
+    /// Read the two buckets out of a statusline snapshot, or `None` when the
+    /// payload carried neither. Lenient by construction: a bucket without a
+    /// `used_percentage` is not a bucket, and an unknown sibling key is ignored.
+    pub fn from_statusline(s: &chat::statusline::Statusline) -> Option<Self> {
+        let raw = s.rate_limits.as_ref()?;
+        let window = |key: &str| -> Option<RateWindow> {
+            let b = raw.get(key)?;
+            Some(RateWindow {
+                used_pct: b.get("used_percentage")?.as_f64()?,
+                resets_at: b.get("resets_at").and_then(serde_json::Value::as_i64),
+            })
+        };
+        let five_hour = window("five_hour");
+        let seven_day = window("seven_day");
+        if five_hour.is_none() && seven_day.is_none() {
+            return None;
+        }
+        Some(Self {
+            five_hour,
+            seven_day,
+            at_ms: s.at_ms,
+        })
+    }
+}
+
 /// The `SessionView.permission_request` shape — the wire form of
 /// [`activity::PermissionAsk`]. Display-only and size-capped upstream; in-memory
 /// only, never persisted.
@@ -311,11 +408,22 @@ pub struct PermissionRequestInfo {
     pub mode: Option<String>,
 }
 
-fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) -> SessionView {
+fn view(
+    s: &Session,
+    rt: Option<&SessionRuntime>,
+    act: Option<SessionActivity>,
+    // The statusline snapshot, when the opt-in tap is installed AND has fired
+    // for this session. Threaded in rather than fetched here so `view` stays a
+    // pure function of its arguments (every caller already holds the state).
+    statusline: Option<chat::statusline::Statusline>,
+) -> SessionView {
     let last_status = rt.map(|r| r.last_status.as_str()).unwrap_or("unknown");
     let last_capture = rt.map(|r| r.last_capture.as_str()).unwrap_or("");
     let last_capture_ansi = rt.map(|r| r.last_capture_ansi.as_str()).unwrap_or("");
     let updated_ts = s.last_send.max(s.last_started).max(s.created_at);
+    // One read of the capture for both the block and the warning — they are two
+    // answers to one question and the reader decides between them by precedence.
+    let pty = pty_state::read(last_capture);
     SessionView {
         name: s.name.clone(),
         display_name: if s.display_name.is_empty() {
@@ -382,6 +490,11 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         } else {
             Some(status::parse_mode(last_capture).as_str().to_string())
         },
+        // Same shape as `mode`: a pure scan over the held capture, so it is
+        // always as fresh as the capture and never needs invalidating.
+        blocked: pty.blocked,
+        limit_warning: pty.warning,
+        rate_limits: statusline.as_ref().and_then(RateLimits::from_statusline),
         // Last user prompt + its epoch. Pair them: either both Some, or both
         // None (no submission yet). The DB stores empty string + 0 as the
         // "never sent" sentinel.
@@ -619,7 +732,14 @@ pub async fn list(state: &AppState) -> Result<Vec<SessionView>, AppError> {
         .collect();
     Ok(sessions
         .iter()
-        .map(|s| view(s, rt_map.get(&s.name), state.session_activity(&s.name)))
+        .map(|s| {
+            view(
+                s,
+                rt_map.get(&s.name),
+                state.session_activity(&s.name),
+                state.statusline(&s.name),
+            )
+        })
         .collect())
 }
 
@@ -628,7 +748,12 @@ pub async fn get(state: &AppState, name: &str) -> Result<SessionView, AppError> 
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
     let rt = db::sessions::runtime(&state.pool, name).await?;
-    Ok(view(&s, rt.as_ref(), state.session_activity(name)))
+    Ok(view(
+        &s,
+        rt.as_ref(),
+        state.session_activity(name),
+        state.statusline(name),
+    ))
 }
 
 /// List archived (soft-deleted) sessions — the Archived sheet's data source.
@@ -644,7 +769,14 @@ pub async fn list_archived(state: &AppState) -> Result<Vec<SessionView>, AppErro
         .collect();
     Ok(sessions
         .iter()
-        .map(|s| view(s, rt_map.get(&s.name), state.session_activity(&s.name)))
+        .map(|s| {
+            view(
+                s,
+                rt_map.get(&s.name),
+                state.session_activity(&s.name),
+                state.statusline(&s.name),
+            )
+        })
         .collect())
 }
 
@@ -1797,6 +1929,58 @@ async fn steer_clear_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A statusline snapshot carrying `rate_limits`, as Claude Code sends it.
+    fn statusline_with(raw: serde_json::Value) -> chat::statusline::Statusline {
+        chat::statusline::Statusline::from_payload(&raw).expect("payload is an object")
+    }
+
+    #[test]
+    fn rate_limits_reads_both_buckets_and_keeps_claude_codes_units() {
+        let s = statusline_with(json!({
+            "rate_limits": {
+                "five_hour": { "used_percentage": 41.5, "resets_at": 1_755_400_000_i64 },
+                "seven_day": { "used_percentage": 77.0, "resets_at": 1_755_900_000_i64 }
+            }
+        }));
+        let r = RateLimits::from_statusline(&s).expect("both buckets");
+        assert_eq!(r.five_hour.as_ref().unwrap().used_pct, 41.5);
+        // SECONDS, passed through unconverted. A silent unit change here is a
+        // countdown wrong by a factor of 1000.
+        assert_eq!(r.five_hour.as_ref().unwrap().resets_at, Some(1_755_400_000));
+        assert_eq!(r.seven_day.as_ref().unwrap().used_pct, 77.0);
+    }
+
+    #[test]
+    fn rate_limits_is_absent_rather_than_zero_when_the_payload_has_none() {
+        // The documented shape: `rate_limits` is OPTIONAL and absent on a fresh
+        // boot. Reporting 0 % for "not reported" would draw a full-headroom
+        // gauge for a session nobody has measured.
+        let fresh = statusline_with(json!({ "model": { "id": "claude-opus-5" } }));
+        assert_eq!(RateLimits::from_statusline(&fresh), None);
+        // Present but empty, and present with a bucket that has no percentage:
+        // both are "nothing to show", never a bucket with a NaN in it.
+        assert_eq!(
+            RateLimits::from_statusline(&statusline_with(json!({ "rate_limits": {} }))),
+            None
+        );
+        assert_eq!(
+            RateLimits::from_statusline(&statusline_with(
+                json!({ "rate_limits": { "five_hour": { "resets_at": 1 } } })
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn rate_limits_takes_one_bucket_when_only_one_is_reported() {
+        let s = statusline_with(json!({
+            "rate_limits": { "seven_day": { "used_percentage": 12 } }
+        }));
+        let r = RateLimits::from_statusline(&s).expect("one bucket is enough");
+        assert!(r.five_hour.is_none());
+        assert_eq!(r.seven_day.unwrap().used_pct, 12.0);
+    }
 
     #[test]
     fn peek_ansi_flag_accepts_the_usual_truthy_spellings() {

@@ -19,6 +19,11 @@
 import { motion, useReducedMotion } from 'framer-motion'
 
 import { classifyAgentError, errorBadgeLabel, resetNote } from '@/components/chat/agent-error'
+import {
+  usageTitle,
+  worstWindow,
+  type RateLimits,
+} from '@/lib/rate-limits'
 import { motionOff, springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
 import { InlineRecovery } from '@/components/recovery/recovery-ladder'
@@ -160,6 +165,101 @@ export function ErrorBadge({ error, className, session }: ErrorBadgeProps) {
     )
   }
   return <ErrorPill error={error} className={className} />
+}
+
+/**
+ * The session cannot do the next turn — a usage limit, or a startup gate.
+ *
+ * A SEPARATE badge from `<ErrorBadge>` because it is a separate fact, arriving
+ * on a separate field, and the audit's worst finding is what happens when
+ * neither is present: a limit-hit session's turn ends with an ordinary `Stop`,
+ * so `status` is `idle`, no `StopFailure` fires for the banner itself, the dot
+ * goes green and the composer stays enabled — for an account that is cut off for
+ * five hours (verify matrix finding 1, `06-overview-limits.png`).
+ *
+ * The label says WHICH condition and the tooltip carries Claude Code's own
+ * sentence, which already contains the reset time. Nothing is invented: if the
+ * terminal did not print a time, this badge does not imply one.
+ */
+export function BlockedBadge({
+  blocked,
+  className,
+}: {
+  blocked?: { kind: string; text: string; detail?: string; wedge?: string }
+  className?: string
+}) {
+  if (!blocked?.kind) return null
+  const label = blocked.kind === 'limit' ? 'Limit reached' : wedgeLabel(blocked.wedge)
+  return (
+    <span
+      role="status"
+      title={[blocked.text, blocked.detail].filter(Boolean).join(' — ')}
+      className={cn(
+        // The same calm orange as `<ErrorPill>`: this is the same rung of bad
+        // news (the agent cannot work) reached by a different road, and giving
+        // it its own colour would imply a severity ladder that does not exist.
+        'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-status-error/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-error',
+        className,
+      )}
+    >
+      <span aria-hidden>⚠</span>
+      {label}
+    </span>
+  )
+}
+
+/** Which startup gate a wedged session is parked on, in words. Unknown wedges
+ *  degrade to the honest generic rather than to silence — a session stuck before
+ *  its first turn must never render as nothing. */
+function wedgeLabel(wedge?: string): string {
+  switch (wedge) {
+    case 'trust':
+      return 'Needs folder trust'
+    case 'apikey':
+      return 'Needs API key OK'
+    case 'onboarding':
+      return 'Needs first-run setup'
+    case 'hooks-review':
+      return 'Needs hook review'
+    default:
+      return 'Blocked at startup'
+  }
+}
+
+/**
+ * Usage headroom, from the opt-in statusline tap (`session.rate_limits`).
+ *
+ * DELIBERATELY QUIET, and only present at all when it has something to say:
+ * below [`USAGE_FLOOR_PCT`] it renders nothing, because a roster of forty rows
+ * each carrying `5h 3%` is forty pieces of furniture and zero information. Above
+ * it, the number is the one signal that arrives BEFORE the block rather than
+ * after it — the banner `<BlockedBadge>` reads is the post-mortem.
+ *
+ * The worse of the two buckets wins the chip: which window is about to run out
+ * is what the user needs, and printing both turns a hint into a table.
+ */
+export function UsageChip({
+  rateLimits,
+  className,
+}: {
+  rateLimits?: RateLimits
+  className?: string
+}) {
+  const worst = worstWindow(rateLimits)
+  if (!worst) return null
+  return (
+    <span
+      role="status"
+      title={usageTitle(rateLimits)}
+      className={cn(
+        'inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none tabular-nums',
+        worst.hot ? 'bg-status-error/15 text-status-error' : 'bg-muted text-muted-foreground',
+        className,
+      )}
+    >
+      {worst.label} {Math.round(worst.pct)}%
+    </span>
+  )
 }
 
 /** The badge itself, without the affordance — the shape every non-recoverable

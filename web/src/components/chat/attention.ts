@@ -1,9 +1,9 @@
 // The honesty copy, in ONE place (fase A4 T5).
 //
-// Seven causes, seven sentences the surface is allowed to say when it cannot do
-// the thing it was asked to do — five from A4, plus the two the states audit
+// Eight causes, eight sentences the surface is allowed to say when it cannot do
+// the thing it was asked to do — five from A4, plus the three the states audit
 // found the surface staying silent about: a session that cannot work at all,
-// and a session whose transcript does not exist. They live in a pure module for the same reason
+// a session whose transcript does not exist, and the lens-read blocked/usage condition. They live in a pure module for the same reason
 // `pending.ts` does: copy that apologises instead of explaining is a defect the
 // same way a wrong caret is, and a defect you cannot assert in `bun test` is one
 // that comes back. Every string below names WHAT IS TRUE — what this app tried,
@@ -21,6 +21,14 @@
 //                              session, so chat can only show the terminal.
 //   send-unconfirmed           `use-pending-sends` (T4), when the watchdog gave
 //                              up on a send: no transcript echo, no aliveness.
+//   session-blocked            the panel, when the LENS sees a usage-limit
+//                              banner or a startup gate on the live screen —
+//                              the one cause that is not about this app at all.
+//                              It is read from the pty rather than from the
+//                              transcript because the two cases that need it
+//                              most have no transcript: a session with
+//                              transcript saving off, and a session wedged on a
+//                              startup gate before its first turn.
 //   dialog-unmapped            `use-dialog-answer` (T7), when the lens sees a
 //                              dialog the registry has no entry for — or when a
 //                              key sequence aborted midway and the surface has
@@ -40,6 +48,7 @@ export type AttentionCause =
   | 'agent-blocked'
   | 'transcript-blind'
   | 'send-unconfirmed'
+  | 'session-blocked'
   | 'dialog-unmapped'
   | 'registry-version-mismatch'
   | 'waiting-unmodelled'
@@ -82,6 +91,9 @@ export interface AttentionCopy {
  *      everything;
  *   1. a message they typed did not arrive — the only cause where something
  *      the user AUTHORED is missing;
+ *   1b. the session cannot work at all — it outranks every dialog cause below,
+ *      because a card explaining which option chat declined to press is beside
+ *      the point on a session that could not act on the answer anyway;
  *   2. a dialog is on the screen and this app will not touch it — the session
  *      is blocked until somebody answers, and chat has just declined to;
  *   3. same, but for a reason that is about US rather than the dialog (an
@@ -94,6 +106,7 @@ export const ATTENTION_ORDER: readonly AttentionCause[] = [
   'agent-blocked',
   'transcript-blind',
   'send-unconfirmed',
+  'session-blocked',
   'dialog-unmapped',
   'registry-version-mismatch',
   'waiting-unmodelled',
@@ -182,6 +195,19 @@ export function attentionCopy(cause: AttentionCause, ctx: AttentionContext = {})
           'It left this app, but nothing confirmed it: the transcript never echoed it back and the session showed no sign of life while we waited.',
           ctx.detail,
           'Send it again, or open the terminal and see what the session is actually doing.',
+        ),
+      }
+
+    case 'session-blocked':
+      return {
+        title: 'This session can’t take another turn right now.',
+        body: join(
+          // The terminal's own sentence is the evidence AND the clock: it
+          // carries the reset time, and no paraphrase of it would be more
+          // useful than the words Claude Code printed.
+          ctx.detail,
+          'The conversation above is complete — the turn ended normally, and the next one is what cannot start.',
+          'Switching this session to a different model moves it to a different limit bucket, which is the one thing that unblocks it before the reset.',
         ),
       }
 

@@ -717,6 +717,8 @@ export function DesktopSplit({
           activity={current?.activity}
           subagents={current?.subagents}
           error={current?.error}
+          blocked={current?.blocked ?? undefined}
+          rateLimits={current?.rate_limits ?? undefined}
           onDetach={onDetach}
           onStop={onStop}
           // Manual resync — re-pull a clean screen on the live handle. Omitted

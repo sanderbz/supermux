@@ -39,7 +39,7 @@ import { RosterRow, type AttentionKind } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import { STATUS_LABEL } from './status-dot'
 import { HostBadge } from './host-badge'
-import { ErrorBadge } from './activity-status'
+import { BlockedBadge, ErrorBadge, UsageChip } from './activity-status'
 import { Kbd } from '@/components/ui/kbd'
 import { useJumpIndex } from './jump-index-context'
 import type { TileSession } from './types'
@@ -182,6 +182,15 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
           }}
         />
       )}
+      {/* Blocked — a usage limit reached, or a startup gate nobody answered.
+          Beside the error badge because it is the same rung of bad news reached
+          by a different road: `error` rides a StopFailure hook, this rides the
+          screen, and before it existed a rate-limited row was pixel-identical
+          to a healthy one (verify matrix finding 1). */}
+      {session.blocked && <BlockedBadge blocked={session.blocked} />}
+      {/* Headroom, while there is still time to act on it. Silent below 60 %,
+          so a healthy roster is unchanged. */}
+      <UsageChip rateLimits={session.rate_limits ?? undefined} />
       {session.status === 'waiting' && (
         <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
           {MISC.needsInputPill}

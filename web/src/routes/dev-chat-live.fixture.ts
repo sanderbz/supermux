@@ -315,8 +315,66 @@ export const BENCH_PLAN_CAPTURE = [
   ' ~/.claude/plans/plan-a-tiny-change-purrfect-locket.md\u001b[0m',
 ].join('\n')
 
+/**
+ * The AskUserQuestion capture, trimmed from the live one the state audit took
+ * (`server/tests/fixtures/pty/ask-user-question.txt`, session `vx-chat` on CC
+ * 2.1.233). Inline for the same reason `BENCH_CAPTURE` is: this page renders
+ * without a backend and without a file read.
+ *
+ * Everything that makes it a question is here — the reverse-video header chip,
+ * the model's sentence, the descriptions under each label, the free-text row,
+ * and the rule with the out-of-box row below it that the option scan must stop
+ * at.
+ */
+export const BENCH_QUESTION_CAPTURE = [
+  '╭─── Claude Code v2.1.233 ───────────────────────────────╮',
+  '╰────────────────────────────────────────────────────────╯',
+  '',
+  '❯ Ask me one multiple-choice question: which fruit do I want.',
+  '────────────────────────────────────────────────────────────',
+  ' ☐ Fruit choice ',
+  '',
+  'Which fruit do you want?',
+  '',
+  '❯ 1. Apple',
+  '     A crisp and refreshing fruit',
+  '  2. Banana',
+  '     A soft and sweet tropical fruit',
+  '  3. Cherry',
+  '     A small and tart stone fruit',
+  '  4. Type something.',
+  '────────────────────────────────────────────────────────────',
+  '  5. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · Esc to cancel',
+].join('\n')
+
+/** The workspace-trust gate, from the production spool's pre-accept frame
+ *  (`server/tests/fixtures/pty/trust-folder.txt`). NOTE what is missing: a boot
+ *  banner. This dialog draws above the welcome box, which is why its registry
+ *  entry is pin-exempt and why this bench state passes `null` for the pin. */
+export const BENCH_TRUST_CAPTURE = [
+  '────────────────────────────────────────────────────────────',
+  ' Accessing workspace:',
+  '',
+  ' /home/supermux/spike-a0/trust',
+  '',
+  ' Quick safety check: Is this a project you created or one you trust?',
+  ' If not, take a moment to review what is in this folder first.',
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' ❯ 1. Yes, I trust this folder',
+  '   2. No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
 /** The session's boot-banner version — the registry's ONLY pin. */
 const BENCH_PIN = '2.1.231'
+/** The pin the question capture actually carries — the card is pinned to the
+ *  binary its fingerprint was captured on, and nothing wider. */
+const BENCH_QUESTION_PIN = '2.1.233'
 /** A version nothing was ever captured against: every option renders, none of
  *  them presses a key. That is the state a CC bump puts every user in, so it is
  *  on the bench beside the working one. */
@@ -332,10 +390,14 @@ const BENCH_ABORT =
 
 /** The four cards, built through the shipped path: capture → lens → registry. */
 export const BENCH_DIALOGS: Readonly<
-  Record<'permission' | 'plan' | 'unpinned' | 'aborted', DialogCardView>
+  Record<'permission' | 'plan' | 'question' | 'trust' | 'unpinned' | 'aborted', DialogCardView>
 > = {
   permission: dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN)!,
   plan: dialogCardView(readLens(BENCH_PLAN_CAPTURE), BENCH_PIN)!,
+  question: dialogCardView(readLens(BENCH_QUESTION_CAPTURE), BENCH_QUESTION_PIN)!,
+  // `null` for the pin, and that is the point of the state: the trust gate
+  // draws before any banner exists, so this is what the app really holds.
+  trust: dialogCardView(readLens(BENCH_TRUST_CAPTURE), null)!,
   unpinned: dialogCardView(readLens(BENCH_CAPTURE), BENCH_UNPINNED)!,
   // Through `applyLatch`, so the bench shows the real revert — a card that was
   // answerable a second ago, is inert now, and PRINTS why.
@@ -420,6 +482,8 @@ export interface LiveState {
   /** The raw capture the card's mini-view renders — the a0 permission frame,
    *  ANSI intact, so the bench and the lens read the same bytes. */
   attentionCapture?: string
+  /** The raiser's own evidence, quoted inside the card's sentence. */
+  attentionDetail?: string
 }
 
 /**
@@ -982,6 +1046,72 @@ export function liveStates(nowMs: number): LiveState[] {
       attention: 'dialog-unmapped',
       attentionCapture: BENCH_CAPTURE,
     },
+    {
+      id: 'question',
+      title: 'A question — the model’s own sentence, its header chip and real answers',
+      board: 'the states audit, finding 4 (03-chat-askq.png)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ AskUserQuestion',
+        // The hook fires for AskUserQuestion too, and quoting its `tool` in the
+        // question frame is exactly what produced ``Run `AskUserQuestion` ?``.
+        // It is on this state deliberately, so the card has to keep winning.
+        permission_request: {
+          tool: 'AskUserQuestion',
+          summary: 'AskUserQuestion',
+          kind: 'tool',
+        },
+      }),
+      entries: release,
+      turnAgo: 8,
+      dialog: BENCH_DIALOGS.question,
+    },
+    {
+      id: 'trust-gate',
+      title: 'The startup wedge — answerable, with no boot banner to pin against',
+      board: 'the states audit, catalog perm.trust_folder',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'waiting',
+        blocked: {
+          kind: 'startup',
+          wedge: 'trust',
+          text: 'Accessing workspace:',
+        },
+      }),
+      // An EMPTY conversation, which is the honest one: this gate blocks before
+      // the session has written a single transcript line.
+      entries: [],
+      turnAgo: null,
+      dialog: BENCH_DIALOGS.trust,
+    },
+    {
+      id: 'limit-blocked',
+      title: 'Limit reached — the session that used to read green and Idle',
+      board: 'the states audit, finding 1 (05-chat-limits.png)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // `idle` ON PURPOSE. The turn ended normally; it is the NEXT one that
+        // cannot start, and this state exists so that the header can never go
+        // back to being pixel-identical to a healthy session.
+        status: 'idle',
+        blocked: {
+          kind: 'limit',
+          text: "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam)",
+          detail: '/upgrade or /usage-credits to finish what you’re working on.',
+        },
+        rate_limits: { five_hour: { used_pct: 100 }, seven_day: { used_pct: 100 } },
+      }),
+      entries: release,
+      turnAgo: null,
+      attention: 'session-blocked',
+      attentionDetail:
+        "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam) — /upgrade or /usage-credits to finish what you’re working on.",
+    },
   ]
 }
 
@@ -1025,6 +1155,9 @@ export const STATE_IDS = [
   'plan-approval',
   'dialog-refused',
   'dialog-aborted',
+  'question',
+  'trust-gate',
+  'limit-blocked',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]

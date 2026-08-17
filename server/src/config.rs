@@ -91,6 +91,32 @@ pub struct Config {
     ///
     /// `DELETE /api/claude/statusline` is deliberately NOT gated on this: taking
     /// our wrapper back out must stay possible after the flag is turned off.
+    ///
+    /// **WHAT TURNING IT ON BUYS, since the payload is finally read.** Until
+    /// this change the tap fed `AppState::set_statusline` and nothing else —
+    /// `AppState::statusline()` had zero call sites, so the snapshot was stored
+    /// and never looked at. `SessionView::rate_limits` is now derived from it,
+    /// which makes the tap the only source in this product of usage HEADROOM:
+    /// the `five_hour` / `seven_day` `used_percentage` pair, i.e. the one signal
+    /// that arrives BEFORE a session is cut off rather than after. Everything
+    /// else supermux knows about limits (`SessionView::blocked`,
+    /// `SessionView::limit_warning`) is read off the banner Claude Code prints
+    /// once the damage is done.
+    ///
+    /// **The default stays `false`, and this change does not touch it.** Two
+    /// reasons, both about consent rather than caution: the tap edits the user's
+    /// own `~/.claude/settings.json`, and it is global to that Claude install
+    /// rather than per-session — so it affects every `claude` the user runs,
+    /// supermux's or not. The gauge is worth having; it is not worth taking
+    /// without asking. To turn it on, set `statusline_tap = true` in
+    /// `config.toml` and then `POST /api/claude/statusline/install` (the
+    /// `mode=wrap` default preserves an existing status line; `mode=tap_only` is
+    /// for a host that has none). `DELETE /api/claude/statusline` reverses it
+    /// exactly, from the sidecar the installer wrote.
+    ///
+    /// A host without the tap loses nothing it had: `rate_limits` is simply
+    /// absent from the wire, and every surface that reads it renders nothing
+    /// (`web/src/lib/rate-limits.ts`).
     pub statusline_tap: bool,
 }
 

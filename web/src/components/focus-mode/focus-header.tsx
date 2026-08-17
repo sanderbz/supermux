@@ -22,11 +22,14 @@ import {
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { SessionStatus } from '@/lib/api'
+import type { RateLimits } from '@/lib/rate-limits'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
   ActivityLine,
+  BlockedBadge,
   ErrorBadge,
+  UsageChip,
 } from '@/components/session-tile/activity-status'
 import { LastSendButton } from './last-send-recall'
 import {
@@ -63,6 +66,14 @@ export interface DesktopFocusHeaderProps {
   subagents?: number
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
+  /** The session cannot do the next turn — a usage-limit banner or a startup
+   *  gate on the live screen (`ApiSession.blocked`). A separate field from
+   *  `error` because it arrives from a separate plane: `error` rides a
+   *  StopFailure hook, this rides the capture, and a limit-hit turn fires
+   *  neither a failure nor a non-idle status. */
+  blocked?: { kind: string; text: string; detail?: string; wedge?: string }
+  /** Usage headroom from the opt-in statusline tap. Silent below 60 %. */
+  rateLimits?: RateLimits
   /** Detach (⌘D): return to overview WITHOUT stopping the session. */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave. */
@@ -103,6 +114,8 @@ export function DesktopFocusHeader({
   activity,
   subagents,
   error,
+  blocked,
+  rateLimits,
   onDetach,
   onStop,
   onMakeTeam,
@@ -157,6 +170,8 @@ export function DesktopFocusHeader({
           </span>
         )}
         {error && <ErrorBadge error={error} />}
+        {blocked && <BlockedBadge blocked={blocked} />}
+        <UsageChip rateLimits={rateLimits} />
         {/* While the agent is working with a live activity label, show the
             activity line in place of the static status word (the live "what is
             it doing now" signal). Otherwise fall back to the status label. The
@@ -286,6 +301,14 @@ export interface FocusHeaderProps {
   subagents?: number
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
+  /** The session cannot do the next turn — a usage-limit banner or a startup
+   *  gate on the live screen (`ApiSession.blocked`). A separate field from
+   *  `error` because it arrives from a separate plane: `error` rides a
+   *  StopFailure hook, this rides the capture, and a limit-hit turn fires
+   *  neither a failure nor a non-idle status. */
+  blocked?: { kind: string; text: string; detail?: string; wedge?: string }
+  /** Usage headroom from the opt-in statusline tap. Silent below 60 %. */
+  rateLimits?: RateLimits
   onBack: () => void
   /** Refresh: re-pull a clean full-screen snapshot from the server (manual twin
    *  of the automatic post-resize resync). Omit to hide the control. */
@@ -313,6 +336,8 @@ export function FocusHeader({
   activity,
   subagents,
   error,
+  blocked,
+  rateLimits,
   onBack,
   onTitleClick,
   hasLastSend,
@@ -400,6 +425,8 @@ export function FocusHeader({
             </h1>
           )}
           {error && <ErrorBadge error={error} />}
+        {blocked && <BlockedBadge blocked={blocked} />}
+        <UsageChip rateLimits={rateLimits} />
         </div>
         {/* Live activity sub-line (hooks-10x) — sits under the name while the
             agent is working so "what is it doing now" is obvious. The header is

@@ -40,7 +40,7 @@ import { useRovingItem } from '@/hooks/use-roving'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import type { AttentionKind } from '@/components/chat/ui/roster-row'
 import { cn } from '@/lib/utils'
-import { ActivityLine, ErrorBadge } from './activity-status'
+import { ActivityLine, BlockedBadge, ErrorBadge, UsageChip } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { ChatTailPreview } from './chat-tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
@@ -895,6 +895,16 @@ export function SessionTile({
                   host_id: session.host_id,
                 }}
               />
+            )}
+            {/* Blocked — the condition the tile could not see. A limit-hit turn
+                ends with an ordinary Stop, so `status` reads `idle` and this
+                card drew green while the account was cut off (verify matrix
+                finding 1, 06-overview-limits.png). */}
+            {session.blocked && !showArchiveControl && (
+              <BlockedBadge blocked={session.blocked} className="self-center" />
+            )}
+            {!showArchiveControl && (
+              <UsageChip rateLimits={session.rate_limits ?? undefined} className="self-center" />
             )}
             {session.status === 'waiting' && !showArchiveControl && (
               <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">

@@ -11,6 +11,8 @@
 // via the shared `apiToken`/`apiUrl` accessors in ./client — so the token is
 // NEVER embedded here.
 
+import type { RateLimits } from '../rate-limits'
+
 import { apiToken, apiUrl } from './client'
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -232,6 +234,33 @@ export interface ApiSession {
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
    *  error badge on the card (Track 3). */
   error?: { type: string; message: string }
+  /**
+   * **This session cannot do the next turn** — a usage-limit banner or a startup
+   * gate read off the live capture (server `sessions::pty_state`).
+   *
+   * A CONDITION, not a status, and the distinction is the whole reason it is a
+   * separate field: a limit-hit turn ends with an ordinary `Stop`, so `status`
+   * is `'idle'`, the dot is green and the composer is enabled while the account
+   * is cut off for hours. Absent on a healthy session.
+   */
+  blocked?: {
+    /** `limit` — a usage bucket ran out. `startup` — the session never reached
+     *  a first turn (see `wedge`). */
+    kind: string
+    /** Claude Code's own line, verbatim; it carries the reset time. */
+    text: string
+    /** The remediation subline under a hard block, when it was on screen. */
+    detail?: string
+    /** `trust` · `apikey` · `onboarding` · `hooks-review`. */
+    wedge?: string
+  } | null
+  /** The dim footer line Claude Code prints at ≥70 % utilisation, verbatim. A
+   *  quiet chip — the session still works — and the only warning plane there is:
+   *  this line never appears in the transcript JSONL. */
+  limit_warning?: string | null
+  /** Usage headroom from the opt-in statusline tap (server `RateLimits`).
+   *  Absent on every host without the tap, which is every host by default. */
+  rate_limits?: RateLimits | null
   /** A live, undecided permission dialog is on screen for this tool call.
    *  In-memory server-side; rides the `sessions` SSE delta (`null` clears —
    *  mergeRow passes null through, so always optional-chain). Fase A1
