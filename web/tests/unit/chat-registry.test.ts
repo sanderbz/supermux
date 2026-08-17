@@ -560,3 +560,32 @@ describe('optionLabel — the live row wins', () => {
     expect(optionLabel(entry.options[1], drifted)).toBe('Yes, and don’t ask again')
   })
 })
+
+/* ── the refusals must not point at each other (r2 finding 32) ───────────── */
+
+describe('a disabled row names a surface that actually works', () => {
+  test('the free-text row and Esc point at the terminal, not at the composer', () => {
+    // What shipped: the "Type something." row said "Type the answer in the
+    // composer instead", and doing exactly that produced the composer's own
+    // refusal — "Pick one of the answers above — typed text would be pasted past
+    // that question, not into it" — verified live, with the pty byte-identical
+    // 15 s later. Two surfaces pointing at each other, and neither naming the
+    // one that can answer. The capability itself stays deferred (a paste into an
+    // open dialog is dropped and the Enter behind it picks the caret's row); the
+    // copy is what had to stop contradicting the card below it.
+    const match = entryFor(ptyOf('ask-user-question.txt'), '2.1.233')
+    const entry = match.entry!
+    expect(entry.id).toBe('question.ask')
+
+    const free = entry.options.find((o) => !o.actOn)!
+    expect(free.disabledReason).toContain('terminal')
+    expect(free.disabledReason).not.toContain('composer')
+
+    expect(entry.escape!.actOn).toBe(false)
+    expect(entry.escape!.disabledReason).toContain('terminal')
+    expect(entry.escape!.disabledReason).not.toContain('composer')
+    // …and the label must not instruct the reader to do the thing the composer
+    // below refuses either.
+    expect(entry.escape!.label).not.toContain('Say something')
+  })
+})

@@ -341,8 +341,17 @@ function questionEntry(sighting: DialogSighting): RegistryEntry | null {
         label,
         tuiIndex: i,
         actOn: !free,
+        // POINTS AT THE SURFACE THAT WORKS, which the composer is not.
+        //
+        // It used to read "Type the answer in the composer instead" — and doing
+        // exactly that produces the composer's own refusal ("Pick one of the
+        // answers above — typed text would be pasted past that question, not
+        // into it"), verified live: the pty is byte-identical 15 s later and
+        // `last_send_text` never moves. Two shipped surfaces pointing at each
+        // other is worse than one that says no, so this names the terminal, the
+        // same place the composer's refusal offers with Open terminal.
         disabledReason: free
-          ? 'This row opens a text field inside the dialog, which chat has never captured. Type the answer in the composer instead — Claude Code matches it against the option labels.'
+          ? 'This row opens a text field inside the dialog, which chat has never captured — and a message sent from here would be pasted past the question rather than into it. Open the terminal to answer in your own words.'
           : undefined,
         // Answering a question grants nothing and changes no mode: it is the
         // narrowest effect this vocabulary has.
@@ -351,14 +360,19 @@ function questionEntry(sighting: DialogSighting): RegistryEntry | null {
       }
     }),
     escape: {
-      label: 'Say something instead',
+      // NOT "Say something instead" — the other families' escape IS a route to
+      // the composer (it dismisses the dialog first), and on a question it is
+      // not: the composer refuses while the dialog is open. A disabled row whose
+      // label instructs the reader to do the thing the row below refuses is the
+      // contradiction this label removes.
+      label: 'Cancel with Esc',
       // Esc on an AskUserQuestion has never been captured. The footer says
       // `Esc to cancel`, and what a cancelled tool call does to the turn is
       // precisely the thing nobody has watched — so the card renders it,
-      // disabled, and names the affordance that IS verified.
+      // disabled, and names the surface that can press it.
       actOn: false,
       disabledReason:
-        'What Esc does to an open question has never been captured. Type in the composer instead: Claude Code matches free text against the option labels.',
+        'What Esc does to an open question has never been captured, so chat will not press it. The terminal can — open it and answer, or cancel, there.',
       effect: 'feedback',
     },
   }
