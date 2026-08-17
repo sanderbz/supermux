@@ -158,14 +158,22 @@ describe('A3 clothes are unchanged', () => {
  * Measured at 390×844 on the phone header card, the `sm` cells are 27×20,
  * 31×20 and 31×20 — about a fifth of the 44pt floor by area, on the control the
  * whole Chat⇄Terminal toggle runs through. The rail's 26px is a VISUAL decision
- * (the header card's geometry is built around it), so the target is grown with
- * an `::after` expander instead of by resizing anything: 44px tall, ≥40px wide,
- * centred on the cell, changing no layout.
+ * (the header card's geometry is built around it), so the VERTICAL axis is
+ * grown with an `::after` expander that changes no layout: 44px tall, centred.
  *
- * Verified live on `/dev/chat-ui` at 390px: `getComputedStyle(cell, '::after')`
- * reports 44px on every cell at both sizes, and `elementFromPoint` 20px above
- * and 20px below each cell's centre resolves to that same cell — never to its
- * neighbour, so the wider targets cannot become mis-taps.
+ * THE HORIZONTAL AXIS CANNOT BE FAKED, and pretending otherwise is what this
+ * control shipped. It read `after:min-w-[40px]`, and the claim beside it —
+ * "adjacent targets cannot overlap into a mis-tap (verified with
+ * elementFromPoint at ±20px)" — had been verified only VERTICALLY. At a 27–31px
+ * cell pitch a 40px expander spills ~10px into each neighbour, elementFromPoint
+ * resolves the overlap to the LATER sibling, and the exclusive own-hit spans
+ * measured 28 / 30 / 40px: the middle of "Chat" could press Terminal.
+ *
+ * So on a coarse pointer the PITCH grows (`min-w-11` on the cell) and the
+ * expander is capped to the cell (`after:w-full`), which makes the targets tile
+ * instead of overlap. A mouse keeps the compact rail exactly as it was. The
+ * measurement itself now lives in
+ * `tests/e2e/smoke/chat-touch-targets.spec.ts`, which scans BOTH axes.
  */
 describe('every cell owns a 44pt hit target', () => {
   for (const size of ['md', 'sm'] as const) {
@@ -174,8 +182,13 @@ describe('every cell owns a 44pt hit target', () => {
       const buttons = out.split('<button').slice(1)
       expect(buttons.length).toBe(3)
       for (const b of buttons) {
-        expect(b).toContain('after:h-11') // 44px
-        expect(b).toContain('after:min-w-[40px]')
+        expect(b).toContain('after:h-11') // 44px tall
+        // The cell itself carries the width on touch…
+        expect(b).toContain('[@media(pointer:coarse)]:min-w-11')
+        // …and the expander is capped to it, so two neighbours cannot claim the
+        // same pixel. A `min-w` on the EXPANDER is the regression.
+        expect(b).toContain('after:w-full')
+        expect(b).not.toContain('after:min-w-')
         expect(b).toContain('after:-translate-y-1/2')
         // `renderToStaticMarkup` escapes the quotes inside `content-['']`.
         expect(b).toContain('after:content-[&#x27;&#x27;]')

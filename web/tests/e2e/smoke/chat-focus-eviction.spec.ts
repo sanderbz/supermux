@@ -151,6 +151,9 @@ test.describe('coarse pointer — the toggle to Chat still evicts the terminal',
     await fx.hook(CONV)
 
     await primePage(page, backend)
+    // `primePage` pins the DESKTOP seam's 1280×800 — take it back, or this test
+    // measures the desktop route with a touch pointer instead of the phone one.
+    await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`${backend.baseUrl}/focus/${fx.name}`)
 
     await expect(page.getByTestId('chat-panel')).toBeVisible()

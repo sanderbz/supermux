@@ -201,7 +201,16 @@ export function ChatComposer({
             // own, so there is exactly ONE picker on this surface and the caret
             // ends up where the user would have put it themselves.
             onClick={() => handle.insert('@')}
-            className="grid size-[26px] flex-none place-items-center rounded-full text-ink-2"
+            // 26px of GLYPH inside a 44px of TARGET on touch. The cell is the
+            // boards' 26px on a pointer device and grows to the 44pt floor under
+            // `pointer: coarse` — measured at 26×26 on a phone, against a row of
+            // 44×44 controls one line below it. The pill's `gap-3` keeps the two
+            // accessories 12px apart, so the grown cells tile instead of
+            // overlapping (the mis-tap the renderer switch shipped).
+            className={cn(
+              'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
+              '[@media(pointer:coarse)]:size-11',
+            )}
           >
             <PlusIcon />
           </button>
@@ -215,7 +224,11 @@ export function ChatComposer({
               // to start from and the composer keeps every character, so
               // cancelling leaves the box exactly as it was.
               onClick={() => onSchedule(handle.draft)}
-              className="grid size-[26px] flex-none place-items-center rounded-full text-ink-2"
+              // Same 26 → 44 on touch as its neighbour above.
+              className={cn(
+                'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
+                '[@media(pointer:coarse)]:size-11',
+              )}
             >
               <ClockIcon />
             </button>
@@ -345,8 +358,13 @@ export function ChatComposer({
 
 /** The one inverted control, as a real button. Same disc as `.sm-mic` (the
  *  boards' trailing cell) — the DISC is B0's 36/40px and is not resized here,
- *  so the phone's hit area comes from a 4px `::after` inset instead: 36 + 8 =
- *  44pt of tappable target inside an unchanged pill. */
+ *  so the touch hit area comes from a 4px `::after` inset instead: 36 + 8 =
+ *  44pt of tappable target inside an unchanged pill.
+ *
+ *  The expander is keyed on `pointer: coarse`, not on the `phone` SURFACE: the
+ *  desktop split is reachable from a touchscreen (a tablet, a convertible), and
+ *  there the 40px disc was the only send control on screen with no 44pt floor at
+ *  all. */
 function TrailingButton({
   testId,
   label,
@@ -383,8 +401,10 @@ function TrailingButton({
         phone ? 'size-9' : 'size-10',
         // The invisible 44pt target (see the doc comment). Pointer-events ride
         // the pseudo-element, so a thumb landing 4px wide of the disc still
-        // presses this button and nothing else — it is inside the pill.
-        phone && 'after:absolute after:-inset-1 after:content-[""]',
+        // presses this button and nothing else — it is inside the pill, whose
+        // `gap-3` leaves 8px of clearance to the field either way.
+        '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1',
+        '[@media(pointer:coarse)]:after:content-[""]',
         disabled && 'opacity-60',
       )}
     >

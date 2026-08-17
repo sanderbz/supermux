@@ -182,13 +182,25 @@ export function RendererSwitch({
               // THE HIT AREA IS NOT THE RAIL. At `sm` the visible cell measures
               // 27–31 × 20 on a phone — a fifth of the 44pt floor by area, and
               // this is the control the whole Chat⇄Terminal toggle runs
-              // through. The rail keeps its 26px so the header card's geometry
-              // is untouched; an ::after expander lifts the TARGET to 44px tall
-              // and ≥40px wide without moving a pixel. Vertical growth only
-              // spills into the card's own padding, and the cells stay side by
-              // side so adjacent targets cannot overlap into a mis-tap
-              // (verified with elementFromPoint at ±20px on /dev/chat-ui).
-              'after:absolute after:left-1/2 after:top-1/2 after:h-11 after:min-w-[40px]',
+              // through. The ::after expander lifts the TARGET to 44px tall
+              // without moving a pixel; vertical growth only spills into the
+              // card's own padding.
+              //
+              // THE HORIZONTAL AXIS USED TO BE A LIE. It read
+              // `after:min-w-[40px]`, and the claim next to it ("adjacent
+              // targets cannot overlap into a mis-tap") was verified by probing
+              // ±20px VERTICALLY — which is the one direction that could not
+              // catch it. At a 27–31px cell pitch a 40px expander spills ~10px
+              // into each neighbour, `elementFromPoint` resolves the overlap to
+              // the LATER sibling, and the exclusive own-hit spans measured 28 /
+              // 30 / 40px: tapping the middle of "Chat" could land on Terminal.
+              //
+              // So the pitch is what grows now, and only where it matters:
+              // `min-w-11` under `pointer: coarse` makes the CELL itself ≥44px,
+              // and the expander is capped at `w-full` so the targets TILE
+              // instead of overlapping. A mouse keeps the compact rail.
+              '[@media(pointer:coarse)]:min-w-11',
+              'after:absolute after:left-1/2 after:top-1/2 after:h-11',
               "after:w-full after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
               selected ? 'text-ink' : 'text-ink-3 hover:text-ink-2',
             )}
