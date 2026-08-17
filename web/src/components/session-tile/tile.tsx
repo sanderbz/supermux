@@ -868,7 +868,17 @@ export function SessionTile({
                 backend nulls `session.error` on resume. Hidden while the archive
                 control is showing so the title row never overflows on hover. */}
             {session.error && !showArchiveControl && (
-              <ErrorBadge error={session.error} className="self-center" />
+              <ErrorBadge
+                error={session.error}
+                className="self-center"
+                /* B5/T8.3 — a dead terminal gets its recovery action here,
+                   where the user is already looking at the bad news. */
+                session={{
+                  name: session.name,
+                  runtime: session.runtime,
+                  host_id: session.host_id,
+                }}
+              />
             )}
             {session.status === 'waiting' && !showArchiveControl && (
               <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">

@@ -246,6 +246,47 @@ export const PURGE_DISPOSITION = [
   purge: string
 }[]
 
+/** B5/T8 — the recovery ladder's vocabulary.
+ *
+ *  Every rung is named by WHAT IT PRESERVES, not by its mechanism. "Restart"
+ *  and "Reset" mean nothing to someone deciding under pressure whether they are
+ *  about to lose a conversation; "keeps your scrollback" and "clears the
+ *  conversation" do. The `destroys` half is never softened — it is the sentence
+ *  that prevents regret, and hiding it would make the ladder a trap.
+ *
+ *  Blocked rungs state WHY with the same sentence in both places they appear
+ *  (§15.5): the inline affordance on a dead tile, and the canonical list in
+ *  Settings. `BRAND.md` §6g carries the full table. */
+export const RECOVERY = {
+  recover: {
+    label: 'Recover terminal',
+    preserves: 'Keeps your scrollback and conversation.',
+    destroys: 'Nothing else changes.',
+  },
+  restart: {
+    label: 'Restart session',
+    preserves: 'Keeps the conversation, worktree and scheduled jobs.',
+    destroys: 'The live terminal and anything only on screen are lost.',
+  },
+  reset: {
+    label: 'Reset session',
+    preserves: 'Keeps the working directory, worktree, scheduled jobs and settings.',
+    destroys: 'The conversation, scrollback and activity are cleared.',
+  },
+  /** One string, two call sites — the inline action and the Settings list. */
+  recoverBlocked:
+    'Recovering in place works on local sessions running the built-in terminal. Restart works everywhere.',
+  /** Shown when the server answered but named no reason — should not happen. */
+  outcomeFallback: 'Nothing to recover.',
+  restartDone: 'Session restarted.',
+  resetDone: 'Session reset. Start it to begin a fresh conversation.',
+  failed: 'That did not work.',
+  /** The automatic layer, which had no UI at all before B5. */
+  autoHealLabel: 'Recover a terminal that dies on its own',
+  autoHealHint:
+    'When a session\u2019s terminal dies unexpectedly, bring it back automatically. Retries are rate-limited, and a session you stopped yourself is never restarted.',
+} as const
+
 // ── Connection / status banner ────────────────────────────────────────────────
 
 export const CONNECTION = {

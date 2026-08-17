@@ -139,7 +139,16 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
       {typeof session.host_id === 'number' && <HostBadge hostId={session.host_id} />}
       {/* The blocked-agent badge. `session.error` is a FIELD, not a status —
           the list row could not show it before B2. */}
-      {session.error && <ErrorBadge error={session.error} />}
+      {session.error && (
+        <ErrorBadge
+          error={session.error}
+          session={{
+            name: session.name,
+            runtime: session.runtime,
+            host_id: session.host_id,
+          }}
+        />
+      )}
       {session.status === 'waiting' && (
         <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
           {MISC.needsInputPill}

@@ -20,6 +20,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 
 import { motionOff, springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
+import { InlineRecovery } from '@/components/recovery/recovery-ladder'
 
 /** Map a machine `error.type` to a short, friendly, sentence-case label. Unknown
  *  types fall back to a generic "Error" so a never-before-seen failure still
@@ -106,13 +107,50 @@ export interface ErrorBadgeProps {
   error?: { type: string; message: string }
   /** Extra classes for the badge (e.g. text size tweaks per call site). */
   className?: string
+  /** B5/T8.3 — the session this badge is about. Supplying it turns a
+   *  `holder_died` badge from a STATEMENT into an AFFORDANCE: a dead terminal
+   *  is the one error a user can act on from here, and until B5 the badge said
+   *  so and then offered nothing. Omit it and the badge renders exactly as
+   *  before, so every existing call site is unchanged. */
+  session?: RecoveryTarget
+}
+
+/** What `<InlineRecovery>` needs to pick the lowest useful rung. */
+export interface RecoveryTarget {
+  name: string
+  runtime?: string
+  host_id?: number | null
 }
 
 /** A small amber "this agent is blocked" badge. Renders null when there's no
  *  error, and clears automatically when `error` clears (the backend nulls it on
  *  resume). `title` = the full error message for a hover/long-press tooltip. */
-export function ErrorBadge({ error, className }: ErrorBadgeProps) {
+export function ErrorBadge({ error, className, session }: ErrorBadgeProps) {
   if (!error?.type) return null
+  // A dead TERMINAL is recoverable; a rate limit or a billing error is not
+  // something a restart fixes. Offering the ladder on those would be noise
+  // dressed as help, so the affordance is scoped to the one error it answers.
+  const recoverable = error.type === 'holder_died' && Boolean(session)
+  if (recoverable && session) {
+    return (
+      <span className={cn('inline-flex items-center gap-1.5', className)}>
+        <ErrorPill error={error} />
+        <InlineRecovery name={session.name} session={session} />
+      </span>
+    )
+  }
+  return <ErrorPill error={error} className={className} />
+}
+
+/** The badge itself, without the affordance — the shape every non-recoverable
+ *  error still renders, unchanged from before B5. */
+function ErrorPill({
+  error,
+  className,
+}: {
+  error: { type: string; message: string }
+  className?: string
+}) {
   return (
     <span
       role="status"

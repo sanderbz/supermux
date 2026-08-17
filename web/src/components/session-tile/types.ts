@@ -41,6 +41,11 @@ export interface TileSession extends SessionSummary {
    *  undefined = LOCAL — the historical default. The tile renders a small
    *  <HostBadge> when this is set. */
   host_id?: number | null
+  /** Which terminal backend drives this session (migration 0024). Read by the
+   *  recovery ladder (B5/T8): only a native, local session has a holder that
+   *  can be recovered in place — a tmux pane has none, and the ladder says so
+   *  rather than offering a button that can only answer "unsupported". */
+  runtime?: string
   /** Live, undecided permission dialog for the current tool call. Rides the
    *  `sessions` SSE delta; `null` clears it (always optional-chain). */
   permission_request?: PermissionRequestInfo | null

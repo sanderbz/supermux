@@ -185,6 +185,10 @@ export interface ApiSession {
    *  been touched — both mean "follow the global category toggles", so the
    *  control renders identically either way. */
   notif?: NotifPolicy
+  /** Which terminal backend drives this session (migration 0024): `"native"`
+   *  (the built-in pty holder) or `"tmux"`. Read by the recovery ladder, which
+   *  can only heal a holder it owns — a tmux pane has no holder to recover. */
+  runtime?: string
   /** Cross-device seen cursor (migration 0029) — server-clock **ms** at which
    *  this session was last read on ANY device, or null/absent for never seen.
    *  Merged newest-wins with the localStorage cursor in `use-attention.ts`;
@@ -668,6 +672,43 @@ export const sessionsApi = {
    *
    *  Call sites treat it as fire-and-forget: localStorage has already made the
    *  UI correct, and this is the background sync behind it. */
+  /** `POST .../restart` — rung 2 of the recovery ladder: an ATOMIC stop→start
+   *  (B5/T8). Server-side because the client used to compose it, twice and
+   *  differently, and because a composed stop+start leaves a window in which
+   *  the auto-healer can race the user's own restart.
+   *
+   *  Preserves the conversation, worktree and schedules; destroys the live
+   *  terminal. */
+  restart: (name: string): Promise<{
+    name: string
+    started: boolean
+    ready: boolean
+    target: string
+  }> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/restart`, { method: 'POST' }),
+
+  /** `POST .../recover` — rung 1: the manual holder heal, bypassing the
+   *  automatic layer's cooldown (B5/T8).
+   *
+   *  Answers with an OUTCOME rather than success/failure, and every non-healed
+   *  outcome is still a 200: "auto-recovery is off" and "this session type
+   *  cannot be recovered" are ANSWERS, not errors. `reason` is the server's own
+   *  sentence, shown verbatim — the client never paraphrases a diagnosis it
+   *  does not own. */
+  recover: (
+    name: string,
+  ): Promise<{ outcome: string; healed: boolean; reason?: string }> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/recover`, { method: 'POST' }),
+
+  /** `POST .../reset` — rung 3: a fresh runtime for a wedged session (B5/T8).
+   *
+   *  Preserves the working directory, worktree, schedules and config; destroys
+   *  the conversation link, scrollback and activity. Refuses a RUNNING session
+   *  with a 409 — resetting under a live terminal would leave a running agent
+   *  writing into a runtime row that no longer describes it. */
+  reset: (name: string): Promise<void> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/reset`, { method: 'POST' }),
+
   markSeen: (
     name: string,
     cursor: { ts: number; count?: number; epoch?: number },
