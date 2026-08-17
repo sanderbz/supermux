@@ -55,6 +55,7 @@ import {
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { DisplayControls } from '@/components/roster/display-controls'
+import { listDetailCeiling, listDetailCeilingNote } from '@/lib/fact-ladder'
 import { AttentionRollup } from '@/components/roster/attention-rollup'
 import {
   hasImplicitUngrouped,
@@ -240,6 +241,22 @@ export function Overview() {
           (activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t))),
       ),
     [sessions, query, hideStopped, activeTags],
+  )
+
+  // How far the LIST's fact ladder can actually climb on this roster (finding
+  // 46). The rungs are fixed — preview, tokens, tags — but a rung whose fact no
+  // session carries renders exactly what the rung below it does, and a density
+  // control whose last step changes nothing reads as broken. So in list view the
+  // "+" stops where the content does, and says why.
+  const listCeiling = React.useMemo(
+    () =>
+      listDetailCeiling(
+        filtered.map((s) => ({
+          tokens: typeof s.tokens === 'number',
+          tags: (s.tags?.length ?? 0) > 0,
+        })),
+      ),
+    [filtered],
   )
 
   // Reconcile the persisted custom order with the LIVE session names.
@@ -682,7 +699,10 @@ export function Overview() {
             onGroupBy={setGroupBy}
             size={overviewSize}
             onSize={setOverviewSize}
-            sizeMax={sizeMax}
+            sizeMax={viewMode === 'list' ? (Math.min(sizeMax, listCeiling) as typeof sizeMax) : sizeMax}
+            sizeNote={
+              viewMode === 'list' ? (listDetailCeilingNote(listCeiling) ?? undefined) : undefined
+            }
             // The density number drives BOTH ladders — tile geometry and the
             // list row's facts (`lib/fact-ladder.ts`). Hiding it in list view
             // meant the only route to a list's tier-3/4 rungs was: switch to

@@ -11,6 +11,9 @@ import {
   facts,
   FACTS,
   hasFact,
+  listDetailCeiling,
+  listDetailCeilingNote,
+  type ListRowFacts,
   SURFACES,
   TICKING_FACTS,
   TIERS,
@@ -158,5 +161,41 @@ describe('the accessor', () => {
 
   test('defaults to tier 1', () => {
     expect([...facts('strip')].sort()).toEqual([...facts('strip', 1)].sort())
+  })
+})
+
+describe('the list ladder stops where the CONTENT stops', () => {
+  // Stepping List view through all four rungs on the shipping instance: tier 4
+  // was byte-identical to tier 3 for every row measured, because the facts it
+  // adds (tags) were empty on every session. The rung was honest and the
+  // CONTROL was not — a density step that changes nothing reads as broken.
+  const row = (over: Partial<ListRowFacts> = {}): ListRowFacts => ({
+    tokens: false,
+    tags: false,
+    ...over,
+  })
+
+  test('one tagged session brings the top rung back for the whole roster', () => {
+    expect(listDetailCeiling([row(), row({ tags: true })])).toBe(4)
+    expect(listDetailCeilingNote(4)).toBeNull()
+  })
+
+  test('tokens but no tags ⇒ three rungs, and the reason names tags', () => {
+    const ceiling = listDetailCeiling([row({ tokens: true })])
+    expect(ceiling).toBe(3)
+    expect(listDetailCeilingNote(ceiling)).toContain('tag')
+  })
+
+  test('neither ⇒ two rungs, and the reason names tokens', () => {
+    const ceiling = listDetailCeiling([row(), row()])
+    expect(ceiling).toBe(2)
+    expect(listDetailCeilingNote(ceiling)).toContain('token')
+  })
+
+  test('the floor is 2, never 1 — the preview rung is transient, not absent', () => {
+    // A ceiling of 1 would disable the control on a roster that is one printed
+    // line away from having something to show, and would take the row's second
+    // line away in the meantime.
+    expect(listDetailCeiling([])).toBe(2)
   })
 })

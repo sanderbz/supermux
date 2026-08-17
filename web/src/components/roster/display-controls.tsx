@@ -56,6 +56,11 @@ export interface DisplayControlsProps {
   /** What the density is called in THIS view. Tiles get bigger; rows get more
    *  facts — one number, two honest names. */
   sizeLabel?: string
+  /** Why the ladder stops below its ceiling — shown under the +/− pair when the
+   *  next rung would render nothing new on THIS roster (the list ladder's top
+   *  rung adds tag chips, and a roster with no tags made it a step that changed
+   *  nothing). `undefined` ⇒ the ceiling is the real one and nothing is said. */
+  sizeNote?: string
   hideStopped: boolean
   onHideStopped: (v: boolean) => void
   /** Every tag on the roster, for the filter. Empty ⇒ the row is not rendered:
@@ -78,6 +83,7 @@ export function DisplayControls({
   sizeMax,
   sizeApplies,
   sizeLabel = 'Density',
+  sizeNote,
   hideStopped,
   onHideStopped,
   tags,
@@ -197,6 +203,11 @@ export function DisplayControls({
                   <Plus className="size-4" aria-hidden />
                 </Button>
               </div>
+              {sizeNote && size >= sizeMax && (
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {sizeNote}
+                </p>
+              )}
             </Section>
           )}
 

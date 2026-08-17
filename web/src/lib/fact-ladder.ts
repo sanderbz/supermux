@@ -207,3 +207,46 @@ export const TILE_FACTS_TODAY: readonly Fact[] = [
   'archiveAction',
   'preview',
 ]
+
+/** What one row can actually SHOW, per the list ladder's content-bound rungs. */
+export interface ListRowFacts {
+  /** A token count exists (tier 3). */
+  tokens: boolean
+  /** At least one tag exists (tier 4). */
+  tags: boolean
+}
+
+/**
+ * The highest LIST rung that would render something new on this roster.
+ *
+ * The density ladder's top rung was byte-identical to the one below it for every
+ * row measured: tier 4 adds `tags`, and no session on the instance had any — so
+ * the last step of a density control changed nothing, which reads as broken
+ * rather than as honest. The rungs are still four; the CONTROL now stops where
+ * the content does, and says why.
+ *
+ * FLOORED AT 2 on purpose. Tier 2's fact is the preview line, and a preview is
+ * transient — a session prints a line and the rung fills — so gating the control
+ * on whether one exists right now would make it flicker, and would take the
+ * second line away from a roster that is about to have one. Tokens and tags are
+ * session PROPERTIES: they are there or they are not, and that is a thing a
+ * control may honestly refuse to pretend about.
+ *
+ * Note the asymmetry with the ladder itself: this is about the roster in front
+ * of you, not about the table. Give one session a tag and the fourth rung comes
+ * back for everybody.
+ */
+export function listDetailCeiling(rows: readonly ListRowFacts[]): Tier {
+  if (rows.some((r) => r.tags)) return 4
+  if (rows.some((r) => r.tokens)) return 3
+  return 2
+}
+
+/** Why the ladder stops where it does — the sentence the control shows when the
+ *  next rung would add nothing. `null` when the ceiling is the real one. */
+export function listDetailCeilingNote(ceiling: Tier): string | null {
+  if (ceiling >= 4) return null
+  return ceiling === 3
+    ? 'More detail would add tag chips — no session here has tags yet.'
+    : 'More detail would add token counts — no session here reports any.'
+}

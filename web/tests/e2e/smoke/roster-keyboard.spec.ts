@@ -407,7 +407,24 @@ test.describe('roster keyboard + actions', () => {
     await open()
     await panel.getByRole('button', { name: 'List', exact: true }).click()
     await expect(panel.getByText('Row detail')).toBeVisible()
-    await expect(panel.getByRole('button', { name: 'More row detail' })).toBeEnabled()
+    //     The rung ladder itself is content-bounded (finding 46): the list's
+    //     top rungs add token counts and tag chips, and on a roster where no
+    //     session has either, raising the density rendered a byte-identical
+    //     row — a last step that changes nothing reads as broken. So the "+"
+    //     is reachable here, and where it can no longer add a fact it is
+    //     disabled WITH the reason, never silently inert.
+    const moreDetail = panel.getByRole('button', { name: 'More row detail' })
+    await expect(moreDetail).toBeEnabled()
+    // Walk it to its ceiling: either it reaches the ladder's top rung, or it
+    // stops early WITH the reason on screen. What it may never do is stop
+    // silently, which is what "tier 4 was identical to tier 3" looked like.
+    for (let i = 0; i < 3 && (await moreDetail.isEnabled()); i++) await moreDetail.click()
+    if (await moreDetail.isDisabled()) {
+      await expect(
+        panel.getByText(/More detail would add/),
+        'a disabled last step says why',
+      ).toBeVisible()
+    }
 
     // …and it is still called Density in tiles: one number, two honest names.
     await panel.getByRole('button', { name: 'Tiles', exact: true }).click()
