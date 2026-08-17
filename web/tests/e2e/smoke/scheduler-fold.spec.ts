@@ -52,6 +52,22 @@ test.describe('scheduler folded into Settings', () => {
     await section.getByRole('button', { name: 'New schedule' }).click()
     const title = page.getByPlaceholder('Weekly review')
     await expect(title).toBeVisible({ timeout: 10_000 })
+
+    // THE PRIMARY ACTION IS ON SCREEN THE MOMENT THE SHEET OPENS. It used to
+    // live at the end of the sheet's own scroll region: bounding box y=892.5,
+    // height 44 at every viewport height tried — ~7px of the button visible at
+    // 900, none below — with the sheet opening at scrollTop 0 and no fade to
+    // say there was more. Measured BEFORE the form is filled, because that is
+    // the state a user actually lands in.
+    const saveBtn = page.getByRole('button', { name: /Save schedule/ })
+    const box = await saveBtn.boundingBox()
+    expect(box, 'Save schedule is laid out').not.toBeNull()
+    const vp = page.viewportSize()!
+    expect(
+      Math.round(box!.y + box!.height),
+      'Save schedule is fully inside the viewport before any scrolling',
+    ).toBeLessThanOrEqual(vp.height)
+
     await title.fill('e2e-fold')
 
     // A shell job is the one kind that needs neither a session nor a tmux pane,

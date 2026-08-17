@@ -10,14 +10,19 @@
 // `/command` token; everything after it is the prompt body.
 
 import * as React from 'react'
-import { Loader2 } from 'lucide-react'
+import { FlaskConical, Loader2 } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { TOAST } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
 import type { SessionPickerOption } from '@/components/session/session-picker'
-import { useCreateSchedule, usePatchSchedule } from '@/hooks/use-scheduler'
+import {
+  useCreateSchedule,
+  usePatchSchedule,
+  useTestFire,
+} from '@/hooks/use-scheduler'
 import {
   EMPTY_FORM,
   isFormValid,
@@ -86,10 +91,34 @@ export function ScheduleEditor({
   )
   const create = useCreateSchedule()
   const patch = usePatchSchedule()
+  const testFire = useTestFire()
   const { toast } = useToast()
 
   const valid = isFormValid(form)
   const pending = create.isPending || patch.isPending
+
+  // Test fire: create, run once, report the outcome, delete. It lives beside
+  // Save because it answers the same question ("does this job work?") one step
+  // earlier — and because both are actions on the whole form, not on a field.
+  const runTestFire = () => {
+    testFire.mutate(toCreateInput(form), {
+      onSuccess: (res) =>
+        toast({
+          message:
+            res.status === 'ok'
+              ? `Test fire ok — ${res.note || 'ran'}`
+              : `Test fire failed — ${res.note || 'error'}`,
+          tone: res.status === 'ok' ? 'active' : 'error',
+          duration: 4000,
+        }),
+      onError: (e) =>
+        toast({
+          message: `Test fire failed — ${(e as Error).message}`,
+          tone: 'error',
+          duration: 4000,
+        }),
+    })
+  }
 
   const submit = () => {
     const input = toCreateInput(form)
@@ -148,21 +177,58 @@ export function ScheduleEditor({
         />
       )}
 
-      <ScheduleForm
-        value={form}
-        onChange={setForm}
-        sessions={sessions}
-        hideTestFire={mode === 'edit'}
-      />
+      <ScheduleForm value={form} onChange={setForm} sessions={sessions} />
 
-      <Button
-        className="h-11 self-start"
-        onClick={submit}
-        disabled={!valid || pending}
+      {/* THE ACTIONS ARE PINNED. They used to sit at the end of the sheet's own
+          scroll region, which put "Save schedule" at y=892 — below the fold at
+          every viewport height, with ~7px of the button visible at 900px and
+          none below it, and no fade or scrim to say there was more. The sheet
+          opens at scrollTop 0, so the primary action of the surface was a thing
+          you had to discover by scrolling.
+          `sticky bottom-0` inside the sheet's scroller keeps the row on screen
+          for as long as the form it belongs to is, and lets it scroll away with
+          the section (edit mode continues into the run history below).
+          `-mx-5 -mb-5` bleeds it to the sheet's edges through the body padding
+          so the border reads as a footer rule rather than a floating card. */}
+      <div
+        data-testid="schedule-editor-actions"
+        className={cn(
+          'sticky bottom-0 z-10 -mx-5 flex flex-wrap items-center gap-2',
+          'border-t border-border bg-background/95 px-5 py-3 backdrop-blur',
+          // Create mode ends with this row, so it also swallows the sheet
+          // body's bottom padding and sits flush on the sheet's edge. Edit mode
+          // continues into the run history, where the padding is still wanted.
+          mode === 'create' && '-mb-5',
+        )}
       >
-        {pending && <Loader2 className="size-4 animate-spin" />}
-        {mode === 'edit' ? 'Save changes' : 'Save schedule'}
-      </Button>
+        <Button
+          className="h-11"
+          onClick={submit}
+          disabled={!valid || pending}
+        >
+          {pending && <Loader2 className="size-4 animate-spin" />}
+          {mode === 'edit' ? 'Save changes' : 'Save schedule'}
+        </Button>
+        {/* Test fire only exists for a schedule that does not exist yet: it
+            creates, runs once, reports and deletes. On an existing row the
+            header's "Run now" is the same proof against the real schedule. */}
+        {mode === 'create' && (
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11"
+            onClick={runTestFire}
+            disabled={!valid || testFire.isPending}
+          >
+            {testFire.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <FlaskConical className="size-4" />
+            )}
+            Test fire now
+          </Button>
+        )}
+      </div>
     </div>
   )
 }

@@ -7,7 +7,11 @@
 // English render + debounced next-5-runs preview (POST /api/schedules/preview),
 // a one-shot datetime picker, an opt-in "Send me notification when done"
 // checkbox (the watch + done_action='notify' path with a friendlier label
-// and dynamic permission hint), and the test-fire button.
+// and dynamic permission hint).
+//
+// The ACTIONS are not here: "Test fire now" and "Save schedule" live in the
+// editor's pinned footer (schedule-editor.tsx), because a primary action that
+// scrolls out of the sheet is one a user cannot find.
 //
 // Animations come from springs.ts (no `transition: all`). Default kind is the
 // most common case — `tmux` (Prompt session) — so the user lands on the
@@ -17,17 +21,13 @@ import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Clock3,
-  FlaskConical,
-  Loader2,
   Rocket,
   Terminal,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useToast } from '@/components/ui/use-toast'
 import {
   SessionPicker,
   type SessionPickerOption,
@@ -37,7 +37,7 @@ import {
   type ScheduleCreateInput,
   type ScheduleKind,
 } from '@/lib/api'
-import { useSchedulerCommands, useTestFire } from '@/hooks/use-scheduler'
+import { useSchedulerCommands } from '@/hooks/use-scheduler'
 import { usePush } from '@/hooks/use-push'
 import {
   describeSchedule,
@@ -165,26 +165,16 @@ interface ScheduleFormProps {
   onChange: (next: ScheduleFormValue) => void
   /** Known sessions for the tmux target picker (carries display_name). */
   sessions: SessionPickerOption[]
-  /** Hide the test-fire button (e.g. on the edit sheet for an existing job). */
-  hideTestFire?: boolean
 }
 
-export function ScheduleForm({
-  value,
-  onChange,
-  sessions,
-  hideTestFire,
-}: ScheduleFormProps) {
+export function ScheduleForm({ value, onChange, sessions }: ScheduleFormProps) {
   const set = <K extends keyof ScheduleFormValue>(
     key: K,
     v: ScheduleFormValue[K],
   ) => onChange({ ...value, [key]: v })
 
   const preview = useExpressionPreview(value.schedule_expr)
-  const testFire = useTestFire()
-  const { toast } = useToast()
   const commands = useSchedulerCommands()
-  const valid = isFormValid(value)
 
   // The combined "type-anything" field holds `/cmd then prompt` as one string.
   // The form's stored shape stays split (`command` + `prompt`) so the API call
@@ -217,28 +207,6 @@ export function ScheduleForm({
     const split = splitCommandAndPrompt(next)
     lastSplitRef.current = { command: split.command, prompt: split.prompt }
     onChange({ ...value, command: split.command, prompt: split.prompt })
-  }
-
-  const runTestFire = () => {
-    testFire.mutate(toCreateInput(value), {
-      onSuccess: (res) => {
-        toast({
-          message:
-            res.status === 'ok'
-              ? `Test fire ok — ${res.note || 'ran'}`
-              : `Test fire failed — ${res.note || 'error'}`,
-          tone: res.status === 'ok' ? 'active' : 'error',
-          duration: 4000,
-        })
-      },
-      onError: (e) => {
-        toast({
-          message: `Test fire failed — ${(e as Error).message}`,
-          tone: 'error',
-          duration: 4000,
-        })
-      },
-    })
   }
 
   return (
@@ -392,23 +360,6 @@ export function ScheduleForm({
           user knows whether the ping will actually reach them. */}
       <NotifyField value={value} set={set} />
 
-      {/* Test fire */}
-      {!hideTestFire && (
-        <Button
-          type="button"
-          variant="outline"
-          onClick={runTestFire}
-          disabled={!valid || testFire.isPending}
-          className="h-11 self-start"
-        >
-          {testFire.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <FlaskConical className="size-4" />
-          )}
-          Test fire now
-        </Button>
-      )}
     </div>
   )
 }
