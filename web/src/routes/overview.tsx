@@ -30,6 +30,8 @@ import { useUI } from '@/stores/ui-store'
 import { type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
+import { SessionActionsMenu } from '@/components/session-tile/session-actions-menu'
+import { RovingListProvider } from '@/hooks/use-roving'
 import {
   JumpIndexProvider,
   type JumpIndexMap,
@@ -837,27 +839,51 @@ export function Overview() {
                       </span>
                     </div>
                   )}
-                  <div
-                    role="list"
-                    className={viewMode === 'tile' ? tileGridClass : 'flex flex-col gap-1.5'}
+                  {/* ROVING TABINDEX (A6 T8.3, shipped for real). One tab
+                      stop per section, arrows to choose the row — a 40-session
+                      roster used to be 38 tab stops with inert arrow keys. The
+                      provider renders no DOM, so the grid class and the
+                      `layoutId` morph are untouched. */}
+                  <RovingListProvider
+                    keys={section.sessions.map((s) => s.name)}
+                    orientation={viewMode === 'tile' ? 'grid' : 'vertical'}
                   >
-                    {section.sessions.map((s, i) => (
-                      <motion.div
-                        key={s.name}
-                        role="listitem"
-                        data-tour={section === presetSections[0] && i === 0 ? 'tile' : undefined}
-                        layout={!reduce}
-                        layoutId={`session-${s.name}`}
-                        transition={springs.smooth}
-                      >
-                        {viewMode === 'tile' ? (
-                          <SessionTile session={toTileSession(s)} sizeTier={overviewSize} />
-                        ) : (
-                          <SessionRow session={toTileSession(s)} sizeTier={overviewSize} />
-                        )}
-                      </motion.div>
-                    ))}
-                  </div>
+                    <div
+                      role="list"
+                      className={viewMode === 'tile' ? tileGridClass : 'flex flex-col gap-1.5'}
+                    >
+                      {section.sessions.map((s, i) => (
+                        <motion.div
+                          key={s.name}
+                          role="listitem"
+                          data-tour={section === presetSections[0] && i === 0 ? 'tile' : undefined}
+                          layout={!reduce}
+                          layoutId={`session-${s.name}`}
+                          transition={springs.smooth}
+                          // `group/tile` is what reveals the action kebab on
+                          // hover; the custom-mode grid supplies it from its own
+                          // drag wrapper, and the flat body had no wrapper at
+                          // all — which is the mechanical reason Pin / Rename /
+                          // Info / Mark unread were absent by default.
+                          className="group/tile relative"
+                        >
+                          {viewMode === 'tile' ? (
+                            <SessionTile session={toTileSession(s)} sizeTier={overviewSize} />
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <div className="min-w-0 flex-1">
+                                <SessionRow session={toTileSession(s)} sizeTier={overviewSize} />
+                              </div>
+                              <SessionActionsMenu session={s} variant="row" />
+                            </div>
+                          )}
+                          {viewMode === 'tile' && (
+                            <SessionActionsMenu session={s} variant="tile" />
+                          )}
+                        </motion.div>
+                      ))}
+                    </div>
+                  </RovingListProvider>
                 </section>
               ))}
             </div>
