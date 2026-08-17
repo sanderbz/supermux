@@ -29,6 +29,7 @@ import * as React from 'react'
 
 let connectionClaims = 0
 let chatSurfaceClaims = 0
+let turnClaims = 0
 const listeners = new Set<() => void>()
 
 function emit() {
@@ -111,9 +112,46 @@ export function useChatSurfaceMounted(): boolean {
   return React.useSyncExternalStore(subscribe, chatMounted, unclaimed)
 }
 
+const turnTaken = () => turnClaims > 0
+
+/**
+ * `true` when the chat layer's announcer is mounted and therefore owns the turn
+ * story — i.e. the terminal route's `TerminalTurnAnnouncer` must stand down so
+ * a screen-reader user hears "Claude is working." once, not twice.
+ */
+export function useTurnVoiceTaken(): boolean {
+  return React.useSyncExternalStore(subscribe, turnTaken, unclaimed)
+}
+
+/**
+ * Take ownership of the TURN announcement ("Claude is working." / "Claude
+ * replied."). Same mechanism, third question.
+ *
+ * Both renderers can be mounted inside the same focus route — the chat renderer
+ * is a toggle, not a route — and both need this sentence. The chat layer is the
+ * more specific owner (it can also see an ask and a hand-off, which the terminal
+ * surface cannot), so it claims, and `TerminalTurnAnnouncer` goes silent for as
+ * long as the claim is held. Degrades to "the terminal announcer speaks", which
+ * is the surface a user gets by default today.
+ */
+export function claimTurnVoice(): () => void {
+  turnClaims += 1
+  emit()
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    turnClaims -= 1
+    emit()
+  }
+}
+
 /** Test seam: the counts, without a React render. */
 export function connectionVoiceClaims(): number {
   return connectionClaims
+}
+export function turnVoiceClaims(): number {
+  return turnClaims
 }
 export function chatSurfaceMountCount(): number {
   return chatSurfaceClaims

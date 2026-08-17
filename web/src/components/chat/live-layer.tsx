@@ -67,6 +67,17 @@ import {
   type Receipt,
 } from './ui'
 
+// `PHASE_SAY` is IMPORTED, not merely re-exported below: `ASK_SAY` reads
+// `PHASE_SAY.asking` at module-evaluation time, and `export … from` creates no
+// local binding — it threw `PHASE_SAY is not defined` on every module that
+// touches this file.
+import {
+  LiveAnnouncer,
+  PHASE_SAY,
+  livePhase as computeLivePhase,
+  useTurnVoiceClaim,
+} from '../a11y/turn-announcer'
+
 
 /**
  * The three answers the modal registry maps a Claude permission dialog to
@@ -251,7 +262,7 @@ export function LiveLayer({
         }
       : undefined
 
-  const phase = livePhase({
+  const phase = computeLivePhase({
     working,
     asking: !!(dialog || session?.permission_request || session?.elicitation || signIn),
     handoff: !!target,
@@ -264,6 +275,13 @@ export function LiveLayer({
     permission: !!session?.permission_request,
     signIn,
   })
+
+  // ONE VOICE. The focus route also mounts a `TerminalTurnAnnouncer` (the
+  // terminal renderer is still the default and needs the same sentence); this
+  // layer is the MORE SPECIFIC owner — it can see an ask and a hand-off, which
+  // the terminal surface cannot — so it claims the turn story while mounted and
+  // the other region stands down. Same rule the connection banner follows.
+  useTurnVoiceClaim()
 
   // No `gap` here, deliberately: every primitive in this stack carries its own
   // vertical rhythm (`MessageRow` 14/8px, `WorkingRow` 14px, `DelegationPill`
@@ -284,7 +302,7 @@ export function LiveLayer({
       // busy flag is carried by the band that owns the row instead (G2).
       aria-busy={phase === 'working' || phase === 'handoff' || undefined}
     >
-      <LiveAnnouncer phase={phase} ask={ask} />
+      <LiveAnnouncer phase={phase} askSay={ASK_SAY[ask]} />
       {attention}
       {login}
 
@@ -406,37 +424,27 @@ export function LiveLayer({
  * provisional tail → the confirmed entry that supersedes it) would narrate
  * three different things about ONE reply, plus one per flush in between.
  *
- * So the band is `aria-live="off"` and the only thing that speaks is a phase,
- * derived with NO memory: the region's text is a pure function of which of the
- * four states this layer is in. A phase that does not change re-renders to the
- * same string, and an unchanged live region is silent — which is what makes the
- * whole P13 sequence exactly ONE announcement rather than N+3. That property is
- * asserted by count in `tests/unit/chat-a11y.test.tsx`, so a later "just add
- * aria-live" fix fails the suite instead of shipping.
+ * So the band is `aria-live="off"` and the only thing that speaks is a phase
+ * EDGE, derived with no memory beyond the previous phase: a phase that does not
+ * change re-renders to the same string, and an unchanged live region is silent
+ * — which is what makes the whole P13 sequence exactly ONE announcement rather
+ * than N+3. That property is asserted by count in
+ * `tests/unit/chat-a11y.test.tsx`, so a later "just add aria-live" fix fails
+ * the suite instead of shipping.
  *
- * Ordered by what outranks what on screen, so the sentence and the pixels can
- * never disagree: an ask is the one thing waiting on a human, a hand-off is
- * more specific than "working", and idle says nothing at all.
+ * The vocabulary and the region itself now live in
+ * `components/a11y/turn-announcer.tsx` — OUTSIDE this lazily-loaded chunk —
+ * because the terminal renderer (still the shipped default) needs the exact
+ * same voice and cannot import chat code. Re-exported here so this file stays
+ * the name every existing caller, test and BRAND.md entry already knows.
  */
-export type LivePhase = 'idle' | 'working' | 'asking' | 'handoff'
-
-export function livePhase(s: { working: boolean; asking: boolean; handoff: boolean }): LivePhase {
-  if (s.asking) return 'asking'
-  if (s.handoff) return 'handoff'
-  if (s.working) return 'working'
-  return 'idle'
-}
-
-/** The four sentences. `idle` is empty on purpose — clearing a live region says
- *  nothing, which is the correct amount to say when nothing is happening.
- *  `asking` is the DEFAULT for its phase; which sentence is actually spoken is
- *  `ASK_SAY` below, because not every ask is a permission request. */
-export const PHASE_SAY: Record<LivePhase, string> = {
-  idle: '',
-  working: 'Claude is working.',
-  asking: 'Claude is asking for permission.',
-  handoff: 'Handing this over.',
-}
+export { PHASE_SAY }
+export {
+  livePhase,
+  TURN_END_SAY,
+  sayFor,
+  type LivePhase,
+} from '../a11y/turn-announcer'
 
 /**
  * WHICH ask is on screen. One phase, several questions — and they are not the
@@ -490,13 +498,6 @@ export function askKind(s: {
   return 'unknown'
 }
 
-function LiveAnnouncer({ phase, ask = 'unknown' }: { phase: LivePhase; ask?: AskKind }) {
-  return (
-    <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-      {phase === 'asking' ? ASK_SAY[ask] : PHASE_SAY[phase]}
-    </p>
-  )
-}
 
 /* ── the ask, answerable ─────────────────────────────────────────────────── */
 

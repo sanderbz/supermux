@@ -25,8 +25,10 @@ import {
   ASK_SAY,
   LiveLayer,
   PHASE_SAY,
+  TURN_END_SAY,
   askKind,
   livePhase,
+  sayFor,
   type LivePhase,
 } from '../../src/components/chat/live-layer'
 import { Bubble } from '../../src/components/chat/ui/bubble'
@@ -54,9 +56,13 @@ function session(over: Partial<TileSession> = {}): TileSession {
  */
 function announcementsOver(frames: readonly LivePhase[]): string[] {
   const out: string[] = []
-  let prev: LivePhase | null = null
+  // Seeded from `idle`, which is also how the component seeds its first render:
+  // mounting ONTO a running turn announces it.
+  let prev: LivePhase = 'idle'
   for (const f of frames) {
-    if (f !== prev && PHASE_SAY[f]) out.push(PHASE_SAY[f])
+    if (f === prev) continue
+    const text = sayFor(prev, f)
+    if (text) out.push(text)
     prev = f
   }
   return out
@@ -81,11 +87,24 @@ const P13_TURN: readonly LivePhase[] = [
   'idle',
 ]
 
-describe('G1 — the streaming region announces, once', () => {
-  test('the whole P13 sequence is ONE announcement, not one per flush', () => {
+describe('G1 — the streaming region announces, once per edge', () => {
+  test('the whole P13 sequence is TWO announcements, not one per flush', () => {
+    // Two, not one: the turn STARTED and the turn ENDED. It used to be one —
+    // `idle` mapped to the empty string, so a screen-reader user was told the
+    // agent started and never told it finished, which is the one state change
+    // they cannot see for themselves. Six streaming frames still add nothing.
     const said = announcementsOver(P13_TURN)
-    expect(said).toEqual(['Claude is working.'])
-    expect(said.length).toBe(1)
+    expect(said).toEqual([PHASE_SAY.working, TURN_END_SAY])
+    expect(said.length).toBe(2)
+  })
+
+  test('a turn that never ends is still only the one sentence', () => {
+    // The coalescing property that the count above is really about: N frames of
+    // the same phase are N re-renders of the same string, and an unchanged live
+    // region is silent.
+    expect(announcementsOver(['idle', ...Array(50).fill('working')] as LivePhase[])).toEqual([
+      PHASE_SAY.working,
+    ])
   })
 
   test('the naive fix — a live region over the band — would have said eight things', () => {
@@ -107,13 +126,20 @@ describe('G1 — the streaming region announces, once', () => {
     expect(new Set(frames).size).toBeGreaterThanOrEqual(7)
   })
 
-  test('an ask and a hand-off each get their own sentence, and idle gets none', () => {
+  test('an ask and a hand-off each get their own sentence, and the turn ends out loud', () => {
     expect(announcementsOver(['idle', 'working', 'asking', 'working', 'idle'])).toEqual([
       PHASE_SAY.working,
       PHASE_SAY.asking,
       PHASE_SAY.working,
+      TURN_END_SAY,
     ])
+    // The resting state still says nothing — arriving at idle FROM idle is not
+    // an event, and only the busy → idle edge is.
     expect(PHASE_SAY.idle).toBe('')
+    expect(sayFor('idle', 'idle')).toBe('')
+    expect(sayFor('working', 'idle')).toBe(TURN_END_SAY)
+    expect(sayFor('asking', 'idle')).toBe(TURN_END_SAY)
+    expect(sayFor('handoff', 'idle')).toBe(TURN_END_SAY)
   })
 
   test('the phase ladder: an ask outranks a hand-off outranks working', () => {

@@ -1,5 +1,6 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useParams } from 'react-router-dom'
 
+import { TerminalTurnAnnouncer } from '@/components/a11y/turn-announcer'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
@@ -15,12 +16,39 @@ import { MobileFocus } from '@/routes/focus/mobile'
 // disjoint files; this is the only fork point they share.
 export function Focus() {
   const isDesktop = useMediaQuery('(min-width: 768px)')
+  const { name } = useParams<{ name: string }>()
+  const { sessions } = useSessions()
+  const session = name ? sessions.find((s) => s.name === name) : undefined
+
+  // WHAT A SCREEN READER IS TOLD ABOUT THE TURN.
+  //
+  // A6 closed this for the chat layer only, and `useUI.chatRenderer` defaults
+  // to false — so on the surface a user actually gets, a whole real turn
+  // (send → working → answer → idle, 75 s measured) announced NOTHING. This is
+  // the fork point both branches share and the only place either renderer is
+  // guaranteed to be under, so the region lives here, above the fork, and
+  // survives a desktop↔mobile resize without remounting mid-turn.
+  //
+  // It stands itself down while the chat layer's own announcer is mounted
+  // (`live-region-owner.ts`), so there is exactly one voice either way.
+  const announcer = <TerminalTurnAnnouncer session={session} />
 
   // Desktop (≥768px): split + dock.
-  if (isDesktop) return <DesktopFocus />
+  if (isDesktop)
+    return (
+      <>
+        {announcer}
+        <DesktopFocus />
+      </>
+    )
 
   // Mobile (<768px): Vaul detent sheet, dock, edge gestures.
-  return <MobileFocus />
+  return (
+    <>
+      {announcer}
+      <MobileFocus />
+    </>
+  )
 }
 
 // `/focus` (no `:name`) — the entry the desktop SideNav's Focus button points at.
