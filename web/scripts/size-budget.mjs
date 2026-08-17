@@ -258,7 +258,10 @@ const BUDGET_ENTRY_JS = 160 * KB
 // to its own measurement the ceiling drifts up by compounding. 232 is the
 // measured cost rounded up, which is what the ledger is for; the wave's own
 // integration commit is where a single ×1.02 belongs, if it needs one at all.
-const BUDGET_APP_JS = 232 * KB
+// 239 at wave-3b integration (#93 + #94 on one tree): the two streams above
+// were measured against different parents; together they measure 233.91.
+// measured×1.02 policy: 233.91 × 1.02 = 238.59 -> 239. Entry gate unchanged.
+const BUDGET_APP_JS = 239 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

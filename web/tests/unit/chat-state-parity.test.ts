@@ -408,6 +408,8 @@ describe('the no-hook fallback for an MCP form', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].text).toBe('this session is waiting on an MCP server’s input form')
     expect(itemNode(buildTranscript(toDisplayList(entries), {}))?.speaker).toBe('system')
+  })
+})
 
 /**
  * **The retraction, and the append-only rule it had to respect.**

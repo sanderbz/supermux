@@ -593,6 +593,8 @@ function dialogNoun(kind?: string): string {
       return 'a dialog'
     default:
       return `a ${kind} dialog`
+  }
+}
 
 /* ── the retraction (catalog `err.refusal_fallback_dialog`) ──────────────────
  *

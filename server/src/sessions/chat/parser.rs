@@ -628,6 +628,7 @@ fn grace_body(text: &str, hint: &'static str) -> Value {
         "limit_grace": true,
         "blocked": false,
     })
+}
 
 /// The uuids a system line says are withdrawn, as a non-empty array of strings.
 fn retracted_uuids(obj: &Map<String, Value>) -> Option<Vec<Value>> {

@@ -176,6 +176,8 @@ fn the_corpus_keeps_its_grace_window_mcp_task_and_no_hook_dialog_rows() {
                 && r["expect"]["body"]["dialog"].as_str() == Some("elicitation")
         }),
         "no no-hook fallback row for an MCP elicitation form"
+    );
+}
 
 /// The PTY-07 transcript states, named so they cannot quietly leave the corpus.
 ///
