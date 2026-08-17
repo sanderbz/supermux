@@ -151,3 +151,40 @@ describe('A3 clothes are unchanged', () => {
     expect(html('auto')).not.toMatch(/#[0-9a-fA-F]{6}/)
   })
 })
+
+/**
+ * The hit target is not the rail.
+ *
+ * Measured at 390×844 on the phone header card, the `sm` cells are 27×20,
+ * 31×20 and 31×20 — about a fifth of the 44pt floor by area, on the control the
+ * whole Chat⇄Terminal toggle runs through. The rail's 26px is a VISUAL decision
+ * (the header card's geometry is built around it), so the target is grown with
+ * an `::after` expander instead of by resizing anything: 44px tall, ≥40px wide,
+ * centred on the cell, changing no layout.
+ *
+ * Verified live on `/dev/chat-ui` at 390px: `getComputedStyle(cell, '::after')`
+ * reports 44px on every cell at both sizes, and `elementFromPoint` 20px above
+ * and 20px below each cell's centre resolves to that same cell — never to its
+ * neighbour, so the wider targets cannot become mis-taps.
+ */
+describe('every cell owns a 44pt hit target', () => {
+  for (const size of ['md', 'sm'] as const) {
+    test(`size=${size} carries the ::after expander on every cell`, () => {
+      const out = html('auto', 'chat', { size, labels: 'selected' })
+      const buttons = out.split('<button').slice(1)
+      expect(buttons.length).toBe(3)
+      for (const b of buttons) {
+        expect(b).toContain('after:h-11') // 44px
+        expect(b).toContain('after:min-w-[40px]')
+        expect(b).toContain('after:-translate-y-1/2')
+        // `renderToStaticMarkup` escapes the quotes inside `content-['']`.
+        expect(b).toContain('after:content-[&#x27;&#x27;]')
+      }
+    })
+  }
+
+  test('the visual rail is untouched — 26px compact, 30px full', () => {
+    expect(html('auto', 'chat', { size: 'sm' })).toContain('h-[26px]')
+    expect(html('auto', 'chat', { size: 'md' })).toContain('h-[30px]')
+  })
+})

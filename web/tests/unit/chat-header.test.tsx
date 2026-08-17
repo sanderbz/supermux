@@ -9,10 +9,19 @@
  *      never a fixed height — globals.css's safe-area contract, the one a
  *      `h-14 pt-safe` header gets wrong by squishing its content under the
  *      notch;
- *   2. the swapping inner is OUT OF FLOW (absolute, one grid cell), so the
- *      leaving session and the arriving one overlap instead of queueing: a
- *      session switch is an opacity change inside a box whose height never
- *      depends on what is inside it.
+ *   2. the leaving session and the arriving one OVERLAP instead of queueing —
+ *      one grid cell, both clusters at `grid-area: 1 / 1` — so a session switch
+ *      is one opacity change and never a reflow.
+ *
+ *      That cell used to be `absolute inset-0` as well, on the stronger claim
+ *      that "nothing inside can size the slot". The claim was too strong: an
+ *      out-of-flow cell in a `min-height` box does not CLIP its overflow, it
+ *      spills it. Measured at 390×844, the phone's trailing stack grew a third
+ *      member (mode chip + connection chip + renderer switch = 72px) inside a
+ *      60px card, and the renderer switch rendered BELOW the card, on top of
+ *      the transcript. The cell is now in flow: the min-height is still a
+ *      floor, the overlap is still one cell, and the card contains what it is
+ *      given.
  *
  * Plus the two things a re-dress could quietly break: the status affordance
  * staying in the `--status-*` family (concept contract C7 — the same guard
@@ -27,6 +36,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { SessionHeaderPill } from '../../src/components/chat/header-pill'
 import { RendererSwitch } from '../../src/components/chat/renderer-switch'
 import { sessionAccentVars } from '../../src/components/chat/session-accent'
+import { PHONE } from '../../src/components/chat/ui/metrics'
 import type { TileSession } from '../../src/components/session-tile/types'
 
 const FOCUS = 'release-train'
@@ -88,17 +98,34 @@ describe('the slot cannot shift', () => {
     // eat INTO the bar instead of growing it. `min-height` cannot. Asserted on
     // the bar's own chrome — the two wrappers before the swap cell — because
     // the 28px mark inside it is legitimately 28px tall.
-    const chrome = html.slice(0, html.indexOf('<div class="absolute'))
+    const chrome = html.slice(0, html.indexOf('grid-area:1 / 1'))
     expect(chrome).toContain('min-height:64px')
     expect(/(?<!min-)height:/.test(chrome)).toBe(false)
     expect(/class="[^"]*\bh-(\[|\d)/.test(chrome)).toBe(false)
   })
 
-  test('the swapping inner is out of flow, in one grid cell', () => {
-    // Absolute + `grid-area: 1 / 1` is §11.6's same-cell swap: the outgoing
-    // session and the incoming one overlap, and neither can size the slot.
-    expect(html).toMatch(/class="[^"]*absolute inset-0[^"]*grid/)
+  test('the swapping inner is one grid cell — the clusters overlap', () => {
+    // `grid-area: 1 / 1` on every cluster is §11.6's same-cell swap: the
+    // outgoing session and the incoming one occupy the SAME cell, so the switch
+    // costs one opacity change and no reflow.
     expect(html).toContain('grid-area:1 / 1')
+    // …and the cell is IN FLOW, so the card grows to hold a tall trailing stack
+    // instead of spilling it over the transcript (see the file header).
+    expect(html).not.toMatch(/class="[^"]*absolute inset-0[^"]*grid/)
+    expect(html).toMatch(/class="relative grid"/)
+  })
+
+  test('the phone trailing stack fits the card floor', () => {
+    const phone = renderToStaticMarkup(
+      <SessionHeaderPill name={FOCUS} session={session()} surface="phone" />,
+    )
+    // The arithmetic the floor is chosen against: mode chip 19 + gap 3 +
+    // renderer rail 26 + the row's 12px of vertical padding = 60, exactly
+    // `PHONE.head.height`. A third chip pushes past it and the card GROWS —
+    // which is the fix — but the two-member case must not grow, or every phone
+    // header gets taller for nothing.
+    expect(phone).toContain('py-1.5')
+    expect(PHONE.head.height).toBe(19 + 3 + 26 + 12)
   })
 
   test('the inner is addressed by the slug — the crossfade re-keys on it', () => {

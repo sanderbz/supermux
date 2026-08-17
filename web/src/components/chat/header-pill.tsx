@@ -192,8 +192,24 @@ export function SessionHeaderPill({
         className,
       )}
     >
-      <div className="relative" style={{ minHeight: phone ? PHONE.head.height : BAR_MIN_H }}>
-        <div className="absolute inset-0 grid">
+      {/* THE SLOT. `min-height` is a FLOOR, and the swap cell is IN FLOW inside
+          it (one grid cell, both clusters at `grid-area: 1 / 1`, §11.6): the
+          outgoing session and the incoming one still overlap and still cost one
+          opacity change, but the card now CONTAINS its content.
+          It did not. The cell used to be `absolute inset-0`, out of flow, so
+          nothing inside could size the slot — which held while the phone's
+          trailing stack was the two members it was designed for (mode chip over
+          the switch) and broke the moment `chat-panel.tsx` added the connection
+          chip as a third: 72px of stack in a 60px card, measured at 390×844 as
+          the Bypass pill jammed against the card's top edge and the A · ⌘ · >_
+          capsule hanging BELOW the card, over the transcript. A box that cannot
+          grow does not clip its overflow — it spills it onto whatever is
+          underneath. */}
+      <div
+        className="relative grid"
+        style={{ minHeight: phone ? PHONE.head.height : BAR_MIN_H }}
+      >
+        <div className="grid">
           <AnimatePresence initial={false}>
             <motion.div
               // Re-keyed on the SLUG: switching sessions crossfades one whole
@@ -212,7 +228,12 @@ export function SessionHeaderPill({
                 'flex min-w-0 items-center',
                 // 10px on the phone, not 12: four gaps at this width are 8px of
                 // the name (QA #6 — every pixel in this row is the name's).
-                phone ? 'gap-2.5 pl-3 pr-3' : 'gap-3 px-6',
+                // `py-1.5` is what keeps the trailing stack off the card's
+                // rounded edge now that the slot can grow: with the two-member
+                // stack it is free (19 + 3 + 26 + 12 = 60, exactly the floor),
+                // and with three it buys the chips their margin instead of
+                // letting them touch the border.
+                phone ? 'gap-2.5 py-1.5 pl-3 pr-3' : 'gap-3 px-6',
               )}
             >
               {leading}

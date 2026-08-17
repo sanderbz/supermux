@@ -170,6 +170,17 @@ export function RendererSwitch({
               'relative h-full min-w-0 rounded-full font-medium tracking-[-0.05px]',
               glyph ? 'grid flex-none place-items-center px-2' : SIZE[size].cell,
               'sm-t-hover',
+              // THE HIT AREA IS NOT THE RAIL. At `sm` the visible cell measures
+              // 27–31 × 20 on a phone — a fifth of the 44pt floor by area, and
+              // this is the control the whole Chat⇄Terminal toggle runs
+              // through. The rail keeps its 26px so the header card's geometry
+              // is untouched; an ::after expander lifts the TARGET to 44px tall
+              // and ≥40px wide without moving a pixel. Vertical growth only
+              // spills into the card's own padding, and the cells stay side by
+              // side so adjacent targets cannot overlap into a mis-tap
+              // (verified with elementFromPoint at ±20px on /dev/chat-ui).
+              'after:absolute after:left-1/2 after:top-1/2 after:h-11 after:min-w-[40px]',
+              "after:w-full after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
               selected ? 'text-ink' : 'text-ink-3 hover:text-ink-2',
             )}
           >
