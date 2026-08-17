@@ -132,3 +132,38 @@ export function mobileChrome(chatOn: boolean, chatActive: boolean): MobileChrome
     dockChat: chatActive,
   }
 }
+
+/** The error type the backend raises when a session's pty HOLDER crashed —
+ *  `auto_actions::HOLDER_DIED`. Not a turn failure (`rate_limit`,
+ *  `billing_error`): the process behind the pane is gone. */
+export const HOLDER_DIED = 'holder_died'
+
+/**
+ * Is there still a process behind this pane?
+ *
+ * THE THIRD CLAUSE IS THE FIX. `status === 'stopped' || termGone` was written
+ * for a route whose only renderer was a terminal, and it leans on the TERMINAL
+ * SOCKET for the case the row does not cover. Under the chat renderer there is
+ * no terminal socket, so `termGone` can never fire — and the row's own status
+ * flip is the one signal the death path does not broadcast reliably (the pty
+ * reader persists `stopped` straight to the DB, after which
+ * `force_stopped_on_death` short-circuits on `persisted == Stopped` and its
+ * `status`/`sessions` broadcasts never run). What the browser DOES get is the
+ * `holder_died` badge, pushed as a `sessions` delta the moment the death is
+ * detected. So that badge is the third way to learn the same fact, and it is
+ * the only one that reaches a chat surface.
+ *
+ * Without it, a killed holder left the chat surface reading `live`, with an
+ * enabled composer, answering a send with "The session has it — waiting for the
+ * transcript to catch up." — a positive delivery claim about a pane with no
+ * process. With it, the route hands over to the same `StoppedSession` card the
+ * explicit-stop path already produces, which carries the honest state AND the
+ * restart affordance.
+ */
+export function paneIsDead(
+  status: string | undefined,
+  termGone: boolean,
+  errorType: string | undefined,
+): boolean {
+  return status === 'stopped' || termGone || errorType === HOLDER_DIED
+}

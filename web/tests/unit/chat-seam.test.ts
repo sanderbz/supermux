@@ -29,6 +29,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   chatPaneActive,
   mobileChrome,
+  paneIsDead,
   pickRenderer,
   terminalPaneMounts,
   type RendererOverride,
@@ -228,5 +229,46 @@ describe('the mobile seam end to end', () => {
     // The route's own ternary puts StoppedSession ahead of both renderers; what
     // matters here is that the chat pane never claims it.
     expect(s.chrome.dockChat).toBe(false)
+  })
+})
+
+describe('is there still a process behind this pane? (paneIsDead)', () => {
+  test('a running session is not dead — no clause fires', () => {
+    expect(paneIsDead('idle', false, undefined)).toBe(false)
+    expect(paneIsDead('active', false, undefined)).toBe(false)
+    // A turn-level agent error is NOT a dead pane: the pty is fine, the model
+    // failed a request. Widening the predicate to any `error` would take the
+    // chat surface away from a rate-limited session that only needs a retry.
+    expect(paneIsDead('idle', false, 'rate_limit')).toBe(false)
+    expect(paneIsDead('active', false, 'billing_error')).toBe(false)
+  })
+
+  test('the two pre-existing signals still fire', () => {
+    expect(paneIsDead('stopped', false, undefined)).toBe(true)
+    expect(paneIsDead('idle', true, undefined)).toBe(true)
+  })
+
+  test('a crashed HOLDER is a dead pane even while the row still reads idle', () => {
+    // THE REGRESSION. `kill -9` on a pty holder is broadcast to the browser as
+    // a `holder_died` badge; the row's status flip is not reliably broadcast at
+    // all, and under the chat renderer there is no terminal socket, so
+    // `termGone` can never fire either. With only the first two clauses the
+    // browser sat on a live-looking chat surface over a pane with no process:
+    // enabled composer, sends reported as delivered, for as long as the tab
+    // stayed open.
+    expect(paneIsDead('idle', false, 'holder_died')).toBe(true)
+    expect(paneIsDead('active', false, 'holder_died')).toBe(true)
+  })
+
+  test('a healed session comes back — the badge is cleared, not sticky', () => {
+    // `clear_holder_death_badge` broadcasts `error: null` on the next alive
+    // tick. The predicate must not latch, or one crash would strand a session
+    // on the stopped card for the life of the tab.
+    expect(paneIsDead('active', false, undefined)).toBe(false)
+  })
+
+  test('a dead pane is never chat — the seam hands over', () => {
+    const dead = paneIsDead('idle', false, 'holder_died')
+    expect(chatPaneActive(true, true, 'chat', dead ? 'stopped' : 'idle')).toBe(false)
   })
 })

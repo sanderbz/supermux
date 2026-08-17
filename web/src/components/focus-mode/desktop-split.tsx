@@ -60,6 +60,7 @@ import { RendererShell } from '@/components/chat/renderer-shell'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
+  paneIsDead,
   terminalPaneMounts,
   type ChatRenderer,
 } from '@/components/chat/seam'
@@ -304,7 +305,10 @@ export function DesktopSplit({
   // session. `termGone` renders the same stopped surface the row-driven branch
   // does, and clears itself the moment the session runs again.
   const { gone: termGone, onTermState } = useTerminalGone(status)
-  const stopped = status === 'stopped' || termGone
+  // …and `holder_died` is the THIRD way to learn the same thing — the only one
+  // that reaches a chat surface, which has no terminal socket to hear the 4404
+  // on. See `chat/seam.ts`'s `paneIsDead`.
+  const stopped = paneIsDead(status, termGone, current?.error?.type)
 
   // Fase A1 chat renderer — the DESKTOP seam. The mobile one landed in A5
   // (routes/focus/mobile.tsx) and shares this file's decision verbatim, via

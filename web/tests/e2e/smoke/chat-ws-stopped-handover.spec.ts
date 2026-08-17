@@ -20,7 +20,10 @@
 //    browser. This dials the real endpoint from the page, with the real
 //    first-frame auth handshake, and reads the code off the wire.
 //
-// One browser context, one test (`playwright.config.ts:35-46`).
+// One browser context, one test (`playwright.config.ts:35-46`). The THIRD
+// half of the same contract — a holder that CRASHED rather than being stopped,
+// which reaches the surface by a different signal entirely — is
+// `chat-ws-holder-death-handover.spec.ts`, in its own file for the same reason.
 
 import { expect, test } from '@playwright/test'
 

@@ -142,6 +142,15 @@ pub struct PointerInputs {
     pub last_hook_ms: Option<i64>,
     /// The session's last detected status is not `stopped`.
     pub session_running: bool,
+    /// The session is not running because its terminal DIED under it — the
+    /// in-memory `holder_died` badge (`auto_actions::HOLDER_DIED`) is up.
+    ///
+    /// A deliberate stop and a crash leave the same `session_running: false`
+    /// behind, and they are not the same claim: after a stop the transcript is
+    /// a complete history of a conversation the user ended, while after a crash
+    /// it is a conversation that was cut off mid-sentence and whose last turn
+    /// may never have been written. Only the crash is a data-plane failure.
+    pub session_crashed: bool,
     pub session_last_started_ms: i64,
     /// When THIS server process started ([`AppState::server_start_ms`]).
     pub server_start_ms: i64,
@@ -198,7 +207,19 @@ pub fn classify_pointer(i: PointerInputs) -> TailState {
     // A stopped session's tail is history, not a claim about now: nothing will
     // append to it, so neither a newer sibling nor a silent hook says anything
     // about whether we are reading the right file.
+    //
+    // …UNLESS the session did not stop, it DIED. A holder that crashed took the
+    // agent with it mid-turn: whatever it was writing when it went is not in
+    // the file, and no `Stop` hook ever closed the turn. Reporting that as
+    // `Live` is the plane telling the surface everything is current while the
+    // pane behind it has no process at all — the state in which a composer
+    // stayed enabled over a dead session and its sends read as delivered.
+    // `Reconnecting` is the honest word: what is on screen stays on screen
+    // (`TailState`'s own contract, above), and it is not presented as complete.
     if !i.session_running {
+        if i.session_crashed {
+            return TailState::Reconnecting { reason: "the session's terminal died" };
+        }
         return TailState::Live;
     }
 
@@ -825,6 +846,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         let hooks_live = state.has_hooks(&name);
         let last_hook = last_hook_ms(&state, &name, now_ms);
         let running = session_running(&state, &name).await;
+        let crashed = !running && session_crashed(&state, &name);
         let hook_fresh = last_hook
             .is_some_and(|h| now_ms.saturating_sub(h) <= HOOK_ACTIVITY_WINDOW_MS);
 
@@ -863,6 +885,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             hooks_live,
             last_hook_ms: last_hook,
             session_running: running,
+            session_crashed: crashed,
             // `sessions.last_started` is stored in SECONDS.
             session_last_started_ms: row.last_started.saturating_mul(1_000),
             server_start_ms: state.server_start_ms,
@@ -955,6 +978,20 @@ async fn session_running(state: &AppState, name: &str) -> bool {
     }
 }
 
+/// Did this session STOP, or did it DIE?
+///
+/// The distinction lives in the in-memory error badge the death detector raises
+/// (`auto_actions::force_stopped_on_death` → `state.set_error(HOLDER_DIED)`),
+/// which is also what the roster and the focus header read to draw "Terminal
+/// died". Cleared on the next `UserPromptSubmit`/`SessionStart`, so a healed or
+/// restarted session stops being crashed the moment it is alive again.
+fn session_crashed(state: &AppState, name: &str) -> bool {
+    state
+        .session_activity(name)
+        .and_then(|a| a.error)
+        .is_some_and(|(kind, _)| kind == crate::sessions::auto_actions::HOLDER_DIED)
+}
+
 /// Watch the project directory (recursively, so `<conv>/subagents/` is covered
 /// the moment it appears). Best effort: the slow poll is the guarantee.
 fn arm_fs_watcher(project: &Path, wake: Arc<Notify>) -> Option<notify::RecommendedWatcher> {
@@ -992,6 +1029,7 @@ mod tests {
             hooks_live: true,
             last_hook_ms: Some(99_500),
             session_running: true,
+            session_crashed: false,
             session_last_started_ms: 10_000,
             server_start_ms: 0,
             now_ms: 100_000,
@@ -1105,6 +1143,39 @@ mod tests {
             ..base()
         };
         assert_eq!(classify_pointer(stopped), TailState::Live);
+    }
+
+    #[test]
+    fn a_session_whose_terminal_died_is_not_live() {
+        // The regression this pins: a CRASHED holder left `session_running:
+        // false` behind and took the branch above, so the socket published
+        // `Live` for a pane with no process in it. The surface read that as a
+        // current conversation, kept its composer enabled, and reported the
+        // sends it swallowed as delivered. A crash is not a stop.
+        let died = PointerInputs {
+            session_running: false,
+            session_crashed: true,
+            hooks_live: false,
+            last_hook_ms: None,
+            pointer_mtime_ms: Some(1_000),
+            newest_sibling_mtime_ms: Some(99_999),
+            session_last_started_ms: 0,
+            ..base()
+        };
+        assert!(
+            matches!(classify_pointer(died.clone()), TailState::Reconnecting { .. }),
+            "a holder that died mid-turn must never publish a live tail",
+        );
+
+        // …and the two are told apart by the badge alone: the same inputs with
+        // a DELIBERATE stop are still the historical tail, unchanged.
+        let stopped = PointerInputs { session_crashed: false, ..died };
+        assert_eq!(classify_pointer(stopped), TailState::Live);
+
+        // A crash badge on a session that is RUNNING again (healed, restarted)
+        // says nothing — `session_running` wins, and the normal ladder applies.
+        let healed = PointerInputs { session_running: true, session_crashed: true, ..base() };
+        assert_eq!(classify_pointer(healed), TailState::Live);
     }
 
     #[test]
