@@ -189,6 +189,106 @@ test.describe('roster keyboard + actions', () => {
     ).toHaveCount(0)
   })
 
+  test('the roving tabindex holds in ALL FOUR modes, and the kebab is not a stop', async ({
+    page,
+  }) => {
+    // It shipped in ONE of the four: tiles/smart. List view carried an extra
+    // `div[tabindex=0]` per row (framer-motion makes a `whileTap` element
+    // focusable), and BOTH custom modes had no provider at all — measured
+    // `{0: 22, -1: 0}` on an 11-session roster with every arrow inert, because
+    // `tile.tsx` falls back to a literal `0` outside a provider. The ⋯ trigger
+    // was a peer stop on top of that, so a 40-session roster was 41 stops.
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(backend.baseUrl)
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+
+    const panel = page.locator('[data-vr="display-controls"]')
+    const setMode = async (view: 'Tiles' | 'List', sort: 'Smart' | 'Custom') => {
+      await page.getByRole('button', { name: 'Display options' }).click()
+      await expect(panel).toBeVisible()
+      await panel.getByRole('button', { name: view, exact: true }).click()
+      await panel.getByRole('button', { name: new RegExp(`^${sort} `) }).click()
+      await page.keyboard.press('Escape')
+      await expect(panel).toBeHidden()
+    }
+
+    for (const view of ['Tiles', 'List'] as const) {
+      for (const sort of ['Smart', 'Custom'] as const) {
+        const mode = `${view}/${sort}`
+        await setMode(view, sort)
+        await expect(page.locator(`${ROSTER_LIST} [data-roving-item]`).first()).toBeVisible()
+
+        const shape = await page.evaluate((sel) => {
+          const lists = [...document.querySelectorAll(sel)].filter(
+            (l) => l.querySelectorAll('[data-roving-item]').length > 0,
+          )
+          return {
+            lists: lists.map((l) => ({
+              items: l.querySelectorAll('[data-roving-item]').length,
+              stops: l.querySelectorAll('[data-roving-item][tabindex="0"]').length,
+            })),
+            // Every stray stop the roster used to grow: the framer tap wrapper
+            // (`whileTap` makes an element focusable) and the ⋯ trigger. Both
+            // are inside the list, so both are counted here.
+            //
+            // dnd-kit's own drag handles are EXCLUDED and stay in the tab
+            // order: in custom mode they are the only keyboard path to reorder
+            // a roster (`KeyboardSensor` is wired), so taking their stop away
+            // would trade one a11y defect for a worse one.
+            strays: lists.reduce(
+              (n, l) =>
+                n +
+                [...l.querySelectorAll<HTMLElement>('[tabindex="0"]')].filter(
+                  (el) =>
+                    !el.hasAttribute('data-roving-item') &&
+                    el.getAttribute('aria-roledescription') !== 'sortable',
+                ).length,
+              0,
+            ),
+            kebabsInTabOrder: [
+              ...document.querySelectorAll<HTMLElement>('[data-vr="tile-kebab"]'),
+            ].filter((el) => el.tabIndex >= 0).length,
+          }
+        }, ROSTER_LIST)
+
+        expect(shape.lists.length, `${mode}: the sessions are in a role=list`).toBeGreaterThan(0)
+        for (const list of shape.lists) {
+          expect(list.items, `${mode}: more than one row`).toBeGreaterThan(1)
+          expect(list.stops, `${mode}: exactly one tab stop for the list`).toBe(1)
+        }
+        expect(shape.strays, `${mode}: no stray tab stops inside the list`).toBe(0)
+        expect(shape.kebabsInTabOrder, `${mode}: the ⋯ trigger is not a tab stop`).toBe(0)
+
+        // …and the arrows move, which is the half that was inert in custom mode.
+        await page.evaluate((sel) => {
+          document.querySelector<HTMLElement>(`${sel} [data-roving-item]`)?.focus()
+        }, ROSTER_LIST)
+        const first = await focusedName(page)
+        expect(first, `${mode}: a roster item took focus`).not.toBeNull()
+        await page.keyboard.press('ArrowDown')
+        expect(await focusedName(page), `${mode}: ArrowDown moved`).not.toBe(first)
+        await page.keyboard.press('Home')
+        expect(await focusedName(page), `${mode}: Home came back`).toBe(first)
+      }
+    }
+  })
+
+  test('Shift+F10 on the focused row opens its action menu', async ({ page }) => {
+    // The replacement for the kebab's own tab stop: the platform's own
+    // secondary-action keys on the row that already owns the tab stop.
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(backend.baseUrl)
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+
+    await page.evaluate((sel) => {
+      document.querySelector<HTMLElement>(`${sel} [data-roving-item]`)?.focus()
+    }, ROSTER_LIST)
+    await page.keyboard.press('Shift+F10')
+    await expect(page.getByRole('menuitem', { name: 'Mark unread' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menuitem', { name: 'Mark unread' })).toBeHidden()
+  })
+
   test('in the tile grid ArrowDown moves DOWN a row, not right one item', async ({
     page,
   }) => {

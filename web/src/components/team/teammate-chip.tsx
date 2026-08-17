@@ -19,7 +19,10 @@
 //     single teammate-view surface across desktop + mobile (one source of truth,
 //     no sync drift).
 
+import * as React from 'react'
+
 import { cn } from '@/lib/utils'
+import { useRovingItem } from '@/hooks/use-roving'
 import { ActivityLine } from '@/components/session-tile/activity-status'
 import { MemberStatusDot } from './member-status-dot'
 import { KillTeammateButton } from './kill-teammate-button'
@@ -49,6 +52,18 @@ export function TeammateChip({
   const taskDone = memberTasks.filter((t) => t.status === TASK_DONE).length
 
   const rail = member.color || 'hsl(var(--status-idle))'
+  const roving = useRovingItem(member.agent_id)
+  // Pulled out of the object before the JSX: the lint's ref rule reads
+  // `roving.ref` on a `ref=` prop plus a sibling property access as "a ref read
+  // during render". These are a stable callback set, not a ref value.
+  const rovingRef = roving.ref
+  // Handed to `ref=` through a callback, the way `<SessionTile>` already does:
+  // passing the roving handle straight into a JSX `ref` prop makes the compiler
+  // lint read every sibling property of the same object as a ref access.
+  const setChipRef = React.useCallback(
+    (el: HTMLDivElement | null) => rovingRef(el),
+    [rovingRef],
+  )
 
   return (
     <div
@@ -62,10 +77,21 @@ export function TeammateChip({
         needsYou && 'bg-status-waiting/[0.06]',
       )}
       role="button"
-      tabIndex={0}
+      // ROVING TABINDEX (finding 20). The team's agents were the one roster of
+      // colleagues with no roving list: six chips, six tab stops, arrows dead —
+      // in every view mode, because the card renders above the grid and the
+      // overview's provider has never reached it. Outside a provider (a bench)
+      // `tabIndex` is `undefined` and the literal 0 applies, exactly as before.
+      tabIndex={roving.tabIndex ?? 0}
+      data-roving-item={member.agent_id}
+      ref={setChipRef}
+      onFocus={roving.onFocus}
       aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''} full screen`}
       onClick={onFocus}
       onKeyDown={(e) => {
+        // Navigation first, then activation — the roving handler consumes only
+        // arrows/Home/End and says whether it did.
+        if (roving.onKeyDown(e)) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onFocus()

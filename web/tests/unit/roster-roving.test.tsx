@@ -111,3 +111,20 @@ describe('a grid arrow steps a visual ROW, not one item', () => {
     expect(itemsPerRow([7])).toBe(1)
   })
 })
+
+describe('a list keeps its single tab stop while dnd-kit owns the arrows', () => {
+  // Custom mode hands the arrow keys to dnd-kit for the duration of a keyboard
+  // drag. That is why the custom-mode grid shipped with NO provider at all —
+  // and the price was 22 tab stops with every arrow inert. Navigation stands
+  // down for the drag; the tab stop does not.
+  test('`arrows={false}` still yields exactly one tabbable row', () => {
+    const html = renderToStaticMarkup(
+      <RovingListProvider keys={['a', 'b', 'c']} arrows={false}>
+        {['a', 'b', 'c'].map((n) => (
+          <Item key={n} name={n} />
+        ))}
+      </RovingListProvider>,
+    )
+    expect(stops(html)).toEqual([0, -1, -1])
+  })
+})

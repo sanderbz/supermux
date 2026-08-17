@@ -41,6 +41,7 @@ import {
   type TeamWidth,
 } from '@/stores/team-width-store'
 import { SessionTile } from '@/components/session-tile'
+import { RovingListProvider } from '@/hooks/use-roving'
 import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import { IssueSurface } from '@/components/issues/issue-surface'
 import { useBoards } from '@/hooks/use-board'
@@ -93,6 +94,10 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
   const leadSession = useSession(team.lead_supermux_session ?? '').session
 
   const members = team.members
+  // The teammates are a roster of colleagues like any other, so they get the
+  // roster's keyboard contract: ONE tab stop for the list, arrows to choose the
+  // agent (finding 20 — the team card was the one list that never had it).
+  const rovingKeys = React.useMemo(() => members.map((m) => m.agent_id), [members])
 
   // Dismiss an UNMAPPED team: archive its on-disk config so the watcher stops
   // surfacing it, then drop it from the shared cache. The POST has already
@@ -217,6 +222,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
            list, so AT was handed N untitled buttons with no count and no
            boundary — measured as the 6 rows that made the roster's tabbable
            total 38. */
+        <RovingListProvider keys={rovingKeys} orientation="grid">
         <div
           role="list"
           aria-label={`${team.team_name} teammates`}
@@ -243,7 +249,9 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
             ))}
           </AnimatePresence>
         </div>
+        </RovingListProvider>
       ) : (
+        <RovingListProvider keys={rovingKeys} orientation="vertical">
         <div
           role="list"
           aria-label={`${team.team_name} teammates`}
@@ -270,6 +278,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
             ))}
           </AnimatePresence>
         </div>
+        </RovingListProvider>
       )}
 
       {/* Calm note: teammates are split-panes inside the lead's session, so

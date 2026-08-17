@@ -11,7 +11,10 @@
 // live pane this tick (offline / null %id) the card shows a calm placeholder
 // instead of a failing stream.
 
+import * as React from 'react'
+
 import { cn } from '@/lib/utils'
+import { useRovingItem } from '@/hooks/use-roving'
 import { MemberStatusDot } from './member-status-dot'
 import { KillTeammateButton } from './kill-teammate-button'
 import { ActivityLine } from '@/components/session-tile/activity-status'
@@ -43,6 +46,14 @@ export function TeammateCard({
   const taskTotal = memberTasks.length
   const taskDone = memberTasks.filter((t) => t.status === TASK_DONE).length
   const rail = member.color || 'hsl(var(--status-idle))'
+  // ROVING TABINDEX (finding 20) — the header button IS this card's row: it is
+  // what a click and a keyboard both use to open the teammate.
+  const roving = useRovingItem(member.agent_id)
+  const rovingRef = roving.ref
+  const setHeaderRef = React.useCallback(
+    (el: HTMLButtonElement | null) => rovingRef(el),
+    [rovingRef],
+  )
 
   return (
     <div
@@ -65,6 +76,13 @@ export function TeammateCard({
         <button
           type="button"
           onClick={onFocus}
+          tabIndex={roving.tabIndex}
+          data-roving-item={member.agent_id}
+          ref={setHeaderRef}
+          onFocus={roving.onFocus}
+          onKeyDown={(e) => {
+            roving.onKeyDown(e)
+          }}
           aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''}`}
           className="flex min-w-0 flex-1 items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >

@@ -92,6 +92,7 @@ import {
 import { sessionTitle, type ApiSession } from '@/lib/api'
 import { GROUP_SORT_LABEL } from '@/lib/overview-layout'
 import { useToast } from '@/components/ui/use-toast'
+import { RovingListProvider } from '@/hooks/use-roving'
 import { SessionActionsMenu, type MoveTarget } from './session-actions-menu'
 import { GroupHeader } from './group-header'
 import { SessionTile } from './tile'
@@ -1256,6 +1257,12 @@ function GroupSection({
     () => section.sessions.map((s) => sessionDragId(s.name)),
     [section.sessions],
   )
+  // The roving list walks the SAME order under its own keys — the session name,
+  // which is what `<SessionTile>` / `<SessionRow>` register themselves under.
+  const rovingKeys = React.useMemo(
+    () => section.sessions.map((s) => s.name),
+    [section.sessions],
+  )
 
   // The header row is sortable as a GROUP — the whole row is the drag target.
   // The implicit Ungrouped bucket isn't reorderable, so we suppress the
@@ -1478,6 +1485,19 @@ function GroupSection({
             onAnimationStart={() => setBodyAnimating(true)}
             onAnimationComplete={() => setBodyAnimating(false)}
           >
+      {/* ROVING TABINDEX in CUSTOM mode too (finding 20). This section used to
+          be the one branch with no provider, and the cost was measured:
+          tiles/custom and list/custom were `{0: 22, -1: 0}` — every tile a tab
+          stop again and every arrow inert — because `tile.tsx` falls back to a
+          literal `0` outside a provider. The original note here said dnd-kit
+          owns the arrow keys in custom mode; that is true only DURING a
+          keyboard drag, so navigation stands down for exactly that window
+          (`arrows={!isDragging}`) and the single tab stop survives it. */}
+      <RovingListProvider
+        keys={rovingKeys}
+        orientation={viewMode === 'tile' ? 'grid' : 'vertical'}
+        arrows={!isDragging}
+      >
       <SortableContext
         items={sessionIds}
         strategy={viewMode === 'tile' ? rectSortingStrategy : verticalListSortingStrategy}
@@ -1490,9 +1510,9 @@ function GroupSection({
             // mode with the action menu and the ONE mode that dropped
             // role=list/listitem (measured `{li:0, gt:12}`), so AT was handed
             // twelve untitled buttons in exactly the mode with the most to do.
-            // NOTE: no roving tabindex here on purpose — in custom mode dnd-kit
-            // owns the arrow keys for keyboard drag-and-drop, and two owners of
-            // one key is worse than the tab stops.
+            // The roving tabindex wraps this list (see the provider above):
+            // dnd-kit owns the arrows only while a keyboard drag is live, and
+            // the provider stands its navigation down for that window.
             role="list"
             className={tileGridClass}
           >
@@ -1598,6 +1618,7 @@ function GroupSection({
           </div>
         )}
       </SortableContext>
+      </RovingListProvider>
           </motion.div>
         )}
       </AnimatePresence>

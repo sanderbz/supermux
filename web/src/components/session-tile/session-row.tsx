@@ -35,6 +35,7 @@ import { hasFact, type Tier } from '@/lib/fact-ladder'
 import { usePin } from '@/hooks/use-roster-marks'
 import { useRowAttention } from '@/hooks/use-attention'
 import { useRovingItem } from '@/hooks/use-roving'
+import { isRowMenuKey, requestRowMenu } from './row-menu-bus'
 import { RosterRow, type AttentionKind } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import { STATUS_LABEL } from './status-dot'
@@ -203,6 +204,13 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
     <motion.div
       whileTap={reduce ? undefined : { scale: 0.99 }}
       transition={springs.buttonPress}
+      // NOT a tab stop. framer-motion gives any element with a tap gesture and
+      // no explicit `tabIndex` a `tabIndex={0}` (`render/html/use-props.mjs`),
+      // so this wrapper sat in the tab order IN FRONT of the row button it
+      // wraps: list view measured `{0: 12, -1: 10}` — the roving button was
+      // roved correctly and every row still cost an extra stop, which is the
+      // whole thing the roving tabindex exists to remove.
+      tabIndex={-1}
       className="cursor-pointer"
     >
       <RosterRow
@@ -227,9 +235,17 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
         onClick={goFocus}
         tabIndex={roving.tabIndex}
         buttonRef={roving.ref as React.Ref<HTMLButtonElement>}
+        rovingKey={session.name}
         onFocus={roving.onFocus}
+        ariaKeyShortcuts="Shift+F10"
         onKeyDown={(e) => {
-          roving.onKeyDown(e)
+          if (roving.onKeyDown(e)) return
+          // Shift+F10 / the Menu key opens this row's ⋯ menu, which is no
+          // longer a tab stop of its own (finding 37).
+          if (isRowMenuKey(e) && requestRowMenu(session.name)) {
+            e.preventDefault()
+            e.stopPropagation()
+          }
         }}
         className="border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
