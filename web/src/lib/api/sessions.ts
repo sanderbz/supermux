@@ -185,6 +185,16 @@ export interface ApiSession {
    *  been touched — both mean "follow the global category toggles", so the
    *  control renders identically either way. */
   notif?: NotifPolicy
+  /** Cross-device seen cursor (migration 0029) — server-clock **ms** at which
+   *  this session was last read on ANY device, or null/absent for never seen.
+   *  Merged newest-wins with the localStorage cursor in `use-attention.ts`;
+   *  localStorage stays as the offline/optimistic layer. */
+  seen_ts?: number | null
+  /** `chat_tail.entry_count` when `seen_ts` was recorded (the seq domain). */
+  seen_count?: number | null
+  /** The chat-store epoch `seen_count` was recorded under. A mismatch means the
+   *  count is a different counter, and the UI degrades to a dot. */
+  seen_epoch?: number | null
   /** tmux session alive AND a child process exists. */
   running?: boolean
   /** Epoch seconds — last send / last started. */
@@ -648,6 +658,25 @@ export const sessionsApi = {
    *  `rename` also renames the live tmux session + rebuilds the pty so a RUNNING
    *  session survives; 409 if a `rename` target already exists, 400 if the target
    *  isn't a valid slug. */
+  /** `PATCH .../seen` — record where the user last read this session, so the
+   *  cursor follows them across devices (B5/T4).
+   *
+   *  The server is MONOTONIC: a cursor older than the stored one is a no-op
+   *  with a 200 and `advanced: false`, never an error. So callers may fire this
+   *  freely without ordering it against other tabs — a stale replay simply does
+   *  nothing rather than un-reading a session on the phone.
+   *
+   *  Call sites treat it as fire-and-forget: localStorage has already made the
+   *  UI correct, and this is the background sync behind it. */
+  markSeen: (
+    name: string,
+    cursor: { ts: number; count?: number; epoch?: number },
+  ): Promise<{ advanced: boolean }> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/seen`, {
+      method: 'PATCH',
+      body: JSON.stringify(cursor),
+    }),
+
   config: (name: string, patch: SessionConfigPatch): Promise<ApiSession> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}/config`, {
       method: 'PATCH',

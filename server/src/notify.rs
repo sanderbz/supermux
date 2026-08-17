@@ -622,14 +622,23 @@ pub async fn deliver(state: &AppState, session: &str, ev: NotifEvent) {
     // they block the agent, and the worst case is the device layer eating the
     // banner on the one device that is already looking.
     //
-    // v1 signal is "a chat store is attached" (true while a chat WS is up plus
-    // the tailer's 30 s idle grace). UPGRADE POINT: when the cross-device
-    // seen-cursor (`PATCH /api/sessions/{name}/seen`) ships, "viewed within
-    // 30 s" replaces this WS proxy.
-    if matches!(ev.tier(), Tier::Unread) && state.chat_store(session).is_some() {
+    // B5/T4.5 — this is the upgrade the harvest named as its own upgrade point.
+    // The v1 signal was "a chat store is attached", a proxy for being watched
+    // that held whenever a chat WS was up plus the tailer's 30 s idle grace —
+    // so a tab left open on a session in another window suppressed its finishes
+    // indefinitely, even with the laptop shut.
+    //
+    // The real signal is the seen cursor (migration 0029): did the user
+    // actually LOOK at this session in the last 30 s, on any device? That is
+    // cross-device by construction, and it expires on its own.
+    //
+    // The chat-store proxy survives as the fallback for the window where the
+    // cursor is still null. Suppressing one extra finish is a better failure
+    // than a duplicate banner.
+    if matches!(ev.tier(), Tier::Unread) && recently_seen(state, session).await {
         tracing::debug!(
             session,
-            "notify: unread suppressed — the session is being viewed"
+            "notify: unread suppressed — seen just now"
         );
         return;
     }
@@ -691,6 +700,34 @@ pub const fn badge_including_self(base: u32, tier: Tier, already_counted: bool) 
         base.saturating_add(1)
     } else {
         base
+    }
+}
+
+/// How recently the user must have looked for a calm finish to be redundant.
+///
+/// 30 s, matching the tailer's idle grace: long enough that "I was just there"
+/// is true, short enough that a session read this morning is not still
+/// suppressing tonight's finishes.
+const SEEN_SUPPRESSION_WINDOW_MS: i64 = 30_000;
+
+/// Has the user viewed this session within [`SEEN_SUPPRESSION_WINDOW_MS`]?
+///
+/// Falls back to the pre-0029 proxy ("a chat store is attached") when the row
+/// has no cursor yet, so the behaviour degrades toward the old one rather than
+/// toward a duplicate banner. A DB error likewise reads as "not seen": failing
+/// toward DELIVERING is the right direction — the cost is one redundant
+/// banner, where the other direction is a notification the user never gets and
+/// cannot know they missed.
+async fn recently_seen(state: &AppState, session: &str) -> bool {
+    match db::sessions::get(&state.pool, session).await {
+        Ok(Some(row)) => match row.seen_ts {
+            Some(ts) => {
+                let now = chrono::Utc::now().timestamp_millis();
+                now.saturating_sub(ts) <= SEEN_SUPPRESSION_WINDOW_MS
+            }
+            None => state.chat_store(session).is_some(),
+        },
+        _ => false,
     }
 }
 

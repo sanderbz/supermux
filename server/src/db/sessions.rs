@@ -76,6 +76,20 @@ pub struct Session {
     /// thing the column DEFAULT gives every backfilled row.
     #[serde(default)]
     pub notif: String,
+    /// Cross-device seen cursor (migration 0029) — server-clock **ms** at which
+    /// this session was last read. `None` = never seen, which `tierFor`
+    /// already treats as "not unread".
+    #[serde(default)]
+    pub seen_ts: Option<i64>,
+    /// `chat_tail.entry_count` when [`Self::seen_ts`] was recorded — the SEQ
+    /// domain, not the ring length.
+    #[serde(default)]
+    pub seen_count: Option<i64>,
+    /// The chat-store epoch [`Self::seen_count`] was recorded under. Counts are
+    /// only comparable within one epoch; across a mismatch the client renders a
+    /// dot rather than a number.
+    #[serde(default)]
+    pub seen_epoch: Option<i64>,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -283,6 +297,37 @@ pub async fn set_notif_policy(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Advance this session's seen cursor — **monotonically** (B5/T4.2).
+///
+/// The `WHERE seen_ts IS NULL OR seen_ts < ?` guard is the whole contract, and
+/// it is enforced in SQL rather than read-modify-write on purpose: two devices
+/// can PATCH concurrently, and a compare-in-Rust would have a window where the
+/// older one wins. A cursor older than the stored one is a no-op, so a stale tab
+/// waking up from sleep cannot un-read a session on the phone.
+///
+/// Returns whether a row was actually advanced, so the handler can report the
+/// no-op honestly instead of implying a write.
+pub async fn set_seen(
+    pool: &SqlitePool,
+    name: &str,
+    ts: i64,
+    count: Option<i64>,
+    epoch: Option<i64>,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query(
+        "UPDATE sessions SET seen_ts = ?, seen_count = ?, seen_epoch = ?
+         WHERE name = ? AND (seen_ts IS NULL OR seen_ts < ?)",
+    )
+    .bind(ts)
+    .bind(count)
+    .bind(epoch)
+    .bind(name)
+    .bind(ts)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
 }
 
 /// Does a session row exist? Used for clean 404/409 mapping before mutating.

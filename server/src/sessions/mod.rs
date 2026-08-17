@@ -114,6 +114,9 @@ pub fn router_for(state: AppState) -> Router {
             "/api/claude/statusline",
             axum::routing::delete(chat::statusline::uninstall_handler),
         )
+        // B5/T4 — the cross-device seen cursor. PATCH, not POST: it advances a
+        // value on the session rather than performing an action on it.
+        .route("/api/sessions/{name}/seen", axum::routing::patch(seen_handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
@@ -195,6 +198,12 @@ pub struct SessionView {
     /// present on the wire (never omitted), because the control has to render a
     /// definite state and `inherit` is a real choice, not an absence.
     pub notif: String,
+    /// The cross-device seen cursor (migration 0029), or `None` for never seen.
+    /// Same triple the client's `SeenCursor` carries, so the merge is
+    /// field-for-field.
+    pub seen_ts: Option<i64>,
+    pub seen_count: Option<i64>,
+    pub seen_epoch: Option<i64>,
     pub flags: String,
     pub branch: String,
     pub mcp: String,
@@ -326,6 +335,12 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         // reaches the client as `inherit` rather than as something its four-way
         // control cannot render.
         notif: crate::notify::NotifPolicy::parse(&s.notif).as_str().to_string(),
+        // B5/T4.3 — the stored cursor rides the row, so a device that has never
+        // seen this session starts correct instead of showing everything as
+        // unread until its first local read.
+        seen_ts: s.seen_ts,
+        seen_count: s.seen_count,
+        seen_epoch: s.seen_epoch,
         flags: s.flags.clone(),
         branch: s.branch.clone(),
         mcp: s.mcp.clone(),
@@ -1417,6 +1432,53 @@ async fn peek_handler(
         _ => lifecycle::peek(&state, &name, q.lines).await?,
     };
     Ok(Json(json!({ "ok": true, "data": text })))
+}
+
+/// `PATCH /api/sessions/{name}/seen` — record where the user last read this
+/// session, so the cursor follows them across devices (B5/T4).
+///
+/// The body is exactly B2's `SeenCursor` shape (`attention-tiers.ts`), because
+/// this endpoint persists a client model that already exists rather than
+/// inventing a second one: `{ ts, count?, epoch? }`, `ts` in server-clock **ms**.
+///
+/// **Monotonic.** A cursor older than the stored one is a no-op with a 200, not
+/// a write and not an error. The scenario that forces this: a laptop tab that
+/// has been asleep for an hour wakes, replays its last known cursor, and would
+/// otherwise un-read on the phone every session the user has since caught up on.
+/// A 200 is right because nothing is wrong — the client's view was simply
+/// older, and `advanced: false` tells it so without asking it to handle a
+/// failure it cannot act on.
+///
+/// Authorised by the dashboard bearer like every other session route. The
+/// per-session hook token deliberately grants nothing here: hooks report what
+/// the AGENT did, and where a HUMAN last looked is not something an agent may
+/// assert (`tests/seen_cursor.rs` pins that).
+#[derive(serde::Deserialize)]
+pub struct SeenInput {
+    /// Server-clock milliseconds. Required — a cursor with no position is not
+    /// a cursor.
+    pub ts: i64,
+    /// `chat_tail.entry_count` at that moment, in the seq domain.
+    #[serde(default)]
+    pub count: Option<i64>,
+    /// The chat-store epoch `count` was recorded under.
+    #[serde(default)]
+    pub epoch: Option<i64>,
+}
+
+async fn seen_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<SeenInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // 404 before the UPDATE, so a typo'd name is distinguishable from a
+    // regressive cursor — both would otherwise be "0 rows affected".
+    if !db::sessions::exists(&state.pool, &name).await? {
+        return Err(AppError::NotFound(format!("session '{name}'")));
+    }
+    let advanced =
+        db::sessions::set_seen(&state.pool, &name, input.ts, input.count, input.epoch).await?;
+    Ok(Json(json!({ "ok": true, "data": { "advanced": advanced } })))
 }
 
 async fn archive_handler(

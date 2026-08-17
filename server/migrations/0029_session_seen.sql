@@ -1,0 +1,35 @@
+-- Cross-device seen cursor — where you last read this session (B5/T4).
+--
+-- B2's attention model is entirely client-side: `web/src/hooks/use-attention.ts`
+-- keeps a `Record<sessionName, SeenCursor>` under ONE localStorage key
+-- (`supermux:seen`). That works, and stays — it is what makes marking a session
+-- read feel instant, and it is the offline layer. What it cannot do is follow
+-- you: read a session on the desktop and your phone still shows the unread dot
+-- until you open it there too.
+--
+-- These three columns are exactly the triple `SeenCursor` already carries
+-- (`attention-tiers.ts`), so this is a persistence layer for a shape that is
+-- already designed, not a new model:
+--
+--   seen_ts     server-clock ms at which the session was last read. NOT seconds
+--               — the client compares it against `activity_at`, which is ms, and
+--               a unit mismatch here would silently mark everything read.
+--   seen_count  `chat_tail.entry_count` at that moment. The SEQ domain
+--               (`Inner.next_seq`), not `ring.len()`: the ring saturates at 500,
+--               so its length is a window, not a total.
+--   seen_epoch  the chat-store epoch `seen_count` was recorded under. A store is
+--               created and dropped many times a day and `next_seq` restarts at
+--               0 each time, so a count is only comparable within one epoch.
+--               When the epochs differ the client renders a dot rather than a
+--               number — it degrades, it does not lie.
+--
+-- ALL THREE ARE NULLABLE, and that is the upgrade contract: every existing row
+-- backfills to "never seen", which `tierFor` already treats as *not unread*. So
+-- this migration changes nobody's tiers on upgrade — no fleet-wide "everything
+-- is unread" the morning after a deploy.
+--
+-- Numbering: next free above the highest applied (0028). The 0025 gap stays a
+-- gap; see 0028's header for why.
+ALTER TABLE sessions ADD COLUMN seen_ts INTEGER;
+ALTER TABLE sessions ADD COLUMN seen_count INTEGER;
+ALTER TABLE sessions ADD COLUMN seen_epoch INTEGER;

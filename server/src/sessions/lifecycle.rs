@@ -1956,6 +1956,9 @@ mod build_env_tests {
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -2010,6 +2013,9 @@ mod build_env_tests {
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -2065,6 +2071,9 @@ mod build_env_tests {
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -2126,6 +2135,9 @@ mod build_env_tests {
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
         };
 
         let (command, _resume) = build_launch_command(&config, &session);
@@ -2172,6 +2184,9 @@ mod build_env_tests {
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
         };
 
         let (command, _resume) = build_launch_command(&config, &session);

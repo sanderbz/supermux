@@ -70,7 +70,52 @@ export type AttentionSession = Pick<
   | 'last_activity'
   | 'updated_at'
   | 'archived'
+  // B5/T4 — the server-persisted seen cursor. Present so the merge in
+  // `use-attention.ts` can read it off the same row it already has, without a
+  // second request.
+  | 'seen_ts'
+  | 'seen_count'
+  | 'seen_epoch'
 >
+
+/** The server's persisted cursor for a session, if it has ever been read on any
+ *  device (B5/T4). `null`/absent `seen_ts` means never seen.
+ *
+ *  Split out from the row so the newest-wins merge has something to name. It is
+ *  field-for-field the same triple as [`SeenCursor`] — that is the point: the
+ *  server persists the shape the client already had, so merging is a comparison
+ *  and not a translation. */
+export function serverCursor(s: AttentionSession): SeenCursor | undefined {
+  const ts = s.seen_ts
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return undefined
+  return {
+    ts,
+    ...(typeof s.seen_count === 'number' ? { count: s.seen_count } : {}),
+    ...(typeof s.seen_epoch === 'number' ? { epoch: s.seen_epoch } : {}),
+  }
+}
+
+/** Newest-wins merge of the local and server cursors (B5/T4.4).
+ *
+ *  localStorage is NOT replaced by the server cursor — it stays as the
+ *  offline/optimistic layer, and it is what makes `markRead` feel instant (the
+ *  network write is fire-and-forget behind it). So at any moment there can be
+ *  two answers, and the rule is simply the later one:
+ *
+ *  * local only   → local (the write has not landed yet, or we are offline)
+ *  * server only  → server (a fresh device, or one that cleared its storage)
+ *  * both         → whichever `ts` is greater
+ *
+ *  Ties go to LOCAL. A tie means the same read, and preferring local keeps the
+ *  count/epoch this device actually observed rather than a round-tripped copy. */
+export function mergeCursors(
+  local: SeenCursor | undefined,
+  server: SeenCursor | undefined,
+): SeenCursor | undefined {
+  if (!local) return server
+  if (!server) return local
+  return server.ts > local.ts ? server : local
+}
 
 /**
  * The activity stamp, in SERVER-CLOCK milliseconds, down the documented ladder.
