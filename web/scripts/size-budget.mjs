@@ -262,6 +262,23 @@ const BUDGET_ENTRY_JS = 160 * KB
 // 239 at wave-3b integration (#93 + #94 on one tree): the two streams above
 // were measured against different parents; together they measure 233.91.
 // measured×1.02 policy: 233.91 × 1.02 = 238.59 -> 239. Entry gate unchanged.
+//
+// 239 HELD at fix/w4-infra-a11y: measured 234.27 against 233.91 for wave-3b —
+// +0.36 KB, comfortably inside the standing ceiling, so it does not move. (The
+// rule this ledger has followed since the fix-wave-1 ratchet: a ceiling tracks
+// real cost, and a PR that fits under the current one does not get to raise it
+// "while it is here".) The ENTRY gate is the one worth watching: 157.60 / 160
+// KB, 99%, up 0.51 KB. Where that went:
+//   ~0.35 KB  `components/a11y/turn-announcer.tsx` + its mount in the focus
+//             route + the third claim in `live-region-owner.ts`. This is the
+//             turn announcement for the DEFAULT (terminal) renderer, which had
+//             none: instrumented over a real 75 s turn, the announcement
+//             timeline was empty. It sits on the hero path because the focus
+//             route is where a turn happens, and the chat chunk is lazy.
+//   ~0.16 KB  `teammate-chip.tsx`'s stretched activation button (the fix for a
+//             serious `nested-interactive`) and one `data-testid`.
+// 2.40 KB of entry headroom remains. The next thing through here should
+// measure first, and probably code-split rather than spend.
 const BUDGET_APP_JS = 239 * KB
 const BUDGET_CSS = 30 * KB
 
