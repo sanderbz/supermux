@@ -249,12 +249,17 @@ const CLOSE_REVOKED = 4001 // explicit token revocation — permanent
 const CLOSE_NOT_RUNNING = 4404 // session's pty is gone — TERMINAL, do NOT retry
 const CLOSE_UNMOUNT = 1000 // normal — our own teardown
 
-/** The supermux 16-colour ANSI palette. Mirrors the static preview palette in
- *  `web/src/lib/ansi.ts` byte-for-byte so the live xterm renders agent output
- *  (zsh prompts, `ls --color`, `git status`) with the SAME colours as the tile
- *  preview — no jarring shift when a session expands from card → live. Tuned
- *  for legibility on the near-black `--terminal-bg` (One Dark-ish family,
- *  iOS-native saturation). */
+/** The supermux 16-colour ANSI palette, DARK tuning. Mirrors the static preview
+ *  palette in `web/src/lib/ansi.ts` byte-for-byte so the live xterm renders
+ *  agent output (zsh prompts, `ls --color`, `git status`) with the SAME colours
+ *  as the tile preview — no jarring shift when a session expands from card →
+ *  live. Tuned for legibility on the near-black `--terminal-bg` (One Dark-ish
+ *  family, iOS-native saturation).
+ *
+ *  DECLARATION ORDER IS LOAD-BEARING: `themeFromCss` zips these keys against
+ *  `--ansi-0 … --ansi-15` by position, so the sequence must stay
+ *  black…white, brightBlack…brightWhite (the xterm order). Values here are the
+ *  fallback when a token is missing. */
 const ANSI_PALETTE = {
   black: '#1d1d1f',
   red: '#ff6b5e',
@@ -274,17 +279,26 @@ const ANSI_PALETTE = {
   brightWhite: '#f5f5f7',
 } as const
 
-/** Read the live terminal theme from the CSS custom properties. This runs
- *  at mount so the terminal tracks whichever theme `<ThemeProvider>` applied to
- *  <html> before first paint — no hardcoded hex for bg/fg. The 16-colour ANSI palette IS hardcoded: those bytes ARE the terminal's
- *  colours (an agent's SGR escapes), not app chrome, and must stay constant
- *  across themes. */
+/** Read the live terminal theme from the CSS custom properties. This runs at
+ *  mount so the terminal tracks whichever theme `<ThemeProvider>` applied to
+ *  <html> before first paint — no hardcoded hex anywhere, including the ANSI
+ *  sixteen. Those bytes ARE the terminal's colours (an agent's SGR escapes),
+ *  not app chrome, but they are not theme-INDEPENDENT: the dark tuning below
+ *  sits at 1.5–2.9:1 on the light theme's white `--terminal-bg`, which is why
+ *  globals.css now carries a light `--ansi-N` set as well. `ANSI_PALETTE` stays
+ *  as the fallback so a missing token can never blank the terminal. */
 function themeFromCss(): import('@xterm/xterm').ITheme {
   const css = getComputedStyle(document.documentElement)
   const read = (name: string, fallback: string) =>
     css.getPropertyValue(name).trim() || fallback
   const bg = read('--terminal-bg', '#000000')
   const fg = read('--terminal-fg', '#e5e5e7')
+  const ansi = Object.fromEntries(
+    Object.entries(ANSI_PALETTE).map(([name, hex], i) => [
+      name,
+      read(`--ansi-${i}`, hex),
+    ]),
+  ) as typeof ANSI_PALETTE
   return {
     // OLED-true terminal surface matching the design tokens (globals.css).
     background: bg,
@@ -297,7 +311,7 @@ function themeFromCss(): import('@xterm/xterm').ITheme {
     // light + dark surfaces (xterm composites this over cell bg).
     selectionBackground: 'rgba(91, 157, 255, 0.35)',
     selectionInactiveBackground: 'rgba(91, 157, 255, 0.20)',
-    ...ANSI_PALETTE,
+    ...ansi,
   }
 }
 

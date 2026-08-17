@@ -179,7 +179,7 @@ function ErrorPill({
       className={cn(
         // Calm orange (--status-error) tint — visible enough to make a dead agent
         // obvious, never an alarmist red. Mirrors the needs-input pill geometry.
-        'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-status-error/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-error',
+        'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-status-error/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-error-ink',
         className,
       )}
     >

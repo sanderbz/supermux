@@ -336,7 +336,7 @@ export function StoppedSessionActions({
       {failed && (
         <span
           role="alert"
-          className="basis-full text-center text-xs text-status-error"
+          className="basis-full text-center text-xs text-status-error-ink"
         >
           Couldn’t complete that action. Try again.
         </span>

@@ -100,7 +100,7 @@ export function TeammateChip({
           "Kill & remove" for a live teammate, "Remove" for an offline one). */}
       <div className="flex shrink-0 items-center gap-1">
         {needsYou ? (
-          <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
+          <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
             needs you
           </span>
         ) : (

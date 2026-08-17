@@ -136,8 +136,10 @@ export function withViewTransition(apply: () => void): void {
     apply()
     return
   }
-  let handle: ViewTransitionHandle | undefined
-  handle = (document as DocWithVT).startViewTransition(async () => {
+  // A holder rather than a plain binding: the callback below reads it after its
+  // first `await`, by which time `startViewTransition` has returned.
+  const handle: { current?: ViewTransitionHandle } = {}
+  handle.current = (document as DocWithVT).startViewTransition(async () => {
     const href = window.location.href
     const commit = deferred()
     pendingCommit = commit
@@ -162,9 +164,7 @@ export function withViewTransition(apply: () => void): void {
     ])
     if (timer !== undefined) clearTimeout(timer)
     pendingCommit = null
-    // `handle` is assigned before this ever runs: the await above yields, and
-    // `startViewTransition` returns synchronously.
-    if (timedOut) handle?.skipTransition()
+    if (timedOut) handle.current?.skipTransition()
   })
 }
 

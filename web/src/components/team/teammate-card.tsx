@@ -81,7 +81,7 @@ export function TeammateCard({
           </div>
         </button>
         {needsYou ? (
-          <span className="mt-0.5 shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
+          <span className="mt-0.5 shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
             needs you
           </span>
         ) : (

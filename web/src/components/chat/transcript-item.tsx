@@ -599,7 +599,7 @@ export function HarnessLine({ ev, names, pinFor, onOpenSession, onOpenSchedule }
   const failed = !created && typeof ev.detail.status === 'string' && ev.detail.status !== 'ok'
   const title = typeof ev.detail.title === 'string' ? ev.detail.title.trim() : ''
   return (
-    <SystemLine className={failed ? 'text-status-error' : undefined}>
+    <SystemLine className={failed ? 'text-status-error-ink' : undefined}>
       {created ? 'Created schedule' : 'Ran schedule'}
       {title && (
         <>

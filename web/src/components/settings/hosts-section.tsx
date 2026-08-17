@@ -92,9 +92,9 @@ function HostStatusPill({ status }: { status: HostStatus }) {
         : 'bg-muted-foreground/50'
   const textCls =
     status === 'reachable'
-      ? 'text-status-ready'
+      ? 'text-status-ready-ink'
       : status === 'unreachable'
-        ? 'text-status-error'
+        ? 'text-status-error-ink'
         : 'text-muted-foreground'
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-medium">
@@ -342,7 +342,7 @@ function HostRow({ host }: { host: Host }) {
             disabled={deleting}
             className={cn(
               confirmDelete.armed &&
-                'bg-status-error/10 text-status-error hover:bg-status-error/15',
+                'bg-status-error/10 text-status-error-ink hover:bg-status-error/15',
             )}
           >
             {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -364,12 +364,12 @@ function HostRow({ host }: { host: Host }) {
         check.variables === host.id &&
         check.data.status !== 'reachable' &&
         check.data.error && (
-          <p className="mt-2 text-[12px] text-status-error">
+          <p className="mt-2 text-[12px] text-status-error-ink">
             {check.data.error}
           </p>
         )}
       {deleteError && (
-        <p className="mt-2 text-[12px] text-status-error" role="alert">
+        <p className="mt-2 text-[12px] text-status-error-ink" role="alert">
           {deleteError}
         </p>
       )}
@@ -522,7 +522,7 @@ function AddHostForm({ onDone }: { onDone: () => void }) {
         {report && <BootstrapChecklist report={report} />}
 
         {error && (
-          <p role="alert" className="text-sm text-status-error">
+          <p role="alert" className="text-sm text-status-error-ink">
             {error}
           </p>
         )}
@@ -597,7 +597,7 @@ function AddHostForm({ onDone }: { onDone: () => void }) {
       </Field>
 
       {error && (
-        <p role="alert" className="text-sm text-status-error">
+        <p role="alert" className="text-sm text-status-error-ink">
           {error}
         </p>
       )}
@@ -700,7 +700,7 @@ function BootstrapBody({
       {report && <BootstrapChecklist report={report} />}
 
       {error && (
-        <p role="alert" className="text-sm text-status-error">
+        <p role="alert" className="text-sm text-status-error-ink">
           {error}
         </p>
       )}
@@ -759,7 +759,7 @@ function BootstrapChecklist({ report }: { report: BootstrapReport }) {
         )}
       </ul>
       {report.warnings.length > 0 && (
-        <div className="mt-3 rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+        <div className="mt-3 rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error-ink">
           <p className="mb-1 font-medium">Warnings</p>
           <ul className="list-disc pl-5">
             {report.warnings.map((w, i) => (
@@ -793,10 +793,10 @@ function ChecklistItem({
       <span
         className={cn(
           okState
-            ? 'text-status-ready'
+            ? 'text-status-ready-ink'
             : isSoftMissing
               ? 'text-muted-foreground'
-              : 'text-status-error',
+              : 'text-status-error-ink',
           '[&_svg]:size-4',
         )}
       >

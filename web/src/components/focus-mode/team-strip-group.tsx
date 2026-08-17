@@ -217,7 +217,7 @@ function TeammateStripRow({
       </span>
       <span className="flex shrink-0 items-center gap-1">
         {needsYou ? (
-          <span className="rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
+          <span className="rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
             needs you
           </span>
         ) : (

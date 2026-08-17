@@ -600,7 +600,7 @@ export function BacklogHead({
               silently is indistinguishable from a conversation that has no
               more history, which is the whole defect. */}
           {error && (
-            <span data-tone="warn" className="text-[12px] text-status-error">
+            <span data-tone="warn" className="text-[12px] text-status-error-ink">
               Couldn’t load earlier messages.
             </span>
           )}
@@ -842,7 +842,7 @@ export function PendingEchoes({
                   <div className="mt-[1px] flex flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-[12px] tracking-[-0.05px]">
                     {/* Calm orange, never alarmist red — the `--status-error`
                         token the tiles already use for a dead agent. */}
-                    <span data-tone="warn" className="mr-1 text-status-error">
+                    <span data-tone="warn" className="mr-1 text-status-error-ink">
                       {p.note ?? 'This didn’t reach the session.'}
                     </span>
                     {/* 34px, the height every actionable control on this surface

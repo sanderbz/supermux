@@ -208,7 +208,7 @@ function StartTeamForm({
       {error && (
         <p
           role="alert"
-          className="rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-sm text-status-error"
+          className="rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-sm text-status-error-ink"
         >
           {error}
         </p>

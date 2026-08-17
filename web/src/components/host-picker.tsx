@@ -170,7 +170,7 @@ export function HostPicker({
         {isError && (
           <>
             <DropdownMenuSeparator />
-            <p className="px-2 py-1.5 text-xs text-status-error">
+            <p className="px-2 py-1.5 text-xs text-status-error-ink">
               Couldn’t load hosts.
             </p>
           </>

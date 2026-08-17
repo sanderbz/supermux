@@ -162,7 +162,7 @@ export function ResumePicker({
         )}
 
         {failed && (
-          <p role="alert" className="mt-2 text-center text-xs text-status-error">
+          <p role="alert" className="mt-2 text-center text-xs text-status-error-ink">
             Couldn’t resume that conversation. Try again.
           </p>
         )}

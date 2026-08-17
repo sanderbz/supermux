@@ -44,7 +44,7 @@ export function CopyButton({
     >
       <motion.button whileTap={{ scale: 0.96 }} transition={springs.buttonPress}>
         {copied ? (
-          <Check className="text-status-active" />
+          <Check className="text-status-active-ink" />
         ) : (
           <Copy />
         )}

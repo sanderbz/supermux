@@ -897,7 +897,7 @@ export function SessionTile({
               />
             )}
             {session.status === 'waiting' && !showArchiveControl && (
-              <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
+              <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
                 {MISC.needsInputPill}
               </span>
             )}
@@ -962,7 +962,7 @@ export function SessionTile({
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') onArchiveClick(e)
                       }}
-                      className="grid size-11 place-items-center rounded-md text-status-error transition-colors hover:bg-status-error/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
+                      className="grid size-11 place-items-center rounded-md text-status-error-ink transition-colors hover:bg-status-error/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
                     >
                       <Archive aria-hidden />
                     </button>

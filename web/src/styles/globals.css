@@ -135,6 +135,51 @@
   --status-ready: 152 60% 45%;   /* calm green — idle-but-ready (turn ended) */
   --status-error: 24 90% 56%;    /* calm orange, never alarmist red */
   --status-idle: 0 0% 45%;       /* dim neutral — stopped / unknown */
+
+  /* Status INK — the same five hues at a lightness that carries TEXT.
+     The dot, the pulse and the /15 pill fill are decoration and keep the
+     saturated triples above; a 10px 600-weight label drawn in them does not:
+     measured on white, `text-status-ready` on `bg-status-ready/15` came out at
+     2.55:1 and `text-status-waiting` at 3.33:1, both well under the 4.5:1 that
+     text-sized output owes. So text gets its own step — same hue, same
+     saturation, only the lightness moves — and only in LIGHT theme, where the
+     surface is bright. `.dark` maps every ink token straight back onto the base
+     triple, so the dark theme (which measured clean) is byte-identical.
+     Pinned by tests/unit/theme-contrast.test.ts. */
+  --status-active-ink: 38 92% 33%;
+  --status-waiting-ink: 214 95% 49%;
+  --status-ready-ink: 152 60% 32%;
+  --status-error-ink: 24 90% 40%;
+  --status-idle-ink: 0 0% 45%;
+
+  /* ── ANSI 16 — light theme ────────────────────────────────────────────────
+     The terminal's own sixteen colours, as they must look on a BRIGHT surface.
+     The static tile/roster preview and the chat attention card paint agent
+     output straight onto the card, so in light theme these are text on white:
+     the dark-tuned palette below (`.dark`) lands at 1.5–2.9:1 there, which is
+     why "⚠ Transcript saving is off" was effectively invisible in a light tile.
+     Each entry is its dark counterpart scaled down the sRGB ramp until it
+     reaches ≥4.5:1 on white, so hue and identity survive — red is still red —
+     while the text becomes readable. 7/15 (white / bright-white) necessarily
+     invert into greys: on white there is no such thing as a legible white.
+     Consumed via `var(--ansi-N)` by lib/ansi.ts and by the live xterm palette
+     (hooks/use-live-term.ts). Pinned by tests/unit/theme-contrast.test.ts. */
+  --ansi-0: #1d1d1f;
+  --ansi-1: #c25147;
+  --ansi-2: #2a8548;
+  --ansi-3: #877430;
+  --ansi-4: #4475bf;
+  --ansi-5: #9a5eac;
+  --ansi-6: #377f89;
+  --ansi-7: #757578;
+  --ansi-8: #6b6b70;
+  --ansi-9: #a4564f;
+  --ansi-10: #38754b;
+  --ansi-11: #776838;
+  --ansi-12: #4c6b95;
+  --ansi-13: #815b8a;
+  --ansi-14: #3e7178;
+  --ansi-15: #69696a;
 }
 
 /* ── Dark theme (iOS dark system colors; the default) ─────────────────────── */
@@ -170,7 +215,35 @@
   --terminal-bg: #000000;
   --terminal-fg: #e5e5e7;
 
-  /* --brand and --status-* are theme-independent; inherited from :root. */
+  /* --brand and --status-* are theme-independent; inherited from :root.
+     The status INK steps are not: on a near-black surface the saturated triples
+     already clear 4.5:1, so ink === fill here and the dark theme is unchanged
+     from before the light-theme audit. */
+  --status-active-ink: var(--status-active);
+  --status-waiting-ink: var(--status-waiting);
+  --status-ready-ink: var(--status-ready);
+  --status-error-ink: var(--status-error);
+  --status-idle-ink: var(--status-idle);
+
+  /* ANSI 16 — dark theme. The standard xterm palette in the app's One-Dark-ish
+     tuning; these ARE the terminal's colours (an agent's SGR escapes), not app
+     chrome. Kept legible on the OLED-true `--terminal-bg`. */
+  --ansi-0: #1d1d1f;  /* black — nudged off pure black so it stays visible */
+  --ansi-1: #ff6b5e;
+  --ansi-2: #3fc66b;
+  --ansi-3: #e0c050;
+  --ansi-4: #5b9dff;
+  --ansi-5: #c678dd;
+  --ansi-6: #56c8d8;
+  --ansi-7: #c8c8cd;
+  --ansi-8: #6b6b70;
+  --ansi-9: #ff8a80;
+  --ansi-10: #69d98b;
+  --ansi-11: #f0d272;
+  --ansi-12: #82b6ff;
+  --ansi-13: #d99ae8;
+  --ansi-14: #7adfeb;
+  --ansi-15: #f5f5f7;
 }
 
 /* ══ B0 — warm paper / ink / hairline ladder ═══════════════════════════════
@@ -305,6 +378,13 @@
   --color-status-ready: hsl(var(--status-ready));
   --color-status-waiting: hsl(var(--status-waiting));
   --color-status-error: hsl(var(--status-error));
+  /* …and the same five as TEXT (`text-status-ready-ink`). Identical to the
+     fills in dark; a darker step in light. See `--status-*-ink` above. */
+  --color-status-active-ink: hsl(var(--status-active-ink));
+  --color-status-idle-ink: hsl(var(--status-idle-ink));
+  --color-status-ready-ink: hsl(var(--status-ready-ink));
+  --color-status-waiting-ink: hsl(var(--status-waiting-ink));
+  --color-status-error-ink: hsl(var(--status-error-ink));
 
   /* B0 warm ladder → Tailwind namespace: bg-paper, bg-paper-raised, text-ink,
      text-ink-2, border-hairline, bg-fill-soft, … The `--sm-*` vars stay the
@@ -746,21 +826,21 @@
 .hljs-symbol,
 .hljs-bullet,
 .hljs-addition {
-  color: hsl(var(--status-active));
+  color: hsl(var(--status-active-ink));
 }
 .hljs-number,
 .hljs-meta,
 .hljs-built_in,
 .hljs-builtin-name,
 .hljs-type {
-  color: hsl(var(--status-ready));
+  color: hsl(var(--status-ready-ink));
 }
 .hljs-title,
 .hljs-class .hljs-title,
 .hljs-function .hljs-title,
 .hljs-selector-class,
 .hljs-selector-id {
-  color: hsl(var(--status-waiting));
+  color: hsl(var(--status-waiting-ink));
 }
 .hljs-variable,
 .hljs-tag,
@@ -769,7 +849,7 @@
   color: color-mix(in srgb, var(--foreground) 80%, transparent);
 }
 .hljs-deletion {
-  color: hsl(var(--status-error));
+  color: hsl(var(--status-error-ink));
 }
 .hljs-emphasis {
   font-style: italic;

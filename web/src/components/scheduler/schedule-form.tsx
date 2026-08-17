@@ -809,7 +809,7 @@ function NextRunsPreview({ state }: { state: PreviewState }) {
         {state.error ? 'Can’t read that schedule' : 'Next runs'}
       </p>
       {state.error ? (
-        <p className="text-xs text-status-error">{state.error}</p>
+        <p className="text-xs text-status-error-ink">{state.error}</p>
       ) : state.loading && !state.runs.length ? (
         <p className="text-xs text-muted-foreground">Computing…</p>
       ) : (

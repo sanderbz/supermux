@@ -551,8 +551,8 @@ function ModeSectionInner({
         className={cn(
           'mt-2 flex min-h-12 w-full items-center gap-3 rounded-xl border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
           mode === 'bypass'
-            ? 'border-status-error/40 bg-status-error/15 text-status-error'
-            : 'border-status-error/40 bg-status-error/5 text-status-error hover:bg-status-error/10',
+            ? 'border-status-error/40 bg-status-error/15 text-status-error-ink'
+            : 'border-status-error/40 bg-status-error/5 text-status-error-ink hover:bg-status-error/10',
         )}
       >
         <ShieldAlert className="size-4 shrink-0" aria-hidden />

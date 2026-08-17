@@ -184,7 +184,7 @@ function EditBody({
             <Button
               variant="ghost"
               size="sm"
-              className="h-11 text-status-error hover:text-status-error"
+              className="h-11 text-status-error-ink hover:text-status-error-ink"
               onClick={() => setConfirmDelete(true)}
             >
               <Trash2 className="size-4" />
@@ -299,8 +299,8 @@ function RunRow({
 }
 
 const STATUS_STYLE: Record<string, string> = {
-  ok: 'bg-status-active/15 text-status-active',
-  error: 'bg-status-error/15 text-status-error',
+  ok: 'bg-status-active/15 text-status-active-ink',
+  error: 'bg-status-error/15 text-status-error-ink',
   skipped: 'bg-status-idle/15 text-muted-foreground',
 }
 

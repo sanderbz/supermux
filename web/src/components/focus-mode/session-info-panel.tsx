@@ -755,7 +755,7 @@ function CopyableMono({
         className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {copied ? (
-          <Check className="size-4 text-status-active" aria-hidden />
+          <Check className="size-4 text-status-active-ink" aria-hidden />
         ) : (
           <Copy className="size-4" aria-hidden />
         )}
