@@ -263,12 +263,15 @@ const BUDGET_ENTRY_JS = 160 * KB
 // were measured against different parents; together they measure 233.91.
 // measured×1.02 policy: 233.91 × 1.02 = 238.59 -> 239. Entry gate unchanged.
 //
-// 239 HELD at fix/w4-infra-a11y: measured 234.27 against 233.91 for wave-3b —
-// +0.36 KB, comfortably inside the standing ceiling, so it does not move. (The
-// rule this ledger has followed since the fix-wave-1 ratchet: a ceiling tracks
-// real cost, and a PR that fits under the current one does not get to raise it
-// "while it is here".) The ENTRY gate is the one worth watching: 157.60 / 160
-// KB, 99%, up 0.51 KB. Where that went:
+// 239 HELD at fix/w4-infra-a11y: measured 237.10 on this branch rebased onto
+// `main` at 084b522 (the chat-theme lane), against 236.5x for that parent
+// alone — this lane's own cost is +0.51 KB and it fits inside the standing
+// ceiling, so the ceiling does not move. (The rule this ledger has followed
+// since the fix-wave-1 ratchet: a ceiling tracks real cost, and a PR that fits
+// under the current one does not get to raise it "while it is here".) The
+// ENTRY gate is the one worth watching — 159.06 / 160 KB, 99%, i.e. 0.94 KB of
+// headroom left across ALL lanes. The next additive change to the hero path
+// should code-split rather than spend. This lane's share of it:
 //   ~0.35 KB  `components/a11y/turn-announcer.tsx` + its mount in the focus
 //             route + the third claim in `live-region-owner.ts`. This is the
 //             turn announcement for the DEFAULT (terminal) renderer, which had
@@ -277,8 +280,8 @@ const BUDGET_ENTRY_JS = 160 * KB
 //             route is where a turn happens, and the chat chunk is lazy.
 //   ~0.16 KB  `teammate-chip.tsx`'s stretched activation button (the fix for a
 //             serious `nested-interactive`) and one `data-testid`.
-// 2.40 KB of entry headroom remains. The next thing through here should
-// measure first, and probably code-split rather than spend.
+// The turn announcer is on the hero path because the focus route is where a
+// turn happens and the chat chunk is lazy; the chip fix is unavoidable markup.
 const BUDGET_APP_JS = 239 * KB
 const BUDGET_CSS = 30 * KB
 
