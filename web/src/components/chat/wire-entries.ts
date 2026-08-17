@@ -107,6 +107,19 @@ const SCHEDULE_TAG = 'supermux-schedule'
  *  machine-written "run this curl when you're done" footer. */
 const CONFIRM_FOOTER_SENTINEL = '— — —'
 
+/** What a supermux wrapper with nothing readable inside it says out loud.
+ *
+ *  A wrapper body reduces to nothing when the delivered text closed the wrapper
+ *  early — the shape every writer now refuses (`scheduler::create`,
+ *  `scheduler::hook`, `lifecycle::send_text`) and `wrap_schedule` defangs on the
+ *  way out. The reader still has to have an answer for it, because an EMPTY
+ *  bubble is the one outcome that hides the fact that something was sent: the
+ *  divider says a schedule fired, the pill under it says nothing at all.
+ *
+ *  Same sentence in `recall.rs`, pinned by the parity corpus. */
+export const UNREADABLE_WRAPPER_BODY =
+  'This prompt didn’t survive its wrapper — the terminal has what was sent.'
+
 /** Drop the agent-confirm footer from a scheduled delivery's body. A sentinel
  *  match, never a guess about what a prompt's tail looks like: bodies without
  *  it come back whole (`recall.rs::strip_confirm_footer`). */
@@ -237,7 +250,7 @@ export function classifyPrompt(raw: string): ClassifiedPrompt {
       if (!from) {
         return { kind: 'system', text: shortSummary(inner), label: DELEGATION_TAG }
       }
-      return { kind: 'delegation', text: inner, label: from }
+      return { kind: 'delegation', text: inner || UNREADABLE_WRAPPER_BODY, label: from }
     }
     case SCHEDULE_TAG: {
       // `<supermux-schedule id="…" title="…">…</supermux-schedule>` — a prompt
@@ -251,7 +264,7 @@ export function classifyPrompt(raw: string): ClassifiedPrompt {
       const inner = stripConfirmFooter((tagInner(trimmed, SCHEDULE_TAG) ?? '').trim())
       return {
         kind: 'schedule',
-        text: sanitiseText(inner),
+        text: sanitiseText(inner) || UNREADABLE_WRAPPER_BODY,
         label: title && title.trim() ? title : undefined,
       }
     }

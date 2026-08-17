@@ -279,6 +279,21 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
         return Err(AppError::BadRequest("boot schedule requires boot_dir".into()));
     }
 
+    // ONE RULE, EVERY WRITER. A schedule's `title` becomes a `SystemEntity` in
+    // the target session's transcript and its `prompt` is delivered inside a
+    // `<supermux-schedule>` wrapper, so a prompt that closes that wrapper hands
+    // the agent whatever it likes at top level — including a forged
+    // `<supermux-delegation from="…">`, i.e. an authority claim supermux's own
+    // markup says is authentic. `/send`, `/paste`, `/api/agents/delegate` and
+    // the hook-token schedule path all refuse the same shapes; this is the
+    // funnel every schedule writer (bearer POST, hook create, test-fire) passes
+    // through, so the rule lives here rather than in each handler.
+    reject_wrapper_markup(&[
+        ("title", title),
+        ("prompt", input.prompt.trim()),
+        ("command", input.command.trim()),
+    ])?;
+
     let done_action = input.done_action.unwrap_or_else(|| "disable".into());
     if !valid_done_action(&done_action) {
         return Err(AppError::BadRequest(
@@ -367,6 +382,20 @@ fn synth_expr(recurrence: Option<&str>, run_at: Option<&str>) -> Option<String> 
 
 fn valid_done_action(a: &str) -> bool {
     a == "disable" || a == "notify" || a.starts_with("command:")
+}
+
+/// 400 on any field carrying markup that could forge — or break out of — one of
+/// supermux's transcript wrappers. Named fields so the refusal says WHICH one,
+/// the way `scheduler::hook`'s already does.
+fn reject_wrapper_markup(fields: &[(&str, &str)]) -> Result<(), AppError> {
+    for (field, value) in fields {
+        if crate::agents::delegate::wrapper_markup(value) {
+            return Err(AppError::BadRequest(format!(
+                "'{field}' may not contain supermux wrapper markup"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ── patch ─────────────────────────────────────────────────────────────────────
@@ -598,6 +627,20 @@ async fn patch_handler(
             ));
         }
     }
+
+    // The same rule `create` applies — a schedule can be edited into the shape
+    // it could not be created in otherwise, and PATCH is the one writer that
+    // does not pass through `create`.
+    reject_wrapper_markup(
+        &[
+            ("title", input.title.as_deref()),
+            ("prompt", input.prompt.as_deref()),
+            ("command", input.command.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(f, v)| v.map(|v| (f, v)))
+        .collect::<Vec<_>>(),
+    )?;
 
     // Recompute next_run when the cadence changed.
     let new_expr = input

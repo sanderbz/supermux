@@ -1269,7 +1269,7 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
                 }),
                 Some(from) => Some(ClassifiedUser {
                     kind: Kind::Delegation,
-                    text: sanitise_text(cleaned),
+                    text: or_unreadable(sanitise_text(cleaned)),
                     label: Some(from),
                 }),
             }
@@ -1289,7 +1289,7 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
             let cleaned = strip_confirm_footer(inner.trim());
             Some(ClassifiedUser {
                 kind: Kind::Schedule,
-                text: sanitise_text(&cleaned),
+                text: or_unreadable(sanitise_text(&cleaned)),
                 label: title,
             })
         }
@@ -1386,6 +1386,27 @@ fn attr_value(body: &str, attr: &str) -> Option<String> {
     };
     let end = body.find(quote)?;
     Some(body[..end].to_string())
+}
+
+/// What a supermux wrapper with nothing readable inside it says out loud.
+///
+/// A wrapper body reduces to nothing when the delivered text closed the wrapper
+/// early — the shape every writer now refuses (`scheduler::create`,
+/// `scheduler::hook`, `lifecycle::send_text`) and `wrap_schedule` defangs on the
+/// way out. The reader still needs an answer for it, because an EMPTY row is the
+/// one outcome that hides the fact that something was sent: the divider says a
+/// schedule fired and the body under it says nothing at all. Twin of
+/// `wire-entries.ts::UNREADABLE_WRAPPER_BODY`, pinned by the parity corpus.
+pub const UNREADABLE_WRAPPER_BODY: &str =
+    "This prompt didn’t survive its wrapper — the terminal has what was sent.";
+
+/// `text`, or the sentence above when the wrapper body came back empty.
+fn or_unreadable(text: String) -> String {
+    if text.trim().is_empty() {
+        UNREADABLE_WRAPPER_BODY.to_string()
+    } else {
+        text
+    }
 }
 
 /// Collapse a long system-event body to a single human-readable line for the
