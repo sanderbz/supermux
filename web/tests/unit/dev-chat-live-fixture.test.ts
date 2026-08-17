@@ -260,6 +260,11 @@ describe('coverage: every state the surface can be in', () => {
       'handoff-failed',
       'schedule-draft',
       'panel',
+      // r2 finding 34: the dialog-question refusal AND the card it points at,
+      // on one screen. A composer state because the notice is the composer's
+      // banner — and the pair is the whole point, since the failure was the two
+      // of them overlapping.
+      'question-refused',
       // PTY-07: the Stop that was refused because the terminal armed Escape.
       // A composer state, because the refusal IS the composer's banner.
       'stop-armed',

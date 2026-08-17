@@ -32,6 +32,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import { PAPER } from '@/brand/tokens'
 import { ChatComposer } from '@/components/chat/composer'
+import { followsFooterGrowth } from '@/components/chat/backlog'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
 import { ConnectionNote } from '@/components/chat/connection-note'
 import { toDisplayList } from '@/components/chat/entries'
@@ -173,6 +174,16 @@ function Surface({
     if (el) el.scrollTop = el.scrollHeight
   }, [state.id, surface])
 
+  // …and the panel's OTHER pin, for the growth this component does not re-render
+  // for: the composer's measured floor (r2 finding 34). Without it a bench state
+  // that carries a refusal banner opens with the banner sitting on top of the
+  // card it points at — which is exactly the bug `question-refused` exists to
+  // keep fixed, so the bench has to reproduce the panel's behaviour here.
+  const onReserveGrew = React.useCallback((grewBy: number) => {
+    const el = scrollRef.current
+    if (el && followsFooterGrowth(el, grewBy)) el.scrollTop = el.scrollHeight
+  }, [])
+
   return (
     <ChatConversation
       name={state.session.name}
@@ -221,6 +232,7 @@ function Surface({
       onDismissPending={() => {}}
       onDismissAttention={() => {}}
       scrollRef={scrollRef}
+      onReserveGrew={onReserveGrew}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}
       composer={state.composer ? <BenchComposer state={state} surface={surface} /> : undefined}

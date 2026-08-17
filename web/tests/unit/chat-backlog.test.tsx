@@ -28,6 +28,8 @@ import {
   restoredScrollTop,
   seamOpen,
   shouldLoadOlder,
+  followsFooterGrowth,
+  FOLLOW_THRESHOLD_PX,
   JUMP_AWAY_PX,
   NEAR_TOP_PX,
 } from '../../src/components/chat/backlog'
@@ -402,5 +404,39 @@ describe('the jump-to-bottom pill (QA #17)', () => {
 
   test('no handler, no pill — the bench renders the same component', () => {
     expect(render({ showJumpToBottom: true })).not.toContain('chat-jump-bottom')
+  })
+})
+
+/* ── the track follows the composer's glass (r2 finding 34) ──────────────── */
+
+describe('a composer that grew takes the track with it', () => {
+  // WHAT SHIPPED: the track RESERVES room for the composer by measuring it
+  // (`trackBottom`, QA #12) — and that measurement is state inside
+  // `ChatConversation`, so a composer that grows re-renders only that subtree.
+  // The panel's follow-bottom effect runs on renders of the PANEL, so it never
+  // fired: the reserve grew, the scroll position did not, and the taller glass
+  // simply covered another band's worth of content. It was found as the
+  // composer's own dialog-question refusal ("Pick one of the answers above")
+  // landing on top of the answers — it hid the card's escape row entirely.
+  const at = (distanceFromBottom: number, grewBy: number) =>
+    followsFooterGrowth(
+      // `grewBy` is already IN `scrollHeight` when the question is asked.
+      { scrollHeight: 1000 + grewBy, scrollTop: 1000 - 600 - distanceFromBottom, clientHeight: 600 },
+      grewBy,
+    )
+
+  test('a reader sitting at the bottom is carried along', () => {
+    expect(at(0, 44)).toBe(true)
+    expect(at(FOLLOW_THRESHOLD_PX - 1, 44)).toBe(true)
+  })
+
+  test('a reader who scrolled back is left where they are', () => {
+    expect(at(FOLLOW_THRESHOLD_PX, 44)).toBe(false)
+    expect(at(400, 44)).toBe(false)
+  })
+
+  test('giving room back never yanks the view', () => {
+    expect(at(0, 0)).toBe(false)
+    expect(at(0, -44)).toBe(false)
   })
 })

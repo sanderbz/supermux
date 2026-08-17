@@ -265,3 +265,37 @@ export function shouldLoadOlder(s: {
 export function jumpVisible(distanceFromBottom: number): boolean {
   return distanceFromBottom > JUMP_AWAY_PX
 }
+
+/**
+ * How close to the bottom the reader has to be for new content to keep pinning.
+ *
+ * Lives here, beside `JUMP_AWAY_PX`, because it now has TWO readers — the
+ * panel's scroll handler and the track's footer-growth follow below — and a
+ * threshold copied into two files is one that drifts.
+ */
+export const FOLLOW_THRESHOLD_PX = 48
+
+/**
+ * The composer's glass just got taller. Should the track follow it?
+ *
+ * WHY THIS EXISTS. The track reserves room for the composer by MEASURING it
+ * (`conversation.tsx` `trackBottom`), and that measurement is state inside the
+ * conversation component — so when the composer grows (a refusal banner
+ * appearing, a draft wrapping to a second line) only that subtree re-renders.
+ * The panel's follow-bottom effect runs on renders of the PANEL, so it never
+ * fired: the reserve grew, the scroll position did not move, and the newly
+ * taller glass simply covered another 44px of whatever was at the bottom of the
+ * band. Verified as the composer's own dialog refusal landing on top of the
+ * dialog card it tells you to answer — it occluded the escape row entirely.
+ *
+ * `grewBy` has ALREADY been added to `scrollHeight` by the time this is asked,
+ * so the distance the reader was at BEFORE the growth is the current one minus
+ * it. Shrinking never scrolls: giving room back must not yank the view.
+ */
+export function followsFooterGrowth(
+  m: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  grewBy: number,
+): boolean {
+  if (grewBy <= 0) return false
+  return m.scrollHeight - m.scrollTop - m.clientHeight - grewBy < FOLLOW_THRESHOLD_PX
+}

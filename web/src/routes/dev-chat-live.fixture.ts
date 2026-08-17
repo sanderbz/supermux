@@ -1198,6 +1198,36 @@ export function liveStates(nowMs: number): LiveState[] {
       dialog: BENCH_DIALOGS.question,
     },
     {
+      // THE REFUSAL OVER THE ANSWERS (r2 finding 34). The composer's own
+      // dialog-question notice and the card it points at, on one screen — the
+      // pair that shipped overlapping, because the track reserves room for the
+      // composer by MEASURING it and nothing re-pinned the scroll when that
+      // measurement grew. A bench state rather than a comment: the failure is
+      // two boxes intersecting, which is exactly what a screenshot catches and
+      // no unit test can.
+      id: 'question-refused',
+      title: 'A question, and the refusal that must not cover its answers',
+      board: 'r2 finding 34',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ AskUserQuestion',
+        permission_request: {
+          tool: 'AskUserQuestion',
+          summary: 'AskUserQuestion',
+          kind: 'tool',
+        },
+      }),
+      entries: release,
+      turnAgo: 8,
+      dialog: BENCH_DIALOGS.question,
+      composer: {
+        draft: '',
+        notice: { kind: 'dialog-question' },
+      },
+    },
+    {
       id: 'trust-gate',
       title: 'The startup wedge — answerable, with no boot banner to pin against',
       board: 'the states audit, catalog perm.trust_folder',
@@ -1391,6 +1421,7 @@ export const STATE_IDS = [
   'dialog-refused',
   'dialog-aborted',
   'question',
+  'question-refused',
   'trust-gate',
   'limit-blocked',
   // PTY-07 — the dialog/pty families.

@@ -175,6 +175,20 @@ export interface ChatConversationProps {
    *  the announcement has to know (`live-layer.tsx` `ASK_SAY`). */
   signIn?: boolean
   /**
+   * The floor this track reserves for the composer just got BIGGER by `grewBy`
+   * pixels — the banner appeared, the draft wrapped (r2 finding 34).
+   *
+   * The owner of `scrollRef` has to hear about it, because the reserve is
+   * measured HERE and the follow-bottom pin lives THERE: the growth re-renders
+   * only this subtree, so the panel's own every-render pin never fired, the
+   * track's padding grew under a scroll position nobody moved, and the taller
+   * glass simply covered another band's worth of the newest content. It was
+   * found as the composer's dialog-question refusal ("Pick one of the answers
+   * above") landing on top of the answers, hiding the card's escape row
+   * entirely. `backlog.ts::followsFooterGrowth` is the decision.
+   */
+  onReserveGrew?: (grewBy: number) => void
+  /**
    * The LIVE composer (fase A4 T3) — a slot, for the same reason `provisional`
    * is one: it talks to the input plane and the peek lens, and this component
    * may not. Omit it and the footer is A3's read-only `ComposerShell`, which is
@@ -297,6 +311,7 @@ export function ChatConversation({
   onDismissAttention,
   onExpandAttention,
   signIn,
+  onReserveGrew,
   dialog,
   dialogBusy,
   onChooseDialog,
@@ -358,6 +373,39 @@ export function ChatConversation({
 
   // The room the floating composer needs, MEASURED (daily-driver QA #12).
   const [footerRef, footerH] = useMeasuredHeight()
+
+  // …AND THE VIEW FOLLOWS IT (r2 finding 34).
+  //
+  // Reserving the room was only half of QA #12. `footerH` is state in THIS
+  // component, so a composer that grows — a refusal banner appearing, a draft
+  // wrapping — re-renders only this subtree; the panel's follow-bottom effect
+  // runs on renders of the PANEL and never sees it. The track's padding grew
+  // under a scroll position nobody moved, and the taller glass covered another
+  // band's worth of the newest content. It was found as the composer's own
+  // dialog-question refusal ("Pick one of the answers above") landing on top of
+  // the answers: it hid the card's escape row completely and clipped the
+  // options — the notice pointed at something it was itself covering.
+  //
+  // A LAYOUT effect, so the correction lands before the browser paints, and only
+  // when the reader was already at the bottom (`followsFooterGrowth`): somebody
+  // reading back through the conversation must not be yanked to the end because
+  // a banner appeared.
+  //
+  // Keyed on the RESERVE rather than on the raw measurement, because the reserve
+  // is what moved the scroll height — and its very first change is the one that
+  // matters most: the 90px fallback giving way to a measured composer that is
+  // taller, which is the state every surface mounts through.
+  // The SCROLLING itself is the owner's, not this component's: `scrollRef` is a
+  // prop, and the surface that created it is also the one that knows whether the
+  // reader is pinned. So this reports the growth and the panel decides — which
+  // is the same split every other live behaviour on this surface uses.
+  const reserve = trackBottom(footerH, phone, stat != null)
+  const lastReserve = React.useRef<number | null>(null)
+  React.useLayoutEffect(() => {
+    const prev = lastReserve.current
+    lastReserve.current = reserve
+    if (prev != null && reserve > prev) onReserveGrew?.(reserve - prev)
+  }, [reserve, onReserveGrew])
 
   // Inline-first (A4 T5): the row is in the band, the evidence is one tap away.
   // The expansion is presentation-local state — nothing above this component
@@ -426,11 +474,11 @@ export function ChatConversation({
             <div
               aria-hidden
               className="chat-track-scrim absolute inset-x-0 bottom-0"
-              style={{ height: trackBottom(footerH, phone, stat != null) }}
+              style={{ height: reserve }}
             />
             <JumpToBottom
               show={showJumpToBottom}
-              bottom={trackBottom(footerH, phone, stat != null) - 16}
+              bottom={reserve - 16}
               onClick={onJumpToBottom}
             />
           </>
@@ -463,7 +511,7 @@ export function ChatConversation({
         //
         // The BOTTOM is measured, not a constant (QA #12 — see `trackBottom`).
         className={`flex min-h-full flex-col ${phone ? 'px-[14px] pt-[86px]' : 'px-6 pt-[80px]'}`}
-        style={{ paddingBottom: trackBottom(footerH, phone, stat != null) }}
+        style={{ paddingBottom: reserve }}
       >
         {/* Bottom-anchored, like every board: the column sits on the floor of
             the pane and grows upward. */}

@@ -40,6 +40,8 @@ import { TruncationProvider } from './truncation'
 import { isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
 import {
+  FOLLOW_THRESHOLD_PX,
+  followsFooterGrowth,
   jumpVisible,
   restoredScrollTop,
   shouldLoadOlder,
@@ -74,8 +76,6 @@ import { exposeLatency, latencySummary, serverNowMs } from './latency'
 const SessionSchedulesSheet = React.lazy(
   () => import('@/components/session-schedules/session-schedules-sheet'),
 )
-
-const FOLLOW_THRESHOLD_PX = 48
 
 export default function ChatPanel({
   name,
@@ -311,6 +311,20 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   })
+
+  // …and the same pin, for the one thing that grows WITHOUT re-rendering this
+  // component: the composer (r2 finding 34). The track reserves room for it by
+  // MEASURING it, and that measurement is state inside `ChatConversation` — so
+  // a refusal banner appearing re-rendered only that subtree, the effect above
+  // never ran, and the newly taller glass covered another 76px of the live
+  // band. It was found as the composer's own dialog-question refusal landing on
+  // top of the dialog card it tells you to answer.
+  const onReserveGrew = React.useCallback((grewBy: number) => {
+    const el = scrollRef.current
+    if (!el || !followsFooterGrowth(el, grewBy)) return
+    pinnedRef.current = true
+    el.scrollTop = el.scrollHeight
+  }, [])
 
   // ── The input plane (fase A4 T3) ───────────────────────────────────────────
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft
@@ -619,6 +633,7 @@ export default function ChatPanel({
       // The sign-in card is what is asking on this frame, so it is what the
       // screen reader is told about (`ASK_SAY`).
       signIn={login.sighting != null}
+      onReserveGrew={onReserveGrew}
       // The live band's working row says what the session is ACTUALLY doing
       // during a stall — `session.activity` still names the last tool that ran
       // (`live-layer.tsx` `stalled`).
