@@ -189,6 +189,50 @@ test.describe('roster keyboard + actions', () => {
     ).toHaveCount(0)
   })
 
+  test('in the tile grid ArrowDown moves DOWN a row, not right one item', async ({
+    page,
+  }) => {
+    // The grid pattern the roving module cites, and the half that shipped as
+    // `±1` on every arrow: in a multi-column roster ArrowDown was byte-identical
+    // to ArrowRight, so reaching the tile visually below took one press per
+    // column. Asserted as GEOMETRY (the landing tile is lower and roughly in the
+    // same column), never as an index, because the index is what was wrong.
+    await page.setViewportSize({ width: 760, height: 900 })
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(backend.baseUrl)
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+
+    const boxes = async () =>
+      page.evaluate((sel) => {
+        const items = [...document.querySelectorAll<HTMLElement>(`${sel} [data-roving-item]`)]
+        return items.map((el) => {
+          const r = el.getBoundingClientRect()
+          return { name: el.getAttribute('data-roving-item'), top: r.top, left: r.left }
+        })
+      }, ROSTER_LIST)
+
+    const grid = await boxes()
+    expect(grid.length, 'four seeded tiles').toBeGreaterThan(3)
+    const columns = grid.filter((b) => Math.abs(b.top - grid[0]!.top) <= 4).length
+    expect(columns, 'the 760px viewport wraps the grid into rows').toBeGreaterThan(1)
+    expect(columns, '…and is not one flat row').toBeLessThan(grid.length)
+
+    await page.evaluate((sel) => {
+      document.querySelector<HTMLElement>(`${sel} [data-roving-item]`)?.focus()
+    }, ROSTER_LIST)
+    await page.keyboard.press('ArrowDown')
+
+    const landed = await focusedName(page)
+    const first = grid[0]!
+    const target = grid.find((b) => b.name === landed)
+    expect(target, 'ArrowDown landed on a roster tile').toBeTruthy()
+    expect(target!.top, 'the landing tile is on a LOWER visual row').toBeGreaterThan(first.top)
+    expect(
+      Math.abs(target!.left - first.left),
+      'and in the same column — not simply the next item',
+    ).toBeLessThan(4)
+  })
+
   test('Mark unread lights the row up, and the cursor survives the next load', async ({
     page,
   }) => {
