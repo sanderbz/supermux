@@ -139,6 +139,17 @@ export const CONFIRM = {
     confirm: 'Overwrite',
     cancel: 'Cancel',
   },
+  // B5/T5.3 — archiving a session that is still running. Hoisted out of
+  // `use-session-actions.ts`, where it lived as an inline string, so the
+  // archive/schedule contract sentence below can be appended from ONE place
+  // and stay identical to the Archived sheet's (§15.5: "blocked things state
+  // why with the same sentence everywhere").
+  archiveRunningSession: {
+    title: 'Archive this running session?',
+    body: 'The agent stops, the terminal session ends, and the tile leaves the overview. You can restore it from the Archived sheet.',
+    confirm: 'Archive',
+    cancel: 'Keep running',
+  },
   // mode-shift: bypass is launch-only, so switching to it RESTARTS the session.
   switchToBypass: {
     title: 'Switch to Bypass permissions?',
@@ -168,6 +179,27 @@ export function killTeamLeadConfirm(teammateCount: number): ConfirmCopy {
     cancel: 'Keep running',
   }
 }
+
+// ── Lifecycle contracts (B5) ──────────────────────────────────────────────────
+
+/** The one-sentence contracts behind supermux's lifecycle verbs. Each string
+ *  here has MORE THAN ONE call site by design — that is the whole point. §15.5
+ *  asks that a blocked or surprising thing "state why with the same sentence
+ *  everywhere", so the sentence lives here and the surfaces import it rather
+ *  than each inventing its own phrasing and drifting apart.
+ *
+ *  `BRAND.md` §6g carries the full verb-by-verb table; these are the strings
+ *  that table describes, and a change to one is a diff in both. */
+export const LIFECYCLE = {
+  /** B5/T5 — the archive/schedule contract, chosen at gate G4 (option a).
+   *  Rendered by BOTH the archive confirm and the Archived sheet. Before B5
+   *  the scheduler was archive-blind and an archived session was silently
+   *  restarted by its own schedule while staying hidden from the overview;
+   *  now archiving pauses the schedules and unarchiving resumes them, with
+   *  nothing mutated on the schedule rows. */
+  archivePausesSchedules:
+    'Scheduled jobs on an archived session are paused, and start running again when you restore it.',
+} as const
 
 // ── Connection / status banner ────────────────────────────────────────────────
 

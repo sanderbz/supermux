@@ -21,7 +21,7 @@ import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { useToast } from '@/components/ui/use-toast'
-import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
+import { CONFIRM, LIFECYCLE, killTeamLeadConfirm } from '@/brand/copy'
 
 export interface UseSessionActions {
   /** True while either action is mid-flight. Callers should disable their
@@ -85,11 +85,16 @@ export function useSessionActions(sessionName: string): UseSessionActions {
       // Archive on a NOT-yet-stopped session also stops + tears down the pty
       // (server-side), so the desktop hover-kebab opts into a confirm for that
       // path. A stopped tile's archive is reversible from the Archived sheet,
-      // so it lands without a confirm (the default). Inline copy — small enough
-      // that hoisting to brand/copy.ts would be more code than the string.
+      // so it lands without a confirm (the default).
+      //
+      // B5/T5.3: the copy moved to `brand/copy.ts` and now carries the
+      // archive/schedule contract sentence — the SAME sentence the Archived
+      // sheet renders. Archiving pauses this session's scheduled jobs, which
+      // is the half of the transaction users could not previously see.
       if (opts?.confirm) {
+        const c = CONFIRM.archiveRunningSession
         const ok = window.confirm(
-          'Archive this running session?\n\nThe agent stops, the tmux session ends, and the tile leaves the overview. You can restore it from the Archived sheet.',
+          `${c.title}\n\n${c.body} ${LIFECYCLE.archivePausesSchedules}`,
         )
         if (!ok) return
       }

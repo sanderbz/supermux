@@ -35,6 +35,7 @@ import {
   type UseArchivedSessionsResult,
 } from '@/hooks/use-archived-sessions'
 import { displayLabel, type ApiSession } from '@/lib/api'
+import { LIFECYCLE } from '@/brand/copy'
 
 export interface ArchivedSheetProps {
   open: boolean
@@ -111,6 +112,16 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
             </AnimatePresence>
           </ul>
         )}
+        {/* B5/T5.3 — the archive/schedule contract, stated where the archived
+            rows are. This is the SAME sentence the archive confirm renders
+            (`LIFECYCLE.archivePausesSchedules`), imported rather than retyped,
+            so the two can never drift. Shown only when there is something
+            archived: on an empty sheet it would be a rule about nothing. */}
+        {count > 0 && !isError ? (
+          <p className="px-3 pb-1 pt-3 text-[12px] leading-snug text-muted-foreground">
+            {LIFECYCLE.archivePausesSchedules}
+          </p>
+        ) : null}
       </div>
     </ShellOverlay>
   )

@@ -231,6 +231,43 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
             pre_output: None,
         };
     }
+    // ARCHIVE CONTRACT (B5/T5, gate G4 option a): archiving a session PAUSES
+    // its schedules; unarchiving resumes them. Nothing on the `schedules` row
+    // is mutated, so the pause is a pure function of `sessions.archived` and is
+    // exactly as reversible as `unarchive` itself.
+    //
+    // Before this guard the scheduler was archive-blind end to end, and
+    // `send_text_with_preview` auto-started whatever it was handed — so an
+    // archived session was silently brought back to life by its own cron while
+    // `list` kept hiding it. `send_text_with_preview` now refuses too (that is
+    // the load-bearing fix); this check exists so the ledger says *why* with a
+    // readable `skipped` instead of a generic "send failed: NotFound" error —
+    // and, critically, so it does not push a phone notification every tick.
+    match db::sessions::exists_active(&state.pool, &sched.session).await {
+        Ok(false) => {
+            // Distinguish "archived" from "gone" so the note is honest.
+            let archived = db::sessions::exists(&state.pool, &sched.session)
+                .await
+                .unwrap_or(false);
+            return JobOutcome {
+                status: "skipped",
+                note: if archived {
+                    format!(
+                        "session '{}' is archived — its schedules are paused until you unarchive it",
+                        sched.session
+                    )
+                } else {
+                    format!("session '{}' no longer exists", sched.session)
+                },
+                pre_output: None,
+            };
+        }
+        Ok(true) => {}
+        // A DB error is not a licence to skip a real job: fall through and let
+        // the send itself decide.
+        Err(e) => tracing::warn!(session = %sched.session, error = %e, "archive check failed"),
+    }
+
     let pre_output = if sched.watch == 1 {
         sessions::lifecycle::peek(state, &sched.session, 200).await.ok()
     } else {

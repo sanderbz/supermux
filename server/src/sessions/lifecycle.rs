@@ -1177,7 +1177,15 @@ pub async fn send_text_with_preview(
     text: &str,
     preview_text: Option<&str>,
 ) -> Result<(), AppError> {
-    if !db::sessions::exists(&state.pool, name).await? {
+    // ARCHIVE CONTRACT (B5/T5): `exists_active`, never the archive-blind
+    // `exists`. This function AUTO-STARTS a session that is not alive (three
+    // lines down), so gating it on `exists` meant any caller — most visibly a
+    // schedule tick — silently resurrected an archived session: running again,
+    // yet still hidden from `list` (which filters `archived = 0`). The guard
+    // belongs here rather than only in the scheduler so a future job kind or
+    // delivery path cannot reintroduce the bug. An archived session is not a
+    // send target; unarchive it first.
+    if !db::sessions::exists_active(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
     let rt = state.runtime_for(name).await?;
