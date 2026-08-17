@@ -20,10 +20,11 @@
 //   2. move the pointer OFF the card (neutral corner) → assert BOTH the picker
 //      AND the stopped-peek Resume trigger stay mounted (the pin holds — the
 //      regression guard). Pre-fix this is exactly when everything unmounted.
-//   3. pick the seeded conversation → the tmux command carries `--resume <id>`.
+//   3. pick the seeded conversation → the launched command carries
+//      `--resume <id>` (read back through `/api/sessions/{name}/peek`, which is
+//      runtime-agnostic — the default runtime is native, not tmux).
 //   4. (no-degradation) after the picker closes, the surface collapses again.
 
-import { execFileSync } from 'node:child_process'
 import {
   mkdtempSync,
   mkdirSync,
@@ -67,17 +68,17 @@ function seedConversation(
   writeFileSync(join(proj, `${id}.jsonl`), lines.join('\n') + '\n')
 }
 
-/** Capture the tmux pane content for a session. Empty string if no pane yet. */
-function capturePane(sessionName: string): string {
-  try {
-    return execFileSync(
-      'tmux',
-      ['capture-pane', '-p', '-t', `supermux-${sessionName}`],
-      { encoding: 'utf8' },
-    )
-  } catch {
-    return ''
-  }
+/**
+ * What the session's terminal shows. Empty string if it has none yet.
+ *
+ * ASKED OF THE SERVER, not of tmux. A session created without an explicit
+ * `runtime` defaults to NATIVE now (`sessions/mod.rs`), so there is no tmux
+ * pane named `supermux-<name>` to capture and this shelled out to a "can't find
+ * pane" error on every poll. `GET /api/sessions/{name}/peek` reads the same
+ * terminal on whichever runtime the product actually chose.
+ */
+async function capturePane(backend: Backend, sessionName: string): Promise<string> {
+  return api(backend).peek(sessionName, 200)
 }
 
 /** The resume reached the spawn iff the pane echoes `claude --resume <id>` OR
@@ -85,8 +86,12 @@ function capturePane(sessionName: string): string {
  *  machine where it's installed and clears the echoed shell line — its trust
  *  prompt / workspace banner is then the only proof the launch ran). Either
  *  means the picked id reached the launch builder. */
-function resumeLaunched(sessionName: string, id: string): boolean {
-  const out = capturePane(sessionName)
+async function resumeLaunched(
+  backend: Backend,
+  sessionName: string,
+  id: string,
+): Promise<boolean> {
+  const out = await capturePane(backend, sessionName)
   if (out.includes(`--resume ${id}`)) return true
   // claude TUI took over: its first-run banner / trust prompt is visible.
   return /Accessing workspace|trust this folder|Claude Code/i.test(out)
@@ -189,9 +194,9 @@ test.describe('resume picker — overview tile hover-pin (fix/resume-hover)', ()
     // The pick reached the spawn — the launch carries `--resume <id>` (proving
     // the picker was usable end-to-end after the mouse-leave).
     await expect
-      .poll(() => resumeLaunched(SESSION, CONV_ID), {
+      .poll(() => resumeLaunched(backend, SESSION, CONV_ID), {
         timeout: 20_000,
-        message: 'tmux pane should show the resumed claude launch',
+        message: 'the session terminal should show the resumed claude launch',
       })
       .toBe(true)
 

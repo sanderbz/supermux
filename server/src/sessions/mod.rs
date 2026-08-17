@@ -950,11 +950,17 @@ pub struct CreateInput {
     /// this way reads as `bypass` and the toggle round-trips.
     #[serde(default)]
     pub bypass_permissions: Option<bool>,
-    /// Which terminal backend drives this session (migration 0024): `"tmux"`
-    /// (the default and the whole existing fleet) or `"native"` (the tmux-less
-    /// pty holder). Absent = `"tmux"`, so every existing client body creates
-    /// exactly the session it always did. Anything else is a 400; `"native"`
-    /// combined with a `host_id` is a 400 too (see [`create`]).
+    /// Which terminal backend drives this session (migration 0024): `"native"`
+    /// (the tmux-less pty holder) or `"tmux"`. Anything else is a 400;
+    /// `"native"` combined with a `host_id` is a 400 too (see [`create`]).
+    ///
+    /// **Absent = NATIVE for a local session**, tmux for a remote-host one —
+    /// the resolution [`create`] actually performs, a few lines below. This
+    /// docstring said "Absent = `tmux`, the default and the whole existing
+    /// fleet" long after native became the default, and it is the reason two
+    /// e2e specs asserted against `tmux capture-pane -t supermux-<name>` for a
+    /// session that has no tmux pane at all and logged "can't find pane" until
+    /// they timed out.
     #[serde(default)]
     pub runtime: Option<String>,
 }

@@ -19,7 +19,6 @@
 // The mobile test runs in a `hasTouch`/`isMobile` context so `matchMedia(
 // '(pointer: coarse)')` matches and <ResponsiveSheet> forks to the Vaul sheet.
 
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,20 +60,24 @@ function seedConversation(
   writeFileSync(join(proj, `${id}.jsonl`), lines.join('\n') + '\n')
 }
 
-/** Capture the tmux pane content for a session and check for a needle. The
- *  launch builder echoes `claude --resume <id>` into the pane when tmux runs the
- *  shell line. */
-function paneContains(sessionName: string, needle: string): boolean {
-  try {
-    const out = execFileSync(
-      'tmux',
-      ['capture-pane', '-p', '-t', `supermux-${sessionName}`],
-      { encoding: 'utf8' },
-    )
-    return out.includes(needle)
-  } catch {
-    return false
-  }
+/**
+ * What the session's terminal shows, and whether `needle` is in it.
+ *
+ * ASKED OF THE SERVER, not of tmux. This used to shell out to
+ * `tmux capture-pane -t supermux-<name>` — but a session created without an
+ * explicit `runtime` defaults to NATIVE now (`sessions/mod.rs`), so there is no
+ * tmux pane to capture and every poll logged "can't find pane" until it timed
+ * out. `GET /api/sessions/{name}/peek` is the runtime-agnostic read of the same
+ * thing (it is exactly what the harness exposes for verifying pty output), so
+ * this assertion now works on whichever runtime the product actually chose.
+ */
+async function paneContains(
+  backend: Backend,
+  sessionName: string,
+  needle: string,
+): Promise<boolean> {
+  const out = await api(backend).peek(sessionName, 200)
+  return out.includes(needle)
 }
 
 const CONV_ID = 'abcdef01-2345-6789-abcd-ef0123456789'
@@ -145,11 +148,11 @@ async function runResumeFlow(
   await expect(row).toBeVisible()
   await row.click()
 
-  // The launched tmux command carries the picked conversation id.
+  // The launched command carries the picked conversation id.
   await expect
-    .poll(() => paneContains(name, `--resume ${CONV_ID}`), {
+    .poll(() => paneContains(backend, name, `--resume ${CONV_ID}`), {
       timeout: 20_000,
-      message: 'tmux pane should show `claude --resume <id>`',
+      message: 'the session terminal should show `claude --resume <id>`',
     })
     .toBe(true)
 }
