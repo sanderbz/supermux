@@ -1260,25 +1260,44 @@ export function useLiveTerm(
           return false
         }
       })()
+      // Force xterm to re-measure: clear the renderer's char atlas and refit so
+      // cell width — and the glyph cache — track the now-loaded face.
+      const remeasure = () => {
+        if (disposedRef.current) return
+        try {
+          ;(term as Terminal & { clearTextureAtlas?: () => void }).clearTextureAtlas?.()
+          fit.fit()
+        } catch {
+          /* non-fatal — first-paint already used the fallback chain */
+        }
+      }
       if (fonts?.load && !alreadyLoaded) {
-        void fonts
-          .load(faceSpec)
-          .then(() => {
-            if (disposedRef.current) return
-            try {
-              // Force xterm to re-measure: clear the renderer's char atlas
-              // and refit so cell width tracks the now-loaded font.
-              ;(
-                term as Terminal & { clearTextureAtlas?: () => void }
-              ).clearTextureAtlas?.()
-              fit.fit()
-            } catch {
-              /* non-fatal — first-paint already used the fallback chain */
-            }
-          })
+        void fonts.load(faceSpec).then(remeasure).catch(() => {
+          /* font not reachable (offline first-paint, blocked) — the
+             fallback chain in fontFamily still renders text legibly. */
+        })
+      }
+      // THE ICON FACE, WARMED HERE AND NOWHERE ELSE.
+      //
+      // globals.css scopes the 935 KB patched face to a `unicode-range` over the
+      // Private Use Areas, so the browser would otherwise fetch it lazily — at
+      // the moment a devicon first appears, which is exactly too late: xterm
+      // rasterises into a texture atlas synchronously, so that glyph would paint
+      // as tofu and stay tofu until something else invalidated the atlas.
+      //
+      // Asking for one PUA codepoint here pulls the whole face in the
+      // background, once a terminal is genuinely on screen — which is the only
+      // context that can ever need it. Routes that mount no terminal (the
+      // roster, settings, files) never pay the bytes, which is the entire point
+      // of dropping the unconditional `<link rel=preload>` from index.html.
+      // U+E5FA is nf-seti-folder, in the icon face's range and never in the
+      // core subset's.
+      if (fonts?.load) {
+        void fonts.load(`${fontSize}px "JetBrainsMono Nerd Font Mono"`, '\u{E5FA}')
+          .then(remeasure)
           .catch(() => {
-            /* font not reachable (offline first-paint, blocked) — the
-               fallback chain in fontFamily still renders text legibly. */
+            /* icons unreachable — core text still renders; only exotic PUA
+               glyphs fall back, exactly as they did before this font shipped. */
           })
       }
     } catch {

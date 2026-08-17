@@ -72,6 +72,13 @@ export default defineConfig({
         // content-hashed, so CacheFirst is safe and `cleanupOutdatedCaches`
         // sweeps superseded revisions on every SW activation.
         globPatterns: ['**/*.{js,css,svg,png,woff2}'],
+        // …but NOT the two full Nerd Font faces. They are 935 KB each and are
+        // `unicode-range`-scoped in globals.css to PUA icon glyphs, so the app
+        // is fully usable without them (the 86 KB `-core` subsets ARE precached
+        // and cover all terminal text plus Powerline). Precaching them made
+        // every first visit — including a phone on 3G that never opens a
+        // terminal — pay 1.87 MB before the SW would activate.
+        globIgnores: ['fonts/JetBrainsMonoNerdFontMono-{Regular,Bold}.woff2'],
         // PUSH: import the hand-written push/notificationclick handlers into the
         // generated SW. This ADDS listeners without switching to injectManifest,
         // so the offline-shell precaching behaviour is left untouched. The path

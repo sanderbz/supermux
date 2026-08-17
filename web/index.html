@@ -30,17 +30,17 @@
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="supermux" />
-    <!-- Embedded terminal font (Powerline + Nerd Font glyphs). Preload the
-         Regular face so xterm's font-ready refit fires as soon as possible —
-         no flash of fallback (Menlo) glyphs misaligning the grid. Bold is
-         loaded lazily by @font-face when the shell first writes bold text. -->
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/JetBrainsMonoNerdFontMono-Regular.woff2"
-      crossorigin="anonymous"
-    />
+    <!-- NO FONT PRELOAD — deliberately.
+         The terminal font used to be preloaded here so xterm's font-ready refit
+         fired as early as possible. It cost 935 KB at the browser's HIGHEST
+         fetch priority on EVERY route, including the roster where no terminal
+         ever mounts — larger than the app bundle it was competing with, and the
+         single biggest term in a 9.1 s Fast-3G FCP.
+         What replaces it: globals.css splits the family into an 86 KB `-core`
+         face and a `unicode-range`-scoped icon face (see the comment there), and
+         `use-live-term.ts` calls `document.fonts.load()` when a terminal
+         actually mounts — the same refit, paid for only by the routes that use
+         it. `font-display: swap` covers the gap with Menlo. -->
     <title>supermux</title>
   </head>
   <body>
