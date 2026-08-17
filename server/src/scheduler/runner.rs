@@ -243,9 +243,9 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     // exactly as reversible as `unarchive` itself.
     //
     // Before this guard the scheduler was archive-blind end to end, and
-    // `send_text_with_preview` auto-started whatever it was handed — so an
+    // `send_harness_text` auto-started whatever it was handed — so an
     // archived session was silently brought back to life by its own cron while
-    // `list` kept hiding it. `send_text_with_preview` now refuses too (that is
+    // `list` kept hiding it. `send_harness_text` now refuses too (that is
     // the load-bearing fix); this check exists so the ledger says *why* with a
     // readable `skipped` instead of a generic "send failed: NotFound" error —
     // and, critically, so it does not push a phone notification every tick.
@@ -293,7 +293,7 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
 
     for (sent, preview) in deliveries(sched, wrap) {
         if let Err(e) =
-            sessions::lifecycle::send_text_with_preview(state, &sched.session, &sent, Some(&preview))
+            sessions::lifecycle::send_harness_text(state, &sched.session, &sent, Some(&preview))
                 .await
         {
             return JobOutcome {

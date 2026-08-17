@@ -2,7 +2,7 @@
 //!
 //! The bug this file locks down: before B5 the scheduler was entirely
 //! archive-blind. `enabled_with_next()` never joined `sessions`, and the tmux
-//! job body called `sessions::lifecycle::send_text_with_preview`, whose
+//! job body called `sessions::lifecycle::send_harness_text`, whose
 //! existence check was the archive-BLIND `db::sessions::exists`. That function
 //! then *starts* the session when it is not alive. Net effect: archiving a
 //! session hid it from `list` (which filters `archived = 0`) while its own
@@ -17,7 +17,7 @@
 //! and *never* a start.
 //!
 //! The second half of the contract is the negative one, and it is the reason
-//! `send_text_with_preview` is asserted directly here: no OTHER caller may
+//! `send_harness_text` is asserted directly here: no OTHER caller may
 //! resurrect an archived session either. The guard lives at the send, not only
 //! at the scheduler, so a future job kind cannot reintroduce the bug.
 
@@ -215,7 +215,7 @@ async fn send_text_refuses_an_archived_session_instead_of_starting_it() {
         .await
         .unwrap();
 
-    let err = sessions::lifecycle::send_text_with_preview(&state, "hidden", "hello", None)
+    let err = sessions::lifecycle::send_harness_text(&state, "hidden", "hello", None)
         .await
         .expect_err("an archived session is not a send target");
     let msg = format!("{err:?}");

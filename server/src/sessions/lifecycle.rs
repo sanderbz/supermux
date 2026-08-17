@@ -1216,20 +1216,73 @@ pub async fn kill_teammate_pane(
     Ok(())
 }
 
-/// Send literal text followed by Enter. Auto-wakes a stopped session.
-pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
-    send_text_with_preview(state, name, text, None).await
+/// Refuse text that would forge one of supermux's own transcript wrappers.
+///
+/// One rule, one message, shared by every untrusted-text delivery path — the
+/// same `agents::delegate::wrapper_markup` the delegate endpoint and the
+/// schedule hook already answer 400 with, so "may I write this string" has a
+/// single answer everywhere. See [`send_text`] for why this is a provenance
+/// question rather than an escaping one.
+fn reject_wrapper_markup(text: &str) -> Result<(), AppError> {
+    if crate::agents::delegate::wrapper_markup(text) {
+        return Err(AppError::BadRequest(
+            "text may not contain supermux wrapper markup — <supermux-delegation> and \
+             <supermux-schedule> are provenance claims only the harness may write"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
-/// [`send_text`], but the string recorded as the session's `last_send_text` can
-/// differ from the string typed into the pty.
+/// Send literal text followed by Enter. Auto-wakes a stopped session.
 ///
-/// Harness-authored deliveries wrap the payload (`<supermux-delegation>`, and
-/// Task 10's schedule tag). That wrapper is machinery for the receiving agent's
-/// transcript — it must never surface as the send preview the roster renders
-/// (`last-send-recall.tsx`) or as the text `receiptClaims` matches against.
+/// **This is the UNTRUSTED-TEXT door, and it is where wrapper forgery is
+/// stopped.** Everything that is not the harness itself arrives here: the chat
+/// composer and `POST /api/sessions/{name}/send`, the steering deliver loop, a
+/// schedule's `command:` follow-up, a boot job's second line, the board
+/// dispatcher. `<supermux-delegation>` / `<supermux-schedule>` are supermux's
+/// own PROVENANCE claims — `recall.rs::classify_prompt_body` and the chat
+/// renderer read them back as "Message from ●someone" / "Sent by schedule ⏱" —
+/// so a caller that could type one would be forging authenticated arrivals.
+///
+/// Until now the guard lived only in `agents::delegate` and `scheduler::hook`,
+/// i.e. in two of the three writers, and the parity corpus recorded the gap as
+/// if it were the design ("the forgery is stopped where it is written"). It was
+/// not: an ordinary send — typed into the real composer, no privileges — put a
+/// fake `Message from ●ceo-root` divider in another agent's transcript. In a
+/// product whose premise is agents talking to agents, that gives fabricated
+/// provenance to injected instructions, and the realistic attacker is not a
+/// hostile human but one agent echoing web/tool content into another session.
+///
+/// The refusal is server-side and at the FUNNEL, not per handler, so a new
+/// endpoint cannot reintroduce the hole by forgetting a check. The one caller
+/// allowed to write a wrapper is the harness itself, through
+/// [`send_harness_text`] — named so the exception is visible at the call site.
+///
+/// KNOWN RESIDUE, recorded rather than papered over: raw keystrokes on the pty
+/// WebSocket are the user's own keyboard and are not filtered, so a person can
+/// still type a wrapper into their own pane. That is a user forging a label in
+/// their own transcript, not one session forging provenance in another's.
+pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
+    reject_wrapper_markup(text)?;
+    send_harness_text(state, name, text, None).await
+}
+
+/// [`send_text`] for HARNESS-AUTHORED deliveries: no wrapper-markup guard, and
+/// the string recorded as `last_send_text` can differ from the string typed
+/// into the pty.
+///
+/// Two callers, both of which build supermux's own transcript wrappers with
+/// `agents::delegate::wrap_delegation` / the schedule tag after refusing
+/// forgeable markup in the untrusted parts (`from`, `prompt`, `title`):
+/// `agents::delegate` and `scheduler::runner`. `tests/archive_schedule_contract.rs`
+/// pins that list — a third caller is a review question, not a refactor.
+///
+/// The wrapper is machinery for the receiving agent's transcript: it must never
+/// surface as the send preview the roster renders (`last-send-recall.tsx`) or as
+/// the text `receiptClaims` matches against, hence `preview_text`.
 /// `preview: None` keeps the old behaviour (preview == what was sent).
-pub async fn send_text_with_preview(
+pub async fn send_harness_text(
     state: &AppState,
     name: &str,
     text: &str,
@@ -1302,12 +1355,17 @@ pub async fn send_keys(state: &AppState, name: &str, key: &str) -> Result<(), Ap
 }
 
 /// Paste `text` via a tmux buffer (bracketed). When `submit`, append Enter.
+///
+/// Carries [`send_text`]'s wrapper guard: `POST /api/sessions/{name}/paste` puts
+/// caller-supplied bytes on the same pty and into the same transcript, so
+/// exempting it would leave the forgery one endpoint away.
 pub async fn paste(
     state: &AppState,
     name: &str,
     text: &str,
     submit: bool,
 ) -> Result<(), AppError> {
+    reject_wrapper_markup(text)?;
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 

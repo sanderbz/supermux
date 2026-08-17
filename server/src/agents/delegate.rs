@@ -91,7 +91,15 @@ fn attr_safe(from: &str) -> bool {
 /// currently cannot tell a colleague's request from its owner's.
 ///
 /// **The wrapper is an authenticity claim, so it is unforgeable by
-/// construction rather than by escaping.** `from` and `prompt` are interpolated
+/// construction rather than by escaping** — a property that holds only because
+/// EVERY writer refuses the markup, not because this one does. The guard used to
+/// live here and in `scheduler::hook` alone, which left the ordinary
+/// `POST /api/sessions/{name}/send` (i.e. the chat composer) able to render a
+/// fake `Message from ●anyone`; it now also lives at the delivery funnel,
+/// `sessions::lifecycle::send_text` — see there for the full argument and for the
+/// one seam that stays unguarded on purpose.
+///
+/// `from` and `prompt` are interpolated
 /// into XML-ish markup; a prompt carrying `</supermux-delegation>` could close
 /// the tag early and append a second, attributed block, and a `from` carrying
 /// `"` could inject attributes. Escaping would silently rewrite an agent's
@@ -209,7 +217,7 @@ pub async fn delegate(
         // never should have, so answer 400 rather than emit forgeable markup.
         let wrapped = wrap_delegation(from, &input.prompt)
             .map_err(|e| AppError::BadRequest(e.into()))?;
-        lifecycle::send_text_with_preview(&state, to, &wrapped, Some(&input.prompt)).await?;
+        lifecycle::send_harness_text(&state, to, &wrapped, Some(&input.prompt)).await?;
     } else {
         lifecycle::send_text(&state, to, &input.prompt).await?;
     }
