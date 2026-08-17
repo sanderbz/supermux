@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useConnection } from '@/stores/connection-store'
 import { useConnectionReaggregator } from '@/hooks/use-connection-link'
+import { useConnectionVoiceTaken } from '@/lib/live-region-owner'
 
 /** How long the green "Connected" all-clear lingers before sliding away. */
 const SUCCESS_LINGER_MS = 1_200
@@ -119,6 +120,12 @@ export function ReconnectBanner() {
   const reduce = useReducedMotion() ?? false
   const state = useConnection((s) => s.state)
   const retry = useConnection((s) => s.retry)
+  // OWNERSHIP (fase B6 — live-region ownership). The chat surface's connection
+  // chip says the SAME thing about the SAME outage, in its own polite region,
+  // and it is the more specific of the two. When it is speaking, this banner
+  // goes visual-only: still painted, still retryable, just no longer the second
+  // voice reading "Reconnecting…" to a screen reader.
+  const voiceTaken = useConnectionVoiceTaken()
 
   // Tick the time-based offline-grace rule (reconnecting → offline after 30s).
   useConnectionReaggregator()
@@ -188,7 +195,7 @@ export function ReconnectBanner() {
 
   return (
     <div
-      aria-live="polite"
+      aria-live={voiceTaken ? 'off' : 'polite'}
       // In-flow row at the top of the content column: it reserves its own
       // vertical space when a banner is visible — pushing the route's own header
       // down — and collapses to zero height when there is none. It is NEVER an

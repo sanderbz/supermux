@@ -15,7 +15,10 @@
  * fixed header slot never moves.
  */
 
+import * as React from 'react'
+
 import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
+import { claimConnectionVoice } from '../../lib/live-region-owner'
 
 import type { ChatPresentation } from './connection'
 
@@ -30,6 +33,16 @@ export interface ConnectionNoteProps {
  * announcement, or the honest state becomes wallpaper.
  */
 export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
+  // OWNERSHIP (fase B6 — live-region ownership). While this chip is actually
+  // saying something, the global `ReconnectBanner` must not say the same thing
+  // in a second polite region — before this claim a dropped socket was
+  // announced twice, once per region, with no relationship between them. The
+  // claim tracks `state !== 'live'` and not merely "a chat surface is mounted":
+  // a healthy chat plane renders nothing here, and in that case the global
+  // banner is the correct — and only — voice for a backend outage.
+  const speaking = state !== 'live'
+  React.useEffect(() => (speaking ? claimConnectionVoice() : undefined), [speaking])
+
   if (state === 'live') return null
   const copy = CHAT_CONNECTION[state]
   const detail = copy.why + CHAT_CONNECTION_STAYS

@@ -765,12 +765,30 @@ export function PendingEchoes({
   onOpenTerminal?: () => void
 }) {
   const reduce = useReducedMotion() ?? false
+  // ONE VOICE PER STATE (fase B6 — live-region ownership).
+  //
+  // The live region is still the PERSISTENT wrapper (the same rule the
+  // composer's refusal banner follows): a role mounted at the same moment as
+  // its text is announced inconsistently, and "this message did not land" IS
+  // the one thing on this surface a user learns by NOT getting what they asked
+  // for. What changed is WHEN it speaks.
+  //
+  // `sending` and `unconfirmed` rows re-render the user's own text — text the
+  // user typed and can still see in the transcript above. Announcing them made
+  // an ordinary turn three announcements (recall strip → this band → the
+  // LiveAnnouncer's phase), i.e. the message read back twice before anything
+  // was said about the reply. The band therefore stays silent through the
+  // normal path and speaks only for the state that is genuinely news:
+  // `undelivered`, where the watchdog gave up and nothing else on screen says
+  // so. The wrapper is unconditional, so the region exists BEFORE its text
+  // does — which is what makes that one announcement reliable.
+  const failing = (pending ?? []).some((p) => p.state === 'undelivered')
   return (
-    // The live region is the PERSISTENT wrapper (the same rule the composer's
-    // refusal banner follows): a role mounted at the same moment as its text is
-    // announced inconsistently, and "this message did not land" is the one thing
-    // on this surface a user learns by NOT getting what they asked for.
-    <div data-testid="chat-pending-band" role="status" aria-live="polite">
+    <div
+      data-testid="chat-pending-band"
+      role="status"
+      aria-live={failing ? 'polite' : 'off'}
+    >
       <AnimatePresence initial={false}>
         {(pending ?? []).map((p) => (
           <motion.div

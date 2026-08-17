@@ -851,7 +851,20 @@ export function LastSendBar({ recall, sessionName, onOpenRecall }: LastSendBarPr
   }, [sessionName, recall?.text, recall?.sentAt.getTime()])
 
   const visible = !!recall && !dismissed
-  const ariaLive = visible ? 'polite' : 'off'
+  // NOT A LIVE REGION (fase B6 — live-region ownership).
+  //
+  // This bar is a persistent affordance showing the user's OWN last prompt, and
+  // it re-renders whenever recall changes over SSE. As a polite region it was
+  // the first of three voices narrating a single turn: the user's text here,
+  // the same text again in the pending band, and only then the LiveAnnouncer's
+  // phase sentence — so a send was read back twice before anything was said
+  // about what Claude was doing with it.
+  //
+  // The turn has ONE owner (`live-layer.tsx`'s LiveAnnouncer). Nothing here is
+  // news to the person who typed it, so this region says nothing; the content
+  // stays fully reachable — the button carries an explicit `aria-label` with
+  // the prompt and its time, and the bar is in the tab order.
+  const ariaLive = 'off' as const
 
   const openAndDismiss = React.useCallback(() => {
     setDismissed(true)
@@ -876,7 +889,6 @@ export function LastSendBar({ recall, sessionName, onOpenRecall }: LastSendBarPr
           animate={enter}
           exit={exit}
           aria-live={ariaLive}
-          role="status"
           className="glass shrink-0 overflow-hidden border-b border-border/50 backdrop-blur-md"
         >
           <div className="flex h-8 items-center gap-2 px-3 text-[12px]">
