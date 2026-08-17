@@ -379,26 +379,25 @@ async fn a_subagent_finishing_is_never_announced_as_the_turn_being_done() {
 /// heartbeat, the idle timeout and restart re-classification can produce
 /// transitions this test would not think to script.
 ///
-/// So the pin is structural and total: the classifier and its reaction layer
-/// must contain NO reference to the push module at all. No transition can
-/// notify anything, whatever the classifier decides, because there is nothing
-/// there to call.
+/// So the pin is structural, not behavioural — but B5/T2 made it a *scoped*
+/// structural pin rather than a total one, and the difference is deliberate.
 ///
-/// **Deferred to T2 (B5).** The harvest's answer to the two-writer hazard was to
-/// delete the detector path outright, which is what makes this assertion total.
-/// That is not acceptable here: `main` has since grown two load-bearing
-/// behaviours that live in the detector path, and the detector must survive as
-/// the fallback for providers that emit no hooks (codex / kimi / shell) so they
-/// do not silently lose notifications. T2 decides the exact shape and re-enables
-/// this test against it.
+/// The harvest's version asserted that the detector could not reach the push
+/// module AT ALL, which it achieved by deleting the detector path outright.
+/// That was rejected: `codex` / `kimi` / `shell` panes emit no hooks, so the
+/// detector is their ONLY route to a notification, and deleting it would have
+/// silently ended notifications for every non-Claude session. It also would
+/// have taken the 15 s team-finish window and the subagent gate with it.
+///
+/// What survives is the property that actually mattered. The CLASSIFIER
+/// (`status.rs`) and the terminal layer (`pty.rs`) still have no edge to push
+/// whatsoever — no transition they compute can notify anything, because there
+/// is nothing there to call. `auto_actions.rs` keeps exactly one, behind
+/// `notify::provider_emits_hooks`, and `notify_one_writer.rs` pins that a
+/// hook-capable session never takes it.
 #[test]
-#[ignore = "T2 decides the detector's fallback shape and re-enables this"]
-fn the_status_detector_has_no_edge_to_the_push_transport() {
-    for file in [
-        "src/sessions/auto_actions.rs",
-        "src/sessions/status.rs",
-        "src/sessions/pty.rs",
-    ] {
+fn the_status_classifier_has_no_edge_to_the_push_transport() {
+    for file in ["src/sessions/status.rs", "src/sessions/pty.rs"] {
         let src = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
         // Strip comments so the doc-comments EXPLAINING the absence don't trip
         // the check that enforces it.
@@ -410,11 +409,41 @@ fn the_status_detector_has_no_edge_to_the_push_transport() {
         for forbidden in ["crate::push", "send_push", "notify_event", "NotifCategory"] {
             assert!(
                 !code.contains(forbidden),
-                "{file} references `{forbidden}` — the status detector must not be able to \
+                "{file} references `{forbidden}` — the status classifier must not be able to \
                  notify anything. Push triggers belong at the hook arms (`crate::notify`).",
             );
         }
     }
+}
+
+/// The detector's single remaining edge is GATED, and this pins the gate rather
+/// than the absence.
+///
+/// A future edit that reaches `send_push_for` from a second place in
+/// `auto_actions.rs`, or that drops the provider check, reintroduces the
+/// two-writer race — which is silent at runtime. Counting the edge here is what
+/// makes that edit loud.
+#[test]
+fn the_detectors_only_push_edge_is_behind_the_provider_gate() {
+    let src = std::fs::read_to_string("src/sessions/auto_actions.rs").unwrap();
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(
+        code.matches("send_push_for").count(),
+        1,
+        "the detector fallback sends from exactly one place; a second is a \
+         second writer of pending_pushes",
+    );
+    assert!(
+        code.contains("provider_emits_hooks"),
+        "the detector's push path must be gated on `notify::provider_emits_hooks` \
+         — without it, Claude sessions get two competing writers and the loser's \
+         push vanishes silently",
+    );
 }
 
 #[tokio::test]

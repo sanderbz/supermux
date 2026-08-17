@@ -347,6 +347,32 @@ pub struct AppState {
     /// teammates pulses Idle every few seconds) into one notification fired
     /// after the system actually settles. Inserting cancels the prior task
     /// via the abort handle stored alongside.
+    ///
+    /// # ONE WRITER PER SESSION (B5/T2 — read before adding a caller)
+    ///
+    /// Two subsystems can legitimately want this slot, and they must never both
+    /// hold it for the same session:
+    ///
+    /// * [`crate::notify::notify_event`] — the hook-anchored path. Owns the
+    ///   slot for every provider where
+    ///   [`crate::notify::provider_emits_hooks`] is true (today: `claude`,
+    ///   which includes board and scheduler sessions).
+    /// * [`crate::sessions::auto_actions::maybe_push_on_transition`] — the
+    ///   status-detector fallback. Owns it for every other provider
+    ///   (`codex` / `kimi` / `shell`), which have no hooks at all.
+    ///
+    /// Both do `remove(name).abort()` + `insert(...)`. If both are live for one
+    /// session they cancel each other's timers in whichever order they happen
+    /// to land, and **the failure is silent** — a dropped push is
+    /// indistinguishable from a muted one, and nothing errors. The surviving
+    /// push may also be composed by the wrong writer, so even the count can
+    /// look correct while the copy is wrong.
+    ///
+    /// A THIRD writer must therefore not be added without extending that
+    /// partition. `tests/notify_one_writer.rs` asserts the split behaviourally
+    /// and `tests/push_triggers.rs` asserts it structurally (exactly one
+    /// `send_push_for` edge in the detector, and it is gated). Both will fail
+    /// loudly rather than silently dropping notifications.
     pub pending_pushes: Arc<DashMap<String, tokio::task::AbortHandle>>,
     /// Persistent SSH ControlMaster pool. One master per
     /// remote host, shared by every `Transport::Ssh` shell-out; warmed on

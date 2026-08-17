@@ -62,6 +62,17 @@ pub const FALLBACK_CRASHED: &str = "Session ended unexpectedly.";
 /// entry has to land on disk before [`tail_for_push`] can read it back.
 pub const FINISH_GRACE: Duration = Duration::from_secs(2);
 
+/// The finish grace for a TEAM LEAD (B5/T2.3, carried over from the detector
+/// path's `T_TEAM_FINISH`).
+///
+/// A lead legitimately bounces in and out of a finished turn every few seconds
+/// while it dispatches teammates, so a 2 s window would announce "done" several
+/// times per team run. 15 s of quiet is the evidence that the team itself is
+/// actually done. Only the finish tier waits this long — a needs-you or an
+/// error on a lead keeps the short grace, because delaying those is worse than
+/// delaying a finish.
+pub const TEAM_FINISH_GRACE: Duration = Duration::from_secs(15);
+
 /// How many bytes off the end of a transcript the disk fallback reads.
 const TAIL_READ_BYTES: u64 = 64 * 1024;
 
@@ -465,6 +476,45 @@ fn cap(s: &str) -> String {
 /// waiting out its transcript-flush grace — and it is what makes the sequence
 /// "Stop, then a new permission dialog 200 ms later" produce the dialog's
 /// banner rather than two.
+/// Does this provider emit Claude-style hooks?
+///
+/// **This predicate decides who owns `state.pending_pushes`** (B5/T2.2), which
+/// is why it is spelled out here rather than inferred at the call site.
+///
+/// Only `claude` installs the hook set supermux reads (`PermissionRequest`,
+/// `Stop`, `StopFailure`, `SessionEnd`, …); board and scheduler sessions are
+/// Claude sessions and so are covered by the same `true`. A `codex` / `kimi` /
+/// `shell` pane emits nothing, so for those the 2 s status detector remains the
+/// ONLY thing that can notice a turn boundary — and therefore stays live as the
+/// explicit fallback (`auto_actions::maybe_push_on_transition`).
+///
+/// EXACT match, deliberately: a new provider must opt IN by name. The failure
+/// mode of guessing wrong in the permissive direction is two writers racing on
+/// one map, which is silent; guessing wrong in the restrictive direction just
+/// means the fallback keeps working.
+pub fn provider_emits_hooks(provider: &str) -> bool {
+    provider == "claude"
+}
+
+/// Whether a hook-anchored `TurnFinished` should actually send, given the live
+/// outstanding subagent count (B5/T2.3).
+///
+/// This gate was grown by `main` INSIDE the detector path
+/// (`auto_actions::push_should_fire`). Demoting the detector without carrying
+/// it across would have re-opened the bug it closed: a multi-agent turn reads
+/// idle between subagent dispatches, and would cry "finished" mid-turn, once
+/// per dispatch.
+///
+/// Fail-safe by construction: the count is force-0'd on the main `Stop`
+/// (`hooks.rs`), so a lost `SubagentStop` can never permanently suppress a real
+/// finish — the worst case is one late notification, never a missing one.
+fn finish_gated_by_subagents(state: &AppState, session: &str) -> bool {
+    state
+        .session_activity(session)
+        .map(|a| a.subagents > 0)
+        .unwrap_or(false)
+}
+
 pub fn notify_event(state: &AppState, session: &str, ev: NotifEvent) {
     // Cancel the prior pending send FIRST, then install the new one. There is
     // no per-session concurrency here (hooks for one session arrive serially on
@@ -479,7 +529,30 @@ pub fn notify_event(state: &AppState, session: &str, ev: NotifEvent) {
         // before `tail_for_push` reads it back. Nothing else waits: a blocked
         // agent is blocked NOW.
         if matches!(ev, NotifEvent::TurnFinished) {
-            tokio::time::sleep(FINISH_GRACE).await;
+            // B5/T2.3 — the 15 s team-finish window, moved here from the
+            // detector path. A team LEAD legitimately bounces in and out of a
+            // finished turn every few seconds while it dispatches teammates, so
+            // its "done" is held until it has been quiet long enough that the
+            // team is actually done. Needs-you and error events keep the short
+            // grace even on a lead: those are unambiguous, and delaying them is
+            // the one thing worse than delaying a finish.
+            let is_lead = db::sessions::team_name(&task_state.pool, &task_session)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            tokio::time::sleep(if is_lead { TEAM_FINISH_GRACE } else { FINISH_GRACE }).await;
+
+            // B5/T2.3 — the subagent gate, likewise moved here. Re-read AFTER
+            // the grace, not before: the whole point is to let the count settle.
+            if finish_gated_by_subagents(&task_state, &task_session) {
+                tracing::debug!(
+                    session = %task_session,
+                    "notify: finish held — Task subagents are still in flight",
+                );
+                task_state.pending_pushes.remove(&task_session);
+                return;
+            }
         }
         deliver(&task_state, &task_session, ev).await;
         // Free the slot; a newer event that arrived meanwhile has already
