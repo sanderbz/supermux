@@ -50,12 +50,29 @@ pub struct HookPayload {
     /// A `Notification` / error message.
     #[serde(default)]
     pub message: Option<String>,
-    /// `StopFailure` error class (`rate_limit`, `billing_error`, …).
+    /// A hypothetical `StopFailure` error class. Claude Code does **not** send
+    /// this key — see [`error_info`] — but it is kept because it is the shape
+    /// this codebase's own tests and any future/derived payload use, and
+    /// reading it first costs nothing.
     #[serde(default)]
     pub error_type: Option<String>,
-    /// Some events carry the error text at the top level rather than `message`.
+    /// `StopFailure`'s ACTUAL class key (`rate_limit`, `billing_error`,
+    /// `authentication_failed`, …), and also the field `PostToolUseFailure`
+    /// uses for a free-text error SENTENCE. Which one it is, is decided by
+    /// shape — see [`error_info`].
     #[serde(default)]
     pub error: Option<String>,
+    /// `StopFailure`'s raw upstream body (a 429/5xx JSON envelope). Modelled so
+    /// the badge has something to say when the banner text is absent.
+    #[serde(default, alias = "errorDetails")]
+    pub error_details: Option<String>,
+    /// **The banner Claude showed the user**, forwarded verbatim by
+    /// `StopFailure`. On a quota hit this is
+    /// `"You've hit your session limit · resets 4:40am (Europe/Amsterdam)"` —
+    /// the only place the reset time exists on this plane, and the whole answer
+    /// to "when can I work again". It was unmodelled, so it was discarded.
+    #[serde(default, alias = "lastAssistantMessage")]
+    pub last_assistant_message: Option<String>,
     /// `SessionEnd`'s stated cause (`clear` / `logout` / `prompt_input_exit` /
     /// `other`). B5/T1.5 reads it to tell a session the USER ended from one
     /// that died on its own — only the latter is worth ringing a phone about.
@@ -149,10 +166,16 @@ pub fn first_question(p: &HookPayload) -> Option<String> {
 /// bytes, so we never split a multi-byte char), appending `…` when cut. Leading/
 /// trailing whitespace is trimmed first so a label is never padded.
 fn truncate(s: &str) -> String {
+    truncate_to(s, MAX_LABEL)
+}
+
+/// [`truncate`] at an explicit budget — the error message is not a label and
+/// does not share the label's 40-char ceiling (see [`MAX_ERROR_MESSAGE`]).
+fn truncate_to(s: &str, max: usize) -> String {
     let s = s.trim();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i >= MAX_LABEL {
+        if i >= max {
             out.push('…');
             break;
         }
@@ -282,25 +305,83 @@ pub fn permission_ask(p: &HookPayload) -> Option<PermissionAsk> {
     })
 }
 
+/// Cap on the error MESSAGE, which is not a label.
+///
+/// [`MAX_LABEL`] is 40 chars — enough for a tile's activity line and far too
+/// short for the one string that answers "when can I work again":
+/// `"You've hit your session limit · resets 4:40am (Europe/Amsterdam)"` is 63,
+/// and a 40-char cut lands mid-clause, deleting exactly the reset time the
+/// message exists to carry. This is display-only text on a tooltip and a push
+/// body, both of which already wrap.
+const MAX_ERROR_MESSAGE: usize = 160;
+
+/// Is `s` an error CLASS (`rate_limit`) rather than an error SENTENCE
+/// (`File does not exist. Note: your current working directory is …`)?
+///
+/// Both arrive under the key `error`: `StopFailure` puts the class there
+/// (`error: e.error ?? "unknown"`, CC 2.1.233 `mDt`), while
+/// `PostToolUseFailure` puts the tool's own failure text there. The shape is
+/// the discriminator — a class is a short lower-snake token and a sentence is
+/// not — which keeps one lenient payload type serving both events without a
+/// second parse or an event-name argument.
+fn is_error_class(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 40
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
+}
+
 /// Derive a `(type, message)` error pair from a `StopFailure` payload.
-/// `type` defaults to `"error"` when the payload omits `error_type`; `message`
-/// prefers `message` then `error`, truncated and secret-conscious. Always returns
-/// a pair (a `StopFailure` is, by definition, an error worth badging).
+///
+/// **The field this reads was wrong until the states audit.** Claude Code
+/// 2.1.233 builds the hook input as
+/// `{…, hook_event_name:"StopFailure", error: e.error ?? "unknown",
+///   error_details: e.errorDetails, last_assistant_message: <the banner> }`
+/// — the class is `error`, and there is no `error_type` key at all. This
+/// function read `error_type` for the class and fell back to the literal
+/// `"error"`, using `error` merely as the message. Net effect, verified live
+/// against the rig with CC's own payload: every turn death badged a generic
+/// `⚠ Error`, and the whole taxonomy in `activity-status.tsx`
+/// (`rate_limit` / `billing_error` / `authentication_failed` / `server_error`)
+/// was unreachable code. The reset time sat in `last_assistant_message` and
+/// was thrown away.
+///
+/// So: the class is `error_type` OR a class-shaped `error`; the message is
+/// `message` OR the banner OR the raw details OR a sentence-shaped `error`.
+/// `PostToolUseFailure`'s free-text `error` is a sentence, so it still lands in
+/// the message half and its class still defaults — the same payload type keeps
+/// serving both events.
 pub fn error_info(p: &HookPayload) -> (String, String) {
+    let class_from_error = p
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| is_error_class(e));
     let etype = p
         .error_type
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
+        .or(class_from_error)
         .map(truncate)
         .unwrap_or_else(|| "error".to_string());
     let msg = p
         .message
         .as_deref()
-        .or(p.error.as_deref())
+        // The banner outranks the raw upstream body: it is the sentence Claude
+        // showed the human, and it carries the reset clause.
+        .or(p.last_assistant_message.as_deref())
+        .or(p.error_details.as_deref())
+        // Only when `error` was NOT taken as the class, so a rate_limit badge
+        // does not also read "rate_limit" as its own explanation.
+        .or_else(|| {
+            p.error
+                .as_deref()
+                .map(str::trim)
+                .filter(|e| !is_error_class(e))
+        })
         .map(str::trim)
         .filter(|m| !m.is_empty())
-        .map(truncate)
+        .map(|m| truncate_to(m, MAX_ERROR_MESSAGE))
         .unwrap_or_default();
     (etype, msg)
 }
@@ -517,10 +598,67 @@ mod tests {
 
     #[test]
     fn stop_failure_defaults_type_and_truncates_message() {
-        let long = "x".repeat(80);
+        let long = "x".repeat(400);
         let p = parse(&format!(r#"{{"message":"{long}"}}"#));
         let (etype, msg) = error_info(&p);
         assert_eq!(etype, "error", "missing error_type defaults to 'error'");
-        assert!(msg.ends_with('…') && msg.chars().count() == MAX_LABEL + 1);
+        assert!(msg.ends_with('…') && msg.chars().count() == MAX_ERROR_MESSAGE + 1);
+    }
+
+    /// VERBATIM `StopFailure` stdin as Claude Code 2.1.233 builds it (`mDt`):
+    /// the class is `error`, there is NO `error_type` key, and the banner rides
+    /// in `last_assistant_message`.
+    const LIVE_STOP_FAILURE_RATE_LIMIT: &str = r#"{"session_id":"c2217ade-1111-4c00-9a55-0c1f0a4e0b21","transcript_path":"/tmp/verify-work/chatprobe/c2217ade.jsonl","cwd":"/tmp/verify-work/chatprobe","permission_mode":"default","hook_event_name":"StopFailure","error":"rate_limit","error_details":"429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit.\"},\"request_id\":\"req_011Cd1dXyPzfvZZVCAvaVjaa\"}","last_assistant_message":"You've hit your session limit · resets 4:40am (Europe/Amsterdam)"}"#;
+
+    #[test]
+    fn the_real_stop_failure_payload_yields_the_class_and_the_reset_time() {
+        // THE BUG, as a test. Pre-fix this returned ("error", "rate_limit"):
+        // the class was read from a key CC does not send, so every turn death
+        // badged a generic "Error" and the whole taxonomy in
+        // `activity-status.tsx` was unreachable — while the one string that
+        // says when the session comes back was discarded.
+        let (etype, msg) = error_info(&parse(LIVE_STOP_FAILURE_RATE_LIMIT));
+        assert_eq!(etype, "rate_limit", "the class is CC's `error` key");
+        assert_eq!(
+            msg, "You've hit your session limit · resets 4:40am (Europe/Amsterdam)",
+            "the banner is the message, reset clause intact"
+        );
+    }
+
+    #[test]
+    fn the_auth_and_billing_classes_reach_the_badge_too() {
+        // The other three arms of the taxonomy, from the same payload shape.
+        for class in ["authentication_failed", "billing_error", "server_error"] {
+            let p = parse(&format!(
+                r#"{{"hook_event_name":"StopFailure","error":"{class}","last_assistant_message":"Please run /login to sign in again."}}"#
+            ));
+            let (etype, msg) = error_info(&p);
+            assert_eq!(etype, class);
+            assert_eq!(msg, "Please run /login to sign in again.");
+        }
+    }
+
+    #[test]
+    fn a_free_text_error_stays_the_message_and_never_becomes_the_class() {
+        // `PostToolUseFailure` puts a SENTENCE under the same key. Taking it as
+        // the class would badge a tile with half a filesystem error, so the
+        // shape decides: a class is a short lower-snake token.
+        let (etype, msg) = error_info(&parse(LIVE_POST_TOOL_FAILURE));
+        assert_eq!(etype, "error");
+        assert!(msg.starts_with("File does not exist."));
+        // …and the class-shaped check is not fooled by a capitalised or spaced
+        // value either.
+        let (etype, _) = error_info(&parse(r#"{"error":"Rate limit exceeded"}"#));
+        assert_eq!(etype, "error");
+    }
+
+    #[test]
+    fn error_details_stand_in_when_there_is_no_banner() {
+        let p = parse(
+            r#"{"hook_event_name":"StopFailure","error":"server_error","error_details":"529 Overloaded"}"#,
+        );
+        let (etype, msg) = error_info(&p);
+        assert_eq!(etype, "server_error");
+        assert_eq!(msg, "529 Overloaded");
     }
 }

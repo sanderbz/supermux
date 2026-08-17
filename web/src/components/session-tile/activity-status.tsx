@@ -18,32 +18,31 @@
 
 import { motion, useReducedMotion } from 'framer-motion'
 
+import { classifyAgentError, errorBadgeLabel, resetNote } from '@/components/chat/agent-error'
 import { motionOff, springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
 import { InlineRecovery } from '@/components/recovery/recovery-ladder'
 
-/** Map a machine `error.type` to a short, friendly, sentence-case label. Unknown
- *  types fall back to a generic "Error" so a never-before-seen failure still
- *  shows the badge (with the raw message in the tooltip) instead of vanishing.
+/** Map an `error` to a short, friendly, sentence-case label. Unknown types fall
+ *  back to a generic "Error" so a never-before-seen failure still shows the
+ *  badge (with the raw message in the tooltip) instead of vanishing.
+ *
+ *  **This taxonomy was unreachable until the states audit.** `activity.rs` read
+ *  the class off `error_type`, a key Claude Code does not send — CC's
+ *  `StopFailure` puts it in `error` — so every arm below `default` was dead
+ *  code and every dead session, whatever killed it, badged `⚠ Error`.
+ *
+ *  The MESSAGE is now part of the decision, not just the tooltip: CC's six
+ *  quota buckets all arrive as class `rate_limit`, and only the banner says
+ *  which — a distinction worth drawing, because waiting is the right answer to
+ *  two of them and the wrong answer to four. A server-side throttle arrives as
+ *  `rate_limit` as well and is explicitly NOT a quota hit. `errorBadgeLabel`
+ *  is that reading, shared with the chat plane and pinned to the Rust
+ *  classifier by `server/tests/fixtures/chat/claude-states.jsonl`.
+ *
  *  Kept module-private so this file exports ONLY components (clean fast-refresh). */
-function errorLabel(type: string): string {
-  switch (type) {
-    case 'rate_limit':
-      return 'Rate-limited'
-    case 'billing_error':
-      return 'Billing'
-    case 'authentication_failed':
-      return 'Auth error'
-    case 'server_error':
-      return 'Server error'
-    // The session's terminal died under it (a crashed pty holder), not the
-    // agent failing a turn — the session is stopped and needs a restart, so the
-    // badge says so plainly and the tooltip carries the crash reason.
-    case 'holder_died':
-      return 'Terminal died'
-    default:
-      return 'Error'
-  }
+function errorLabel(type: string, message?: string): string {
+  return errorBadgeLabel(type, message) ?? 'Error'
 }
 
 /** Below this many outstanding subagents the parallelism clause stays hidden — a
@@ -172,10 +171,14 @@ function ErrorPill({
   error: { type: string; message: string }
   className?: string
 }) {
+  // "when can I work again", where the banner carried it. The reset clause is
+  // the whole answer and it lives nowhere else on this plane — it rode in on
+  // `last_assistant_message` and was discarded until the states fix.
+  const reset = resetNote(classifyAgentError(error.message ?? '', error.type))
   return (
     <span
       role="status"
-      title={error.message || errorLabel(error.type)}
+      title={[error.message, reset].filter(Boolean).join(' · ') || errorLabel(error.type)}
       className={cn(
         // Calm orange (--status-error) tint — visible enough to make a dead agent
         // obvious, never an alarmist red. Mirrors the needs-input pill geometry.
@@ -184,7 +187,7 @@ function ErrorPill({
       )}
     >
       <span aria-hidden>⚠</span>
-      {errorLabel(error.type)}
+      {errorLabel(error.type, error.message)}
     </span>
   )
 }
