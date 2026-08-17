@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
+import { PushBridge } from '@/components/pwa/push-bridge'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { useRendererPrefsSync } from '@/hooks/use-renderer-prefs-sync'
 import { ConnectionOverlay } from '@/components/connection/connection-overlay'
@@ -115,6 +116,12 @@ export default function App() {
             {/* "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />
+            {/* B5/T3 — the in-app half of the notification pipeline. Renders
+                nothing; it listens for the payloads the service worker
+                forwards, keeps the home-screen badge honest, and tells the SW
+                which lock-screen card has gone stale. Mounted here, inside the
+                providers, because it reads the sessions snapshot. */}
+            <PushBridge />
             {/* First-60-seconds unboxing — welcome banner + 4-step tour
                 (step 4 = Agent Teams explainer) for migrated v2 users;
                 self-gates to the first launch only. */}

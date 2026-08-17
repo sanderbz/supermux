@@ -69,6 +69,13 @@ pub struct Session {
     /// backends under a live pane.
     #[serde(default)]
     pub runtime: String,
+    /// This bot's own notification policy (migration 0028): `inherit` | `all` |
+    /// `attention` | `off`. `#[serde(default)]` so a row read by a binary that
+    /// predates the column still deserialises; `notify::NotifPolicy::parse`
+    /// reads an empty or unrecognised value as `inherit`, which is the same
+    /// thing the column DEFAULT gives every backfilled row.
+    #[serde(default)]
+    pub notif: String,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).

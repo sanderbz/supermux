@@ -438,7 +438,20 @@ interface NotifTypeSpec {
 /** The categories, in display order. Kept short on purpose — every extra
  *  toggle is another decision the user has to make AND another row in the
  *  Recent activity diagnostic. Each one maps 1:1 to a distinct
- *  `send_push_for(NotifCategory::*)` call site on the server. */
+ *  `send_push_for(NotifCategory::*)` call site on the server.
+ *
+ *  **All six ship ON** (B5, gate G2b). The upstream design had
+ *  `agent_finished` shipping OFF; that was declined, because the server already
+ *  carries three mitigations aimed at exactly that noise — a 2 s trailing
+ *  coalesce, a 15 s window for a team lead bouncing through idle, and a gate
+ *  that holds the ping while Task subagents are still in flight. Silently
+ *  muting a category people already receive is a worse trade than the noise
+ *  those three suppress. An explicit choice here always wins over the default,
+ *  in both directions.
+ *
+ *  These are the GLOBAL half of the mute. The per-BOT half lives in each
+ *  session's own info panel, and a push goes out only when both allow it —
+ *  see `BRAND.md` §6f for the full tier × policy × category table. */
 const NOTIF_TYPES: NotifTypeSpec[] = [
   {
     key: 'agent_waiting',
@@ -449,6 +462,14 @@ const NOTIF_TYPES: NotifTypeSpec[] = [
     key: 'agent_finished',
     label: 'Agent finished',
     hint: 'When an agent finishes its turn — ready for your review.',
+  },
+  {
+    // B5/T3.4 — the sixth category. Distinct from `agent_stopped`, which is the
+    // PROCESS going away: this is the agent still running and telling you, in
+    // its own words, that the work did not land.
+    key: 'agent_error',
+    label: 'Agent hit an error',
+    hint: 'When a turn ends in an error the agent could not recover from.',
   },
   {
     key: 'agent_stopped',

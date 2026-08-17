@@ -180,6 +180,11 @@ export interface ApiSession {
    *  only so an explicit choice outlives a reload. Unparseable values decode to
    *  `undefined` and the derived face is used. */
   mark_pin?: string | null
+  /** This bot's own notification policy (migration 0028). Absent on a server
+   *  that predates the column, and `'inherit'` for every row that has never
+   *  been touched — both mean "follow the global category toggles", so the
+   *  control renders identically either way. */
+  notif?: NotifPolicy
   /** tmux session alive AND a child process exists. */
   running?: boolean
   /** Epoch seconds — last send / last started. */
@@ -389,7 +394,26 @@ export interface SessionConfigPatch {
    *  its derived face. Written only by the reroll affordance — assignment stays
    *  derived (`lib/roster-marks.ts`). */
   mark_pin?: string
+  /** This bot's own notification policy (migration 0028) — the per-BOT half of
+   *  the mute decision. ANDed with the global per-category toggles in Settings:
+   *  a push goes out only when both allow it. See [`NotifPolicy`]. */
+  notif?: NotifPolicy
 }
+
+/** Per-session notification policy — notifications live on the BOT, not only in
+ *  a global list of event types.
+ *
+ *  * `inherit` — follow the global category toggles. The default, and what every
+ *    pre-0028 row backfills to, so nothing changes until a user opts in.
+ *  * `all` — every session-scoped tier may push.
+ *  * `attention` — only needs-you and errors. The calm "turn finished" tier is
+ *    muted for this bot.
+ *  * `off` — this bot never pushes. Its roster tier still updates; the phone
+ *    just stays quiet.
+ *
+ *  The server mirrors these four strings exactly (`notify::NotifPolicy`), and
+ *  `BRAND.md` §6f carries the tier × policy table. */
+export type NotifPolicy = 'inherit' | 'all' | 'attention' | 'off'
 
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode
  *  ACTUALLY in effect after the op (the UI reflects truth, never an optimistic

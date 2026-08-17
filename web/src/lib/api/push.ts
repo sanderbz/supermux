@@ -21,12 +21,15 @@ export interface PushSubscriptionJSON {
   keys: { p256dh: string; auth: string }
 }
 
-/** The four per-event toggles a user can flip independently. Mirrors the
+/** The six per-event toggles a user can flip independently. Mirrors the
  *  `NotifCategory` enum on the server — these strings are both the API field
  *  names AND the prefs storage key suffix, so renaming one is renaming both. */
 export type NotifCategory =
   | 'agent_waiting'
   | 'agent_finished'
+  /** B5 — a turn that ended in an error the agent could not recover from.
+   *  Distinct from `agent_stopped`, which is the process going away. */
+  | 'agent_error'
   | 'agent_stopped'
   | 'schedule_error'
   | 'schedule_finished'

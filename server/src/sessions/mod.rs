@@ -190,6 +190,11 @@ pub struct SessionView {
     /// or `None`. Assignment is derived client-side; this is written only by the
     /// reroll affordance.
     pub mark_pin: Option<String>,
+    /// This bot's own notification policy (migration 0028) — the per-BOT half of
+    /// the mute decision, ANDed with the global per-category toggles. Always
+    /// present on the wire (never omitted), because the control has to render a
+    /// definite state and `inherit` is a real choice, not an absence.
+    pub notif: String,
     pub flags: String,
     pub branch: String,
     pub mcp: String,
@@ -317,6 +322,10 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         // to the derived face either way, and normalising here keeps the wire
         // from carrying two spellings of the same absence.
         mark_pin: s.mark_pin.as_deref().filter(|v| !v.is_empty()).map(str::to_string),
+        // Normalised through `parse`, so a hand-edited junk value in the column
+        // reaches the client as `inherit` rather than as something its four-way
+        // control cannot render.
+        notif: crate::notify::NotifPolicy::parse(&s.notif).as_str().to_string(),
         flags: s.flags.clone(),
         branch: s.branch.clone(),
         mcp: s.mcp.clone(),
@@ -937,6 +946,11 @@ pub struct ConfigInput {
     /// the override and returns the session to its derived face — the one way
     /// back, and the reason this is not a bare `Option<String>` meaning "unset".
     pub mark_pin: Option<String>,
+    /// Set this bot's notification policy (migration 0028): `inherit` | `all` |
+    /// `attention` | `off`. An unrecognised value is a 400 rather than a silent
+    /// coercion — mis-typing this would quietly change whether the user's phone
+    /// rings, which is exactly the class of failure that must be loud.
+    pub notif: Option<String>,
 }
 
 pub async fn config_patch(
@@ -1082,6 +1096,15 @@ pub async fn config_patch(
             if trimmed.is_empty() { None } else { Some(trimmed) },
         )
         .await?;
+        changed = true;
+    }
+    if let Some(v) = patch.notif {
+        let parsed = crate::notify::NotifPolicy::from_str(v.trim()).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "unknown notification policy '{v}' (expected inherit|all|attention|off)"
+            ))
+        })?;
+        db::sessions::set_notif_policy(&state.pool, &current, parsed).await?;
         changed = true;
     }
     if patch.toggle_pin.is_some() {
@@ -1859,6 +1882,7 @@ mod tests {
                 tags: None,
                 toggle_pin: None,
                 mark_pin: None,
+                notif: None,
                 toggle_auto_continue: None,
             },
         )
@@ -1899,6 +1923,7 @@ mod tests {
                 tags: None,
                 toggle_pin: None,
                 mark_pin: None,
+                notif: None,
                 toggle_auto_continue: None,
             },
         )
@@ -2037,6 +2062,7 @@ mod tests {
             tags: None,
             toggle_pin: None,
             mark_pin: Some(value.into()),
+            notif: None,
             toggle_auto_continue: None,
         }
     }
@@ -2068,6 +2094,7 @@ mod tests {
             tags: None,
             toggle_pin: None,
             mark_pin: None,
+            notif: None,
             toggle_auto_continue: None,
         }
     }

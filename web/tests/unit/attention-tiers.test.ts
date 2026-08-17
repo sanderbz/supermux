@@ -307,3 +307,54 @@ describe('cursorFor — what "I have seen this" records', () => {
     expect(tierFor(s, cursorFor(s, NOW), NOW)).toBe('quiet')
   })
 })
+
+// ── R2: the two tier vocabularies (B5/T3.5) ─────────────────────────────────
+//
+// The server's push `Tier` (`attention | unread | error | schedule` — what a
+// push IS) and this module's `TIERS` (`needs | unread | working | quiet` —
+// what a session LOOKS like in the roster) are DIFFERENT SETS sharing exactly
+// one word. That single overlap is the hazard: `unread` means the same thing
+// in both, which makes it easy to assume the rest do too and "unify" them.
+//
+// They answer different questions, so the relationship is a mapping, not a
+// rename. It is asserted from BOTH sides — `notify.rs`'s
+// `the_server_tiers_map_onto_the_client_roster_tiers` is the mirror of this —
+// so a rename on either side breaks a test instead of drifting silently.
+// `BRAND.md` §6f carries the table in prose.
+describe('the server push tiers map onto the roster tiers', () => {
+  /** The mapping, transcribed from `notify::Tier::client_tier`. */
+  const SERVER_TO_CLIENT: Record<string, string | null> = {
+    attention: 'needs',
+    // An error NEEDS you every bit as much as a block does.
+    error: 'needs',
+    unread: 'unread',
+    // The scheduler lane has no roster row to tier.
+    schedule: null,
+  }
+
+  test('every mapped target is a tier this module actually ships', () => {
+    for (const [server, client] of Object.entries(SERVER_TO_CLIENT)) {
+      if (client === null) continue
+      expect(TIERS as readonly string[]).toContain(client)
+      expect(server).not.toBe('')
+    }
+  })
+
+  test('`working` and `quiet` are unreachable from a push, deliberately', () => {
+    // They describe a session nobody needs to hear about — precisely the set
+    // that must never buzz a phone. If a future server tier maps onto either,
+    // that is a product decision, not a refactor, and this test should be the
+    // thing that forces the conversation.
+    const targets = Object.values(SERVER_TO_CLIENT).filter((v) => v !== null)
+    expect(targets).not.toContain('working')
+    expect(targets).not.toContain('quiet')
+  })
+
+  test('`unread` is the one shared word, and it means the same thing', () => {
+    // Both sides use it for "something happened, nothing is blocked". The
+    // server suppresses that tier's banner while the session is being viewed;
+    // the client renders it as a dot rather than a demand.
+    expect(SERVER_TO_CLIENT.unread).toBe('unread')
+    expect(TIERS as readonly string[]).toContain('unread')
+  })
+})

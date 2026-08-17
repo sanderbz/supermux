@@ -1955,6 +1955,7 @@ mod build_env_tests {
             host_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
+            notif: "inherit".into(),
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -2008,6 +2009,7 @@ mod build_env_tests {
             host_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
+            notif: "inherit".into(),
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -2062,6 +2064,7 @@ mod build_env_tests {
             host_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
+            notif: "inherit".into(),
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -2122,6 +2125,7 @@ mod build_env_tests {
             host_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
+            notif: "inherit".into(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session);
@@ -2167,6 +2171,7 @@ mod build_env_tests {
             host_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
+            notif: "inherit".into(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session);

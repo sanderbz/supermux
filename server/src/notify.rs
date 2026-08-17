@@ -162,6 +162,38 @@ pub enum Tier {
 }
 
 impl Tier {
+    /// The client roster tier this push tier corresponds to (B5/T3.5, R2).
+    ///
+    /// The two vocabularies are DIFFERENT SETS that share exactly one word, and
+    /// that overlap is the whole hazard: server `Tier` is
+    /// `attention | unread | error | schedule` (what a push IS), while B2's
+    /// client `TIERS` is `needs | unread | working | quiet` (what a session
+    /// LOOKS like in the roster). They answer different questions, so this is a
+    /// mapping, never a rename:
+    ///
+    /// | server tier | client tier | what buzzes |
+    /// |---|---|---|
+    /// | `attention` | `needs`  | banner + badge, may renotify |
+    /// | `error`     | `needs`  | banner + badge, may renotify |
+    /// | `unread`    | `unread` | banner only, replaces silently, no badge |
+    /// | `schedule`  | *(none)* | banner only — no roster row to tier |
+    ///
+    /// The client's `working` and `quiet` have no server tier at all, and must
+    /// not grow one: they describe a session nobody needs to hear about, which
+    /// is precisely the set that should never push.
+    ///
+    /// `BRAND.md` §6f carries the full table, and
+    /// `web/tests/unit/attention-tiers.test.ts` asserts the same mapping from
+    /// the client side — so a rename on either side fails a test rather than
+    /// silently drifting.
+    pub const fn client_tier(self) -> Option<&'static str> {
+        match self {
+            Self::Attention | Self::Error => Some("needs"),
+            Self::Unread => Some("unread"),
+            Self::Schedule => None,
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Attention => "attention",
@@ -223,6 +255,23 @@ impl NotifPolicy {
             "attention" => Self::Attention,
             "off" => Self::Off,
             _ => Self::Inherit,
+        }
+    }
+
+    /// Strict parse for the WRITE path (`PATCH /api/sessions/{name}/config`).
+    ///
+    /// Deliberately not [`Self::parse`]: that one is lenient because it reads a
+    /// column that may hold junk from a hand-edit, and silently muting a bot is
+    /// the worse failure there. On the write path the opposite is true — a
+    /// mis-typed policy would quietly change whether the user's phone rings, so
+    /// an unrecognised value is a 400 instead.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "inherit" => Some(Self::Inherit),
+            "all" => Some(Self::All),
+            "attention" => Some(Self::Attention),
+            "off" => Some(Self::Off),
+            _ => None,
         }
     }
 
@@ -835,6 +884,36 @@ mod tests {
             p.url, "/focus/deploy-fix#pending",
             "tap lands on the plan card"
         );
+    }
+
+    #[test]
+    /// R2 — the two tier vocabularies are pinned from this side; the client
+    /// asserts the same table in `attention-tiers.test.ts`. A rename on either
+    /// side has to break one of the two.
+    #[test]
+    fn the_server_tiers_map_onto_the_client_roster_tiers() {
+        assert_eq!(Tier::Attention.as_str(), "attention");
+        assert_eq!(Tier::Unread.as_str(), "unread");
+        assert_eq!(Tier::Error.as_str(), "error");
+        assert_eq!(Tier::Schedule.as_str(), "schedule");
+
+        // An error NEEDS you just as much as a block does — both land on the
+        // client's `needs`, which is why this is a mapping and not a rename.
+        assert_eq!(Tier::Attention.client_tier(), Some("needs"));
+        assert_eq!(Tier::Error.client_tier(), Some("needs"));
+        assert_eq!(Tier::Unread.client_tier(), Some("unread"));
+        // The scheduler lane has no roster row to tier.
+        assert_eq!(Tier::Schedule.client_tier(), None);
+
+        // Every client tier this maps onto must be one B2 actually ships.
+        for t in [Tier::Attention, Tier::Unread, Tier::Error, Tier::Schedule] {
+            if let Some(c) = t.client_tier() {
+                assert!(
+                    ["needs", "unread", "working", "quiet"].contains(&c),
+                    "{c} is not one of the client's TIERS",
+                );
+            }
+        }
     }
 
     #[test]
