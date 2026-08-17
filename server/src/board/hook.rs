@@ -227,12 +227,20 @@ async fn needs_input_handler(
         tokio::spawn(async move {
             let title = format!("agent {session} needs you");
             let url = format!("/focus/{session}");
+            // B5/T1.4 — the payload shape, and the session IS passed here: this
+            // is a board question from a specific bot, so the per-bot
+            // notification policy legitimately applies to it (unlike the
+            // schedule lane, which passes `None`).
             let _ = crate::push::send_push_for(
                 &state,
                 crate::db::push::NotifCategory::AgentWaiting,
-                &title,
-                &question,
-                &url,
+                &crate::notify::PushPayload::simple(
+                    title,
+                    question,
+                    url,
+                    crate::notify::Tier::Attention,
+                ),
+                Some(&session),
             )
             .await;
         });

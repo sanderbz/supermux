@@ -139,12 +139,18 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
             } else {
                 format!("'{title}' errored: {note}")
             };
+            // `session: None` — the schedule lane, not the bot lane (B5/T1.4).
+            // A failing job must reach the user even if the target bot is muted.
             let _ = crate::push::send_push_for(
                 &st,
                 crate::db::push::NotifCategory::ScheduleError,
-                &format!("schedule '{title}' errored"),
-                &body,
-                "/scheduler",
+                &crate::notify::PushPayload::simple(
+                    format!("schedule '{title}' errored"),
+                    body,
+                    "/scheduler",
+                    crate::notify::Tier::Schedule,
+                ),
+                None,
             )
             .await;
         });

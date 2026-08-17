@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 use axum::body::Bytes;
 
 use crate::db;
+use crate::notify::{self, NotifEvent};
 use crate::error::AppError;
 use crate::sessions::activity::{self, HookPayload};
 use crate::sessions::status::{HookEvent, Status};
@@ -293,6 +294,22 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // A tool call started → set the live activity label (`✎ tile.tsx`, …).
         // A payload with no tool name yields no label → leave activity as-is.
         "pre_tool" | "pre_tool_use" | "PreToolUse" => {
+            // TRIGGER 1 (B5/T1.5) — `AskUserQuestion` is the agent ASKING, not a
+            // tool call to watch, and the pre-tool arm is where the question
+            // TEXT arrives. Raising it here is what lets the banner carry the
+            // agent's own sentence instead of "needs permission —
+            // AskUserQuestion".
+            //
+            // Lenient about the shape: a payload that does not carry a question
+            // still raises the event, and `notify::compose` falls back to its
+            // declared generic sentence. That names what happened without
+            // inventing content — and it is the ONLY push for this tool call,
+            // because the `PermissionRequest` Claude raises ~20 ms later
+            // deliberately does not push (see that arm).
+            if payload.tool_name.as_deref() == Some("AskUserQuestion") {
+                let q = activity::first_question(payload).unwrap_or_default();
+                notify::notify_event(state, session, NotifEvent::Question(q));
+            }
             match activity::activity_label(payload) {
                 Some((label, kind)) => state.set_activity(session, label, kind),
                 None => false,
@@ -331,7 +348,21 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // nothing to show → no-op.
         "permission_request" | "PermissionRequest" => {
             match activity::permission_ask(payload) {
-                Some(ask) => state.set_permission_request(session, ask),
+                Some(ask) => {
+                    // Whether this dialog is one the pre-tool arm already
+                    // announced with the agent's own words. Decided BEFORE the
+                    // ask is moved into the state.
+                    let pushes = notify::permission_raises_push(&ask.tool);
+                    let changed = state.set_permission_request(session, ask);
+                    // TRIGGER 2 (B5/T1.5) — needs-attention. Only on a CHANGE:
+                    // Claude re-fires the identical dialog payload, and the ask
+                    // comparison dedupes that for free, so the phone buzzes once
+                    // per dialog rather than once per re-render.
+                    if changed && pushes {
+                        notify::notify_event(state, session, NotifEvent::PermissionAsked);
+                    }
+                    changed
+                }
                 None => false,
             }
         }
@@ -346,6 +377,14 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
             let perm = state.clear_permission_request(session);
+            // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
+            // has its own arm and structurally cannot reach this one, so a Task
+            // subagent finishing can never be announced as "the turn is done".
+            //
+            // The permission clear happens FIRST (above), which is what makes
+            // this push's replacement of a pending "needs you" banner causally
+            // correct: by the time it lands, the dialog is provably resolved.
+            notify::notify_event(state, session, NotifEvent::TurnFinished);
             act || sub || perm
         }
         // A Task sub-agent finished. It shares the parent session token and the
@@ -382,6 +421,23 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // we ALSO push the stopped status straight through the DB + watch + SSE so
         // the tile flips immediately, mirroring lifecycle::stop's broadcast.
         "session_end" | "SessionEnd" => {
+            // TRIGGER 4 (B5/T1.5) — error, and ONLY for a death the user did not
+            // cause. `clear` / `logout` / `prompt_input_exit` / `exit` are the
+            // human at the keyboard: `/clear`ing a conversation or typing
+            // `/exit` must never ring their own phone. An absent reason is a
+            // real death (a killed pane reports nothing).
+            //
+            // Raised BEFORE the activity clear so the crash body can still name
+            // what the session was doing when it died.
+            if crashed_reason(payload) {
+                notify::notify_event(
+                    state,
+                    session,
+                    NotifEvent::SessionCrashed {
+                        reason: payload.reason.clone().unwrap_or_default(),
+                    },
+                );
+            }
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
             let perm_changed = state.clear_permission_request(session);
@@ -397,6 +453,13 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "stop_failure" | "StopFailure" => {
             let (etype, msg) = activity::error_info(payload);
             let cleared = state.clear_activity(session);
+            // TRIGGER 5 (B5/T1.5) — error. Raised with the agent's own error
+            // text, before `set_error` moves it into the state.
+            notify::notify_event(
+                state,
+                session,
+                NotifEvent::TurnFailed { etype: etype.clone(), msg: msg.clone() },
+            );
             let set = state.set_error(session, etype, msg);
             cleared || set
         }
@@ -405,6 +468,22 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
 
     if changed {
         broadcast_activity_delta(state, session);
+    }
+}
+
+/// Did this `SessionEnd` represent a death the user did NOT cause?
+///
+/// `clear` / `logout` / `prompt_input_exit` / `exit` are the human at the
+/// keyboard — their own keystroke ringing their own phone is the single
+/// most-hated false positive. Everything else (`other`, or no reason at all,
+/// which is what a killed pane produces) is a real death.
+fn crashed_reason(payload: &HookPayload) -> bool {
+    match payload.reason.as_deref().map(str::trim) {
+        None | Some("") => true,
+        Some(r) => !matches!(
+            r.to_ascii_lowercase().as_str(),
+            "clear" | "logout" | "prompt_input_exit" | "exit"
+        ),
     }
 }
 

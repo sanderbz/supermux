@@ -249,6 +249,35 @@ pub async fn list_runtimes(pool: &SqlitePool) -> sqlx::Result<Vec<SessionRuntime
         .await
 }
 
+/// This bot's own notification setting (migration 0028).
+///
+/// Fails toward `Inherit`: a missing row, a DB error or a hand-edited junk
+/// value must never silently mute a session. Read on every send, so it is one
+/// indexed lookup on the primary key.
+pub async fn notif_policy(pool: &SqlitePool, name: &str) -> crate::notify::NotifPolicy {
+    let row: Option<(String,)> = sqlx::query_as("SELECT notif FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+    row.map(|(v,)| crate::notify::NotifPolicy::parse(&v))
+        .unwrap_or(crate::notify::NotifPolicy::Inherit)
+}
+
+/// Set this bot's notification setting (the four-way in its detail sheet).
+pub async fn set_notif_policy(
+    pool: &SqlitePool,
+    name: &str,
+    policy: crate::notify::NotifPolicy,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET notif = ? WHERE name = ?")
+        .bind(policy.as_str())
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Does a session row exist? Used for clean 404/409 mapping before mutating.
 ///
 /// NOTE: an *archived* row still satisfies this (it is not DELETEd by
@@ -363,16 +392,22 @@ pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<
 /// is reset and `created_at` refreshed; the caller seeds a fresh runtime row.
 /// The clone's `display_name` is set to its own new slug (not the source's
 /// label) so two sessions never share a confusing identical title.
+///
+/// The column list is EXPLICIT, not `SELECT *`, so a new column is opt-in: a
+/// copy silently inheriting something it should not is worse than one missing a
+/// field. `notif` (migration 0028) is opted in — a bot you have muted should
+/// stay muted in its copy, which is what "a bot is its own template" means
+/// (B5/T1.6).
 pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, created_at)
+             host_id, runtime, notif, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, ?
+                host_id, runtime, notif, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

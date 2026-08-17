@@ -291,18 +291,29 @@ impl ChatStore {
 
 /// `body.text` collapsed to a single whitespace-separated line and capped at
 /// [`TAIL_MAX_CHARS`] **chars** (never bytes — the tail is user text).
+fn one_line(w: &WireEntry) -> Option<String> {
+    one_line_capped(w.body().get("text").and_then(|v| v.as_str())?, TAIL_MAX_CHARS)
+}
+
+/// `text` collapsed to a single whitespace-separated line and capped at `max`
+/// **chars** (never bytes — this is user text). Returns `None` when nothing
+/// survived (empty / whitespace-only).
+///
 /// The char count is tracked incrementally and an over-budget word is copied
 /// only as far as it fits: re-counting after every push was quadratic in the
 /// output, and a body with no whitespace at all (a base64 blob, a minified
 /// payload) is ONE word — up to `MAX_ENTRY_BYTES` of it copied, then counted,
 /// then thrown away. This runs under the store mutex on every detector tick.
-fn one_line(w: &WireEntry) -> Option<String> {
-    let text = w.body().get("text").and_then(|v| v.as_str())?;
+///
+/// Extracted from [`one_line`] (B5/T1) and shared with [`crate::notify`], which
+/// composes push bodies at a smaller budget: the lock screen and the tile must
+/// show the *same* string, so they must go through the *same* function.
+pub fn one_line_capped(text: &str, max: usize) -> Option<String> {
     let mut out = String::new();
     let mut chars = 0usize;
     for word in text.split_whitespace() {
         let sep = usize::from(chars > 0);
-        let room = TAIL_MAX_CHARS.saturating_sub(chars + sep);
+        let room = max.saturating_sub(chars + sep);
         if room == 0 {
             break;
         }

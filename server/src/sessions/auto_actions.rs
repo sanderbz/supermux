@@ -1730,7 +1730,17 @@ pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
             _ => return,
         };
         let url = format!("/focus/{task_name}");
-        let n = crate::push::send_push_for(&task_state, cat, &title, &body, &url).await;
+        // B5/T1.4 — the payload shape. The tier is derived from the category
+        // rather than hard-coded: `AgentFinished` is the calm review-when-you-can
+        // tier, the other two genuinely interrupt. Passing the session lets the
+        // per-bot policy mute this lane, which is what that control is for.
+        let tier = match cat {
+            NotifCategory::AgentFinished => crate::notify::Tier::Unread,
+            NotifCategory::AgentStopped => crate::notify::Tier::Error,
+            _ => crate::notify::Tier::Attention,
+        };
+        let payload = crate::notify::PushPayload::simple(title, body, url, tier);
+        let n = crate::push::send_push_for(&task_state, cat, &payload, Some(&task_name)).await;
         if n > 0 {
             tracing::debug!(
                 name = %task_name,

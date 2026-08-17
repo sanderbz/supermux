@@ -94,6 +94,13 @@ pub enum NotifCategory {
     /// agent-confirm hook. Unlike a periodic success this is an EXPLICIT
     /// per-schedule opt-in, so pushing here is wanted, not noise.
     ScheduleFinished,
+    /// The turn itself FAILED — a `Stop` that carried an error, or a tool
+    /// failure the agent could not recover from (B5/T1). Distinct from
+    /// [`Self::AgentStopped`], which is the *process* going away: this one is
+    /// the agent still running and telling you, in its own words, that the work
+    /// did not land. Low-frequency and high-signal, so it ships enabled like
+    /// every other category.
+    AgentError,
 }
 
 impl NotifCategory {
@@ -107,14 +114,16 @@ impl NotifCategory {
             Self::AgentStopped => "agent_stopped",
             Self::ScheduleError => "schedule_error",
             Self::ScheduleFinished => "schedule_finished",
+            Self::AgentError => "agent_error",
         }
     }
 
     /// The set of categories, iterated in display order (matches the Settings
     /// UI order).
-    pub const ALL: [NotifCategory; 5] = [
+    pub const ALL: [NotifCategory; 6] = [
         Self::AgentWaiting,
         Self::AgentFinished,
+        Self::AgentError,
         Self::AgentStopped,
         Self::ScheduleError,
         Self::ScheduleFinished,

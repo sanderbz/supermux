@@ -56,6 +56,12 @@ pub struct HookPayload {
     /// Some events carry the error text at the top level rather than `message`.
     #[serde(default)]
     pub error: Option<String>,
+    /// `SessionEnd`'s stated cause (`clear` / `logout` / `prompt_input_exit` /
+    /// `other`). B5/T1.5 reads it to tell a session the USER ended from one
+    /// that died on its own — only the latter is worth ringing a phone about.
+    /// Absent on a killed pane, which is exactly why absence counts as a death.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Claude's CURRENT permission mode (`default` / `acceptEdits` / `plan` /
     /// `bypassPermissions`). EVERY Claude hook stdin carries it — and the
     /// statusLine JSON does NOT (verified on 2.1.227 + 2.1.231), so hooks are the
@@ -105,6 +111,38 @@ pub struct ToolInput {
     pub pattern: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// `AskUserQuestion`'s questions (B5/T1.5). The only large-ish field we
+    /// admit, because it IS the payload's point: the agent's own sentence, which
+    /// the notification relays verbatim rather than paraphrasing.
+    #[serde(default)]
+    pub questions: Option<Vec<QuestionEntry>>,
+}
+
+/// One entry of `AskUserQuestion`'s `questions` array. Only the question text is
+/// modelled; the options/header live alongside it in Claude's payload and are
+/// not something a lock-screen banner can usefully show.
+#[derive(Debug, Default, Deserialize)]
+pub struct QuestionEntry {
+    #[serde(default)]
+    pub question: Option<String>,
+}
+
+/// The agent's FIRST question from an `AskUserQuestion` payload, verbatim
+/// (whitespace-trimmed). `None` when the payload carries no question text —
+/// including when Claude's shape differs from the one modelled here.
+///
+/// Deliberately NOT truncated here: the notification layer caps it with the
+/// same function the chat tile uses, so both show the identical string.
+pub fn first_question(p: &HookPayload) -> Option<String> {
+    p.tool_input
+        .as_ref()?
+        .questions
+        .as_ref()?
+        .iter()
+        .find_map(|q| q.question.as_deref())
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(str::to_string)
 }
 
 /// Truncate `s` to [`MAX_LABEL`] chars (counting Unicode scalar values, not

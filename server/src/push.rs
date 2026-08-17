@@ -107,9 +107,15 @@ pub struct PushAttempt {
     /// Subscriber rows that failed for a non-Gone reason (encryption error,
     /// 4xx/5xx from the push service, network).
     pub failed: usize,
-    /// `true` when the category was muted in prefs and the fan-out never
-    /// happened (the row's `delivered == 0` is then NOT a transport failure).
+    /// `true` when the send was muted and the fan-out never happened (the
+    /// row's `delivered == 0` is then NOT a transport failure).
     pub muted: bool,
+    /// WHICH mute layer stopped it (B5/T1): `global:<category>` for the Settings
+    /// toggle, `session:<policy>` for the per-bot policy. There are now two
+    /// layers that can silence a push, so "muted" alone no longer answers "why
+    /// didn't my phone ring" — this does. `None` for a send that was not muted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// In-memory bounded ring of recent send attempts. Wrapped in a `std::sync::Mutex`
@@ -211,6 +217,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/push/test", post(test_push))
         .route("/api/push/prefs", get(get_prefs).put(put_prefs))
         .route("/api/push/attempts", get(get_attempts))
+        .route("/api/push/preview", get(get_preview))
         .with_state(state)
 }
 
@@ -320,7 +327,16 @@ async fn test_push(
                 "Test for the '{}' category. Toggle it off in Settings to mute.",
                 human_label(cat)
             );
-            send_push_for(&state, cat, &title, &body, "/").await
+            // The diagnostic path: `session: None` so only the GLOBAL category
+            // toggle can mute it — the user is testing that one category's
+            // wiring, and a per-bot policy is not what they are asking about.
+            send_push_for(
+                &state,
+                cat,
+                &crate::notify::PushPayload::simple(title, body, "/", crate::notify::Tier::Attention),
+                None,
+            )
+            .await
         }
     };
     Ok(Json(json!({ "ok": true, "data": { "delivered": delivered } })))
@@ -388,6 +404,7 @@ const fn human_label(cat: NotifCategory) -> &'static str {
         NotifCategory::AgentStopped => "Agent stopped",
         NotifCategory::ScheduleError => "Scheduled task errored",
         NotifCategory::ScheduleFinished => "Scheduled task finished",
+        NotifCategory::AgentError => "Agent hit an error",
     }
 }
 
@@ -400,35 +417,125 @@ struct PushPayload<'a> {
     url: &'a str,
 }
 
-/// Send a notification gated by a category preference. The triggers ALWAYS
-/// use this — never `send_push_inner` — so the user's per-type Settings
-/// toggles are honoured at the dispatch site instead of inside each trigger.
-/// A muted category records a `PushAttempt { muted: true, attempted: 0 }` in
-/// the ring so the diagnostic surface explains the missing notification
-/// ("muted by your preference") instead of looking like a silent transport
-/// failure.
+/// `GET /api/push/preview?session=X&event=stop` — compose the notification this
+/// session would send RIGHT NOW for `event`, and return it. Sends nothing,
+/// stores nothing, records nothing.
+///
+/// The attempts ring stores titles only, by privacy posture — bodies now carry
+/// the agent's own words, which is MORE sensitive, so that posture stays. This
+/// endpoint is the answer to the question the ring therefore cannot answer:
+/// "what exactly would my phone say?". It runs the same `compose` + tail
+/// resolution the real trigger runs, so an assertion here is an assertion about
+/// the real thing.
+#[derive(Debug, serde::Deserialize)]
+struct PreviewQuery {
+    session: String,
+    /// Which trigger to preview. Defaults to `stop` — the one whose copy depends
+    /// on state the caller cannot see (the transcript on disk).
+    #[serde(default)]
+    event: Option<String>,
+}
+
+async fn get_preview(
+    State(state): State<AppState>,
+    Query(q): Query<PreviewQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::notify::NotifEvent;
+    let ev = match q.event.as_deref().unwrap_or("stop") {
+        "stop" | "finished" => NotifEvent::TurnFinished,
+        "permission" => NotifEvent::PermissionAsked,
+        "stop_failure" | "error" => {
+            let (etype, msg) = state
+                .session_activity(&q.session)
+                .and_then(|a| a.error)
+                .unwrap_or_else(|| ("error".to_string(), String::new()));
+            NotifEvent::TurnFailed { etype, msg }
+        }
+        "session_end" | "crashed" => NotifEvent::SessionCrashed {
+            reason: "other".to_string(),
+        },
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unknown preview event '{other}' (expected stop|permission|error|crashed)"
+            )))
+        }
+    };
+    let payload = crate::notify::build_payload(&state, &q.session, &ev)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("session '{}'", q.session)))?;
+    // What WOULD happen to it, so the preview answers "and would it ring?" too.
+    let muted = mute_reason(&state, ev.category(), payload.tier, Some(&q.session)).await;
+    Ok(Json(json!({
+        "ok": true,
+        "data": {
+            "payload": payload,
+            "category": ev.category().as_str(),
+            "muted": muted.is_some(),
+            "muted_reason": muted,
+        }
+    })))
+}
+
+/// Send a notification gated by BOTH mute layers. The triggers ALWAYS use this
+/// — never [`send_push_inner`] — so the layering rule is implemented exactly
+/// once, here, instead of once per trigger:
+///
+/// ```text
+/// effective = global_category_pref(cat) AND session_policy(session, tier)
+/// ```
+///
+/// `session` is the bot this is about, or `None` for the schedule lane. A
+/// schedule's "notify me when done" is an EXPLICIT per-schedule opt-in and
+/// therefore outranks a passive per-session mute — passing `None` is what
+/// expresses that.
+///
+/// A muted send still records a `PushAttempt { muted: true, attempted: 0 }`
+/// carrying WHICH layer muted it, so "why didn't my phone ring" stays
+/// answerable from the Settings diagnostic panel instead of a log grep.
 pub async fn send_push_for(
     state: &AppState,
     cat: NotifCategory,
-    title: &str,
-    body: &str,
-    url: &str,
+    payload: &crate::notify::PushPayload,
+    session: Option<&str>,
 ) -> usize {
-    if !db::push::pref_enabled(&state.pool, cat).await {
+    if let Some(reason) = mute_reason(state, cat, payload.tier, session).await {
         state.push_attempts.record(PushAttempt {
             at: chrono::Utc::now().timestamp(),
             category: cat.as_str().to_string(),
-            title: title.to_string(),
+            title: payload.title.clone(),
             attempted: 0,
             delivered: 0,
             pruned: 0,
             failed: 0,
             muted: true,
+            reason: Some(reason.clone()),
         });
-        tracing::debug!(category = cat.as_str(), "send_push_for: muted by pref");
+        tracing::debug!(category = cat.as_str(), reason = %reason, "send_push_for: muted");
         return 0;
     }
-    send_push_inner(state, cat.as_str(), title, body, url).await
+    let encoded = serde_json::to_vec(payload).unwrap_or_default();
+    send_encoded(state, cat.as_str(), &payload.title, &encoded).await
+}
+
+/// Which mute layer, if any, stops this send. `None` = it goes out.
+///
+/// Order matters only for the diagnostic string; both layers gate the same send,
+/// and the global one is checked first because it is the cheaper read.
+async fn mute_reason(
+    state: &AppState,
+    cat: NotifCategory,
+    tier: crate::notify::Tier,
+    session: Option<&str>,
+) -> Option<String> {
+    if !db::push::pref_enabled(&state.pool, cat).await {
+        return Some(format!("global:{}", cat.as_str()));
+    }
+    let name = session?;
+    let policy = db::sessions::notif_policy(&state.pool, name).await;
+    if policy.mutes(tier) {
+        return Some(format!("session:{}", policy.as_str()));
+    }
+    None
 }
 
 /// Send a notification to EVERY stored subscription. Best-effort: each device is
@@ -451,6 +558,19 @@ pub async fn send_push_inner(
     body: &str,
     url: &str,
 ) -> usize {
+    // The legacy title+body+url shape, lifted into a payload so there is exactly
+    // one thing the service worker ever receives (B5/T1). `Attention` is the
+    // right tier for the only remaining caller: `POST /api/push/test` exists to
+    // make the phone buzz, so it must not be coalesced away.
+    let payload =
+        crate::notify::PushPayload::simple(title, body, url, crate::notify::Tier::Attention);
+    let encoded = serde_json::to_vec(&payload).unwrap_or_default();
+    send_encoded(state, category, title, &encoded).await
+}
+
+/// Fan an ALREADY-ENCODED payload out to every stored subscription. The one
+/// place in the process that talks to a push service.
+async fn send_encoded(state: &AppState, category: &str, title: &str, payload: &[u8]) -> usize {
     let subs = match db::push::list(&state.pool).await {
         Ok(subs) => subs,
         Err(e) => {
@@ -465,7 +585,6 @@ pub async fn send_push_inner(
     }
 
     let total = subs.len();
-    let payload = serde_json::to_vec(&PushPayload { title, body, url }).unwrap_or_default();
     let client = reqwest::Client::new();
     let mut delivered = 0usize;
     let mut pruned = 0usize;
@@ -526,6 +645,7 @@ pub async fn send_push_inner(
         pruned,
         failed,
         muted: false,
+        reason: None,
     });
     delivered
 }
