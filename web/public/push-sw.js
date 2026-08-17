@@ -97,18 +97,36 @@ function notificationOptions(payload) {
   }
 }
 
+// Badging is a NICETY, and on some builds it is a nicety that takes the whole
+// renderer with it: chrome-headless-shell ships `navigator.setAppBadge` but no
+// BadgeService binder, so the first call kills the process with
+// "No binder found for interface blink.mojom.BadgeService" — feature detection
+// is not enough, because the capability lies. So the FIRST failure latches
+// badging off for the life of this service worker: one bad call, never a
+// second. Both the synchronous throw and the async rejection latch.
+let badgingBroken = false
+
 /** Apply the home-screen / dock badge. 0 clears it rather than showing a zero. */
 function applyBadge(count) {
+  if (badgingBroken) return undefined
   const n = Number(count) || 0
+  const latch = (p) =>
+    p && typeof p.catch === 'function'
+      ? p.catch(() => {
+          badgingBroken = true
+        })
+      : p
   try {
     if (n > 0 && typeof self.navigator?.setAppBadge === 'function') {
-      return self.navigator.setAppBadge(n)
+      return latch(self.navigator.setAppBadge(n))
     }
     if (typeof self.navigator?.clearAppBadge === 'function') {
-      return self.navigator.clearAppBadge()
+      return latch(self.navigator.clearAppBadge())
     }
   } catch {
-    // Badging is unsupported on this browser — never let it break the push.
+    // Unsupported (or hostile) badging — never let it break the push, and
+    // never call it again.
+    badgingBroken = true
   }
   return undefined
 }

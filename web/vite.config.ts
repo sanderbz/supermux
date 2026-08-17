@@ -104,12 +104,24 @@ export default defineConfig({
         // is root-relative — push-sw.js is a public asset served at /push-sw.js.
         importScripts: ['/push-sw.js'],
         cleanupOutdatedCaches: true,
-        // No navigateFallback needed: the server returns index.html for every
-        // SPA route, so NetworkFirst above handles all navigations. Setting
-        // navigateFallback: '/index.html' would require index.html to be in the
-        // precache manifest (globPatterns only covers hashed assets, not HTML),
-        // which causes a non-precached-url throw on slow connections when the
+        // No navigateFallback: the server returns index.html for every SPA
+        // route, so the NetworkFirst rule below handles all navigations.
+        // `navigateFallback: '/index.html'` would require index.html to be in
+        // the precache manifest (globPatterns only covers hashed assets, not
+        // HTML), which throws `non-precached-url` on slow connections when the
         // 3s NetworkFirst timeout fires before the network responds.
+        //
+        // `null`, not "omitted": generateSW DEFAULTS navigateFallback to
+        // 'index.html', and the paragraph above was a comment describing a
+        // setting nobody made. The shipped sw.js really did carry
+        //   registerRoute(new NavigationRoute(createHandlerBoundToURL("index.html")))
+        // while the only HTML in the manifest was offline.html — the exact
+        // hazard, live. Because that precache route is registered FIRST it also
+        // shadowed the NetworkFirst rule, so `supermux-html` was never created
+        // and the branded offline shell was unreachable dead code.
+        // `sw-navigation-route.test.ts` greps the built sw.js so this cannot
+        // silently come back on a plugin bump.
+        navigateFallback: null,
         runtimeCaching: [
           {
             // The HTML document carries the auth token — NetworkFirst with a

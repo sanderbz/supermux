@@ -38,7 +38,13 @@ interface PushSwInternals {
 }
 
 /** Evaluate push-sw.js in a fake SW scope and hand back its internals. */
-function loadServiceWorker(): {
+function loadServiceWorker(
+  /** Swap in a hostile badging implementation (see the latch test). */
+  badging?: Partial<{
+    setAppBadge: (n: number) => unknown
+    clearAppBadge: () => unknown
+  }>,
+): {
   sw: PushSwInternals
   badgeCalls: number[]
   /** Mutable counter — read it AFTER the call under test, not at load time. */
@@ -62,6 +68,7 @@ function loadServiceWorker(): {
         clears.count += 1
         return Promise.resolve()
       },
+      ...badging,
     },
     registration: {
       showNotification: () => Promise.resolve(),
@@ -201,5 +208,40 @@ describe('applyBadge', () => {
     // No throw is the assertion; the badge is a nicety and must never be able
     // to break the delivery of a notification.
     expect(true).toBe(true)
+  })
+
+  // chrome-headless-shell EXPOSES navigator.setAppBadge and then has no
+  // BadgeService binder behind it, so the call kills the render process. A
+  // capability that lies cannot be feature-detected; the only defence is to
+  // stop asking after the first failure.
+  test('one failure latches badging off for the life of the worker', async () => {
+    let calls = 0
+    const { sw } = loadServiceWorker({
+      setAppBadge: () => {
+        calls += 1
+        throw new Error('No binder found for interface blink.mojom.BadgeService')
+      },
+    })
+    await sw.applyBadge(3)
+    await sw.applyBadge(4)
+    await sw.applyBadge(5)
+    expect(calls).toBe(1)
+  })
+
+  test('an async rejection latches too — and never rejects outward', async () => {
+    let calls = 0
+    const { sw, clears } = loadServiceWorker({
+      setAppBadge: () => {
+        calls += 1
+        return Promise.reject(new Error('badge service gone'))
+      },
+    })
+    await sw.applyBadge(3)
+    await sw.applyBadge(3)
+    expect(calls).toBe(1)
+    // …and the latch covers the CLEAR path as well: once badging is known
+    // broken, nothing on that API is touched again.
+    await sw.applyBadge(0)
+    expect(clears.count).toBe(0)
   })
 })
