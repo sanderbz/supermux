@@ -202,6 +202,14 @@ export function EntityPickerView({
                 role="option"
                 id={optionId?.(i)}
                 aria-selected={on}
+                // OUT of the tab order. The combobox contract is: the input is
+                // the only tab stop and `aria-activedescendant` is the cursor.
+                // Left tabbable, every row became a real tab stop inside the
+                // dialog — Tab moved DOM focus onto a <button> while
+                // aria-selected stayed behind, so typing went to the button and
+                // vanished, and Enter picked the HIGHLIGHTED row rather than the
+                // focused one. Two cursors, one of them silent.
+                tabIndex={-1}
                 data-testid={rowTestId}
                 data-highlighted={on ? '' : undefined}
                 // `onMouseDown` + preventDefault: a click must not blur the

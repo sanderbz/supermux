@@ -132,3 +132,89 @@ test.describe('the command palette answers its keyboard', () => {
     expect(await selectedIndex()).toBe(0)
   })
 })
+
+test.describe('the palette does not eat the keyboard', () => {
+  let backend: Backend
+
+  test.beforeEach(async () => {
+    backend = await startBackend()
+  })
+  test.afterEach(async () => {
+    await backend?.dispose()
+  })
+
+  // TWO defects, one gesture apart, both of them WCAG 2.4.3/2.4.7:
+  //
+  //   · Tab inside the open palette moved DOM focus onto the option buttons.
+  //     Every row was a natural tab stop, so after three Tabs the focus ring sat
+  //     on `#command-palette-option-2` while `aria-selected` and
+  //     `aria-activedescendant` were still on option-0 — two cursors, and typing
+  //     went to a <button> and vanished. Enter then picked the HIGHLIGHTED row,
+  //     not the focused one.
+  //   · Escape dropped focus to <body>, so the next Tab landed on "Skip to
+  //     content" — a keyboard user was thrown back to the top of the document
+  //     every time they dismissed the palette.
+  //
+  // Neither was covered: no palette spec had ever pressed Tab, and the Escape
+  // assertion stopped at "the listbox is hidden".
+  test('Tab keeps the caret in the box, and Escape hands focus back', async ({ page }) => {
+    test.setTimeout(75_000)
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(() => {
+      localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
+    })
+
+    const A = api(backend)
+    for (let i = 0; i < 4; i++) {
+      const name = `tab-${i}`
+      expect(
+        (await A.createSession({ name, provider: 'shell', dir: backend.dataDir })).status,
+      ).toBe(201)
+    }
+
+    await page.goto(`${backend.baseUrl}/`)
+    await expect(page.getByRole('heading').first()).toBeVisible({ timeout: 20_000 })
+
+    const list = page.getByRole('listbox', { name: 'Palette results' })
+    const input = page.getByRole('combobox', { name: 'Command palette' })
+
+    // Give the page a real, identifiable OPENER — the first tab stop on the
+    // document, which is also where the bug used to dump you.
+    await page.keyboard.press('Tab')
+    const opener = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      return { tag: el?.tagName ?? '', text: (el?.textContent ?? '').trim() }
+    })
+    expect(opener.tag).not.toBe('BODY')
+
+    await page.keyboard.press('Control+k')
+    await expect(list).toBeVisible({ timeout: 10_000 })
+    await expect(input).toBeFocused()
+
+    // ── Tab does not walk onto the rows ─────────────────────────────────────
+    for (let i = 0; i < 3; i++) await page.keyboard.press('Tab')
+    const afterTabs = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      return { role: el?.getAttribute('role') ?? '', id: el?.id ?? '' }
+    })
+    expect(afterTabs.role).not.toBe('option')
+    expect(afterTabs.id).not.toMatch(/command-palette-option/)
+
+    // ── …so typing still reaches the box ────────────────────────────────────
+    // This is the user-visible half: before the fix the keystrokes went to a
+    // <button> and the query stayed "".
+    await input.focus()
+    await page.keyboard.type('tab-')
+    await expect(input).toHaveValue('tab-')
+
+    // ── Escape hands focus back to the opener, not to <body> ────────────────
+    await page.keyboard.press('Escape')
+    await expect(list).toBeHidden({ timeout: 10_000 })
+    const restored = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      return { tag: el?.tagName ?? '', text: (el?.textContent ?? '').trim() }
+    })
+    expect(restored.tag).not.toBe('BODY')
+    expect(restored).toEqual(opener)
+  })
+})

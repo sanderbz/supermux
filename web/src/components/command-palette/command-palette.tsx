@@ -215,6 +215,14 @@ export function CommandPalette() {
   // this keeps `react-hooks/set-state-in-effect` clean. We reset on the
   // open=true transition so the palette never reopens mid-search from a stale
   // filter + highlight.
+  //
+  // The same transition is also where we remember the OPENER. `onOpenAutoFocus`
+  // is prevented below (the input takes focus instead), and Radix only restores
+  // focus on close for the element it moved focus away from itself — so without
+  // this, Escape dropped focus to <body> and the next Tab landed on "Skip to
+  // content", i.e. a keyboard user got thrown back to the top of the document
+  // (WCAG 2.4.3). A ref, not state: nothing renders from it.
+  const opener = React.useRef<HTMLElement | null>(null)
   const setOpen = React.useCallback<
     React.Dispatch<React.SetStateAction<boolean>>
   >(
@@ -222,6 +230,8 @@ export function CommandPalette() {
       setOpenRaw((prev) => {
         const resolved = typeof next === 'function' ? next(prev) : next
         if (resolved && !prev) {
+          const el = document.activeElement
+          opener.current = el instanceof HTMLElement && el !== document.body ? el : null
           setQuery('')
           setActive({ i: 0, viaKey: false })
         }
@@ -230,6 +240,19 @@ export function CommandPalette() {
     },
     [setOpenRaw],
   )
+
+  // Restore focus to whatever the user was on when the palette opened —
+  // Escape, a second ⌘K, an outside click and a pick all funnel through
+  // Radix's close, so this is the single restore point.
+  const restoreFocus = React.useCallback((e: Event) => {
+    const el = opener.current
+    opener.current = null
+    // Still in the document? A pick that navigated away may have unmounted it;
+    // in that case let Radix do its default thing.
+    if (!el || !el.isConnected) return
+    e.preventDefault()
+    el.focus()
+  }, [])
 
   // ⌘K toggles THROUGH the wrapper, so the reset-on-open above is the one and
   // only definition of "the palette opened" (fase B3 T1.4).
@@ -661,6 +684,8 @@ export function CommandPalette() {
         )}
         // Don't auto-focus the close button; let the input take focus.
         onOpenAutoFocus={(e) => e.preventDefault()}
+        // …and hand focus back to the opener on the way out.
+        onCloseAutoFocus={restoreFocus}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         {/* pr-11 on the row, not on the chip: the dialog's own close ✕ is
