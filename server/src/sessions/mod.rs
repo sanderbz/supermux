@@ -125,8 +125,6 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/reset", post(reset_handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
-        .route("/api/sessions/{name}/wake", post(wake_handler))
-        .route("/api/sessions/{name}/clone", post(clone_handler))
         // ── switch the Claude permission mode from the ⋯ menu ──
         .route("/api/sessions/{name}/mode", post(mode_handler))
         // ── reopen a past Claude conversation for the dir ──
@@ -920,17 +918,37 @@ pub async fn duplicate(
     src: &str,
     new_name: &str,
 ) -> Result<SessionView, AppError> {
-    let new_name = new_name.trim();
+    ensure_session(state, src).await?;
+    // T6.4 — the caller no longer has to invent a name. §15.1 asks for a
+    // `<name> copy` default, and an empty `new_name` is what requests it; a
+    // supplied name still wins, so every existing caller is unchanged.
+    let new_name = if new_name.trim().is_empty() {
+        next_copy_name(state, src).await?
+    } else {
+        new_name.trim().to_string()
+    };
+    let new_name = new_name.as_str();
     if !valid_name(new_name) {
         return Err(AppError::BadRequest("invalid new_name".into()));
     }
-    ensure_session(state, src).await?;
     if db::sessions::exists(&state.pool, new_name).await? {
         return Err(AppError::Conflict(format!(
             "session '{new_name}' already exists"
         )));
     }
     db::sessions::duplicate(&state.pool, src, new_name).await?;
+    // T6.2 — the schedules come too, DISABLED. Before B5 no child row was
+    // cloned at all, so "duplicate this agent" silently dropped its jobs. They
+    // arrive disabled because a copy that immediately starts firing cron jobs
+    // is a surprise, and the framing is "a bot is its own template", not "its
+    // own daemon" — the UI says so at the call site.
+    match db::schedules::copy_for_session(&state.pool, src, new_name).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(src = %src, new = %new_name, schedules = n, "duplicate: copied schedules (disabled)"),
+        // Best-effort: a session without its schedules is still a usable copy,
+        // and failing the whole duplicate over them would be worse.
+        Err(e) => tracing::warn!(src = %src, error = %e, "duplicate: could not copy schedules"),
+    }
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, new_name, &hook_token).await?;
     state.hook_tokens.insert(new_name.to_string(), hook_token);
@@ -939,6 +957,29 @@ pub async fn duplicate(
     auto_actions::spawn_status_loop(state.clone(), new_name.to_string());
     steering::deliver_loop::spawn(state.clone(), new_name.to_string());
     get(state, new_name).await
+}
+
+/// The default name for a copy: `<name> copy`, then `<name> copy 2`, `3`, …
+///
+/// §15.1 asks for `<name> copy` with "the usual collision suffix". Slugs cannot
+/// hold spaces, so the separator is `-` — the DISPLAY name is what a user
+/// reads, and `duplicate` sets that to the new slug anyway.
+async fn next_copy_name(state: &AppState, src: &str) -> Result<String, AppError> {
+    let base = format!("{src}-copy");
+    if !db::sessions::exists(&state.pool, &base).await? {
+        return Ok(base);
+    }
+    // Bounded: 99 copies of one session is not a workflow, it is a runaway
+    // loop, and returning a clean error beats scanning forever.
+    for n in 2..100 {
+        let candidate = format!("{base}-{n}");
+        if !db::sessions::exists(&state.pool, &candidate).await? {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict(format!(
+        "too many copies of '{src}' — name the next one yourself"
+    )))
 }
 
 /// Config patch — the tmux-free fields of `PATCH .../config`. `model`,
@@ -1263,6 +1304,11 @@ async fn purge_handler(
 
 #[derive(Debug, Deserialize)]
 struct DuplicateInput {
+    /// Optional since B5/T6.4: omit it (or send `""`) and the server picks
+    /// `<name>-copy`, with the usual collision suffix. §15.1 asks that the
+    /// caller not have to invent a name for what is conceptually "this one,
+    /// again".
+    #[serde(default)]
     new_name: String,
 }
 
@@ -1552,23 +1598,6 @@ async fn unarchive_handler(
     // `sessions` SSE delta SYNCHRONOUSLY, so it returns 200 once the row is back.
     lifecycle::unarchive(&state, &name).await?;
     Ok(Json(json!({ "ok": true })))
-}
-
-async fn wake_handler(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let result = lifecycle::wake(&state, &name).await?;
-    Ok(Json(json!({ "ok": true, "data": result })))
-}
-
-async fn clone_handler(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(input): Json<DuplicateInput>,
-) -> Result<impl IntoResponse, AppError> {
-    let v = lifecycle::clone(&state, &name, &input.new_name).await?;
-    Ok((StatusCode::CREATED, ok(v)))
 }
 
 // ── permission mode ──────────────────────────────────────────────────────────

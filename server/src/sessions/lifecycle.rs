@@ -28,9 +28,8 @@ use super::runtime::SessionRuntime;
 use super::status::{self, Mode};
 use super::tmux::Tmux;
 use super::transport::HostId;
-use super::SessionView;
 
-/// Outcome of a `start`/`wake` (returned to the client).
+/// Outcome of a `start`/`restart` (returned to the client).
 #[derive(Debug, Serialize)]
 pub struct StartResult {
     pub name: String,
@@ -1663,24 +1662,6 @@ pub async fn reset(state: &AppState, name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Wake a (possibly hibernated/stopped) session: clear the hibernate flag and
-/// start it if its tmux session is gone.
-pub async fn wake(state: &AppState, name: &str) -> Result<StartResult, AppError> {
-    if !db::sessions::exists(&state.pool, name).await? {
-        return Err(AppError::NotFound(format!("session '{name}'")));
-    }
-    db::sessions::set_hibernated(&state.pool, name, false).await?;
-    let rt = state.runtime_for(name).await?;
-    if rt.alive().await {
-        return Ok(StartResult {
-            name: name.to_string(),
-            started: false,
-            ready: true,
-            target: rt.target(),
-        });
-    }
-    start(state, name, None).await
-}
 
 // ── mode-shift: switch the permission mode from the UI ────────────────────────
 
@@ -1884,16 +1865,6 @@ fn broadcast_mode(state: &AppState, name: &str, mode: Mode) {
     });
 }
 
-/// Clone a session's config under `new_name` (fresh runtime + hook token). The
-/// git-worktree variant of clone is deferred (see agent notes); this mirrors
-/// `duplicate` so the new session is independently startable.
-pub async fn clone(
-    state: &AppState,
-    src: &str,
-    new_name: &str,
-) -> Result<SessionView, AppError> {
-    super::duplicate(state, src, new_name).await
-}
 
 // ── REST send_keys allowlist ─────────────────────────────────────────────────
 

@@ -449,17 +449,19 @@ pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<
 /// copy silently inheriting something it should not is worse than one missing a
 /// field. `notif` (migration 0028) is opted in — a bot you have muted should
 /// stay muted in its copy, which is what "a bot is its own template" means
-/// (B5/T1.6).
+/// (B5/T1.6). `mark_pin` (0027) likewise: §10 names "the copy carries the
+/// avatar" as one of the reasons that column is persisted at all, and the
+/// explicit column list had quietly omitted it (B5/T6.3).
 pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, notif, created_at)
+             host_id, runtime, notif, mark_pin, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, notif, ?
+                host_id, runtime, notif, mark_pin, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

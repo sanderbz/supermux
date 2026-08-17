@@ -35,6 +35,7 @@ import {
 
 import { cn } from '@/lib/utils'
 import { NotifPolicyControl } from '@/components/focus-mode/notif-policy-control'
+import { LIFECYCLE } from '@/brand/copy'
 import { motionOff, springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
@@ -316,6 +317,13 @@ function PanelBody({
         )}
         {clone.pending ? 'Cloning…' : 'Clone agent in this directory'}
       </button>
+      {/* B5/T6.5 — say where the copy actually lands. `duplicate` copies the
+          worktree COLUMNS as strings and creates no git worktree, so the copy
+          runs in this same directory. Letting the columns imply otherwise is
+          the dishonesty §15.1 objects to. */}
+      <p className="px-1 pt-2 text-[12px] leading-snug text-muted-foreground">
+        {LIFECYCLE.duplicateIsATemplate}
+      </p>
     </div>
   )
 }

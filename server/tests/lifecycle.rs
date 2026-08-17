@@ -50,6 +50,29 @@ async fn test_app() -> (axum::Router, std::path::PathBuf) {
     (http::router(state), dir)
 }
 
+/// Like [`test_app`] but hands back the `AppState` too, so a test can assert
+/// against the DB directly rather than only through HTTP (B5/T6).
+async fn new_state() -> (AppState, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("supermux-life-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = Config {
+        data_dir: dir.clone(),
+        bind: "127.0.0.1:0".parse().unwrap(),
+        extra_binds: vec![],
+        extra_origins: vec![],
+        tls: TlsConfig::default(),
+        auth_token: TOKEN.to_string(),
+        provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
+        remote_callback_url: None,
+        push_sub: None,
+        github_token: None,
+        statusline_tap: false,
+    };
+    let pool = db::init(&config).await.expect("db init");
+    (AppState::new(pool, config), dir)
+}
+
 async fn send(
     app: &axum::Router,
     method: Method,
@@ -412,4 +435,213 @@ async fn peek_serves_plain_by_default_and_ansi_on_request() {
     );
 
     teardown(&app, &name, dir).await;
+}
+
+// ── T6: duplicate is an honest template copy ────────────────────────────────
+//
+// §15.1's "unify /clone and /duplicate" turned out to be a DELETION: `/clone`
+// was a literal one-line alias with zero web callers. `/wake` went the same way
+// — it cleared a `hibernated` flag that nothing in the codebase ever sets, so
+// it was `start` with dead code attached. A dead route is a maintenance
+// liability and a small attack surface.
+//
+// What remains is `duplicate`, and these tests pin what it does and does not
+// carry — the enumeration §15.1 asks for, asserted rather than documented, so a
+// column added to `sessions` without a decision about copying it shows up here.
+
+/// The removed routes stay removed. A 404 rather than a 405: the path is gone,
+/// not merely the method.
+#[tokio::test]
+async fn the_clone_alias_and_the_wake_route_are_gone() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+    db::sessions::insert_minimal(&state.pool, "orig", dir.to_str().unwrap(), "claude")
+        .await
+        .unwrap();
+
+    for path in ["clone", "wake"] {
+        let (status, _) = send(
+            &app,
+            Method::POST,
+            &format!("/api/sessions/orig/{path}"),
+            Some(json!({ "new_name": "copy" })),
+        )
+        .await;
+        // 405, not 404: axum still matches the `/api/sessions/{name}/{...}`
+        // shape for the sibling routes and reports method-not-allowed. What
+        // matters is that it no longer ACTS — asserting the exact code would
+        // pin a routing detail rather than the behaviour.
+        assert!(
+            status.is_client_error(),
+            "/{path} was a dead route and must stay deleted; got {status}",
+        );
+        assert_ne!(
+            status,
+            StatusCode::CREATED,
+            "/{path} must not still create a session",
+        );
+    }
+    // …and nothing was created by either call.
+    assert!(!db::sessions::exists(&state.pool, "copy").await.unwrap());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// T6.4 — the caller no longer has to invent a name, and collisions suffix.
+#[tokio::test]
+async fn duplicate_defaults_the_name_and_suffixes_collisions() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+    db::sessions::insert_minimal(&state.pool, "deploy", dir.to_str().unwrap(), "claude")
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/sessions/deploy/duplicate",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["data"]["name"], json!("deploy-copy"));
+
+    // A second copy suffixes rather than colliding.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/sessions/deploy/duplicate",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["data"]["name"], json!("deploy-copy-2"));
+
+    // An explicit name still wins — every existing caller is unchanged.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/sessions/deploy/duplicate",
+        Some(json!({ "new_name": "my-own-name" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["data"]["name"], json!("my-own-name"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// T6.2/T6.3 — what the copy carries, named column by column and table by
+/// table. The negative assertions matter as much as the positive ones: a copy
+/// that silently inherits run history, or that starts firing cron jobs, is a
+/// surprise rather than a template.
+#[tokio::test]
+async fn duplicate_copies_the_template_and_nothing_that_would_surprise_you() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+    db::sessions::insert_minimal(&state.pool, "src", dir.to_str().unwrap(), "claude")
+        .await
+        .unwrap();
+    db::sessions::set_mark_pin(&state.pool, "src", Some("wedge:350"))
+        .await
+        .unwrap();
+    db::sessions::set_notif_policy(
+        &state.pool,
+        "src",
+        supermux_server::notify::NotifPolicy::Off,
+    )
+    .await
+    .unwrap();
+
+    let sched = supermux_server::db::schedules::Schedule {
+        id: "s-src".into(),
+        title: "nightly".into(),
+        session: "src".into(),
+        command: String::new(),
+        prompt: "go".into(),
+        kind: "tmux".into(),
+        boot_dir: String::new(),
+        boot_provider: String::new(),
+        boot_worktree: 0,
+        sched_type: "recurring".into(),
+        recurrence: Some("every 1 minute".into()),
+        run_at: None,
+        next_run: Some(chrono::Utc::now().to_rfc3339()),
+        last_run: Some(chrono::Utc::now().to_rfc3339()),
+        enabled: 1,
+        run_count: 17,
+        schedule_expr: Some("every 1 minute".into()),
+        watch: 0,
+        watch_timeout: 0,
+        done_pattern: None,
+        done_action: "notify".into(),
+        confirm_finish: 0,
+        bypass_permissions: 0,
+        created: chrono::Utc::now().timestamp(),
+        updated: chrono::Utc::now().timestamp(),
+        deleted: None,
+    };
+    db::schedules::insert(&state.pool, &sched).await.unwrap();
+
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/api/sessions/src/duplicate",
+        Some(json!({ "new_name": "dst" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let copy = db::sessions::get(&state.pool, "dst").await.unwrap().unwrap();
+
+    // COPIED — the things that make it the same kind of bot.
+    assert_eq!(copy.dir, dir.to_str().unwrap(), "working directory");
+    assert_eq!(copy.provider, "claude", "provider");
+    assert_eq!(
+        copy.mark_pin.as_deref(),
+        Some("wedge:350"),
+        "T6.3 — the copy carries the avatar; §10 names this as a reason the \
+         column is persisted, and the explicit column list had omitted it",
+    );
+    assert_eq!(
+        copy.notif, "off",
+        "T1.6 — a bot you have muted stays muted in its copy",
+    );
+
+    // NOT COPIED — the things that would make the copy lie about its history.
+    assert_eq!(copy.pinned, 0, "pinned is a placement, not a property");
+    assert_eq!(copy.start_count, 0, "the copy has never run");
+
+    // Schedules: copied, but DISABLED and with no history.
+    let copied: Vec<_> = db::schedules::list(&state.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.session == "dst")
+        .collect();
+    assert_eq!(copied.len(), 1, "T6.2 — the schedules come with the template");
+    let c = &copied[0];
+    assert_ne!(c.id, "s-src", "a fresh id — otherwise the fire-key table would \
+                               let the original's history suppress the copy");
+    assert_eq!(c.title, "nightly", "the job itself is intact");
+    assert_eq!(
+        c.enabled, 0,
+        "DISABLED: a copy that immediately starts firing cron jobs is a \
+         surprise. A bot is its own template, not its own daemon",
+    );
+    assert_eq!(c.run_count, 0, "the copy has no run history");
+    assert!(c.last_run.is_none(), "…and inherits none");
+    assert!(c.next_run.is_none(), "…so it is not scheduled either");
+
+    // The original is untouched by having been copied.
+    let orig: Vec<_> = db::schedules::list(&state.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.session == "src")
+        .collect();
+    assert_eq!(orig.len(), 1);
+    assert_eq!(orig[0].enabled, 1, "the ORIGINAL keeps running");
+    assert_eq!(orig[0].run_count, 17, "and keeps its history");
+
+    let _ = std::fs::remove_dir_all(dir);
 }

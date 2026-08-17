@@ -210,6 +210,16 @@ export const LIFECYCLE = {
    *  first in the disposition table below and repeated here because it is the
    *  fact users are most surprised by: supermux removes its own record of a
    *  session, never your code. */
+  /** B5/T6.5 — the honest description of what "duplicate" produces.
+   *
+   *  `duplicate` copies `worktree`/`worktree_repo` as STRINGS and creates no
+   *  git worktree: the copy lands in the SOURCE'S directory. Leaving those
+   *  columns to imply a worktree that does not exist is the dishonesty §15.1
+   *  objects to, so the UI says where the copy actually goes — and, since
+   *  B5/T6.2, that its scheduled jobs come along switched off. */
+  duplicateIsATemplate:
+    'The copy runs in this same directory, and starts out with this agent\u2019s settings. Its scheduled jobs are copied but switched off.',
+
   purgeLeavesYourFilesAlone:
     'Your working directory, git branch and worktree are never touched — on archive or on delete.',
 } as const

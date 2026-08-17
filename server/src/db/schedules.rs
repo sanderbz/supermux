@@ -196,6 +196,47 @@ pub async fn soft_delete_for_session(pool: &SqlitePool, session: &str) -> sqlx::
     Ok(res.rows_affected())
 }
 
+/// Copy every live schedule from `src` onto `dst`, DISABLED (B5/T6.2).
+///
+/// Returns how many were copied.
+///
+/// **Why they are copied at all.** `duplicate` cloned no child row of any kind,
+/// so "duplicate this agent" silently dropped its scheduled jobs — the copy
+/// looked identical and behaved differently, which is the worst kind of wrong.
+///
+/// **Why DISABLED.** A copy that immediately starts firing cron jobs is a
+/// surprise, and doubles the load of whatever the original does. The framing is
+/// "a bot is its own template", not "its own daemon": the copy arrives with the
+/// jobs described and switched off, ready to enable deliberately.
+///
+/// New ids, and `last_run`/`run_count`/`next_run` all reset: the copy has no
+/// history, and inheriting the original's would make its ledger a lie. The
+/// fire-key idempotency table is keyed by schedule id, so fresh ids also mean
+/// the copy can never be suppressed by the original's fire history.
+pub async fn copy_for_session(pool: &SqlitePool, src: &str, dst: &str) -> sqlx::Result<u64> {
+    let now = Utc::now().timestamp();
+    let res = sqlx::query(
+        "INSERT INTO schedules
+            (id, title, session, command, prompt, kind, boot_dir, boot_provider, boot_worktree,
+             sched_type, recurrence, run_at, next_run, last_run, enabled, run_count,
+             schedule_expr, watch, watch_timeout, done_pattern, done_action, confirm_finish,
+             bypass_permissions, created, updated, deleted)
+         SELECT lower(hex(randomblob(16))), title, ?, command, prompt, kind, boot_dir,
+                boot_provider, boot_worktree, sched_type, recurrence, run_at,
+                NULL, NULL, 0, 0,
+                schedule_expr, watch, watch_timeout, done_pattern, done_action, confirm_finish,
+                bypass_permissions, ?, ?, NULL
+         FROM schedules WHERE session = ? AND deleted IS NULL",
+    )
+    .bind(dst)
+    .bind(now)
+    .bind(now)
+    .bind(src)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Persist a real fire: bump `last_run`/`run_count`, set the recomputed
 /// `next_run` (NULL disables a finished one-shot).
 pub async fn record_fire(
