@@ -13,3 +13,6 @@
 {"name": "negative-idle-composer", "file": "negative-idle-composer.txt", "width": 80, "stage": null, "waiting": false}
 {"name": "negative-login-in-scrollback", "file": "negative-login-in-scrollback.txt", "width": 80, "stage": null, "waiting": false}
 {"name": "negative-prose-quotes-the-prompt", "file": "negative-prose-quotes-the-prompt.txt", "width": 80, "stage": null, "waiting": false}
+{"name": "codex-device-code", "file": "codex-device-code.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "device_code", "url": "https://chatgpt.com/deviceauth?user_code=FKDL-XMQP", "code": "FKDL-XMQP"}}
+{"name": "codex-apikey-paste", "file": "codex-apikey-paste.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "api_key"}}
+{"name": "codex-method-picker", "file": "codex-method-picker.txt", "width": 100, "stage": null, "waiting": true, "provider_auth": {"kind": "method_picker"}}

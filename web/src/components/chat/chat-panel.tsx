@@ -51,7 +51,7 @@ import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
 import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
-import { LoginCard } from './login-card'
+import { LoginCard, ProviderAuthCard } from './login-card'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
 import { usePendingSends } from './use-pending-sends'
@@ -586,7 +586,14 @@ export default function ChatPanel({
         showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
       }
       login={
-        login.sighting && (
+        (login.providerAuth && (
+          <ProviderAuthCard
+            auth={login.providerAuth}
+            onOpenTerminal={onOpenTerminal}
+            surface={phone ? 'phone' : 'desktop'}
+          />
+        )) ||
+        (login.sighting && (
           <LoginCard
             sighting={login.sighting}
             frozen={login.frozen}
@@ -599,7 +606,7 @@ export default function ChatPanel({
             onOpenTerminal={onOpenTerminal}
             surface={phone ? 'phone' : 'desktop'}
           />
-        )
+        ))
       }
       composer={
         <ChatComposer

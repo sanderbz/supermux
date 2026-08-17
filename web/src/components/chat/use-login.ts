@@ -19,11 +19,21 @@ import * as React from 'react'
 
 import { sessionRequest } from '@/lib/api'
 
-import { readLogin, type LoginSighting, type LoginStage } from './login-lens'
+import {
+  readLogin,
+  readProviderAuth,
+  type LoginSighting,
+  type LoginStage,
+  type ProviderAuth,
+} from './login-lens'
 
 export interface LoginHandle {
   /** What is on the screen, read off the shared peek capture. */
   sighting: LoginSighting | null
+  /** A codex / kimi device-auth screen — detected and explained, never driven
+   *  (their device-code lifecycles are their own). Never set at the same time as
+   *  `sighting`: one screen is one thing. */
+  providerAuth: ProviderAuth | null
   /**
    * Is supervision actually frozen? Read from the server, not assumed.
    *
@@ -58,6 +68,10 @@ type Action =
 export function useLogin(name: string, capture: string): LoginHandle {
   const [busy, setBusy] = React.useState(false)
   const sighting = React.useMemo(() => readLogin(capture), [capture])
+  const providerAuth = React.useMemo(
+    () => (sighting ? null : readProviderAuth(capture)),
+    [capture, sighting],
+  )
   const stage = sighting?.stage ?? null
 
   // Both facts below are STAMPED WITH THE STAGE THEY BELONG TO and derived
@@ -126,6 +140,7 @@ export function useLogin(name: string, capture: string): LoginHandle {
   return React.useMemo<LoginHandle>(
     () => ({
       sighting,
+      providerAuth,
       frozen,
       busy,
       error,
@@ -139,6 +154,6 @@ export function useLogin(name: string, capture: string): LoginHandle {
       cancel: () => post({ action: 'cancel' }),
       start: (design = false) => post({ action: 'start', design }),
     }),
-    [sighting, frozen, busy, error, post],
+    [sighting, providerAuth, frozen, busy, error, post],
   )
 }

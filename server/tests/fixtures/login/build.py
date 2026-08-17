@@ -279,6 +279,71 @@ case(
     waiting=False,
 )
 
+# ── 14-16. the other providers ───────────────────────────────────────────────
+# Detected and EXPLAINED, not driven: codex's and kimi's device lifecycles are
+# their own, and a half-automation that gets the timing wrong is worse than a
+# card that says what is happening and hands over.
+case(
+    "codex-device-code",
+    [
+        "Welcome to Codex [v0.147.0]",
+        "OpenAI's command-line coding agent",
+        "",
+        "Follow these steps to sign in with ChatGPT using device code authorization:",
+        "",
+        "1. Open this link in your browser and sign in to your account",
+        "   https://chatgpt.com/deviceauth?user_code=FKDL-XMQP",
+        "",
+        "2. Enter this one-time code",
+        "   FKDL-XMQP",
+        "   (expires in 15 minutes)",
+        "",
+        "Continue only if you started this login in Codex. If a website or another person gave you this code, cancel.",
+    ],
+    100,
+    stage=None,
+    waiting=True,
+    provider_auth={
+        "kind": "device_code",
+        "url": "https://chatgpt.com/deviceauth?user_code=FKDL-XMQP",
+        "code": "FKDL-XMQP",
+    },
+)
+
+case(
+    "codex-apikey-paste",
+    [
+        "Welcome to Codex [v0.147.0]",
+        "",
+        "Paste or type your API key below. It will be stored locally in auth.json.",
+        "",
+        "API key",
+        "  ",
+    ],
+    100,
+    stage=None,
+    waiting=True,
+    provider_auth={"kind": "api_key"},
+)
+
+case(
+    "codex-method-picker",
+    [
+        "Welcome to Codex [v0.147.0]",
+        "",
+        "Sign in with ChatGPT to use Codex as part of your paid plan",
+        "or connect an API key for usage-based billing",
+        "",
+        " ❯ 1. Sign in with ChatGPT",
+        "   2. Sign in with Device Code",
+        "   3. Provide your own API key",
+    ],
+    100,
+    stage=None,
+    waiting=True,
+    provider_auth={"kind": "method_picker"},
+)
+
 with open(os.path.join(HERE, "cases.jsonl"), "w") as fh:
     fh.write(
         json.dumps(

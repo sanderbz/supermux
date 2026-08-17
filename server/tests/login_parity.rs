@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use supermux_server::sessions::login::{read_login, reassemble_url, Stage};
+use supermux_server::sessions::login::{read_login, read_provider_auth, reassemble_url, Stage};
 use supermux_server::sessions::status::{Status, StatusDetector, TurnState};
 
 fn fixtures() -> PathBuf {
@@ -40,7 +40,7 @@ fn corpus() -> Vec<Value> {
         .filter(|v: &Value| v.get("_").is_none())
         .collect();
     assert!(
-        rows.len() >= 14,
+        rows.len() >= 17,
         "the corpus is the contract — it must not shrink (got {})",
         rows.len()
     );
@@ -171,6 +171,36 @@ fn the_authorize_host_is_claude_dot_com() {
     assert_eq!(reassemble_url(&lines), None);
     let lines = ["https://claude.com/cai/oauth/authorize?x=1"];
     assert!(reassemble_url(&lines).is_some());
+}
+
+/// The other providers. supermux does not DRIVE codex's or kimi's device flows
+/// — their lifecycles are their own, and a half-automation that gets the timing
+/// wrong is worse than nothing — but a session sitting on one is blocked, and
+/// the card has to be able to name it, show the link and show the one-time code.
+#[test]
+fn a_codex_device_auth_screen_is_detected_and_readable() {
+    for row in corpus() {
+        let Some(want) = row.get("provider_auth") else {
+            continue;
+        };
+        let got = read_provider_auth(&capture(&row))
+            .unwrap_or_else(|| panic!("{}: no provider auth sighting", name(&row)));
+        assert_eq!(
+            serde_json::to_value(&got).unwrap()["kind"],
+            want["kind"],
+            "{}: kind",
+            name(&row)
+        );
+        if let Some(u) = want.get("url").and_then(Value::as_str) {
+            assert_eq!(got.url.as_deref(), Some(u), "{}: url", name(&row));
+        }
+        if let Some(c) = want.get("code").and_then(Value::as_str) {
+            assert_eq!(got.code.as_deref(), Some(c), "{}: one-time code", name(&row));
+        }
+        // And a Claude login must never be read as a provider device-auth, or
+        // the wrong card is drawn on the one flow this app CAN complete.
+        assert!(read_login(&capture(&row)).is_none(), "{}: not a claude login", name(&row));
+    }
 }
 
 /// The roster dot. Before this feature a session parked on the paste prompt

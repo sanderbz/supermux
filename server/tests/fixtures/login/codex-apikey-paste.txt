@@ -1,0 +1,6 @@
+Welcome to Codex [v0.147.0]
+
+Paste or type your API key below. It will be stored locally in auth.json.
+
+API key
+  

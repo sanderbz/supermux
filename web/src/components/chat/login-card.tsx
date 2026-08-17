@@ -44,7 +44,7 @@ import * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-import { loginCodeProblem, type LoginSighting } from './login-lens'
+import { loginCodeProblem, type LoginSighting, type ProviderAuth } from './login-lens'
 
 export interface LoginCardProps {
   /** The current reading, or null when no login is on screen. */
@@ -214,6 +214,74 @@ function CodeField({
         </p>
       )}
     </form>
+  )
+}
+
+/**
+ * The HONEST CARD for a non-Claude provider (AREA 3, item 3).
+ *
+ * supermux does not drive codex's or kimi's device flows: their device-code
+ * lifecycles, expiry windows and confirm steps are their own, and a
+ * half-automation that gets one of them wrong burns a code the user then has to
+ * chase. What it CAN do is stop the session reading as an idle green dot while
+ * it sits on a sign-in screen — name the state, put the link and the one-time
+ * code where a thumb can reach them, and hand over to the terminal for the rest.
+ *
+ * Deliberately no input of any kind. `Paste or type your API key` is a SECRET
+ * field, and offering a web input for it here would put a long-lived API key
+ * through a path this feature has not designed the storage rules for.
+ */
+export function ProviderAuthCard({
+  auth,
+  onOpenTerminal,
+  surface = 'desktop',
+}: {
+  auth: ProviderAuth | null
+  onOpenTerminal?: () => void
+  surface?: 'phone' | 'desktop'
+}): React.ReactElement | null {
+  if (!auth) return null
+  return (
+    <section
+      className={cn(CARD, surface === 'phone' ? 'mx-0' : 'ml-[44px] max-w-[592px]')}
+      data-testid="provider-auth-card"
+      data-kind={auth.kind}
+      aria-label="Provider sign-in"
+    >
+      <Title>
+        {auth.kind === 'api_key' ? 'This session wants an API key' : 'This session is signing in'}
+      </Title>
+      <Why>
+        {auth.kind === 'device_code'
+          ? 'Open the link, enter the code below, then come back — the terminal finishes on its own.'
+          : auth.kind === 'api_key'
+            ? 'It is asking for a key in a masked field. Keys are typed in the terminal, not here.'
+            : 'It is asking how to sign in. Pick a method in the terminal.'}
+      </Why>
+      {auth.url && (
+        <div className="mt-[10px]">
+          <a
+            href={auth.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(BTN, 'font-semibold bg-[var(--sm-fill-soft)]')}
+            data-testid="provider-auth-link"
+          >
+            Open the sign-in page
+          </a>
+        </div>
+      )}
+      {auth.code && (
+        <p className="mt-[10px] select-all font-mono text-[19px] tracking-[2px] text-ink-0">
+          {auth.code}
+        </p>
+      )}
+      <div className="mt-[13px]">
+        <button type="button" className={BTN} onClick={onOpenTerminal}>
+          Open terminal
+        </button>
+      </div>
+    </section>
   )
 }
 

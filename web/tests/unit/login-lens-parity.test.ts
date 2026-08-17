@@ -27,8 +27,10 @@ import {
   loginCodeProblem,
   maskCode,
   readLogin,
+  readProviderAuth,
   reassembleUrl,
   type LoginStage,
+  type ProviderAuthKind,
 } from '../../src/components/chat/login-lens'
 
 interface CorpusRow {
@@ -42,6 +44,7 @@ interface CorpusRow {
   message?: string
   email?: string
   waiting?: boolean
+  provider_auth?: { kind: ProviderAuthKind; url?: string; code?: string }
 }
 
 const DIR = new URL('../../../server/tests/fixtures/login/', import.meta.url)
@@ -56,7 +59,7 @@ const capture = (row: CorpusRow) => readFileSync(new URL(row.file, DIR), 'utf8')
 
 describe('the shared /login corpus', () => {
   test('is present and has not shrunk', () => {
-    expect(CORPUS.length).toBeGreaterThanOrEqual(14)
+    expect(CORPUS.length).toBeGreaterThanOrEqual(17)
   })
 
   test('still covers every stage, both flows, several wrap widths and the negatives', () => {
@@ -123,6 +126,24 @@ describe('the URL', () => {
     expect(reassembleUrl(['https://claude.ai/oauth/authorize?x=1'])).toBeUndefined()
     expect(reassembleUrl(['https://claude.com/cai/oauth/authorize?x=1'])).toBeDefined()
   })
+})
+
+describe('the other providers', () => {
+  // supermux does not drive codex's or kimi's device flows — their lifecycles
+  // are their own. But a session sitting on one IS blocked, and the card has to
+  // be able to name it, show the link and show the one-time code.
+  for (const row of CORPUS.filter((r) => r.provider_auth)) {
+    test(`${row.name} is detected and readable`, () => {
+      const got = readProviderAuth(capture(row))
+      expect(got).not.toBeNull()
+      expect(got!.kind).toBe(row.provider_auth!.kind)
+      if (row.provider_auth!.url) expect(got!.url).toBe(row.provider_auth!.url)
+      if (row.provider_auth!.code) expect(got!.code).toBe(row.provider_auth!.code)
+      // And it must never be read as a Claude login, or the wrong card is drawn
+      // on the one flow this app CAN complete.
+      expect(readLogin(capture(row))).toBeNull()
+    })
+  }
 })
 
 describe('the code field', () => {

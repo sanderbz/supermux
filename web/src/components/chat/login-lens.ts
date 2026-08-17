@@ -296,3 +296,60 @@ export function loginCodeProblem(raw: string): string | null {
 export function maskCode(code: string): string {
   return '•'.repeat(Math.min(code.trim().length, 48))
 }
+
+/* ── the other providers ─────────────────────────────────────────────────── */
+
+/**
+ * What a NON-Claude provider is blocked on.
+ *
+ * Deliberately smaller than a `LoginSighting`: supermux does not drive codex's
+ * or kimi's device flows — their device-code lifecycles are their own, and a
+ * half-automation that gets the expiry or the confirm step wrong is worse than
+ * nothing. The contract is an HONEST CARD: name the state, show the link and the
+ * one-time code, say what to do, and hand over to the terminal.
+ */
+export type ProviderAuthKind = 'device_code' | 'api_key' | 'method_picker'
+
+export interface ProviderAuth {
+  kind: ProviderAuthKind
+  url?: string
+  /** The one-time code typed into the browser. Not a credential in the stored
+   *  sense — it is meaningless without that browser session — but short-lived,
+   *  so it is shown and never kept. */
+  code?: string
+}
+
+/** `FKDL-XMQP` — a device code row: short, loud, no spaces. */
+function looksLikeDeviceCode(line: string): boolean {
+  const t = line.trim()
+  return (
+    t.length >= 6 &&
+    t.length <= 16 &&
+    /[A-Z0-9]/.test(t) &&
+    /^[A-Z0-9-]+$/.test(t)
+  )
+}
+
+/** Twin of `login.rs::read_provider_auth`, same window rule as `readLogin`. */
+export function readProviderAuth(capture: string): ProviderAuth | null {
+  const lines = capture ? capture.split('\n') : []
+  const w = windowOf(lines)
+  if (!w) return null
+  const win = lines.slice(w[0], w[1] + 1)
+  const block = win.join('\n')
+
+  if (block.includes('Paste or type your API key')) return { kind: 'api_key' }
+  if (block.includes('Enter this one-time code') || block.includes('device code authorization')) {
+    const at = win.findIndex((l) => l.includes('Enter this one-time code'))
+    const code = at >= 0 ? win.slice(at + 1).find(looksLikeDeviceCode)?.trim() : undefined
+    const url = reassembleUrl(win, () => true)
+    return { kind: 'device_code', ...(url ? { url } : {}), ...(code ? { code } : {}) }
+  }
+  if (
+    block.includes('Sign in with Device Code') ||
+    (block.includes('Sign in with ChatGPT') && block.includes('Provide your own API key'))
+  ) {
+    return { kind: 'method_picker' }
+  }
+  return null
+}

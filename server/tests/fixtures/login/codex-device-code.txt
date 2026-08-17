@@ -1,0 +1,14 @@
+Welcome to Codex [v0.147.0]
+OpenAI's command-line coding agent
+
+Follow these steps to sign in with ChatGPT using device code authorization:
+
+1. Open this link in your browser and sign in to your account
+   https://chatgpt.com/deviceauth?user_code=FKDL-XMQP
+
+2. Enter this one-time code
+   FKDL-XMQP
+   (expires in 15 minutes)
+
+Continue only if you started this login in Codex. If a website or another person gave you this code,
+ cancel.
