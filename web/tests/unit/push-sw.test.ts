@@ -49,6 +49,10 @@ function loadServiceWorker(
   badgeCalls: number[]
   /** Mutable counter — read it AFTER the call under test, not at load time. */
   clears: { count: number }
+  /** The listeners the worker registered (`message`, `push`, …). */
+  listeners: Record<string, (event: { data: unknown }) => void>
+  /** Tags passed to `getNotifications` — proves `closeTag` ran. */
+  closedTags: (string | undefined)[]
 } {
   const src = readFileSync(
     join(import.meta.dir, '../../public/push-sw.js'),
@@ -56,7 +60,8 @@ function loadServiceWorker(
   )
   const badgeCalls: number[] = []
   const clears = { count: 0 }
-  const listeners: Record<string, unknown> = {}
+  const closedTags: (string | undefined)[] = []
+  const listeners: Record<string, (event: { data: unknown }) => void> = {}
   const self: Record<string, unknown> = {
     location: { origin: 'https://supermux.example' },
     navigator: {
@@ -72,16 +77,19 @@ function loadServiceWorker(
     },
     registration: {
       showNotification: () => Promise.resolve(),
-      getNotifications: () => Promise.resolve([]),
+      getNotifications: (q?: { tag?: string }) => {
+        closedTags.push(q?.tag)
+        return Promise.resolve([])
+      },
     },
-    addEventListener: (name: string, fn: unknown) => {
+    addEventListener: (name: string, fn: (event: { data: unknown }) => void) => {
       listeners[name] = fn
     },
   }
   // The SW body only registers listeners and assigns `self.__pushSw`, so
   // evaluating it has no side effects beyond that.
   new Function('self', 'clients', src)(self, { matchAll: () => Promise.resolve([]) })
-  return { sw: self.__pushSw as PushSwInternals, badgeCalls, clears }
+  return { sw: self.__pushSw as PushSwInternals, badgeCalls, clears, listeners, closedTags }
 }
 
 const ORIGIN = 'https://supermux.example'
@@ -243,5 +251,64 @@ describe('applyBadge', () => {
     // broken, nothing on that API is touched again.
     await sw.applyBadge(0)
     expect(clears.count).toBe(0)
+  })
+})
+
+describe('the message handler', () => {
+  // A ServiceWorker `ExtendableEvent` — capture the promise passed to
+  // `waitUntil` so the test can await the handler's async body.
+  function evt(data: unknown): {
+    data: unknown
+    readonly waited: Promise<unknown>
+    waitUntil(p: Promise<unknown>): void
+  } {
+    let waited: Promise<unknown> = Promise.resolve()
+    return {
+      data,
+      get waited() {
+        return waited
+      },
+      waitUntil(p: Promise<unknown>) {
+        waited = Promise.resolve(p)
+      },
+    }
+  }
+
+  // chrome-headless-shell ships `navigator.setAppBadge` with no BadgeService
+  // binder, so the FIRST worker call hard-crashes the render process — and
+  // `notification-seen` fires on every in-app navigation. The badge is the page's
+  // job whenever it is open (push-bridge.tsx::setBadge), so the worker must NOT
+  // touch the badge API from a message: it closes the stale card and nothing more.
+  test('notification-seen closes the card but NEVER touches the badge API', async () => {
+    const { listeners, badgeCalls, clears, closedTags } = loadServiceWorker()
+    expect(typeof listeners.message).toBe('function')
+
+    const e = evt({ type: 'notification-seen', session: 'deploy-fix', badge: 3 })
+    listeners.message(e)
+    await e.waited
+
+    // The card was closed on the session's coalescing slot…
+    expect(closedTags).toContain('session:deploy-fix')
+    // …and the badge API was left completely alone — the crash trigger is gone.
+    expect(badgeCalls).toEqual([])
+    expect(clears.count).toBe(0)
+  })
+
+  test('a bare {type:"badge"} message is an inert no-op (page owns the badge)', async () => {
+    const { listeners, badgeCalls, clears } = loadServiceWorker()
+    const e = evt({ type: 'badge', badge: 7 })
+    listeners.message(e)
+    await e.waited
+    expect(badgeCalls).toEqual([])
+    expect(clears.count).toBe(0)
+  })
+
+  test('the push handler STILL badges — closed-app badging is preserved', async () => {
+    const { listeners, badgeCalls } = loadServiceWorker()
+    expect(typeof listeners.push).toBe('function')
+    const e = evt({ json: () => ({ title: 't', badge: 2 }) })
+    listeners.push(e)
+    await e.waited
+    expect(badgeCalls).toEqual([2])
   })
 })

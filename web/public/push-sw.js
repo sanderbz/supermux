@@ -237,20 +237,28 @@ async function closeTag(tag) {
 // ── message: the app telling the SW what it has just seen ────────────────────
 //
 // The page owns the truth about what the user is looking at, so it drives the
-// two things the SW cannot know: which session's banner is now stale, and what
-// the badge count actually is. Without this the lock screen kept a "needs you"
-// card for a dialog the user had already answered in the app.
+// one thing the SW cannot know: which session's banner is now stale.
+//
+// The BADGE is deliberately NOT applied from here. Every message on this channel
+// is posted BY the page (push-bridge.tsx), and the page can only post while it
+// is open — at which point `push-bridge.tsx::setBadge` has ALREADY applied the
+// same count from the window context (on iOS the page and the SW share one
+// badge, and the page is the authoritative writer). Re-applying it in the worker
+// was pure redundancy, and it was also a live renderer-crash hazard: on
+// chrome-headless-shell `navigator.setAppBadge` EXISTS but has no BadgeService
+// binder behind it, so the first worker call HARD-CRASHES the render process on
+// the very next navigation. A capability that lies cannot be feature-detected,
+// so the defence is to not make the call from a context that doesn't need to.
+// Closed-app badging — the case the page can't cover because it isn't running —
+// is still applied in the `push` handler above, guarded by the `applyBadge`
+// latch. See tests/e2e/smoke/sw-lifecycle.spec.ts for the crash regression.
 self.addEventListener('message', (event) => {
   const msg = event.data
   if (!msg || typeof msg !== 'object') return
   if (msg.type === 'notification-seen') {
-    event.waitUntil(
-      (async () => {
-        await closeTag(msg.tag || (msg.session ? `session:${msg.session}` : null))
-        if (typeof msg.badge === 'number') await applyBadge(msg.badge)
-      })(),
-    )
-  } else if (msg.type === 'badge') {
-    event.waitUntil(applyBadge(msg.badge) || Promise.resolve())
+    event.waitUntil(closeTag(msg.tag || (msg.session ? `session:${msg.session}` : null)))
   }
+  // A `{type:'badge'}` message is now a no-op — the open page owns the badge.
+  // Tolerated (not rejected) so an older/newer page build posting one is
+  // harmless.
 })

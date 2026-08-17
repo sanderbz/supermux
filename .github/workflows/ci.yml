@@ -93,9 +93,12 @@ jobs:
       - name: Install web deps
         working-directory: web
         run: bun install --frozen-lockfile
+      # `chromium-headless-shell` is a SEPARATE browser download from `chromium`;
+      # `sw-lifecycle.spec.ts` pins that channel on purpose (the badge crash it
+      # guards reproduces only there — full chromium has the BadgeService binder).
       - name: Install Playwright chromium
         working-directory: web
-        run: bun x playwright install --with-deps chromium
+        run: bun x playwright install --with-deps chromium chromium-headless-shell
       # `@slow` and `@needs-claude` are excluded, and the reason is a property of
       # the runner rather than of the specs: both classes need the real `claude`
       # CLI on PATH (and, for `@slow`, authenticated). `delegate-handoff.spec.ts`
