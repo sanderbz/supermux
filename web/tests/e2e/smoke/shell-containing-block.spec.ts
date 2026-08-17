@@ -80,11 +80,11 @@ test.describe('shell: no ancestor may become a containing block for fixed chrome
     await backend?.dispose()
   })
 
-  // ONE test, two phases (keyboard closed, then a simulated keyboard). Kept in a
-  // single test on purpose: this box runs chromium with `--single-process`
+  // ONE test, two phases (keyboard closed, then a simulated keyboard). This
+  // used to be forced — the box ran chromium with `--single-process`
   // (SUPERMUX_E2E_NO_SANDBOX), where a second browser context in the same file
-  // cannot be created — the same reason every other mobile spec here is a
-  // single test.
+  // killed the browser. That flag is gone (INFRA-01, tests/e2e/launch-args.ts);
+  // the shape is kept because phase 2 builds on phase 1's layout.
   test('focus sheet + KeyBar: clean ancestor chain and correct z-order, keyboard closed and open', async ({
     page,
   }) => {

@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test'
+import { HARDENED_HOST_CHROMIUM_ARGS } from './tests/e2e/launch-args'
 
 // Screenshot capture for the snippets editing/visibility PR. Uses the smoke
 // harness pattern: each test boots a REAL supermux-server binary + a Vite dev
@@ -16,16 +17,7 @@ export default defineConfig({
   reporter: 'list',
   use: {
     trace: 'retain-on-failure',
-    launchOptions: {
-      args: [
-        '--no-sandbox',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--no-zygote',
-        '--single-process',
-        '--disable-dev-shm-usage',
-      ],
-    },
+    launchOptions: { args: HARDENED_HOST_CHROMIUM_ARGS },
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
 })

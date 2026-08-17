@@ -37,8 +37,9 @@ async function seedSnippets(backend: Backend) {
 }
 
 /** Force `(pointer: coarse)` so the focus route renders the MOBILE dock + Vaul
- *  snippet sheet, without device emulation (which crashes the host's
- *  single-process Chromium). Must run before app scripts. */
+ *  snippet sheet, without needing a device-emulating second context (which used
+ *  to crash the host's `--single-process` Chromium — INFRA-01, now fixed; this
+ *  stays because it keeps the capture on one page). Must run before app scripts. */
 async function forceCoarsePointer(page: Page) {
   await page.addInitScript(() => {
     const real = window.matchMedia.bind(window)

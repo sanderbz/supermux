@@ -38,9 +38,12 @@ test.describe('nav: the active pill is one view-transition group', () => {
     await backend?.dispose()
   })
 
-  // One test, several phases — this host runs chromium `--single-process`
-  // (SUPERMUX_E2E_NO_SANDBOX), where a second browser context per spec file
-  // cannot be created.
+  // One test, several phases — historically forced, because this host used to
+  // run chromium `--single-process` (SUPERMUX_E2E_NO_SANDBOX), where a second
+  // browser context per spec file killed the browser. That flag is gone
+  // (INFRA-01, see tests/e2e/launch-args.ts): multi-test files and second
+  // contexts work now. The single-test shape here is kept only because the
+  // phases genuinely share one navigation history.
   test('one named pill, it follows the active route, and modifier clicks stay native', async ({
     page,
     context,
@@ -231,10 +234,11 @@ test.describe('nav: the active pill is one view-transition group', () => {
     await expect(page, 'the current page did not morph away').toHaveURL(/\/settings$/)
 
     // ── Reduced motion: still navigates, and asks for no transition at all ───
-    // `page.emulateMedia` rather than a second browser context: this host runs
-    // chromium `--single-process`, where a second context cannot be created.
-    // `navigateMorph` reads `prefers-reduced-motion` LIVE (not cached), so the
-    // switch takes effect without a reload — which is itself worth asserting.
+    // `page.emulateMedia` rather than a second browser context — originally a
+    // `--single-process` workaround (INFRA-01, now fixed), kept because it is
+    // the stronger assertion: `navigateMorph` reads `prefers-reduced-motion`
+    // LIVE (not cached), so the switch takes effect without a reload — which is
+    // itself worth asserting.
     await page.emulateMedia({ reducedMotion: 'reduce' })
     const startedBefore = await page.evaluate(
       () => (window as unknown as { __vtStarted: number }).__vtStarted,

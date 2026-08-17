@@ -31,9 +31,11 @@ test.describe('shell overlay', () => {
   })
 
   // Desktop only. The mobile form needs a touch-emulating context
-  // (`devices['iPhone 14 Pro']` → `pointer: coarse`), and this host runs
-  // chromium `--single-process`, where a second context in the same spec file
-  // cannot be created — so it lives in `shell-overlay-mobile.spec.ts`.
+  // (`devices['iPhone 14 Pro']` → `pointer: coarse`) and lives in
+  // `shell-overlay-mobile.spec.ts` — originally because chromium ran
+  // `--single-process` here and a second context in one spec file killed the
+  // browser (INFRA-01, now fixed); the split is kept as a file-level
+  // `test.use()` is the clearest way to express a device fork.
   test('desktop: the overlay lives inside the content column and is dismissible', async ({
     page,
   }) => {

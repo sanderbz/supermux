@@ -7,8 +7,9 @@
 // would simply be occluded by it.
 //
 // A separate spec file because the mobile form forks on `pointer: coarse`,
-// which needs a touch-emulating context — and this host runs chromium
-// `--single-process`, where a second context in one spec file cannot be created.
+// which needs a touch-emulating context, expressed as a file-level `test.use()`.
+// (It was also forced once: chromium ran `--single-process` here and a second
+// context in one spec file killed the browser — INFRA-01, now fixed.)
 
 import { devices, expect, test } from '@playwright/test'
 import { injectGlobals, startBackend, type Backend } from './harness'

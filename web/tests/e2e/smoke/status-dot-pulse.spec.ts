@@ -34,9 +34,11 @@
 //     like every other spec here, instead of a `DEV_BASE_URL` the caller had to
 //     remember to start and export;
 //   · reduced motion is emulated on the EXISTING page rather than in a second
-//     `browser.newContext()` — this host runs chromium `--single-process`
-//     (SUPERMUX_E2E_NO_SANDBOX), where a second context per spec file cannot be
-//     created. The route's own `?reduce=1` override is still passed.
+//     `browser.newContext()` — originally because this host ran chromium
+//     `--single-process` (SUPERMUX_E2E_NO_SANDBOX) and a second context per spec
+//     file killed the browser; that flag is gone (INFRA-01,
+//     tests/e2e/launch-args.ts) and `emulateMedia` is simply the cheaper form.
+//     The route's own `?reduce=1` override is still passed.
 
 import { expect, test } from '@playwright/test'
 import { injectGlobals, startBackend, type Backend } from './harness'
@@ -196,9 +198,10 @@ test.describe('card-glow (StatusBorder) model', () => {
     }
   })
 
-  // Reduced motion is emulated on THIS page (not a second context): chromium
-  // runs `--single-process` on the self-host box, where `browser.newContext()`
-  // throws. `emulateMedia` sets the same `prefers-reduced-motion: reduce` the
+  // Reduced motion is emulated on THIS page rather than in a second context
+  // (a `--single-process` workaround originally; INFRA-01 removed that flag, and
+  // this stays because it is cheaper and equivalent).
+  // `emulateMedia` sets the same `prefers-reduced-motion: reduce` the
   // context option would, and `?reduce=1` additionally forces Framer's
   // `<MotionConfig reducedMotion="always">` on the route itself
   // (`dev-tiles.tsx:36,83`), so the assertion holds either way.

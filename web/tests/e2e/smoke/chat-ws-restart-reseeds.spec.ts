@@ -22,8 +22,10 @@
 //       `undelivered`, because the watchdog measures echo arrival over the very
 //       socket that is down (A6 T2.5, `pending.ts:382-397`).
 //
-// One browser context, one test: chromium runs `--single-process` on this host
-// (`playwright.config.ts:35-46`) and dies on a second context.
+// One browser context, one test — because the four claims above are phases of a
+// SINGLE kill/restart timeline, not because the rig forces it: the
+// `--single-process` flag that used to kill the browser on a second context is
+// gone (INFRA-01, `tests/e2e/launch-args.ts`).
 
 import { expect, test } from '@playwright/test'
 

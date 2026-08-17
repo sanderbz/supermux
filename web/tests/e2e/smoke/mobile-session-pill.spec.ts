@@ -14,11 +14,12 @@
 // `dock.tsx` — but "forbidden" is a comment, and this is the test. If T7 ever
 // perturbs the gate, this goes red before a phone does.
 //
-// ONE TEST, NOT FOUR. Under `--single-process` chromium (SUPERMUX_E2E_NO_SANDBOX,
-// the hardened self-host box) a spec cannot open a second browser context, so
-// every assertion below shares one page. They are ordered least-destructive
-// first: a short drag changes nothing, a committed drag switches session, and
-// only then does a tap open the sheet.
+// ONE TEST, NOT FOUR — every assertion below shares one page, ordered
+// least-destructive first: a short drag changes nothing, a committed drag
+// switches session, and only then does a tap open the sheet. (Originally forced
+// by `--single-process` chromium on the hardened self-host box, where a spec
+// could not open a second browser context; that flag is gone — INFRA-01,
+// tests/e2e/launch-args.ts.)
 //
 // A `shell` provider is deliberate: `onEdit` is wired only for claude/codex
 // under the terminal (`routes/focus/mobile.tsx:828-834`), so on shell — exactly
