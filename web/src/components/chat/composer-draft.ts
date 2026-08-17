@@ -14,6 +14,10 @@
 // surface (master plan §6.2 carry-over). It is deliberately NOT the zustand UI
 // store either — a draft is not app state, it is one surface's scratch paper,
 // and putting it there would re-render the shell on every keystroke.
+//
+// …AND WHY IT IS ALSO IN `sessionStorage`. Module state dies with the DOCUMENT,
+// and the document is reloaded by paths the user never asked for. See the store
+// block below.
 
 import type { SessionInput } from '../../lib/session-input'
 
@@ -26,6 +30,55 @@ export const COMPOSER_MAX_H = 120
 
 const drafts = new Map<string, string>()
 const listeners = new Map<string, Set<() => void>>()
+
+// ── the draft OUTLIVES the document ─────────────────────────────────────────
+//
+// The Maps above survive a renderer toggle and a panel remount, which is what
+// they were written for — and nothing else. They do not survive a RELOAD, and
+// the app has several that the user did not ask for: the service worker
+// activating a new shell, a crash-recovery reload, a pull-to-refresh reached for
+// while the keyboard was up. Measured once at 31 typed characters destroyed
+// silently, with no way to get them back.
+//
+// `sessionStorage`, not `localStorage`, and this is the whole design: a draft is
+// this TAB's scratch paper. It should survive that tab reloading and die with
+// it — a message half-typed last week reappearing in a new window would be a
+// different kind of surprise.
+const STORE_PREFIX = 'supermux-draft:'
+/** Sessions whose stored draft has already been folded into `drafts`. */
+const hydrated = new Set<string>()
+
+function store(): Storage | null {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage
+  } catch {
+    // Safari in private mode / a blocked storage partition throws on ACCESS.
+    return null
+  }
+}
+
+/** Read this session's persisted draft ONCE, on the first read after a load. */
+function hydrate(name: string): void {
+  if (hydrated.has(name)) return
+  hydrated.add(name)
+  try {
+    const saved = store()?.getItem(STORE_PREFIX + name)
+    if (saved) drafts.set(name, saved)
+  } catch {
+    /* storage is a nicety; never let it break the composer */
+  }
+}
+
+function persist(name: string, value: string): void {
+  try {
+    const s = store()
+    if (!s) return
+    if (value === '') s.removeItem(STORE_PREFIX + name)
+    else s.setItem(STORE_PREFIX + name, value)
+  } catch {
+    /* quota, private mode, disabled storage — the in-memory draft still works */
+  }
+}
 /** Session → its mounted textarea (or null when the panel is not mounted). The
  *  caret lives on the DOM node, so an insert that arrives while the composer is
  *  unmounted still lands — at the end of the draft, which is where it belongs
@@ -37,6 +90,7 @@ function emit(name: string): void {
 }
 
 export function getDraft(name: string): string {
+  hydrate(name)
   return drafts.get(name) ?? ''
 }
 
@@ -44,7 +98,15 @@ export function setDraft(name: string, value: string): void {
   if (getDraft(name) === value) return
   if (value === '') drafts.delete(name)
   else drafts.set(name, value)
+  persist(name, value)
   emit(name)
+}
+
+/** Drop a session's draft everywhere — the send path's "the message left the
+ *  box" (a `setDraft(name, '')` already does this; this is the explicit name for
+ *  it, and the one a test can call to reset the store). */
+export function clearDraft(name: string): void {
+  setDraft(name, '')
 }
 
 /** Subscribe to one session's draft (the hook's `useSyncExternalStore`). */

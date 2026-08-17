@@ -30,7 +30,26 @@ export default defineConfig({
     //   - `manifest.webmanifest` + icons are public assets (the documented
     //     public router exceptions) — precached, not bearer-gated.
     VitePWA({
-      registerType: 'autoUpdate',
+      // `prompt`, NOT `autoUpdate` — and the difference is a data-loss bug.
+      //
+      // `autoUpdate` makes vite-plugin-pwa's registration reload the DOCUMENT on
+      // any service-worker activation or external takeover
+      // (`wb.addEventListener('activated', e => (e.isUpdate || e.isExternal) &&
+      // location.reload())`). That is an unrequested reload of a page whose
+      // composer, terminal draft and scroll position are all in memory: a
+      // harness run measured 31 typed characters destroyed by one, with SW
+      // `controllerchange` immediately preceding `beforeunload`.
+      //
+      // `prompt` leaves the new shell WAITING instead. Nothing reloads under the
+      // user; the update lands on the next cold launch — which is exactly what
+      // `lib/pwa.ts` has always claimed this registration does — and the server
+      // updater's own "Reload now" button (settings/updates-panel.tsx) is still
+      // the deliberate, user-pressed path to it.
+      //
+      // (The composer's drafts are ALSO persisted now, `chat/composer-draft.ts`
+      // — belt to this brace, because a reload can arrive from a crash, a
+      // pull-to-refresh or the user's own ⌘R too.)
+      registerType: 'prompt',
       // public/manifest.json stays for the <link rel="manifest"> in index.html;
       // the generated `manifest.webmanifest` is the SW-precached canonical copy.
       manifestFilename: 'manifest.webmanifest',

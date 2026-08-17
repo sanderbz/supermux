@@ -27,9 +27,13 @@ export function initPWA(): void {
 
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
 
-  // `autoUpdate` registration: a new shell is fetched + activated in the
-  // background; `onNeedRefresh` is intentionally a no-op (we never block the
-  // running session on a reload — the next cold launch picks it up).
+  // `prompt` registration (see the `registerType` comment in vite.config.ts): a
+  // new shell is fetched and left WAITING; `onNeedRefresh` is intentionally a
+  // no-op — we never reload the running session, and the next cold launch picks
+  // the new shell up. This file has always documented that behaviour; until the
+  // registerType was corrected the build shipped `autoUpdate`, whose generated
+  // registration reloads the document on activation and takes any unsent draft
+  // with it.
   registerSW({
     immediate: true,
     onRegisteredSW(_url, registration) {
