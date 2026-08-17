@@ -259,3 +259,78 @@ async fn root_is_public_no_auth_required() {
     assert_eq!(resp.status(), StatusCode::OK);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The `/api` plane must be compressed too.
+///
+/// #84 wired `CompressionLayer` onto the *static* sub-router only, so every JSON
+/// body still shipped identity. `GET /api/sessions` is the hero-path payload —
+/// ~50 KB on a live roster, refetched on a 30s staleTime plus every SSE-driven
+/// invalidate — and gzips ~9x. On a Fast-3G waterfall that one missing header
+/// was 0.25s of time-to-content.
+///
+/// Probed on `/api/kbd-groups` rather than `/api/sessions`: it is on the SAME
+/// bearer-gated router, and its first GET seeds the four default accessory
+/// groups, so the body is deterministically well over the predicate's 32-byte
+/// floor without this test having to spawn a pty. Asserted as a PROPERTY (the
+/// bytes shrink, the identity path still works), not as "a layer is installed".
+#[tokio::test]
+async fn api_json_is_compressed_on_the_wire() {
+    let (app, dir) = test_app().await;
+
+    async fn get_api(app: &axum::Router, accept: Option<&str>) -> (Vec<u8>, axum::http::HeaderMap) {
+        let mut req = Request::builder()
+            .uri("/api/kbd-groups")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"));
+        if let Some(a) = accept {
+            req = req.header(header::ACCEPT_ENCODING, a);
+        }
+        let resp = app.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "the probe route must be reachable with the bearer");
+        let headers = resp.headers().clone();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (bytes, headers)
+    }
+
+    // Identity still works — a client that negotiates nothing gets plain JSON.
+    let (plain, plain_headers) = get_api(&app, None).await;
+    assert!(
+        plain_headers.get(header::CONTENT_ENCODING).is_none(),
+        "no Accept-Encoding must still mean identity bytes"
+    );
+    assert!(
+        plain.len() > 32,
+        "the probe body must clear the compressor's 32-byte floor, got {} B",
+        plain.len()
+    );
+
+    // gzip: negotiated, flagged, varied on — and genuinely smaller.
+    let (gz, gz_headers) = get_api(&app, Some("gzip")).await;
+    assert_eq!(
+        gz_headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+        "an `/api` GET with `Accept-Encoding: gzip` must come back gzip-encoded"
+    );
+    assert!(
+        gz_headers
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("accept-encoding")),
+        "a negotiated /api response must Vary on accept-encoding or a shared cache poisons"
+    );
+    assert!(
+        gz.len() < plain.len(),
+        "compression must actually shrink the wire: gzip {} B vs identity {} B",
+        gz.len(),
+        plain.len()
+    );
+
+    // …and brotli, which is what every modern browser sends first.
+    let (br, br_headers) = get_api(&app, Some("br,gzip")).await;
+    assert_eq!(
+        br_headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()),
+        Some("br"),
+    );
+    assert!(br.len() < plain.len(), "brotli must shrink the wire too");
+
+    let _ = std::fs::remove_dir_all(dir);
+}

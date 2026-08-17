@@ -163,5 +163,15 @@ fn protected_router(state: AppState) -> Router {
         // In-UI updater (`/api/version*` + `/api/update/*`). Same bearer
         // gate as the rest of /api — auto-update is admin-equivalent.
         .merge(updates::router_for(state.clone()))
+        // ── Compress the JSON plane too ──
+        // #84 gave the *static* sub-router br/gzip and stopped there, so every
+        // `/api/*` body shipped identity: `GET /api/sessions` is ~50 KB of JSON
+        // on the hero path (refetched on a 30s staleTime plus every SSE-driven
+        // invalidate) and gzips to ~5.6 KB — 8.9x, and 0.25s of a Fast-3G
+        // time-to-content. Same layer, same knobs, on purpose: `DefaultPredicate`
+        // excludes `text/event-stream`, so `/api/events` (SSE) is untouched and
+        // still streams frame-by-frame. Placed INSIDE the auth layer so a 401
+        // synthesized by the middleware is not worth a compressor pass.
+        .layer(static_assets::compression())
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }

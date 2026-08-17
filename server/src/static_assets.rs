@@ -90,7 +90,10 @@ pub fn router_for(state: AppState) -> Router {
 ///     the container format; re-compressing it burns CPU to add bytes. The
 ///     `DefaultPredicate` already excludes images, gRPC, `text/event-stream`
 ///     (the SSE plane) and bodies under 32 bytes.
-fn compression() -> CompressionLayer<impl Predicate + Clone> {
+/// Shared with `http::protected_router` — the `/api` plane wants the exact same
+/// negotiation, quality and predicate (notably `DefaultPredicate`'s
+/// `text/event-stream` exclusion, which keeps the SSE stream un-buffered).
+pub fn compression() -> CompressionLayer<impl Predicate + Clone> {
     CompressionLayer::new()
         .gzip(true)
         .br(true)
