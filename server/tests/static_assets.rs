@@ -136,6 +136,117 @@ async fn unknown_api_route_404s_not_html() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The frontend's size budget is stated in GZIPPED bytes, so the wire has to
+/// actually be compressed or the gate polices a number nobody transfers. Before
+/// `static_assets::compression()` the binary sent no `Content-Encoding` at all:
+/// the entry chunk went out at 551,022 bytes against a 147 KB budget.
+///
+/// Asserted as a PROPERTY (the bytes shrink, and the identity path still
+/// works), not as "a layer is installed".
+#[tokio::test]
+async fn assets_are_compressed_on_the_wire() {
+    let (app, dir) = test_app().await;
+
+    async fn get(app: &axum::Router, uri: &str, accept: Option<&str>) -> (Vec<u8>, axum::http::HeaderMap) {
+        let mut req = Request::builder().uri(uri);
+        if let Some(a) = accept {
+            req = req.header(header::ACCEPT_ENCODING, a);
+        }
+        let resp = app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let headers = resp.headers().clone();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (bytes, headers)
+    }
+
+    // Identity: unchanged behaviour for a client that asks for nothing.
+    let (plain, plain_headers) = get(&app, "/", None).await;
+    assert!(
+        plain_headers.get(header::CONTENT_ENCODING).is_none(),
+        "a client that asked for no encoding must get identity bytes"
+    );
+    assert!(
+        String::from_utf8_lossy(&plain).contains("<div id=\"root\">"),
+        "the identity path must still serve the SPA shell"
+    );
+
+    // Brotli: negotiated, flagged, varied on — and genuinely smaller.
+    let (br, br_headers) = get(&app, "/", Some("br")).await;
+    assert_eq!(
+        br_headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()),
+        Some("br"),
+        "an `Accept-Encoding: br` request must come back brotli-encoded"
+    );
+    assert!(
+        br_headers
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("accept-encoding")),
+        "a negotiated response must Vary on accept-encoding or a shared cache poisons"
+    );
+    assert!(
+        br.len() < plain.len(),
+        "compression must actually shrink the wire: br {} B vs identity {} B",
+        br.len(),
+        plain.len()
+    );
+
+    // Gzip too — Safari/older clients and every curl default.
+    let (gz, gz_headers) = get(&app, "/", Some("gzip")).await;
+    assert_eq!(
+        gz_headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+    );
+    assert!(gz.len() < plain.len(), "gzip must shrink the wire too");
+
+    // …and the validator is WEAK, because one URL now has three
+    // representations and a strong ETag would claim they are byte-identical.
+    if let Some(etag) = br_headers.get(header::ETAG).and_then(|v| v.to_str().ok()) {
+        assert!(
+            etag.starts_with("W/\""),
+            "a content-negotiated response needs a weak validator, got {etag}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// woff2 is a Brotli container. Re-compressing it burns CPU to ADD bytes, so
+/// the predicate must leave `font/*` alone — the reason `compression()` does not
+/// just use `DefaultPredicate` on its own.
+#[tokio::test]
+async fn fonts_are_not_recompressed() {
+    let (app, dir) = test_app().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/fonts/JetBrainsMonoNerdFontMono-Regular-core.woff2")
+                .header(header::ACCEPT_ENCODING, "gzip, br")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Only meaningful when the frontend bundle is actually embedded; a
+    // checkout without `scripts/build.sh` serves the SPA shell here instead.
+    if resp.status() == StatusCode::OK
+        && resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|c| c.contains("font"))
+    {
+        assert!(
+            resp.headers().get(header::CONTENT_ENCODING).is_none(),
+            "woff2 is already Brotli-compressed — re-encoding it is pure loss"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[tokio::test]
 async fn root_is_public_no_auth_required() {
     // The SPA shell is public (no bearer) — it is what bootstraps the token.

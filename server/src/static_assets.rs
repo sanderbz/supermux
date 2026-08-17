@@ -43,6 +43,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use rust_embed::RustEmbed;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::{CompressionLayer, CompressionLevel};
 
 use crate::state::AppState;
 
@@ -60,7 +62,40 @@ pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .fallback(get(asset_or_index))
+        .layer(compression())
         .with_state(state)
+}
+
+/// Wire compression for the embedded bundle.
+///
+/// The frontend size budget (`web/scripts/size-budget.mjs`) is stated in
+/// GZIPPED bytes, but until this layer existed the binary sent no
+/// `Content-Encoding` at all: the entry chunk went out at ~551 KB and the
+/// stylesheet at ~121 KB, i.e. the gate policed ~147 KB while a real visitor
+/// downloaded 551 KB. A reverse proxy in front of the binary would have fixed
+/// it, but `deploy.sh` only *suggests* one — the shipped default is the binary
+/// on its own, so the binary has to do it.
+///
+/// Notes on the knobs:
+///
+///   * **br + gzip.** `CompressionLayer` negotiates from `Accept-Encoding`
+///     (q-values included) and sets `Vary: accept-encoding`, so a client that
+///     asks for neither still gets the identity bytes.
+///   * **Quality 4, not the default.** async-compression's default brotli
+///     quality is 11, which spends on the order of a second on a 550 KB chunk
+///     — on this class of host that is a request-time stall, not a saving.
+///     q4 lands within a few percent of q11 on minified JS at a fraction of
+///     the CPU.
+///   * **Never fonts.** `/fonts/*.woff2` is already Brotli-compressed inside
+///     the container format; re-compressing it burns CPU to add bytes. The
+///     `DefaultPredicate` already excludes images, gRPC, `text/event-stream`
+///     (the SSE plane) and bodies under 32 bytes.
+fn compression() -> CompressionLayer<impl Predicate + Clone> {
+    CompressionLayer::new()
+        .gzip(true)
+        .br(true)
+        .quality(CompressionLevel::Precise(4))
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/")))
 }
 
 /// `GET /` — the SPA shell with the runtime config injected.
@@ -230,12 +265,19 @@ fn cache_control(path: &str) -> &'static str {
 }
 
 /// Format the rust-embed sha256 content hash as a quoted hex ETag.
+///
+/// **Weak** (`W/"…"`) on purpose. The hash identifies the *resource*, not the
+/// *representation*: with `compression()` in front of this handler the same
+/// URL is served as identity, gzip or brotli bytes depending on
+/// `Accept-Encoding`, and a strong validator promises byte-for-byte identity
+/// across all of them — which would be a lie the moment a cache holds one
+/// encoding and revalidates for another.
 fn hex_etag(hash: &[u8]) -> Option<String> {
     if hash.is_empty() {
         return None;
     }
-    let mut s = String::with_capacity(hash.len() * 2 + 2);
-    s.push('"');
+    let mut s = String::with_capacity(hash.len() * 2 + 4);
+    s.push_str("W/\"");
     for b in hash {
         s.push_str(&format!("{b:02x}"));
     }

@@ -33,7 +33,18 @@ tokio-stream = { version = "0.1", features = ["sync"] }  # BroadcastStream adapt
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }   # TLS
 tower = { version = "0.5", features = ["util", "limit"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs", "limit", "set-header"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "fs",
+    "limit",
+    "set-header",
+    # Wire compression for the embedded SPA bundle (static_assets.rs). Without
+    # it the entry chunk goes out at ~551 KB uncompressed even though the
+    # frontend size budget is stated in gzipped bytes.
+    "compression-gzip",
+    "compression-br",
+] }
 http = "1.2"
 http-body-util = "0.1"
 bytes = "1.9"
