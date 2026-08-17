@@ -168,6 +168,51 @@ pub fn scrub_inherited_agent_env() -> Vec<&'static str> {
     removed
 }
 
+/// Does a session with this `provider` launch the `claude` binary?
+///
+/// Mirrors the `_ =>` fallback arm of [`build_launch_command`], which is what
+/// makes this an INVERSE list rather than `provider == "claude"`: a legacy or
+/// unknown non-shell row falls through to Claude there, so the Claude-only env
+/// (transcript persistence) must reach it too or such a row would launch the
+/// agent with half its environment. `shell` never reaches the launch builder at
+/// all, `codex` launches its own binary and ignores `CLAUDE_CODE_*`, and the
+/// RETIRED `kimi` (see [`crate::sessions::RETIRED_PROVIDERS`]) can never be
+/// launched again — none of the three is a Claude pane.
+fn launches_claude(provider: &str) -> bool {
+    !matches!(provider, "codex" | "kimi" | "shell")
+}
+
+/// Split a stored `flags` string into words and shell-quote each one for the
+/// launch line (SEC-01).
+///
+/// `flags` is caller-supplied through `POST /api/sessions` and lands in a string
+/// that is TYPED INTO A SHELL, so an unquoted `; touch /tmp/pwned` used to run as
+/// the service user in the pane. The HTTP boundary now rejects shell
+/// metacharacters up front (`sessions::validate_flags`); this is the second,
+/// unconditional layer — it covers rows written BEFORE that check existed and the
+/// non-HTTP writers (`relaunch_for_bypass`, clone), and it is the layer an
+/// auditor can verify without reasoning about every write path.
+///
+/// Word-splitting is by whitespace, which is exactly how the shell used to split
+/// the interpolated string, and the escaper (the same
+/// `shell_escape::unix::escape` the SSH transport quotes remote argv with)
+/// leaves an ordinary flag word untouched — so every real flags value
+/// (`--yolo`, `--ask-for-approval never`, `--permission-mode bypassPermissions`,
+/// `--model opus`) renders BYTE-IDENTICALLY to what it rendered before. What
+/// changes is only the outcome for a poisoned value: the words arrive as
+/// arguments to the agent instead of as commands to the shell.
+///
+/// Operator config (`provider_defaults.*_flags`) is deliberately NOT run through
+/// this: it comes from the server's own config file, it is trusted the way the
+/// rest of that file is, and an operator may legitimately have written their own
+/// quoting there.
+fn quoted_flag_words(flags: &str) -> Vec<String> {
+    flags
+        .split_whitespace()
+        .map(|w| shell_escape::unix::escape(std::borrow::Cow::Borrowed(w)).into_owned())
+        .collect()
+}
+
 /// Per-session tmux env. Excludes the dashboard bearer by construction.
 ///
 /// `agent_teams` gates the experimental Claude Code Agent Teams feature:
@@ -210,6 +255,36 @@ fn build_env(
     if agent_teams && provider == "claude" {
         env.insert(
             "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
+            "1".to_string(),
+        );
+    }
+    // THE SECOND HALF OF THE TRANSCRIPT GUARANTEE (the first is
+    // [`AGENT_NESTING_ENV`] / [`scrub_inherited_agent_env`]).
+    //
+    // Without a `.jsonl` transcript the ENTIRE chat plane is blind: the tailer
+    // has no file to watch, recall has nothing to read, and the chat renderer
+    // shows an empty conversation for a session that is visibly working. Claude
+    // prints exactly one line about it — "⚠ Transcript saving is off … restart
+    // with CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1" — and then says nothing more.
+    //
+    // The scrub covers the INHERITANCE path (a supermux started by hand from
+    // inside a Claude pane hands every child a `CLAUDE_CODE_CHILD_SESSION`
+    // marker). It cannot cover the OTHER two ways persistence ends up off:
+    //   • the user turned it off themselves (settings / their own exported env
+    //     in `~/.zprofile`, which the launch line sources), and
+    //   • a marker that appears in the daemon's environ AFTER the one-shot
+    //     startup scrub.
+    // Exporting the positive flag per pane closes both: it is read at Claude
+    // STARTUP and wins over an inherited marker, so a supermux-spawned session
+    // ALWAYS writes a transcript.
+    //
+    // Same blast radius as the FORCE_SYNC / DISABLE_ALTERNATE_SCREEN siblings
+    // below: per-pane, purely additive, and never in [`AGENT_NESTING_ENV`] (the
+    // scrub list is markers an agent exports about ITSELF — pinned disjoint by
+    // `the_scrub_list_and_the_injected_env_are_disjoint`).
+    if launches_claude(provider) {
+        env.insert(
+            "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
             "1".to_string(),
         );
     }
@@ -338,9 +413,8 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             if !defaults.is_empty() {
                 parts.push(defaults.to_string());
             }
-            if !s.flags.trim().is_empty() {
-                parts.push(s.flags.trim().to_string());
-            }
+            // Per-session flags are caller-supplied → quoted word by word.
+            parts.extend(quoted_flag_words(&s.flags));
             let codex = parts.join(" ");
 
             // Codex is an optional provider, so make its first launch
@@ -395,9 +469,11 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             if !defaults.is_empty() {
                 parts.push(defaults.to_string());
             }
-            if !s.flags.trim().is_empty() {
-                parts.push(s.flags.trim().to_string());
-            }
+            // Per-session flags are caller-supplied → quoted word by word
+            // (SEC-01). Same argv as before for every real flags value; a
+            // poisoned one now reaches `claude` as arguments instead of the
+            // shell as commands.
+            parts.extend(quoted_flag_words(&s.flags));
             // `cc_session_name` / `cc_conversation_id` are charset-validated
             // at the HTTP boundary (see `sessions::valid_cc_id`), so the rule
             // `[A-Za-z0-9._-]{1,128}` holds here. We single-quote the value
@@ -2139,6 +2215,57 @@ mod build_env_tests {
         }
     }
 
+    /// SRV-01 — the transcript guarantee has TWO halves and only both together
+    /// make "a supermux-spawned Claude always writes a `.jsonl`" true:
+    ///
+    ///   1. NEGATIVE — the eight [`AGENT_NESTING_ENV`] markers are scrubbed from
+    ///      the daemon's own environ, so a supermux started by hand from inside a
+    ///      Claude pane stops handing every child a `CLAUDE_CODE_CHILD_SESSION`.
+    ///   2. POSITIVE — every Claude pane exports
+    ///      `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`, which also covers the two
+    ///      cases the scrub cannot see: a user who turned persistence off in
+    ///      their own profile, and a marker that lands in the environ after the
+    ///      one-shot startup scrub.
+    ///
+    /// Half two is what was missing on origin/main. Without a transcript the
+    /// whole chat plane (tailer, recall, renderer) reads an empty conversation
+    /// for a session that is visibly working, and Claude says so exactly once, in
+    /// one dim line: "⚠ Transcript saving is off … restart with
+    /// CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1".
+    #[test]
+    fn both_halves_of_the_transcript_guarantee_are_wired() {
+        // Half 1: the marker Claude actually names is on the scrub list.
+        assert!(
+            AGENT_NESTING_ENV.contains(&"CLAUDE_CODE_CHILD_SESSION"),
+            "the inherited-marker half must stay listed",
+        );
+        assert_eq!(AGENT_NESTING_ENV.len(), 8, "the scrub list is the eight markers");
+
+        // Half 2: every Claude pane forces persistence on.
+        let env = build_env(&cfg(), "s", "tok", "claude", false, None);
+        assert_eq!(
+            env.get("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE").map(String::as_str),
+            Some("1"),
+            "a supermux-spawned Claude must always write a transcript",
+        );
+        // A legacy/unknown non-shell row falls through to CLAUDE in
+        // `build_launch_command`, so it needs the Claude env too.
+        let legacy = build_env(&cfg(), "s", "tok", "legacy-agent", false, None);
+        assert_eq!(
+            legacy.get("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE").map(String::as_str),
+            Some("1"),
+            "the launch fallback boots claude for unknown providers — same env",
+        );
+        // …and the providers that never launch `claude` do not get it.
+        for provider in ["codex", "shell", "kimi"] {
+            let other = build_env(&cfg(), "s", "tok", provider, false, None);
+            assert!(
+                !other.contains_key("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"),
+                "{provider} does not launch claude — no Claude-only env",
+            );
+        }
+    }
+
     #[test]
     fn renders_claude_in_the_normal_buffer() {
         // Regression guard: Claude Code is a full-screen TUI in the ALTERNATE
@@ -2203,6 +2330,8 @@ mod build_env_tests {
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
+        // Per-session flags go through the SEC-01 escaper, which leaves ordinary
+        // flag words alone — the rendered line is byte-identical to before.
         let invocation = "codex --no-alt-screen --model gpt-5-codex --ask-for-approval never";
         assert!(command.contains("https://chatgpt.com/codex/install.sh"));
         assert!(command.contains("CODEX_NON_INTERACTIVE=1"));
@@ -2331,6 +2460,182 @@ mod build_env_tests {
             .status()
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "generated Codex bootstrap must parse as shell");
+    }
+
+    // ── SEC-01: caller-supplied `flags` on a shell command line ──────────────
+
+    /// A claude-provider row carrying `flags`, everything else at its zero value.
+    fn claude_session(name: &str, flags: &str) -> Session {
+        Session {
+            name: name.into(),
+            display_name: name.into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            flags: flags.into(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+            mark_pin: None,
+            runtime: "tmux".into(),
+            notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
+        }
+    }
+
+    /// COMPAT — every flags value this repo actually stores must reach the agent
+    /// as the SAME argv it reached it with before quoting.
+    ///
+    /// This is the whole risk of the SEC-01 fix: `flags` is a free-text column on
+    /// live installs, and quoting is only safe if it is a no-op for real values.
+    /// Proven against `bash` itself rather than by eyeballing the string — the
+    /// shell is the thing whose opinion counts.
+    #[test]
+    fn quoting_leaves_every_real_flags_value_argv_identical() {
+        let corpus = [
+            // `Default::default()` / every `flags: String::new()` fixture.
+            "",
+            // The trusted bypass flag `create` + `relaunch_for_bypass` write.
+            BYPASS_FLAG,
+            // Retired-provider and codex rows in this file's own fixtures.
+            "--yolo",
+            "--ask-for-approval never",
+            // Ordinary user-typed values.
+            "--model opus",
+            "--permission-mode bypassPermissions --model opus",
+            "--add-dir /opt/projects/supermux",
+            // Sloppy whitespace: the old `.trim()` + shell splitting collapsed
+            // it, and so does `split_whitespace`.
+            "  --yolo   --model  opus  ",
+        ];
+        for flags in corpus {
+            let words = quoted_flag_words(flags);
+            let want: Vec<String> = flags.split_whitespace().map(str::to_string).collect();
+            // Stronger than argv-equality for these: the escaper leaves an
+            // ordinary flag word ALONE, so the launch line these render into is
+            // byte-for-byte the line origin/main rendered.
+            assert_eq!(words, want, "{flags:?} must render unchanged");
+            if words.is_empty() {
+                assert!(want.is_empty(), "{flags:?} produced no words but expected {want:?}");
+                continue;
+            }
+            // Ask bash what argv these words produce.
+            let out = std::process::Command::new("bash")
+                .args(["-c", &format!("printf '%s\\n' {}", words.join(" "))])
+                .output()
+                .expect("bash must be available");
+            let got: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect();
+            assert_eq!(got, want, "quoting changed the argv for {flags:?}");
+        }
+    }
+
+    /// THE REGRESSION TEST. A flags value carrying `; touch <sentinel>` must
+    /// neither execute nor break the launch line: the payload has to arrive at
+    /// the agent as ARGUMENTS.
+    ///
+    /// Executed for real against a stub `claude` on PATH and an empty `$HOME`
+    /// (so the profile sources in the launch line find nothing), because the
+    /// only convincing proof that a shell-injection is dead is running the line
+    /// and finding the sentinel absent.
+    #[test]
+    fn a_poisoned_flags_value_is_argv_and_never_a_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!("supermux-sec01-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let bin = tmp.join("bin");
+        std::fs::create_dir_all(&bin).expect("temp bin dir");
+        let sentinel = tmp.join("pwned");
+        let argv_log = tmp.join("argv");
+
+        // The stub agent: record argv, exit. Stands in for `claude` on PATH.
+        let stub = bin.join("claude");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv_log.display()),
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        // The exploit body from the SEC-01 report, verbatim in shape: end the
+        // injected run with a second `claude` so the `--name <session>` the
+        // builder appends still lands on a real command. Without that tail the
+        // old, VULNERABLE rendering would leave `touch <sentinel> --name pwn`,
+        // `touch` would refuse the flag, and this test would pass against the
+        // very bug it exists to catch.
+        let payload = format!(
+            "--version >/dev/null ; touch {} ; claude",
+            sentinel.display()
+        );
+        let (command, _) = build_launch_command(&cfg(), &claude_session("pwn", &payload));
+
+        // 1. It is still a VALID shell line (an unbalanced quote would 500 the
+        //    pane instead of running the payload — also not acceptable).
+        assert!(
+            std::process::Command::new("bash")
+                .args(["-n", "-c", &command])
+                .status()
+                .expect("bash must be available")
+                .success(),
+            "the launch line must still parse: {command}",
+        );
+
+        // 2. Running it does NOT run the payload.
+        let status = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&command)
+            .env("HOME", &tmp)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .expect("run the launch line");
+        assert!(status.success(), "the stub agent should exit cleanly");
+        assert!(
+            !sentinel.exists(),
+            "SEC-01 REGRESSED — the flags payload executed in the pane",
+        );
+
+        // 3. The payload reached the agent as argv, one word per argument.
+        let argv: Vec<String> = std::fs::read_to_string(&argv_log)
+            .expect("the stub agent must have run")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert!(argv.contains(&";".to_string()), "argv: {argv:?}");
+        assert!(argv.contains(&">/dev/null".to_string()), "argv: {argv:?}");
+        assert!(argv.contains(&"touch".to_string()), "argv: {argv:?}");
+        assert!(
+            argv.contains(&sentinel.display().to_string()),
+            "argv: {argv:?}",
+        );
+        // The launch builder's own `--name` still lands after the flags.
+        assert!(argv.contains(&"--name".to_string()), "argv: {argv:?}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 

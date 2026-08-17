@@ -28,6 +28,7 @@ import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import {
+  CHAT_BACKEND_ENV,
   chatSession,
   connectionState,
   expectTokenOnce,
@@ -75,7 +76,7 @@ function killHolder(session: string, dataDir: string): number {
 test.describe("chat WS — a crashed holder hands the surface over", () => {
   let backend: Backend;
   test.beforeEach(async () => {
-    backend = await startBackend();
+    backend = await startBackend({ env: CHAT_BACKEND_ENV });
   });
   test.afterEach(async () => {
     await backend?.dispose();

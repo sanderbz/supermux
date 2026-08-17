@@ -28,6 +28,7 @@
 import { expect, test } from '@playwright/test'
 
 import {
+  CHAT_BACKEND_ENV,
   chatSession,
   countSockets,
   expectTokenOnce,
@@ -42,7 +43,7 @@ const tok = (n: number) => `A6T3STOPPED-${String(n).padStart(4, '0')}`
 test.describe('chat WS — the stopped session and the 4404 refusal (A6 T3.5)', () => {
   let backend: Backend
   test.beforeEach(async () => {
-    backend = await startBackend()
+    backend = await startBackend({ env: CHAT_BACKEND_ENV })
   })
   test.afterEach(async () => {
     await backend?.dispose()

@@ -26,6 +26,7 @@
 import { expect, test } from '@playwright/test'
 
 import {
+  CHAT_BACKEND_ENV,
   chatSession,
   connectionState,
   expectTokenOnce,
@@ -46,7 +47,7 @@ const b = (n: number) => `A6T3EPOCHB-${String(n).padStart(4, '0')}`
 test.describe('chat WS — a conversation change under an open socket (A6 T3.4)', () => {
   let backend: Backend
   test.beforeEach(async () => {
-    backend = await startBackend()
+    backend = await startBackend({ env: CHAT_BACKEND_ENV })
   })
   test.afterEach(async () => {
     await backend?.dispose()

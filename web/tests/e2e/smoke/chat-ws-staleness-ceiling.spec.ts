@@ -20,6 +20,7 @@
 import { expect, test } from '@playwright/test'
 
 import {
+  CHAT_BACKEND_ENV,
   chatSession,
   connectionState,
   countSockets,
@@ -35,7 +36,7 @@ const tok = (n: number) => `A6T3STALE-${String(n).padStart(4, '0')}`
 test.describe('chat WS — the staleness ceiling (A6 T3.2)', () => {
   let backend: Backend
   test.beforeEach(async () => {
-    backend = await startBackend()
+    backend = await startBackend({ env: CHAT_BACKEND_ENV })
   })
   test.afterEach(async () => {
     await backend?.dispose()

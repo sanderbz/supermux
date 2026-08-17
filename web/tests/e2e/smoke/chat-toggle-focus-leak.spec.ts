@@ -30,7 +30,7 @@
 
 import { expect, test } from '@playwright/test'
 
-import { chatSession, expectTokenOnce, primePage } from './chat-fixture'
+import { CHAT_BACKEND_ENV, chatSession, expectTokenOnce, primePage } from './chat-fixture'
 import { startBackend, type Backend } from './harness'
 
 const CONV = 'leak-conv'
@@ -43,7 +43,7 @@ const PROBE = 'the composer owns this sentence'
 test.describe('the renderer toggle never leaks keystrokes into the pty', () => {
   let backend: Backend
   test.beforeEach(async () => {
-    backend = await startBackend()
+    backend = await startBackend({ env: CHAT_BACKEND_ENV })
   })
   test.afterEach(async () => {
     await backend?.dispose()

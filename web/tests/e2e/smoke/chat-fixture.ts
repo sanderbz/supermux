@@ -19,11 +19,17 @@
 //      (`server/src/sessions/chat/ws.rs:97`) and by the client's own
 //      `chatEligible` guard, and the focus seam refuses to render chat for a
 //      `stopped` session — so the session has to be a running claude-provider
-//      session. `flags` is interpolated into the launch line
-//      (`sessions/lifecycle.rs:388-394`), so we use it to run a bare `bash`
-//      instead of the agent. The pane is then a live pty that stays up and
-//      writes nothing, which is exactly the blank canvas the transcript
-//      assertions need. This is a TEST FIXTURE, not a supported configuration.
+//      session. A shim named `claude` on the BACKEND's PATH ({@link
+//      CHAT_BACKEND_ENV}) stands in for the agent and execs a bare `bash`. The
+//      pane is then a live pty that stays up and writes nothing, which is
+//      exactly the blank canvas the transcript assertions need. This is a TEST
+//      FIXTURE, not a supported configuration.
+//
+//      This used to be done by smuggling shell through `flags`, which worked
+//      only because `POST /api/sessions` spliced that string into the launch
+//      line unquoted — SEC-01. That is now a 400 (and the launch line quotes
+//      what it stores anyway), so the fixture uses the same PATH-shim seam
+//      `login-flow.spec.ts` uses: a real launcher, a real pty, a fake binary.
 //
 //   2. THE TRANSCRIPT. The test writes `<project>/<conv>.jsonl` itself, in the
 //      same JSONL shape `server/tests/chat_ws.rs` uses, and the tailer reads it
@@ -38,7 +44,16 @@
 // a RUNNING session, so this is not a shortcut: it is the same signal a real
 // Claude sends, and the specs depend on the difference.
 
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -50,6 +65,36 @@ import { api, type Backend } from './harness'
 // imports this file. The backend inherits `process.env`, and its hook installer
 // writes into `$CLAUDE_CONFIG_DIR/settings.json` — never the developer's own.
 process.env.CLAUDE_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), 'a6t3-claude-cfg-'))
+
+// ── the stand-in agent ───────────────────────────────────────────────────────
+//
+// A `claude` on the backend's PATH that is really a quiet shell. It writes the
+// pane's `$SUPERMUX_HOOK_TOKEN` into `.hook-token` in its working directory —
+// the session dir, which is where the launcher spawns the pane — because that
+// token exists nowhere else (it is deliberately kept out of the world-shared
+// `settings.json`, see `claude_config.rs:27`) and the fixture's `hook()` needs
+// it. Then it execs an interactive bash that prints one short prompt and
+// nothing else, for the rest of the session's life.
+//
+// A throwaway `HOME` ships with it, for the reason `login-flow.spec.ts` documents:
+// PATH alone is not enough, because the pane's shell sources the developer's
+// `~/.bashrc`, which re-prepends `~/.local/bin` — where a REAL claude lives —
+// in front of the shim. No rc file, no shadowing.
+const SHIM_DIR = mkdtempSync(join(tmpdir(), 'a6t3-shim-'))
+const SHIM_HOME = mkdtempSync(join(tmpdir(), 'a6t3-home-'))
+writeFileSync(
+  join(SHIM_DIR, 'claude'),
+  '#!/bin/sh\nprintf %s "$SUPERMUX_HOOK_TOKEN" > "$PWD/.hook-token"\n' +
+    "exec env PS1='t3$ ' bash --norc --noprofile -i\n",
+)
+chmodSync(join(SHIM_DIR, 'claude'), 0o755)
+
+/** Backend environment every spec using {@link chatSession} must boot with:
+ *  `startBackend({ env: CHAT_BACKEND_ENV })`. */
+export const CHAT_BACKEND_ENV = {
+  PATH: `${SHIM_DIR}:${process.env.PATH ?? ''}`,
+  HOME: SHIM_HOME,
+}
 
 /** zustand persist payload for the UI store with the chat renderer ON. */
 export const CHAT_FLAG_ON = JSON.stringify({ state: { chatRenderer: true }, version: 0 })
@@ -101,15 +146,11 @@ export async function chatSession(backend: Backend, name: string): Promise<ChatF
   mkdirSync(workDir, { recursive: true })
   const tokenFile = join(workDir, '.hook-token')
 
-  // `--version` makes a real `claude` on the runner's PATH exit immediately
-  // instead of taking over the pane; a missing one is a harmless
-  // "command not found". The trailing `#` comments out the `--name <session>`
-  // the launch builder appends after our flags.
-  const flags =
-    `--version >/dev/null 2>&1; printf %s "$SUPERMUX_HOOK_TOKEN" > ${tokenFile}; ` +
-    `exec env PS1='t3$ ' bash --norc --noprofile -i #`
-
-  const created = await api(backend).createSession({ name, provider: 'claude', dir: workDir, flags })
+  // No flags: the stand-in agent IS `claude` on the backend's PATH
+  // ({@link CHAT_BACKEND_ENV}), so this is an ordinary session create — the same
+  // body the web sends. It writes `.hook-token` into `workDir` (its cwd) and
+  // then sits in bash.
+  const created = await api(backend).createSession({ name, provider: 'claude', dir: workDir })
   expect([200, 201]).toContain(created.status)
   expect((await api(backend).startSession(name)).ok).toBeTruthy()
 
@@ -119,7 +160,13 @@ export async function chatSession(backend: Backend, name: string): Promise<ChatF
   while (!existsSync(tokenFile) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100))
   }
-  if (!existsSync(tokenFile)) throw new Error(`pane never wrote ${tokenFile}`)
+  if (!existsSync(tokenFile)) {
+    throw new Error(
+      `pane never wrote ${tokenFile} — did this spec boot its backend with ` +
+        `startBackend({ env: CHAT_BACKEND_ENV })? Without it the pane runs the ` +
+        `real claude instead of the stand-in and never writes the token.`,
+    )
+  }
   const hookToken = readFileSync(tokenFile, 'utf8').trim()
   if (!hookToken) throw new Error('pane wrote an empty hook token')
 
