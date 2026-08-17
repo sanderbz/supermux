@@ -122,6 +122,11 @@ export function useKeyboardCapture(handlers: KeyboardCaptureHandlers): void {
  * Read the DOM facts `shouldToggleRenderer` needs. The only part of the hotkey
  * that touches a `KeyboardEvent`, kept here so the decision itself stays pure.
  */
+/** Is `el` inside a subtree matching `selector`? */
+function inside(el: Element | null, selector: string): boolean {
+  return !!el?.closest?.(selector)
+}
+
 function hotkeyCtx(e: KeyboardEvent, h: KeyboardCaptureHandlers): HotkeyCtx {
   const el = (e.target as HTMLElement | null) ?? null
   const active = document.activeElement as HTMLElement | null
@@ -143,7 +148,18 @@ function hotkeyCtx(e: KeyboardEvent, h: KeyboardCaptureHandlers): HotkeyCtx {
     inOverlay: !!active?.closest('[role="dialog"],[role="menu"],[role="listbox"]'),
     // xterm's hidden textarea is the terminal's keyboard owner. `.xterm` on an
     // ancestor covers the helper textarea AND anything else inside the viewport.
-    terminalFocused: !!active?.closest('.xterm'),
+    //
+    // BOTH the active element AND the event's target, because `activeElement`
+    // lies: a focused node inside an `inert` subtree (which is exactly what the
+    // hidden renderer pane is) reports as `<body>` while still receiving the
+    // keydown. The event knows where the key really went.
+    terminalFocused: inside(active, '.xterm') || inside(el, '.xterm'),
+    // The chat surface's own root (`chat-surface.tsx`). Same two readings, same
+    // reason.
+    chatFocused: inside(active, '[data-surface="chat"]') || inside(el, '[data-surface="chat"]'),
+    // The switch's own rail (`renderer-switch.tsx` stamps the marker).
+    onRendererSwitch:
+      inside(active, '[data-renderer-switch]') || inside(el, '[data-renderer-switch]'),
     eligible: h.rendererEligible ?? false,
   }
 }

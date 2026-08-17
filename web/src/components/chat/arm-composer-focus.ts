@@ -44,11 +44,58 @@ export const ARM_WINDOW_MS = 3_000
  *  calls `term.focus()` unconditionally.) */
 const SWITCH_CELLS = new Set(['renderer-chat', 'renderer-terminal', 'renderer-auto'])
 
-/** Is `el` a real focus owner — something whose caret would be rude to take? */
-function ownsFocus(el: Element | null): boolean {
-  if (el == null || el === document.body || el === document.documentElement) return false
+/**
+ * Is `el` a real KEYBOARD owner — something whose caret would be rude to take?
+ *
+ * The predicate used to be "anything that is not `<body>`", and that is what let
+ * the blocker through: a click on the transcript background parks focus on the
+ * route's `<main>` (a `tabindex="-1"` landing pad for the skip link), which is
+ * not `<body>`, so the arm aborted and the surface was left with a caret that
+ * goes NOWHERE. Keys typed into a container like that reach the DOCUMENT — which
+ * is exactly where the global `t` renderer hotkey listens.
+ *
+ * So the question is not "is something focused" but "would a keystroke land
+ * somewhere". Fields, contenteditables and the interactive roles say yes; a
+ * `tabindex="-1"` container says no.
+ */
+export function ownsKeyboard(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  if (el === document.body || el === document.documentElement) return false
+  // The renderer switch HANDS the caret on: the cell that was clicked is the
+  // control asking for the chat surface, so keeping the focus would be the
+  // toggle refusing its own request.
   const id = el.getAttribute('data-testid')
-  return id == null || !SWITCH_CELLS.has(id)
+  if (id != null && SWITCH_CELLS.has(id)) return false
+  if (el.isContentEditable) return true
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (tag === 'BUTTON' || (tag === 'A' && el.hasAttribute('href'))) return true
+  const role = el.getAttribute('role')
+  if (
+    role === 'textbox' ||
+    role === 'searchbox' ||
+    role === 'combobox' ||
+    role === 'button' ||
+    role === 'link' ||
+    role === 'tab' ||
+    role === 'menuitem' ||
+    role === 'option' ||
+    role === 'checkbox' ||
+    role === 'switch'
+  ) {
+    return true
+  }
+  const tabindex = el.getAttribute('tabindex')
+  return tabindex != null && tabindex !== '-1'
+}
+
+/** Did this event happen inside THIS session's chat surface? `data-surface` +
+ *  `data-session` are `chat-surface.tsx`'s own root attributes, so a desktop
+ *  split with two chat panes arms each pane from its own clicks only. */
+function inChatSurface(target: EventTarget | null, name: string): boolean {
+  if (!(target instanceof Element)) return false
+  const surface = target.closest('[data-surface="chat"]')
+  return surface != null && surface.getAttribute('data-session') === name
 }
 
 /**
@@ -63,14 +110,54 @@ export function useArmComposerFocus(name: string, chatActive: boolean): void {
   React.useEffect(() => {
     if (!chatActive || coarse) return
     let raf = 0
-    const deadline = Date.now() + ARM_WINDOW_MS
-    const tick = () => {
-      if (ownsFocus(document.activeElement)) return
-      if (focusComposer(name)) return
-      if (Date.now() > deadline) return
-      raf = window.requestAnimationFrame(tick)
+    // SYNCHRONOUS FIRST ATTEMPT, then the retry loop. The first attempt used to
+    // be deferred a frame as well, which is a race the user wins: a click that
+    // drops the caret is immediately followed by typing, and a character that
+    // arrives before the rAF is a character at the DOCUMENT — where the hotkey
+    // lives. Once the panel is mounted the composer is already in the DOM, so
+    // the synchronous attempt succeeds and the loop never runs.
+    const arm = () => {
+      window.cancelAnimationFrame(raf)
+      const deadline = Date.now() + ARM_WINDOW_MS
+      const tick = () => {
+        if (ownsKeyboard(document.activeElement)) return
+        if (focusComposer(name)) return
+        if (Date.now() > deadline) return
+        raf = window.requestAnimationFrame(tick)
+      }
+      tick()
     }
-    raf = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(raf)
+    arm()
+
+    // THE EDGE IS NOT ENOUGH — this is the second half of the blocker.
+    //
+    // Arming only on `[name, chatActive]` meant the caret was placed once and
+    // never taken back. Every later way to lose it — a click on the transcript
+    // background, Escape out of a popover, closing a sheet — left the chat
+    // surface on screen with focus parked on a non-focusable container, and the
+    // next sentence went to the document: the first `t` flipped the renderer and
+    // the rest was typed at the agent's `❯`.
+    //
+    // So the arm re-runs on any focus change or click INSIDE this session's chat
+    // surface. `ownsKeyboard` above is what keeps that from being a focus grab:
+    // clicking a button, a link or another field inside the panel leaves that
+    // control alone; only focus that would swallow keystrokes is replaced.
+    const rearm = (e: Event) => {
+      if (!inChatSurface(e.target, name)) return
+      // A drag-select in the transcript ends in a `click`, and focusing a
+      // textarea collapses the document selection — so a user reading and
+      // copying output would lose the selection they just made.
+      const sel = window.getSelection?.()
+      if (sel && !sel.isCollapsed) return
+      if (ownsKeyboard(document.activeElement)) return
+      arm()
+    }
+    document.addEventListener('focusin', rearm, true)
+    document.addEventListener('click', rearm, true)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      document.removeEventListener('focusin', rearm, true)
+      document.removeEventListener('click', rearm, true)
+    }
   }, [name, chatActive, coarse])
 }

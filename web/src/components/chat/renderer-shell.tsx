@@ -178,6 +178,25 @@ export function RendererShell({
 }
 
 /**
+ * Take the keyboard away from a pane that just went invisible.
+ *
+ * TWO READINGS, because one of them lies. `activeBefore` is
+ * `document.activeElement` sampled BEFORE the pane was made inert and is the
+ * truthful one; `:focus` inside the subtree is the fallback for every other way
+ * in (a pane that was already inert when the caret arrived, an engine that
+ * re-parents focus). Both are containment-checked against this pane, so this can
+ * never evict a caret that belongs to the OTHER pane — the page-wide blur that
+ * bug once was.
+ */
+function evictFocus(pane: HTMLElement, activeBefore: Element | null): void {
+  if (activeBefore instanceof HTMLElement && pane.contains(activeBefore)) {
+    activeBefore.blur()
+  }
+  const stillInside = pane.querySelector<HTMLElement>(':focus')
+  if (stillInside) stillInside.blur()
+}
+
+/**
  * One occupant of the cell.
  *
  * `visibility` rides framer's `transitionEnd` rather than a class: set as a
@@ -215,6 +234,16 @@ function Pane({
   React.useEffect(() => {
     const el = ref.current
     if (!el) return
+    // READ THE CARET BEFORE `inert` — this order is the whole guard.
+    //
+    // A focused element inside an `inert` subtree reports as `<body>` in
+    // `document.activeElement` while STILL receiving every keydown (measured in
+    // Chromium: `document.activeElement === document.body`, `keydown.target ===
+    // textarea.xterm-helper-textarea`, and the pty received the characters). So
+    // the containment check below has to run against the caret as it was BEFORE
+    // this effect made the pane inert; reading it afterwards sees `<body>`,
+    // fails `el.contains(...)`, and the invisible xterm keeps the keyboard.
+    const activeBefore = document.activeElement
     // `inert`, set IMPERATIVELY.
     //
     // The `inert={!visible}` prop below is what renders in SSR (and is what the
@@ -231,8 +260,7 @@ function Pane({
     wasVisibleRef.current = visible
 
     if (visible) return
-    const active = document.activeElement
-    if (active instanceof HTMLElement && el.contains(active)) active.blur()
+    evictFocus(el, activeBefore)
 
     // `onHidden` is an EDGE, not a state.
     //

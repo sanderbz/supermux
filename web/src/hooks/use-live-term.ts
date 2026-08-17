@@ -628,11 +628,22 @@ export function useLiveTerm(
    *  composer. Only focus that is INSIDE this terminal's container is ours to
    *  take away. */
   const blur = React.useCallback(() => {
-    termRef.current?.blur()
-    const active = document.activeElement
-    if (!(active instanceof HTMLElement)) return
+    const term = termRef.current
+    term?.blur()
+    // THE HELPER TEXTAREA, BY NAME. `term.blur()` goes through xterm's core and
+    // was observed leaving the node focused behind the renderer crossfade — the
+    // pane is `inert` by then, so `document.activeElement` reports `<body>`
+    // while the textarea still receives every keydown and the pty still gets
+    // the bytes. This node is ours by construction, so blurring it directly
+    // needs no containment check.
+    term?.textarea?.blur()
     const host = containerRef.current
-    if (host && host.contains(active)) active.blur()
+    const active = document.activeElement
+    if (active instanceof HTMLElement && host && host.contains(active)) active.blur()
+    // The same lie, from the other side: if anything in this terminal still
+    // holds `:focus` after the two blurs above, take it. Scoped to our own
+    // container, so this is not the page-wide eviction it used to be.
+    if (host) host.querySelector<HTMLElement>(':focus')?.blur()
   }, [])
 
   /** Open the URL under a viewport point (PWA-safely) and report whether it hit

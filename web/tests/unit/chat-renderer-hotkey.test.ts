@@ -22,8 +22,32 @@ const ctx = (o: Partial<HotkeyCtx> = {}): HotkeyCtx => ({
   target: { tag: 'DIV', editable: false, role: null },
   inOverlay: false,
   terminalFocused: false,
+  chatFocused: false,
+  onRendererSwitch: false,
   eligible: true,
   ...o,
+})
+
+test('a key from inside a visible chat surface is never the shortcut', () => {
+  // The blocker, as a matrix row. A click on the transcript background parks
+  // focus on a container that owns no keys, so `t` arrives at the DOCUMENT with
+  // a plain `DIV` target and every other refusal passing — and swallowing it
+  // flipped the surface mid-sentence, after which the rest was typed at the pty.
+  expect(shouldToggleRenderer(ctx({ chatFocused: true }))).toBe(false)
+  expect(shouldToggleRenderer(ctx({ chatFocused: true, target: { tag: 'MAIN', editable: false, role: null } }))).toBe(
+    false,
+  )
+})
+
+test('a key that arrived at the renderer switch is never the shortcut', () => {
+  // The coarse-pointer half: a tap leaves the caret on the tab it pressed, the
+  // composer arm is exempt on touch, and the next letter typed flipped the
+  // surface — which focuses xterm, so the rest went to the pty.
+  expect(
+    shouldToggleRenderer(
+      ctx({ onRendererSwitch: true, target: { tag: 'BUTTON', editable: false, role: 'tab' } }),
+    ),
+  ).toBe(false)
 })
 
 test('plain t on the pane toggles', () => {

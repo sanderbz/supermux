@@ -98,6 +98,31 @@ describe('the hidden pane', () => {
   })
 })
 
+describe('the eviction order (invariant 4) — the caret is read BEFORE inert', () => {
+  // THE BLOCKER THIS ENCODES. `inert` was set first and the containment check
+  // read `document.activeElement` afterwards — and a focused element inside an
+  // inert subtree reports as `<body>` while STILL receiving every keydown. So
+  // the check compared `<body>` against the pane, found no containment, blurred
+  // nothing, and the invisible xterm kept the keyboard: a sentence typed at the
+  // chat surface was executed in the agent's pty.
+  //
+  // Order is the whole fix, and order is what a static render cannot show — so
+  // it is asserted on the source, next to the rule it protects.
+  test('activeElement is sampled before the inert attribute is written', () => {
+    const read = CODE.indexOf('document.activeElement')
+    const write = CODE.indexOf("setAttribute('inert'")
+    expect(read).toBeGreaterThan(-1)
+    expect(write).toBeGreaterThan(-1)
+    expect(read).toBeLessThan(write)
+  })
+
+  test('the hide edge falls back to :focus inside the pane', () => {
+    // The second reading, for every path where the caret arrived while the pane
+    // was ALREADY inert (and `activeElement` therefore never saw it).
+    expect(CODE).toContain("querySelector<HTMLElement>(':focus')")
+  })
+})
+
 describe('the grep rules (§3), asserted on the source', () => {
   test('never display:none, never a `hidden` attribute', () => {
     expect(CODE).not.toMatch(/display\s*:\s*['"]?none/)

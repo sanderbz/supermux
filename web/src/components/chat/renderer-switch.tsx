@@ -118,6 +118,15 @@ export function RendererSwitch({
   return (
     <div
       role="tablist"
+      // The `T` hotkey's marker (`renderer-hotkey.ts`, refusal 5c). A tap on a
+      // cell leaves the caret ON the cell — on a coarse pointer nothing takes it
+      // back, because focusing the composer there would summon the soft
+      // keyboard — so the next character typed arrived at a focused tab with the
+      // global renderer hotkey armed. It flipped the surface, the reveal focused
+      // xterm, and the rest of the sentence was executed in the pty. A `t` while
+      // your finger is literally on this control is a stray keystroke, not a
+      // shortcut.
+      data-renderer-switch=""
       // Spelled out so "Auto, currently Chat" is one announcement rather than
       // a selected tab plus an unexplained underline.
       aria-label={

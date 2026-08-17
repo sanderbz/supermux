@@ -84,6 +84,13 @@ export function focusComposer(name: string): boolean {
   const el = fieldFor(name)
   if (!el) return false
   el.focus()
+  // VERIFY, don't assume. `HTMLElement.focus()` is silently IGNORED inside an
+  // `inert` subtree, and the retained chat pane is exactly that for the frames
+  // around a renderer toggle — so "I called focus()" and "the caret is in the
+  // composer" are two different claims, and the arming loop
+  // (`arm-composer-focus.ts`) needs the difference or it stops one frame too
+  // early and leaves the surface with no keyboard owner at all.
+  if (typeof document !== 'undefined' && document.activeElement !== el) return false
   return true
 }
 

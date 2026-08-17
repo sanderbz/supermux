@@ -37,6 +37,27 @@ export interface HotkeyCtx {
   inOverlay: boolean
   /** Does xterm's helper textarea currently hold focus? */
   terminalFocused: boolean
+  /**
+   * Did this key come from INSIDE a chat surface that is on screen?
+   *
+   * Not the same question as `target.editable`: the caret can sit on a
+   * non-focusable container inside the panel (the transcript's scroll region,
+   * the route's `<main>`), and that is precisely the state in which the key
+   * reaches the document. Swallowing it there turns a sentence meant for the
+   * composer into a surface flip followed by terminal input.
+   */
+  chatFocused: boolean
+  /**
+   * Did the key arrive at the renderer switch itself?
+   *
+   * The coarse-pointer half of the same blocker: a tap on a cell leaves the
+   * caret on that cell, and the composer arm is deliberately exempt on
+   * `pointer: coarse` (focusing a textarea summons the soft keyboard). So the
+   * caret stays on a focused tab with the hotkey armed, and the first letter
+   * typed flips the surface — after which the reveal focuses xterm and the rest
+   * of the sentence is executed in the pty.
+   */
+  onRendererSwitch: boolean
   /** Is the chat renderer even POSSIBLE here? (`flag.ts`) */
   eligible: boolean
 }
@@ -84,6 +105,25 @@ export function shouldToggleRenderer(c: HotkeyCtx): boolean {
   //    already the signal that keys are going to the pty, so the rule is
   //    legible rather than mysterious.
   if (c.terminalFocused) return false
+
+  // 5b. THE CHAT SURFACE HAS THE KEY. The mirror of refusal 5, and the one that
+  //     closes the injection path: a `t` typed at a visible chat surface is a
+  //     letter someone is writing, whether or not the caret happens to be in the
+  //     field at that instant. Taking it flips the renderer mid-sentence and the
+  //     REST of the sentence is then typed into the pty — the worst outcome this
+  //     module exists to prevent, and worth more than a shortcut that is
+  //     redundant with the switch two centimetres away.
+  //
+  //     (`arm-composer-focus.ts` is what puts the caret back in the composer, so
+  //     in practice refusal 3 catches this first; this is the guard for the
+  //     frames before it lands, and for the coarse pointers it is exempt on.)
+  if (c.chatFocused) return false
+
+  // 5c. THE SWITCH HAS THE KEY. Same refusal, from the control that performs the
+  //     same toggle: nothing is lost by declining a shortcut whose visible
+  //     equivalent is under the user's finger, and what is gained is that the
+  //     caret a tap leaves behind can no longer flip the surface mid-sentence.
+  if (c.onRendererSwitch) return false
 
   // 6. ELIGIBILITY. With no toggle to perform there is no key to swallow.
   if (!c.eligible) return false
