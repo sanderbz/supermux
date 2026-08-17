@@ -13,6 +13,11 @@
 //     sm-nav-active` at rest, and it sits inside the ACTIVE link;
 //   · navigating moves it (it follows `aria-current`), which is the whole
 //     behaviour;
+//   · the transition it belongs to ANIMATES — sampled `currentTime` passes half
+//     the declared 0.26s. This is the assertion that was missing: the earlier
+//     version asserted a unique name and a non-rejecting `ready`, and stayed
+//     green through a regression where every navigation was a hard cut (the
+//     pseudo-tree was built, then cancelled one frame later at currentTime 0);
 //   · nav links are real `<a href>`s, so a ⌘-click opens a new page instead of
 //     morphing the current one (the regression a click-only handler would
 //     introduce);
@@ -49,18 +54,46 @@ test.describe('nav: the active pill is one view-transition group', () => {
       // elements makes the browser reject `transition.ready` and skip the
       // animation — which is exactly the failure this spec exists to catch, and
       // it is otherwise completely silent.
-      const w = window as unknown as { __vtStarted: number; __vtFailed: string[] }
+      const w = window as unknown as {
+        __vtStarted: number
+        __vtFailed: string[]
+        __vtProgress: number[]
+      }
       w.__vtStarted = 0
       w.__vtFailed = []
+      // Peak `currentTime` reached by any `::view-transition-*` animation, one
+      // entry per transition. `ready` resolving proves the pseudo-tree was
+      // BUILT; only a currentTime that advances proves it ANIMATED. The bug
+      // this catches (every navigation a hard cut) left `ready` resolved, no
+      // rejection, and every animation cancelled on the next frame at
+      // currentTime 0 — invisible to any existence assertion.
+      w.__vtProgress = []
       const d = document as Document & {
-        startViewTransition?: (cb: () => void) => { ready?: Promise<void> }
+        startViewTransition?: (
+          cb: () => void | Promise<void>,
+        ) => { ready?: Promise<void> }
       }
       if (d.startViewTransition) {
         const orig = d.startViewTransition.bind(d)
-        d.startViewTransition = (cb: () => void) => {
+        d.startViewTransition = (cb: () => void | Promise<void>) => {
           w.__vtStarted++
+          const slot = w.__vtProgress.push(0) - 1
           const t = orig(cb)
           t?.ready?.catch((e: unknown) => w.__vtFailed.push(String(e)))
+          t?.ready?.then(() => {
+            let frames = 0
+            const tick = () => {
+              const peak = document
+                .getAnimations()
+                .filter((a) =>
+                  String(a.effect?.pseudoElement ?? '').startsWith('::view-transition'),
+                )
+                .reduce((m, a) => Math.max(m, Number(a.currentTime) || 0), 0)
+              w.__vtProgress[slot] = Math.max(w.__vtProgress[slot], peak)
+              if (++frames < 60) requestAnimationFrame(tick)
+            }
+            tick()
+          })
           return t
         }
       }
@@ -101,6 +134,23 @@ test.describe('nav: the active pill is one view-transition group', () => {
     expect(found[0].href).toBe('/')
     expect(found[0].ariaCurrent, 'the pill sits under the ACTIVE link').toBe('page')
 
+    // ── Warm-up: visit both destinations once, then forget the samples ───────
+    // `/settings` is entry-lazy (App.tsx). A morph waits for React to COMMIT
+    // the new route, and a cold chunk fetch can exceed that wait — in which case
+    // the morph deliberately degrades to a hard cut. That degradation is a
+    // separate, documented behaviour; measuring it here would make the progress
+    // assertion below a coin flip on how fast the dev server serves a chunk.
+    for (const label of ['Files', 'Settings', 'Overview'] as const) {
+      await rail.getByRole('link', { name: label, exact: true }).click()
+      await page.waitForTimeout(500)
+    }
+    await expect(page).toHaveURL(/\/$/)
+    // Mark rather than clear: a warm-up transition's rAF sampler may still be
+    // running and would otherwise write into a recycled slot.
+    const warmupCount = await page.evaluate(
+      () => (window as unknown as { __vtProgress: number[] }).__vtProgress.length,
+    )
+
     // ── Navigate: the pill follows the active route ──────────────────────────
     for (const [label, href] of [
       ['Files', '/files'],
@@ -117,15 +167,41 @@ test.describe('nav: the active pill is one view-transition group', () => {
     }
 
     // ── The transitions actually RAN, and none was skipped ───────────────────
-    const vt = await page.evaluate(() => {
-      const w = window as unknown as { __vtStarted: number; __vtFailed: string[] }
-      return { started: w.__vtStarted, failed: w.__vtFailed }
-    })
+    // The pill group is declared at 0.26s (globals.css). Half of it is the bar:
+    // a transition that is torn down a frame after `ready` peaks at 0, and one
+    // that runs reaches ~260. Sampling is per rAF, so a transition that is
+    // merely SLOW to be scheduled still clears this once it starts.
+    const HALF_DURATION_MS = 130
+    let vt = { started: 0, failed: [] as string[], progress: [] as number[] }
+    await expect(async () => {
+      vt = await page.evaluate(
+        (skip) => {
+          const w = window as unknown as {
+            __vtStarted: number
+            __vtFailed: string[]
+            __vtProgress: number[]
+          }
+          return {
+            started: w.__vtStarted,
+            failed: w.__vtFailed,
+            progress: w.__vtProgress.slice(skip),
+          }
+        },
+        warmupCount,
+      )
+      expect(vt.progress.length).toBe(2)
+      expect(Math.min(...vt.progress)).toBeGreaterThan(HALF_DURATION_MS)
+    }).toPass({ timeout: 5_000 })
     expect(vt.started, 'nav clicks route through startViewTransition').toBeGreaterThan(0)
     expect(
       vt.failed,
       'no transition was skipped — a duplicate view-transition-name would reject `ready`',
     ).toEqual([])
+    // EVERY navigation animates, not just the luckiest one.
+    expect(
+      vt.progress.filter((ms) => ms > HALF_DURATION_MS).length,
+      'every navigation ran its transition past half its declared duration',
+    ).toBe(vt.progress.length)
 
     // ── The pill is NOT a framer shared-layout element ───────────────────────
     // framer-motion drives `layoutId` by writing an inline `transform` on the

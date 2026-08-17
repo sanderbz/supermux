@@ -12,6 +12,7 @@ import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { useRendererPrefsSync } from '@/hooks/use-renderer-prefs-sync'
 import { ConnectionOverlay } from '@/components/connection/connection-overlay'
+import { MorphCommitProbe } from '@/components/view-transitions/morph'
 import { Overview } from '@/routes/overview'
 import { Focus, FocusEntry } from '@/routes/focus'
 import { Files } from '@/routes/files'
@@ -140,6 +141,12 @@ export default function App() {
                 one SSE tick. Mounted here (inside QueryClientProvider, outside
                 the routes) so exactly one instance exists per app. */}
             <RendererPrefsSync />
+            {/* Renders nothing; tells an in-flight route morph the moment React
+                has COMMITTED the new route, so `startViewTransition` captures
+                the destination instead of a second copy of the origin. Must be
+                inside the router and mounted exactly once — see
+                `components/view-transitions/morph.tsx`. */}
+            <MorphCommitProbe />
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />
