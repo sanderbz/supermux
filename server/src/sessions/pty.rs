@@ -397,6 +397,9 @@ impl PtyStream {
         let pool_clone = pool.clone();
         let name = self.name.clone();
         let is_pane = self.target.is_pane();
+        // The detector's own wake handle, kept out of the `sink` move so the
+        // reader's EXIT can ring it too (see the stream-dead branch below).
+        let death_wake = detector_wake.clone();
         tokio::spawn(async move {
             let reason = match reader.run(sink).await {
                 Ok(()) => ExitReason::StreamDead,
@@ -419,6 +422,18 @@ impl PtyStream {
                 {
                     tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
                 }
+                // TWO WRITERS, ONE FACT. This write flips the row to `stopped`
+                // within ~100 ms of a holder dying; the REASON — the
+                // `holder_died` badge that says "crashed" rather than "the user
+                // pressed Stop" — is stamped by the detector's own
+                // `force_stopped_on_death`, on its next tick. Measured, that was
+                // 1–5 s apart, and for that whole window the row is
+                // byte-identical to a deliberate Stop, so no surface can tell a
+                // crash from a choice. Ring the detector the instant the stream
+                // dies so the second fact follows the first by a tick's work
+                // instead of a tier's sleep. (`notify_one` parks a permit, so
+                // this is never lost to a race with the loop's `select!`.)
+                death_wake.notify_one();
             }
         });
         Ok(())

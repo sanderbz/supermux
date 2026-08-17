@@ -518,6 +518,21 @@ fn agent_ui_visible(capture: &str) -> bool {
     capture.contains('❯') || capture.contains('❱') || capture.contains("? for shortcuts")
 }
 
+/// AGENT-LEVEL evidence that a provider is actually at the wheel on this pty —
+/// the same proof `start`'s readiness poll accepts, minus the two screens that
+/// draw `agent_ui_visible`'s `❯` glyph without an agent being ready behind it.
+///
+/// This exists for the failed-heal latch (`auto_actions`): after
+/// `claude --resume <stale>` the pty is NOT a bare shell — claude sits in its
+/// interactive Resume picker, which is a live program. "A program owns the pty"
+/// therefore proves nothing there, and using it as the release condition is what
+/// wiped the honest `resume failed: …` badge one ~2s tick after the heal
+/// admitted failure. The picker and the trust dialog are exactly the two
+/// captures that must NOT count.
+pub(super) fn agent_at_the_wheel(capture: &str) -> bool {
+    agent_ui_visible(capture) && !at_resume_picker(capture) && !at_trust_dialog(capture)
+}
+
 /// Heuristic: are we stuck in Claude's `--resume` session picker?
 fn at_resume_picker(capture: &str) -> bool {
     let c = capture.to_lowercase();
@@ -1368,7 +1383,7 @@ pub async fn send_harness_text(
     let rt = state.runtime_for(name).await?;
     // Auto-wake BEFORE taking the lock (start() acquires it itself).
     if !rt.alive().await {
-        start(state, name, None).await?;
+        wake_for_send(state, name).await?;
     }
 
     let lock = state.lock_for(name);
@@ -1380,6 +1395,60 @@ pub async fn send_harness_text(
     let (preview, at) =
         db::sessions::set_last_send(&state.pool, name, preview_text.unwrap_or(text)).await?;
     broadcast_send(state, name, &preview, at);
+    Ok(())
+}
+
+/// THE AUTO-WAKE SEAM — the one place a writer may resurrect a stopped session,
+/// and therefore the one place the recovery guards have to live.
+///
+/// `#81` put two guards on the AUTOMATIC recovery path
+/// (`auto_actions::auto_heal`): refuse to restart a claude session whose resume
+/// link is provably dead, and believe `start`'s `ready` flag rather than the
+/// mere existence of a pane. Its sibling — the auto-wake three lines above — had
+/// neither, and EVERY writer reaches the pty through it: `POST
+/// /api/sessions/{name}/send`, `POST /api/agents/delegate`, `scheduler::runner`,
+/// the board dispatcher, the steering deliver loop. So the exact failure #81
+/// closed was still one `/send` away: the heal correctly refused ("auto-heal:
+/// skipped"), then a send woke the session anyway, `claude --resume <gone>`
+/// printed "No conversation found with session ID: …" and EXITED, and the
+/// prompt was typed at the bash prompt left behind ("…: command not found")
+/// while the API answered `{ok:true}` and the row went green.
+///
+/// Two refusals, both 409s with a sentence, because "your message was eaten by a
+/// shell" must never be reported as delivery:
+///
+/// 1. **A dead resume link** ([`auto_actions::dead_resume_link`]) — naming the
+///    conversation that is gone, so the next step (start fresh, or pick another
+///    conversation) is obvious. A claude row with NO link is not refused: that
+///    is an ordinary first send and it loses nothing.
+/// 2. **`start().ready == false`** — the pane came back, the agent did not. We
+///    do NOT type into it, we re-stamp the `holder_died` badge through
+///    [`auto_actions::stamp_heal_failed`] (which also latches the badge against
+///    the detector's alive tick), and we return the error.
+///
+/// The caller then reports UNDELIVERED all the way out: `/send` and `/paste`
+/// answer 409, `agents::delegate` never reaches its `record_delegation` (so no
+/// delivered edge is written), the scheduler's run is recorded failed, and the
+/// chat composer settles its unconfirmed row on the server's sentence instead of
+/// promising an arrival.
+async fn wake_for_send(state: &AppState, name: &str) -> Result<(), AppError> {
+    let s = require_session(state, name).await?;
+    if let Some(conv) = super::auto_actions::dead_resume_link(&s) {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' can't be woken: its Claude conversation '{conv}' is no longer on \
+             disk, so starting it would come back as a bare shell wearing the session's name and \
+             swallow this message — start it fresh (Reset), or point it at a conversation that \
+             still exists",
+        )));
+    }
+    let res = start(state, name, None).await?;
+    if !res.ready {
+        super::auto_actions::stamp_heal_failed(state, name, &s);
+        return Err(AppError::Conflict(format!(
+            "session '{name}' was woken but its agent never came up — the message was NOT \
+             delivered; open the terminal to see what the session is sitting on",
+        )));
+    }
     Ok(())
 }
 
