@@ -40,12 +40,20 @@ test.describe('mobile: joystick hold-to-arm', () => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })
 
-    const created = await api(backend).createSession({
+    const A = api(backend)
+    const created = await A.createSession({
       name: 'mob-joy',
       provider: 'shell',
       dir: backend.dataDir,
     })
     expect(created.status, 'create session').toBe(201)
+    // START it. A created-but-never-started session now renders
+    // `StoppedSession` — a calm restart surface with no terminal and no
+    // joystick under it — so `[data-armed]` was legitimately 0 and this spec
+    // measured an empty page. Every sibling mobile spec already starts its
+    // session; this one was written before the stopped surface existed.
+    const started = await A.startSession('mob-joy')
+    expect(started.ok, 'start session').toBeTruthy()
 
     await page.goto(`${backend.baseUrl}/focus/mob-joy`)
 

@@ -20,6 +20,20 @@
 // by Framer) carries the glow colour/alpha. A status with no glow renders no
 // such element.
 //
+// HOW A CARD IS IDENTIFIED (re-anchored). This file used to find cards by the
+// `[role="img"]` status DOT inside them and read the status off its aria-label.
+// Fase B2 T4 replaced the tile's `<StatusDot>` with the session MARK, whose
+// EYES are the status channel and which is decorative (`aria-hidden`) because
+// the row already names the session in text — so both tests here timed out on
+// `[role="img"][aria-label="Idle"]` and the whole card-glow model, including
+// the only automated check that Reduce Motion stills the pulse, stopped
+// guarding anything. Cards are now found by the mark they actually draw, and
+// the status is read from the CARD's own `aria-label` ("<title> — <status>"),
+// which is the channel a screen-reader user is given. The dot's own
+// static-ness is still asserted, at the end, through the documented kill
+// switch (`localStorage['supermux:roster-marks'] = '0'`) — the one path on
+// which that component still renders.
+//
 // ADOPTED by A6 T1.3 (§0.1 #32). This file sat at `tests/e2e/` — covered by NO
 // config's `testDir` (`./tests/e2e/smoke`, `./tests/e2e/mobile`,
 // `./tests/e2e/screens`), so it had not run since it was written. Kept rather
@@ -57,12 +71,15 @@ async function probeCards(
   page: import('@playwright/test').Page,
 ): Promise<CardProbe[]> {
   return page.evaluate(() => {
+    // A tile is a role=button that draws a session face — the mark by default,
+    // the StatusDot under the kill switch. Its aria-label is
+    // "<title> — <status>", so the status is the tail after the em dash.
     const cards = Array.from(
-      document.querySelectorAll('[role="button"]'),
-    ).filter((c) => c.querySelector('[role="img"]'))
+      document.querySelectorAll('[role="button"][aria-label]'),
+    ).filter((c) => c.querySelector('.sm-mark, [role="img"]'))
     return cards.map((c) => {
-      const label =
-        c.querySelector('[role="img"]')?.getAttribute('aria-label') ?? '?'
+      const aria = c.getAttribute('aria-label') ?? ''
+      const label = aria.includes('—') ? aria.split('—').pop()!.trim() : aria
       const border = c.querySelector(
         ':scope > span[aria-hidden].pointer-events-none.absolute.inset-0.z-10.rounded-xl',
       ) as HTMLElement | null
@@ -137,7 +154,7 @@ test.describe('card-glow (StatusBorder) model', () => {
     test.setTimeout(90_000)
     await page.addInitScript(injectGlobals(backend.token))
     await page.goto(`${backend.baseUrl}/dev/tiles`)
-    await page.waitForSelector('[role="img"][aria-label="Idle"]', {
+    await page.waitForSelector('[role="button"][aria-label$="Idle"]', {
       state: 'attached',
       timeout: 15_000,
     })
@@ -179,8 +196,31 @@ test.describe('card-glow (StatusBorder) model', () => {
       true,
     )
 
-    // 7) the status DOTS are static (reverted) — no inline box-shadow halo on
-    // the idle/waiting dots themselves.
+    // 7a) the MARK is never overpainted (B0 contract C5) — the status channel a
+    //     user actually sees today carries no inline halo of its own.
+    const markHalos = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.sm-mark')).map(
+        (m) => (m as HTMLElement).style.boxShadow,
+      ),
+    )
+    expect(markHalos.length, 'the tiles must be drawing marks').toBeGreaterThan(0)
+    for (const shadow of markHalos) {
+      expect(shadow, 'the mark must never be ringed or haloed').toBe('')
+    }
+
+    // 7b) …and the DOT, on the one path that still renders it, is static too.
+    //     This is the assertion that was mis-fixed three times, so it is kept
+    //     alive rather than retired with the component: the kill switch has to
+    //     be the exact pre-B2 pixels, and a halo here would be a regression on
+    //     a surface a user can still reach.
+    await page.addInitScript(() =>
+      localStorage.setItem('supermux:roster-marks', '0'),
+    )
+    await page.reload()
+    await page.waitForSelector('[role="img"][aria-label="Idle"]', {
+      state: 'attached',
+      timeout: 15_000,
+    })
     const dotHalos = await page.evaluate(() => {
       const wanted = ['Idle', 'Needs input']
       return wanted.map((label) => {
@@ -212,7 +252,7 @@ test.describe('card-glow (StatusBorder) model', () => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.addInitScript(injectGlobals(backend.token))
     await page.goto(`${backend.baseUrl}/dev/tiles?reduce=1`)
-    await page.waitForSelector('[role="img"][aria-label="Idle"]', {
+    await page.waitForSelector('[role="button"][aria-label$="Idle"]', {
       state: 'attached',
       timeout: 15_000,
     })

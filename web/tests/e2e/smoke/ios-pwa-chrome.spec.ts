@@ -74,12 +74,21 @@ test.describe('iOS PWA chrome (SD-6)', () => {
     await page.addInitScript(injectGlobals(backend.token))
     await page.goto(`${backend.baseUrl}/settings`)
     // Simulate the notch inset the fixed-height header used to eat into.
-    await page.addStyleTag({ content: '.pt-safe{padding-top:44px !important}' })
+    //
+    // `.safe-header`, not `.pt-safe`: B1 T7.1 packaged the "floor + ADDITIVE
+    // env(safe-area-inset-top)" contract into one `@utility safe-header`, and
+    // `settings.tsx` moved onto it. The spec kept overriding `.pt-safe`, which
+    // the header no longer carries — so it simulated NO notch at all, and the
+    // "title clears 44px" assertion below could not pass however correct the
+    // product was. Overriding the class the header actually wears restores the
+    // simulation.
+    await page.addStyleTag({ content: '.safe-header{padding-top:44px !important}' })
 
     const header = page.locator('header').first()
     await expect(header).toBeVisible({ timeout: 10_000 })
-    // min-h-12 (fix) lets the 44px inset ADD to the 48px bar → it grows past 48.
-    // A fixed h-12 (bug) would stay 48px and squeeze the title under the notch.
+    // `safe-header` is a min-height FLOOR (56px) plus an additive inset, so the
+    // 44px notch grows the bar past its floor. A fixed height (the bug) would
+    // stay put and squeeze the title under the notch.
     await expect(async () => {
       const h = await header.evaluate((el) => el.getBoundingClientRect().height)
       expect(h, 'header grew to fit the notch inset').toBeGreaterThan(52)

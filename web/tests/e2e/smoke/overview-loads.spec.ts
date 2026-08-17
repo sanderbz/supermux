@@ -55,12 +55,17 @@ test.describe('overview loads', () => {
 
     // 3. Reload → at least one tile. The tile is a role=button with an
     //    aria-label "<title> — <status>"; the session name is the title.
+    //
+    //    ANCHORED AT THE START, deliberately. A bare /smoke-tile/ used to match
+    //    exactly one thing; the tile then grew a kebab labelled "More actions
+    //    for smoke-tile", so the same locator matched two buttons and every
+    //    assertion below died on a strict-mode violation. The tile's label
+    //    BEGINS with the session name and the kebab's does not, which is the
+    //    stable distinction between "the tile" and "a control on the tile".
     await page.reload()
-    const tile = page.getByRole('button', { name: /smoke-tile/ })
+    const tile = page.getByRole('button', { name: /^smoke-tile\b/ })
     await expect(tile).toBeVisible()
-    expect(await page.getByRole('button', { name: /smoke-tile/ }).count()).toBeGreaterThanOrEqual(
-      1,
-    )
+    expect(await tile.count(), 'exactly one tile, not the tile plus its kebab').toBe(1)
 
     // The empty state must be gone now that a session exists.
     await expect(
