@@ -33,9 +33,8 @@ import * as React from 'react'
 import { useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { focusApi, type ApiSession } from '@/lib/api'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
-import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
+import { useSessionActions } from '@/hooks/use-session-actions'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
@@ -118,30 +117,20 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   // `invalidate` in `.finally` backfills the authoritative row. Mirrors the
   // quick-peek-modal stop path — one shared `['sessions']` cache, no new
   // transport.
+  // B5/T9.4 — this route used to REIMPLEMENT `useSessionActions.stop`, and the
+  // two had already drifted: the team-lead branch was duplicated, and only this
+  // copy did the optimistic cache write. Both now live in the hook (the
+  // optimistic write was the better half and was lifted there), so the two
+  // surfaces cannot drift again — and killing a team lead enumerates its
+  // teammates in one place rather than two.
+  //
+  // Deliberately does NOT navigate away: the user stays on the focus route to
+  // see the calm `StoppedSession` surface LiveTerminal swaps in.
+  const sessionActions = useSessionActions(name ?? '')
   const onStop = React.useCallback(() => {
     if (!name) return
-    const team = teams.find((t) => t.lead_supermux_session === name)
-    const c = team ? killTeamLeadConfirm(team.members.length) : CONFIRM.killSession
-    if (!window.confirm(`${c.title}\n\n${c.body}`)) {
-      return
-    }
-    qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
-      (prev ?? []).map((s) =>
-        s.name === name ? { ...s, status: 'stopped' as const } : s,
-      ),
-    )
-    void focusApi
-      .stopSession(name)
-      .catch((e) => console.warn('stopSession failed', e))
-      .finally(() => {
-        // Reconcile against the server's authoritative state (the SSE `stopped`
-        // delta may have already landed; this covers the case it hasn't). We
-        // intentionally DO NOT navigate away — the user stays on the focus
-        // route to see the calm `StoppedSession` surface that LiveTerminal
-        // swaps in when status === 'stopped'.
-        void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
-      })
-  }, [name, qc, teams])
+    void sessionActions.stop()
+  }, [name, sessionActions])
 
   // Gate the "Make it a team" affordance on a session that
   // is eligible to be converted — must exist, not be archived, and not already

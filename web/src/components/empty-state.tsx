@@ -15,7 +15,8 @@ export interface EmptyStateCta {
 export interface EmptyStateProps {
   /** Monochrome inline SVG (currentColor) — pass a lucide icon element. */
   icon: React.ReactNode
-  /** One short sentence, builder-to-builder voice (no "Oops!", no "Great!"). */
+  /** One short sentence, builder-to-builder voice — no interjections. The
+   *  banned list is in BRAND.md, enforced by `scripts/lint-microcopy.sh`. */
   message: string
   /** Optional single primary call-to-action. */
   cta?: EmptyStateCta

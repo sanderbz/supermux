@@ -20,6 +20,8 @@
 // affordances and reduced-motion behaviour come for free.
 
 import * as React from 'react'
+
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   CheckCircle2,
@@ -248,7 +250,6 @@ function HostRow({ host }: { host: Host }) {
   const check = useCheckHost()
   const remove = useDeleteHost()
   const [bootstrapOpen, setBootstrapOpen] = React.useState(false)
-  const [confirmDelete, setConfirmDelete] = React.useState(false)
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
 
   const checking = check.isPending && check.variables === host.id
@@ -257,26 +258,22 @@ function HostRow({ host }: { host: Host }) {
   const onRecheck = () => {
     check.mutate(host.id)
   }
-  const onDelete = () => {
-    setDeleteError(null)
-    if (!confirmDelete) {
-      setConfirmDelete(true)
-      // Auto-cancel the confirm after a few seconds so the row never sits in a
-      // half-armed state.
-      window.setTimeout(() => setConfirmDelete(false), 4000)
-      return
-    }
-    remove.mutate(host.id, {
-      onError: (err) => {
-        setConfirmDelete(false)
-        setDeleteError(
-          err instanceof HostError
-            ? err.message
-            : 'Could not delete the host.',
-        )
-      },
-    })
-  }
+  // B5/T9.2 — variant B → the shared idiom. The old inline version never
+  // cleared its timer, so unmounting the section while a delete was armed left
+  // a `setState` scheduled against a dead component. `useArmedConfirm` clears
+  // on unmount and on every re-arm.
+  const confirmDelete = useArmedConfirm({
+    onConfirm: () => {
+      setDeleteError(null)
+      remove.mutate(host.id, {
+        onError: (err) => {
+          setDeleteError(
+            err instanceof HostError ? err.message : 'Could not delete the host.',
+          )
+        },
+      })
+    },
+  })
 
   const label = (
     <div className="flex min-w-0 items-center gap-2">
@@ -336,15 +333,15 @@ function HostRow({ host }: { host: Host }) {
           <Button
             variant="ghost"
             size="icon"
-            onClick={onDelete}
+            onClick={confirmDelete.press}
             aria-label={
-              confirmDelete
+              confirmDelete.armed
                 ? `Confirm delete ${host.name}`
                 : `Delete ${host.name}`
             }
             disabled={deleting}
             className={cn(
-              confirmDelete &&
+              confirmDelete.armed &&
                 'bg-status-error/10 text-status-error hover:bg-status-error/15',
             )}
           >
@@ -352,7 +349,7 @@ function HostRow({ host }: { host: Host }) {
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          {confirmDelete ? 'Click again to delete' : 'Delete host'}
+          {confirmDelete.armed ? 'Click again to delete' : 'Delete host'}
         </TooltipContent>
       </Tooltip>
     </div>

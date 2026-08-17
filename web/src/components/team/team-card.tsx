@@ -23,6 +23,9 @@
 // terminal state to drift.
 
 import * as React from 'react'
+
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
+import { ArmedButton } from '@/components/ui/armed-button'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
@@ -111,6 +114,8 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
     }
   }, [qc, team.team_name])
 
+  const dismissConfirm = useArmedConfirm({ onConfirm: () => void dismiss() })
+
   // Navigate to the lead's focus route with `?teammate=<agent_id>` so the focus
   // view auto-selects this teammate. When the lead isn't mapped to a session
   // this tick we silently no-op (the chip can't reach a non-existent route).
@@ -186,14 +191,18 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
       ) : (
         <div className="flex h-16 items-center justify-between gap-2 rounded-xl border border-dashed border-border/60 px-3 text-xs text-muted-foreground">
           <span>Lead not mapped to a session right now</span>
-          <button
-            type="button"
-            onClick={dismiss}
+          {/* B5/T9.5 — this had NO confirm at all, sitting directly above a
+              `KillTeammateButton` that has one. Dismissing removes the team
+              from the overview, so it is cheap-but-destructive: the armed
+              idiom, not a dialog. */}
+          <ArmedButton
+            confirm={dismissConfirm}
+            label="Dismiss"
+            confirmLabel="Dismiss team"
+            ariaLabel="Dismiss this team"
             disabled={dismissing}
             className="shrink-0 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >
-            Dismiss
-          </button>
+          />
         </div>
       )}
 

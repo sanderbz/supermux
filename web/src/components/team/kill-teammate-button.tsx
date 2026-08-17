@@ -24,6 +24,8 @@
 // agent_id): nothing we could dismiss.
 
 import * as React from 'react'
+
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
@@ -54,7 +56,10 @@ export function KillTeammateButton({
   const qc = useQueryClient()
   const { toast } = useToast()
   const reduce = useReducedMotion()
-  const [confirming, setConfirming] = React.useState(false)
+  // B5/T9.2 — variant C → the shared idiom. This site was UNTIMED: a button
+  // armed an hour ago was still one click from killing a teammate. It now
+  // disarms after 4 s, which is a behaviour change and is called out as one.
+  const confirming = useArmedConfirm({ onConfirm: () => remove.mutate() })
 
   const remove = useMutation({
     // Non-null asserted via the render gate below (button never mounts without both).
@@ -66,7 +71,7 @@ export function KillTeammateButton({
       void qc.invalidateQueries({ queryKey: TEAMS_KEY })
     },
     onError: () => toast({ message: `Couldn’t remove ${member.name}`, tone: 'error' }),
-    onSettled: () => setConfirming(false),
+    onSettled: () => confirming.cancel(),
   })
 
   if (!teamName || !agentId) return null
@@ -76,7 +81,7 @@ export function KillTeammateButton({
   // into a navigation.
   const swallow = (e: React.SyntheticEvent) => e.stopPropagation()
 
-  if (confirming) {
+  if (confirming.armed) {
     return (
       <motion.div
         initial={reduce ? false : { opacity: 0, x: 8 }}
@@ -88,7 +93,7 @@ export function KillTeammateButton({
       >
         <button
           type="button"
-          onClick={() => setConfirming(false)}
+          onClick={confirming.cancel}
           disabled={remove.isPending}
           className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
@@ -96,7 +101,7 @@ export function KillTeammateButton({
         </button>
         <button
           type="button"
-          onClick={() => remove.mutate()}
+          onClick={confirming.press}
           disabled={remove.isPending}
           className="flex h-11 items-center gap-1.5 rounded-md bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
@@ -112,7 +117,7 @@ export function KillTeammateButton({
       type="button"
       onClick={(e) => {
         swallow(e)
-        setConfirming(true)
+        confirming.press()
       }}
       onKeyDown={swallow}
       disabled={remove.isPending}

@@ -469,8 +469,10 @@ function ComposerBanner({
   )
 }
 
-/** The copy, in one place. Each line names what is actually true — no "oops",
- *  no "something went wrong". */
+/** The copy, in one place. Each line names what is actually true — never an
+ *  interjection, never "something went wrong". The banned list lives in
+ *  BRAND.md and `scripts/lint-microcopy.sh`; it is not repeated here, because a
+ *  third copy of it could only drift out of sync with the gate. */
 const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   'tui-draft': 'The terminal has an unsent draft.',
   // Says what happened (it went) AND what could not be established (whose text

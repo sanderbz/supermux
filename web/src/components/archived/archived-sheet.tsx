@@ -22,6 +22,8 @@
 // UPPERCASE), spring transitions (springs.*), design tokens throughout.
 
 import * as React from 'react'
+
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Archive, RotateCcw, Trash2 } from 'lucide-react'
 
@@ -70,6 +72,8 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
   // 28px-high row. Lifting just the armed flag lets the table render in the
   // sheet BODY, where there is room to be honest, while the buttons stay where
   // the user's finger already is.
+  // B5/T9.2 keeps the flag lifted (rather than owning a hook here) precisely so
+  // the table above can see it; the ARMING itself lives in `DeleteAllAction`.
   const [confirmingPurgeAll, setConfirmingPurgeAll] = React.useState(false)
 
   const count = archived.length
@@ -93,8 +97,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
         count > 0 ? (
           <DeleteAllAction
             recovery={recovery}
-            confirming={confirmingPurgeAll}
-            setConfirming={setConfirmingPurgeAll}
+            onArmedChange={setConfirmingPurgeAll}
           />
         ) : null
       }
@@ -156,14 +159,14 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
  *  request resolves. */
 function DeleteAllAction({
   recovery,
-  confirming,
-  setConfirming,
+  onArmedChange,
 }: {
   recovery: UseArchivedSessionsResult
-  /** B5/T7.2 — owned by `ArchivedSheet` so the disposition table can render in
-   *  the sheet body while these buttons stay on the description row. */
-  confirming: boolean
-  setConfirming: (v: boolean) => void
+  /** B5/T7.2 — the arming lives HERE (it is this button's state), but the
+   *  disposition table it should reveal lives in the sheet body, where there is
+   *  room to be honest. So the flag is reported upward rather than owned there:
+   *  one source of truth, two places that need to see it. */
+  onArmedChange: (armed: boolean) => void
 }) {
   const { archived, purgeAll, pending } = recovery
   const { toast } = useToast()
@@ -175,7 +178,6 @@ function DeleteAllAction({
   const count = archived.length
 
   const onPurgeAll = React.useCallback(async () => {
-    setConfirming(false)
     setBusy(true)
     try {
       const { ok, failed } = await purgeAll()
@@ -196,12 +198,19 @@ function DeleteAllAction({
     } finally {
       setBusy(false)
     }
-  }, [purgeAll, toast, setConfirming])
+  }, [purgeAll, toast])
 
   // Compact inline action sized to fit ON the description row (h-7 / text-xs)
   // so the sheet header gains zero vertical space vs the count alone. The
   // confirm morph keeps the same height so the row never reflows.
-  if (confirming) {
+  // B5/T9.2 — variant C → the shared idiom. Untimed before: "Delete all" armed
+  // and forgotten stayed one click from purging every archived session.
+  const confirming = useArmedConfirm({ onConfirm: () => void onPurgeAll() })
+  React.useEffect(() => {
+    onArmedChange(confirming.armed)
+  }, [confirming.armed, onArmedChange])
+
+  if (confirming.armed) {
     return (
       <motion.div
         initial={reduce ? false : { opacity: 0, x: 8 }}
@@ -211,7 +220,7 @@ function DeleteAllAction({
       >
         <button
           type="button"
-          onClick={() => setConfirming(false)}
+          onClick={confirming.cancel}
           disabled={anyPending}
           className="flex h-7 items-center rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
@@ -219,7 +228,7 @@ function DeleteAllAction({
         </button>
         <button
           type="button"
-          onClick={() => void onPurgeAll()}
+          onClick={confirming.press}
           disabled={anyPending}
           className="flex h-7 items-center gap-1 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
@@ -232,7 +241,7 @@ function DeleteAllAction({
   return (
     <button
       type="button"
-      onClick={() => setConfirming(true)}
+      onClick={confirming.press}
       disabled={anyPending}
       aria-label={`Delete all ${count} archived sessions forever`}
       className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
@@ -309,7 +318,6 @@ function ArchivedRow({
   const { restore, purge, pending } = recovery
   const { toast } = useToast()
   const reduce = useReducedMotion()
-  const [confirming, setConfirming] = React.useState(false)
   const busy = pending.has(session.name)
   const label = displayLabel(session)
 
@@ -322,13 +330,16 @@ function ArchivedRow({
   }, [restore, session.name, label, toast])
 
   const onPurge = React.useCallback(() => {
-    setConfirming(false)
     purge(session.name)
       .then(() => toast({ message: `Deleted ${label}` }))
       .catch(() =>
         toast({ message: 'Couldn’t delete session', tone: 'error' }),
       )
   }, [purge, session.name, label, toast])
+
+  // B5/T9.2 — variant C → the shared idiom. Untimed before: a row armed and
+  // forgotten was one click from an irreversible delete, indefinitely.
+  const confirming = useArmedConfirm({ onConfirm: onPurge })
 
   return (
     <motion.li
@@ -358,7 +369,7 @@ function ArchivedRow({
           </p>
         </div>
 
-        {confirming ? (
+        {confirming.armed ? (
           // Inline destructive confirm — the row morphs into "Cancel / Delete"
           // so a stray tap can never nuke a session. Matches the tile's
           // archive-confirm pattern.
@@ -370,7 +381,7 @@ function ArchivedRow({
           >
             <button
               type="button"
-              onClick={() => setConfirming(false)}
+              onClick={confirming.cancel}
               disabled={busy}
               className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
@@ -400,7 +411,7 @@ function ArchivedRow({
             </button>
             <button
               type="button"
-              onClick={() => setConfirming(true)}
+              onClick={confirming.press}
               disabled={busy}
               aria-label={`Delete ${displayLabel(session)} forever`}
               title="Delete forever"

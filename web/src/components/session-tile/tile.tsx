@@ -1,4 +1,6 @@
 import * as React from 'react'
+
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useQueryClient } from '@tanstack/react-query'
 import { Archive, GitBranch, X } from 'lucide-react'
@@ -426,22 +428,12 @@ export function SessionTile({
   // important because archiving a RUNNING session also stops + tears it down.
   const qc = useQueryClient()
   const { toast } = useToast()
-  const [archiveConfirm, setArchiveConfirm] = React.useState(false)
   const [archiving, setArchiving] = React.useState(false)
   // While `archiving`, the tile plays a self-contained exit (the slot collapses
   // its own height + fades + scales via springs.cardExpand). The cache removal
   // fires on the exit's animation-complete, so the tile springs OUT instead of
   // vanishing instantly — and it's gone from the cache by the time the spring
   // settles, so no flicker / double-render.
-  const archiveConfirmTimer = React.useRef<number | null>(null)
-  React.useEffect(
-    () => () => {
-      if (archiveConfirmTimer.current !== null) {
-        window.clearTimeout(archiveConfirmTimer.current)
-      }
-    },
-    [],
-  )
 
   const removeFromCache = React.useCallback(() => {
     qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
@@ -483,7 +475,8 @@ export function SessionTile({
   // server round-trip latency (optimistic), reverting only on outright failure.
   const commitArchive = React.useCallback(() => {
     if (archiving) return
-    setArchiveConfirm(false)
+    // The hook has already disarmed itself by the time `onConfirm` runs, so
+    // there is no confirm state left to clear here.
     setArchiving(true)
     // Same title the tile shows — computed inline so this callback doesn't
     // depend on the `title` const declared after the missing-tile early return.
@@ -507,39 +500,28 @@ export function SessionTile({
       })
   }, [qc, archiving, session, toast, undoArchive])
 
+  // B5/T9.2 — variant A → the shared idiom. Same 4 s window and the same
+  // icon→confirm/cancel morph as before; what goes is the hand-rolled timer and
+  // its unmount cleanup, which every site had to reinvent.
+  const archiveArmed = useArmedConfirm({ onConfirm: commitArchive })
+  const archiveConfirm = archiveArmed.armed
+
   const onArchiveClick = React.useCallback(
     (e: React.MouseEvent | React.KeyboardEvent) => {
       // Never let the archive control's click bubble to the tile's onClick
       // (which navigates to focus view).
       e.stopPropagation()
-      if (!archiveConfirm) {
-        setArchiveConfirm(true)
-        // Auto-cancel the confirm after a few seconds so the tile doesn't sit in
-        // a half-armed state if the user moves on.
-        if (archiveConfirmTimer.current !== null) {
-          window.clearTimeout(archiveConfirmTimer.current)
-        }
-        archiveConfirmTimer.current = window.setTimeout(() => {
-          setArchiveConfirm(false)
-          archiveConfirmTimer.current = null
-        }, 4000)
-        return
-      }
-      commitArchive()
+      archiveArmed.press()
     },
-    [archiveConfirm, commitArchive],
+    [archiveArmed],
   )
 
   const cancelArchiveConfirm = React.useCallback(
     (e: React.MouseEvent | React.KeyboardEvent) => {
       e.stopPropagation()
-      setArchiveConfirm(false)
-      if (archiveConfirmTimer.current !== null) {
-        window.clearTimeout(archiveConfirmTimer.current)
-        archiveConfirmTimer.current = null
-      }
+      archiveArmed.cancel()
     },
-    [],
+    [archiveArmed],
   )
 
   // Computed BEFORE the early-return for `session.missing` so the type-on-hover
