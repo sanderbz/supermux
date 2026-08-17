@@ -765,6 +765,16 @@ pub async fn tick(
     let prev = detector.last_status();
     let new_status = detector.detect(&capture, last_pty, turn, has_hooks);
 
+    // THE FREEZE, reconciled with what is actually on the screen.
+    //
+    // The overwhelmingly common login is the one this app did not start: Claude
+    // Code hit an expired credential and the user typed `/login` into the
+    // terminal. A freeze that only existed for API-driven flows would leave
+    // exactly those sessions exposed to the auto-heal that kills the PKCE
+    // verifier they are holding. This tick already has the capture, so the
+    // reconciliation is one pure classification and no extra I/O.
+    super::login::observe(name, &capture);
+
     // last_capture writeback — ALWAYS (canonical preview source).
     db::sessions::set_last_capture(&state.pool, name, &capture, &capture_ansi).await?;
 

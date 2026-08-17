@@ -169,6 +169,8 @@ export interface ChatConversationProps {
   overlay?: readonly OverlayLine[]
   /** The P13 block — a slot, because it is the one child that talks to `/peek`. */
   provisional?: React.ReactNode
+  /** The sign-in card (AREA 3) — a slot, passed through to `LiveLayer`. */
+  login?: React.ReactNode
   /**
    * The LIVE composer (fase A4 T3) — a slot, for the same reason `provisional`
    * is one: it talks to the input plane and the peek lens, and this component
@@ -279,6 +281,7 @@ export function ChatConversation({
   turnStart,
   overlay,
   provisional,
+  login,
   composer,
   pending,
   attention = null,
@@ -334,6 +337,7 @@ export function ChatConversation({
     (pending?.length ?? 0) === 0 &&
     (overlay?.length ?? 0) === 0 &&
     !provisional &&
+    !login &&
     !dialog &&
     !dialogResolved &&
     !attention &&
@@ -524,6 +528,7 @@ export function ChatConversation({
             pinFor={pinFor}
             surface={phone ? 'phone' : 'desktop'}
             provisional={provisional}
+            login={login}
             dialog={dialog}
             dialogBusy={dialogBusy}
             onChooseDialog={onChooseDialog}

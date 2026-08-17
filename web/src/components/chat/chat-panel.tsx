@@ -51,6 +51,8 @@ import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
 import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
+import { LoginCard } from './login-card'
+import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
@@ -336,6 +338,16 @@ export default function ChatPanel({
   // through the normal send.
   const onFeedback = React.useCallback(() => focusComposer(name), [name])
   const dialog = useDialogAnswer({ peek, input: plane, onFeedback })
+
+  // ── Signing in (AREA 3) ────────────────────────────────────────────────────
+  // `/login` is the one needs-input state chat could not answer: it is pty-only
+  // (the transcript records the slash command and nothing else), so the READ has
+  // to be the same peek capture everything else on this surface reads. The
+  // WRITE is one POST per step, and the server freezes supervision for the
+  // duration — the PKCE verifier lives only inside the running process, so a
+  // heal or a scheduled fire landing mid-flow would invalidate the code the
+  // user is copying out of their browser at that moment.
+  const login = useLogin(name, peek.capture)
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
@@ -572,6 +584,22 @@ export default function ChatPanel({
       onOpenTerminal={onOpenTerminal}
       provisional={
         showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
+      }
+      login={
+        login.sighting && (
+          <LoginCard
+            sighting={login.sighting}
+            frozen={login.frozen}
+            busy={login.busy}
+            error={login.error}
+            onSubmitCode={login.submitCode}
+            onChooseMethod={login.chooseMethod}
+            onConfirm={login.confirm}
+            onCancel={login.cancel}
+            onOpenTerminal={onOpenTerminal}
+            surface={phone ? 'phone' : 'desktop'}
+          />
+        )
       }
       composer={
         <ChatComposer

@@ -575,10 +575,27 @@ pub fn mask_codes(text: &str) -> String {
 /// expire well inside it.
 pub const FREEZE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// How many consecutive login-free captures release a SCREEN-DRIVEN freeze.
+///
+/// One is not enough: the detector tick can land on a frame the TUI is halfway
+/// through redrawing, and releasing on that would open the window a redraw wide
+/// — precisely the window an auto-heal needs to kill the verifier. Two ticks is
+/// 2-10 s of "there is genuinely no login on this screen", and an explicit
+/// freeze (the one the API's `start` takes) is never released this way at all.
+const CLEAN_TICKS_TO_RELEASE: u8 = 2;
+
 #[derive(Debug, Clone)]
 struct Freeze {
     at: Instant,
     reason: &'static str,
+    /// Was this freeze taken because the SCREEN showed a login, rather than
+    /// because someone asked for one? Only a screen-driven freeze releases
+    /// itself when the screen clears; an explicit one waits for confirm/cancel
+    /// (or the TTL), because the flow may legitimately show nothing for a
+    /// moment between `/login` and the URL block.
+    screen_driven: bool,
+    /// Consecutive login-free captures seen since the last sighting.
+    clean: u8,
 }
 
 static FROZEN: once_cell::sync::Lazy<dashmap::DashMap<String, Freeze>> =
@@ -595,9 +612,53 @@ pub fn freeze(name: &str, reason: &'static str) {
         Freeze {
             at: Instant::now(),
             reason,
+            screen_driven: false,
+            clean: 0,
         },
     );
     tracing::info!(session = %name, reason, "login: supervision frozen");
+}
+
+/// Reconcile the freeze with what is actually ON THE SCREEN. Called once per
+/// detector tick with the capture that tick already took.
+///
+/// This is what makes the protection real for the login nobody asked this app
+/// for — the overwhelmingly common one, where Claude Code hit an expired
+/// credential and the user typed `/login` into the terminal themselves. A freeze
+/// that only existed for flows started through the API would leave exactly those
+/// sessions exposed to the heal that kills their verifier.
+pub fn observe(name: &str, capture: &str) {
+    if read_login(capture).is_some() {
+        match FROZEN.get_mut(name) {
+            Some(mut f) => {
+                f.at = Instant::now();
+                f.clean = 0;
+            }
+            None => {
+                FROZEN.insert(
+                    name.to_string(),
+                    Freeze {
+                        at: Instant::now(),
+                        reason: "login on screen",
+                        screen_driven: true,
+                        clean: 0,
+                    },
+                );
+                tracing::info!(session = %name, "login: supervision frozen — a login is on screen");
+            }
+        }
+        return;
+    }
+    let release = match FROZEN.get_mut(name) {
+        Some(mut f) if f.screen_driven => {
+            f.clean = f.clean.saturating_add(1);
+            f.clean >= CLEAN_TICKS_TO_RELEASE
+        }
+        _ => false,
+    };
+    if release {
+        unfreeze(name);
+    }
 }
 
 /// Release the session. Idempotent — the cancel path, the success path and the

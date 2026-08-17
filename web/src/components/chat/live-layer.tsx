@@ -133,6 +133,17 @@ export interface LiveLayerProps {
    */
   attention?: React.ReactNode
   /**
+   * The sign-in card (AREA 3), directly under Attention and above the permission
+   * card.
+   *
+   * ABOVE the permission card because it OUTRANKS it: while a login is up,
+   * nothing else on this session can proceed — the freeze refuses every other
+   * writer — so a permission prompt drawn beside it would be offering an action
+   * that cannot be taken. A slot for the same reason `attention` is one: it is
+   * driven by the peek lens and one POST, and this module fetches nothing.
+   */
+  login?: React.ReactNode
+  /**
    * The dialog the PEEK LENS is seeing, as data (fase A4 T7).
    *
    * The lens is the authority for *which* dialog and *where the caret is*; the
@@ -163,6 +174,7 @@ export function LiveLayer({
   surface,
   provisional,
   attention,
+  login,
   dialog,
   dialogBusy = null,
   onChooseDialog,
@@ -224,6 +236,7 @@ export function LiveLayer({
     >
       <LiveAnnouncer phase={phase} />
       {attention}
+      {login}
 
       {/* The lens' sighting outranks the hook: it is the one that knows which
           variant is on screen and where the caret is, which is what the answer
