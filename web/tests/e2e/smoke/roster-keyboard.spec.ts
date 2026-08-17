@@ -189,6 +189,59 @@ test.describe('roster keyboard + actions', () => {
     ).toHaveCount(0)
   })
 
+  test('Mark unread lights the row up, and the cursor survives the next load', async ({
+    page,
+  }) => {
+    // The two halves of "Mark unread is a no-op end to end":
+    //   (a) the RENDER — clicking the item must light the row up in this frame,
+    //       not on the next unrelated invalidation. Asserted on the row the
+    //       click acted on, with a short timeout, because "it appears when you
+    //       pin something else" is exactly what shipped.
+    //   (b) the STORAGE — the roster's prune effect split the NUL-joined roster
+    //       signature on a space, so `live` was one NUL-joined string that
+    //       matched no session name, every cursor was judged dead and the whole
+    //       map was rewritten to `{}` on the first render after boot.
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(backend.baseUrl)
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+
+    const row = page.locator(`[data-roving-item="${SESSIONS[0]}"]`)
+    const dot = row.locator('[data-vr="tile-attention-dot"]')
+    await expect(dot, 'the row starts quiet').toHaveCount(0)
+
+    await page
+      .locator(`[data-vr="tile-kebab"][data-vr-session-name="${SESSIONS[0]}"]`)
+      .click()
+    await page.getByRole('menuitem', { name: 'Mark unread' }).click()
+
+    await expect(dot, 'the dot arrives on the click, not on the next re-render').toHaveAttribute(
+      'data-attention-kind',
+      'unread',
+      { timeout: 2_000 },
+    )
+
+    // …and the cursor is still there after a reload — the prune must drop only
+    // cursors whose session is really gone.
+    await page.reload()
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+    await expect
+      .poll(
+        () =>
+          page.evaluate((name) => {
+            const raw = localStorage.getItem('supermux:seen')
+            if (!raw) return null
+            const map = JSON.parse(raw) as Record<string, { unread?: boolean }>
+            return map[name]?.unread ?? null
+          }, SESSIONS[0]),
+        { message: 'the prune keeps a live session’s cursor' },
+      )
+      .toBe(true)
+    await expect(dot, 'and the row is still unread after the reload').toHaveAttribute(
+      'data-attention-kind',
+      'unread',
+    )
+  })
+
   test('the Display popover offers only controls that decide something', async ({
     page,
   }) => {
