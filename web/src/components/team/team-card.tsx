@@ -212,10 +212,20 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
           No teammates yet.
         </div>
       ) : density === 'cards' ? (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        /* A LIST, like every other roster of colleagues (A6 T8.3 / G11-G12).
+           The team's agents were the one group of sessions sitting outside any
+           list, so AT was handed N untitled buttons with no count and no
+           boundary — measured as the 6 rows that made the roster's tabbable
+           total 38. */
+        <div
+          role="list"
+          aria-label={`${team.team_name} teammates`}
+          className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+        >
           <AnimatePresence initial={false}>
             {members.map((m) => (
               <motion.div
+                role="listitem"
                 key={m.agent_id}
                 layout={!reduce}
                 initial={reduce ? false : { opacity: 0, height: 0 }}
@@ -234,10 +244,15 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
           </AnimatePresence>
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div
+          role="list"
+          aria-label={`${team.team_name} teammates`}
+          className="flex flex-col gap-1.5"
+        >
           <AnimatePresence initial={false}>
             {members.map((m) => (
               <motion.div
+                role="listitem"
                 key={m.agent_id}
                 layout={!reduce}
                 initial={reduce ? false : { opacity: 0, height: 0 }}

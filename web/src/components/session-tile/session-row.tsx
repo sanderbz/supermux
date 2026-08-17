@@ -34,7 +34,8 @@ import { markStateFor } from '@/lib/mark-status'
 import { hasFact, type Tier } from '@/lib/fact-ladder'
 import { usePin } from '@/hooks/use-roster-marks'
 import { useRowAttention } from '@/hooks/use-attention'
-import { RosterRow } from '@/components/chat/ui'
+import { useRovingItem } from '@/hooks/use-roving'
+import { RosterRow, type AttentionKind } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import { STATUS_LABEL } from './status-dot'
 import { HostBadge } from './host-badge'
@@ -57,9 +58,23 @@ function relativeTime(updatedAt?: string): string {
   return `${Math.round(hrs / 24)}d ago`
 }
 
+/** The last non-blank line of the roster-wide tail — the session's own last
+ *  word, which is what the preview slot promises. Blank-trimmed from the END
+ *  because a captured pane is bottom-padded with empty rows, so the naive
+ *  `at(-1)` is almost always the empty string. */
+function lastPreviewLine(lines: readonly string[] | undefined): string | undefined {
+  if (!lines) return undefined
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim()
+    if (line) return line
+  }
+  return undefined
+}
+
 export interface SessionRowProps {
   session: TileSession
-  /** This row needs you — the attention tier's `needs` (fase B2 T5). */
+  /** This row needs you — the attention tier's `needs` (fase B2 T5). Omit to
+   *  let the row read its own tier (including the calm `unread` dot). */
   attention?: boolean
   /** The overview's density tier. Drives the FACT LADDER, not the geometry:
    *  tier 2 adds the preview line, tier 3 tokens, tier 4 tag chips. Defaults to
@@ -78,8 +93,13 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   const when = relativeTime(session.updated_at)
   const jumpIndex = useJumpIndex(session.name)
   const pin = usePin(session.name)
+  const roving = useRovingItem(session.name)
   const rowAttention = useRowAttention(session)
-  const showAttention = attention ?? rowAttention.dot
+  // `dotKind`, not the boolean: `unread` is the model's middle tier and it used
+  // to draw nothing at all, so a row that had spoken since you last looked was
+  // pixel-identical to a quiet one. `true` from a caller still means `needs`.
+  const showAttention: boolean | AttentionKind =
+    attention === true ? 'needs' : attention === false ? false : (rowAttention.dotKind ?? false)
 
   const goFocus = React.useCallback(
     () => navigateMorph(`/focus/${session.name}`),
@@ -90,16 +110,29 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   // `chat_tail` exists only while a chat store does (it is not roster-wide — see
   // `lib/attention-tiers.ts`), so this is `undefined` for most rows and the
   // status word below keeps the slot.
-  const preview =
-    hasFact('list', sizeTier, 'preview')
-      ? session.chat_tail?.agent?.trim() || session.chat_tail?.user?.trim() || undefined
-      : undefined
+  // `chat_tail` exists only while a chat STORE does, and a store is only spun up
+  // for a session somebody has open — a roster is by definition the list of
+  // sessions nobody has open, so on a real instance this was `undefined` for
+  // every row and tier 2 was byte-identical to tier 1. `preview_lines` is the
+  // roster-wide tail that is already on the wire for every row (it is what the
+  // tile draws), so it is the honest fallback: the session's own last line,
+  // which is what this slot promises.
+  const preview = hasFact('list', sizeTier, 'preview')
+    ? session.chat_tail?.agent?.trim() ||
+      session.chat_tail?.user?.trim() ||
+      lastPreviewLine(session.preview_lines) ||
+      undefined
+    : undefined
 
   // The secondary line at tier 1: the status word plus the branch, which is what
   // this row has always shown under the title. The ladder keeps both.
   const meta = (
     <span className="flex items-center gap-2">
-      {hasFact('list', sizeTier, 'statusLabel') && (
+      {/* ONE status channel per row. `waiting` is already spelled out by the
+          "Needs input" pill in the trailing cluster, so printing the ladder's
+          status word too made every blocked row say it twice — the loudest state
+          on the roster was also the only duplicated one. */}
+      {hasFact('list', sizeTier, 'statusLabel') && session.status !== 'waiting' && (
         <span className="shrink-0">{STATUS_LABEL[session.status]}</span>
       )}
       {hasFact('list', sizeTier, 'branch') && session.branch && (
@@ -183,6 +216,12 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
         ariaLabel={`${title} — ${STATUS_LABEL[session.status]}`}
         dataVr="session-row"
         onClick={goFocus}
+        tabIndex={roving.tabIndex}
+        buttonRef={roving.ref as React.Ref<HTMLButtonElement>}
+        onFocus={roving.onFocus}
+        onKeyDown={(e) => {
+          roving.onKeyDown(e)
+        }}
         className="border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
     </motion.div>

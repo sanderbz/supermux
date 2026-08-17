@@ -36,7 +36,10 @@ import {
 import { STATUS_LABEL } from './status-dot'
 import { SessionFace } from '@/components/roster/session-face'
 import { useRowAttention } from '@/hooks/use-attention'
+import { useRovingItem } from '@/hooks/use-roving'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
+import type { AttentionKind } from '@/components/chat/ui/roster-row'
+import { cn } from '@/lib/utils'
 import { ActivityLine, ErrorBadge } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { ChatTailPreview } from './chat-tail-preview'
@@ -225,8 +228,17 @@ export function SessionTile({
   // rendered several layers below whoever owns the roster, and the header
   // rollup must agree with the tile it points at. An explicit `attention` prop
   // (benches, fixtures) still wins.
+  const roving = useRovingItem(session.name)
+  const rovingRef = roving.ref
   const rowAttention = useRowAttention(session)
-  const showAttention = attention ?? rowAttention.dot
+  // `dotKind` and not just the boolean: `unread` is the model's middle tier and
+  // it used to be drawn nowhere at all, so a session that had spoken since you
+  // last looked was pixel-identical to a quiet one. An explicit `attention` prop
+  // (benches, fixtures) still wins, and `true` still means the red needs dot.
+  const attentionKind: AttentionKind | null =
+    attention === true ? 'needs' : attention === false ? null : rowAttention.dotKind
+  const showAttention = attentionKind !== null
+  const unreadCount = rowAttention.count
   const resolvedJumpIndex = jumpIndex ?? ctxJumpIndex
   const {
     idleLines: IDLE_LINES,
@@ -266,6 +278,17 @@ export function SessionTile({
   // Tile content width — the scale target for the zoomed live terminal. Tracked
   // with a ResizeObserver so the grid's responsive column count is respected.
   const cardRef = React.useRef<HTMLDivElement | null>(null)
+  // The card node is claimed twice: by the ResizeObserver below (live-terminal
+  // scale target) and by the roving list, which has to be able to FOCUS the tile
+  // it selects. Without the second claim the arrow keys move the tab stop and
+  // nothing visibly happens — the bug the roving e2e caught on its first run.
+  const setCardRef = React.useCallback(
+    (el: HTMLDivElement | null) => {
+      cardRef.current = el
+      rovingRef(el)
+    },
+    [rovingRef],
+  )
   const [cardWidth, setCardWidth] = React.useState(0)
   React.useEffect(() => {
     const el = cardRef.current
@@ -736,12 +759,23 @@ export function SessionTile({
       initial={false}
     >
       <motion.div
-        ref={cardRef}
+        ref={setCardRef}
         role="button"
-        tabIndex={0}
+        // ROVING TABINDEX (A6 T8.3, shipped for real). Inside a
+        // `<RovingListProvider>` exactly one tile in the list is `0` and the
+        // rest are `-1`, so a 40-session roster is ONE tab stop and the arrows
+        // choose the tile. Outside a provider `tabIndex` is `undefined` and the
+        // literal `0` below applies — every other call site is unchanged.
+        tabIndex={roving.tabIndex ?? 0}
+        data-roving-item={session.name}
+        onFocus={roving.onFocus}
         aria-label={`${title} — ${STATUS_LABEL[session.status]}`}
         onClick={fine ? goFocus : undefined}
         onKeyDown={(e) => {
+          // Navigation first, then activation: the roving handler consumes only
+          // arrows/Home/End and reports whether it did, so Enter/Space still
+          // open the session exactly as before.
+          if (roving.onKeyDown(e)) return
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             goFocus()
@@ -972,12 +1006,44 @@ export function SessionTile({
                     size={28}
                     className="mt-0.5"
                   />
-                  {showAttention && (
+                  {showAttention && !(attentionKind === 'unread' && unreadCount !== null) && (
                     <span
                       aria-hidden
-                      className="absolute -right-0.5 top-0 size-[7px] rounded-full ring-2 ring-card"
-                      style={{ background: ATTENTION_DOT.color }}
+                      data-vr="tile-attention-dot"
+                      data-attention-kind={attentionKind}
+                      className={cn(
+                        'absolute top-0 rounded-full ring-2 ring-card',
+                        // The unread dot is smaller and calmer than the needs
+                        // dot — a fact, not a demand — and nudged so both sit on
+                        // the same centre, or a row escalating unread → needs
+                        // would visibly jump.
+                        attentionKind === 'unread'
+                          ? 'right-0 size-[5px]'
+                          : '-right-0.5 size-[7px]',
+                      )}
+                      style={{
+                        background:
+                          attentionKind === 'unread'
+                            ? ATTENTION_DOT.unreadColor
+                            : ATTENTION_DOT.color,
+                      }}
                     />
+                  )}
+                  {/* The promised NUMBER. `Attention.count` has been on the wire
+                      since T5 (entry_count/epoch/last_entry_ts) and no surface
+                      read it, so the whole server change fed a function nothing
+                      consumed. It is `null` for every honest reason — no store,
+                      no epoch match, a counter that restarted — and then the dot
+                      above carries the news on its own. */}
+                  {attentionKind === 'unread' && unreadCount !== null && (
+                    <span
+                      data-vr="tile-unread-count"
+                      aria-label={`${unreadCount} unread`}
+                      className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none tabular-nums text-primary-foreground ring-2 ring-card"
+                      style={{ background: ATTENTION_DOT.unreadColor }}
+                    >
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
                   )}
                 </motion.span>
               )}
