@@ -22,12 +22,8 @@ import { springs } from '@/lib/springs'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { MemberStatusDot } from '@/components/team'
-import {
-  needsYouCount,
-  taskProgress,
-  type Team,
-  type TeamMember,
-} from '@/lib/api/teams'
+import { TeamRollupBadges } from '@/components/team/team-rollup-badges'
+import { type Team, type TeamMember } from '@/lib/api/teams'
 import { groupedPickerLayout } from './session-order'
 
 export interface SessionPickerSheetProps {
@@ -141,30 +137,22 @@ export function SessionPickerSheet({
   )
 }
 
-// ── Team header roll-up (mirrors the overview TeamCard language) ──────────────
+// ── Team header roll-up ──────────────────────────────────────────────────────
+//
+// B5/T12.3: this used to hand-roll the badges, under a comment that said it
+// "mirrors the overview TeamCard language" — which is the definition of drift,
+// written down and shipped. `TeamRollupBadges` was already the shared source for
+// the other two headers (the overview card and the focus strip), and its `strip`
+// density produced byte-identical markup to what was inlined here. Three
+// implementations become one; the third was never anything but a copy.
 
 function TeamPickerHeader({ team }: { team: Team }) {
-  const needs = needsYouCount(team)
-  const { done, total } = taskProgress(team)
-  const agentCount = team.members.length
   return (
     <header className="flex items-center gap-1.5 px-2 pb-1 pt-1">
       <h3 className="min-w-0 shrink truncate text-[12px] font-semibold tracking-tight">
         {team.team_name}
       </h3>
-      {needs > 0 ? (
-        <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
-          needs you · {needs}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-full bg-status-ready/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-ready">
-          done
-        </span>
-      )}
-      <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
-        {total > 0 && ` · ${done}/${total}`}
-      </span>
+      <TeamRollupBadges team={team} density="strip" />
     </header>
   )
 }

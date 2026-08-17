@@ -101,9 +101,18 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
 export function StatusDot({
   status,
   className,
+  label,
 }: {
   status: SessionStatus
   className?: string
+  /** Override the accessible label (B5/T12.2).
+   *
+   *  `MemberStatusDot` maps a TEAMMATE's status onto this vocabulary to reuse
+   *  the rendering, but a screen-reader user is being told about a teammate:
+   *  "Needs you" must not be announced as "Waiting". The mapping is a rendering
+   *  decision and must not leak into what the user is told. Omit it and the
+   *  session vocabulary is used, as everywhere else. */
+  label?: string
 }) {
   // ── Loading spinner (starting + active) — a PURE function of status ────────
   //
@@ -120,7 +129,7 @@ export function StatusDot({
     return (
       <span
         role="img"
-        aria-label={STATUS_LABEL[status]}
+        aria-label={label ?? STATUS_LABEL[status]}
         className={cn(
           'sm-status-spinner inline-block size-3 shrink-0 rounded-full border-2 border-transparent border-t-status-active',
           className,
@@ -143,7 +152,7 @@ export function StatusDot({
   return (
     <span
       role="img"
-      aria-label={STATUS_LABEL[status]}
+      aria-label={label ?? STATUS_LABEL[status]}
       className={cn(
         'size-2 shrink-0 rounded-full',
         STATUS_COLOR[status],

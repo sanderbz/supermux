@@ -1,20 +1,41 @@
-// MemberStatusDot — the leading status indicator for a teammate.
+// MemberStatusDot — a teammate's status, expressed in the app's ONE status
+// vocabulary (B5/T12.2).
 //
-// The teammate analogue of <StatusDot> (session-tile/status-dot.tsx), mapping the
-// derived MemberStatus → the SAME visual language the rest of the app uses,
-// so a teammate reads at a glance next to the lead's session tile:
-//   working  → amber spinner (reuses the `sm-status-spinner` keyframe — "busy,
-//              hang on", the only dot that moves; spins even under Reduce Motion
-//              because it's functional feedback, like StatusDot's loading state).
-//   needs_you→ STATIC blue disc (calm; the LOUD blue signal is the `needs you`
-//              pill on the chip trailing edge, never the dot — attention-first
-//              keeps exactly one loud token).
-//   idle     → STATIC green "ready" disc (turn ended, alive).
-//   offline  → dim neutral disc (no live pane / shut down).
+// ── What this used to be ────────────────────────────────────────────────────
+// A parallel implementation of `<StatusDot>`: its own four-state colour table,
+// its own spinner markup, its own sizes. Two components, one visual language,
+// and nothing keeping them in step — a token changed in `status-dot.tsx` simply
+// did not reach teammates, and a teammate's "idle" green could drift from a
+// session's "idle" green while both claimed to mean the same thing.
 //
-// Decorative + non-interactive (no 44pt rule). Footprint ≤ 14px.
+// ── What it is now ──────────────────────────────────────────────────────────
+// A thin ADAPTER. `MemberStatus` is a genuinely different domain — it is
+// derived from a team roster, not from the status detector — so the type stays.
+// What goes is the second renderer: the four states map onto the shipped
+// `SessionStatus` vocabulary and `<StatusDot>` draws them.
+//
+// Kept as a component rather than inlined at its six call sites for exactly the
+// reason §16.3 asks for an adapter: the MAPPING is the interesting part, and it
+// deserves one place to live and one place to argue with.
+//
+//   working   → active   the amber spinner. Both mean "busy, hang on", and both
+//                        rotate even under Reduce Motion — functional feedback,
+//                        not decoration. Same `sm-status-spinner` keyframe as
+//                        before, so this state is pixel-identical.
+//   needs_you → waiting  the static blue disc. Calm on purpose: the LOUD blue
+//                        signal is the `needs you` pill on the chip's trailing
+//                        edge, never the dot, so exactly one loud token exists
+//                        per row.
+//   idle      → idle     the green "ready" disc — turn ended, teammate alive.
+//   offline   → stopped  the muted grey reserved for "agent is off". A teammate
+//                        with no live pane and a stopped session are the same
+//                        fact, and were already drawn the same way by accident;
+//                        now they are the same by construction.
+//
+// Decorative + non-interactive (no 44pt rule). Footprint ≤ 14px, unchanged.
 
-import { cn } from '@/lib/utils'
+import { StatusDot } from '@/components/session-tile/status-dot'
+import type { SessionStatus } from '@/lib/api'
 import type { MemberStatus } from '@/lib/api/teams'
 
 const LABEL: Record<MemberStatus, string> = {
@@ -24,11 +45,12 @@ const LABEL: Record<MemberStatus, string> = {
   offline: 'Offline',
 }
 
-/** Static-disc colour token per non-working status (working renders the spinner). */
-const DISC_COLOR: Record<Exclude<MemberStatus, 'working'>, string> = {
-  needs_you: 'bg-status-waiting',
-  idle: 'bg-status-ready',
-  offline: 'bg-status-idle/60',
+/** The mapping, as data — the one thing this module still owns. */
+export const MEMBER_STATUS_TO_SESSION: Record<MemberStatus, SessionStatus> = {
+  working: 'active',
+  needs_you: 'waiting',
+  idle: 'idle',
+  offline: 'stopped',
 }
 
 export function MemberStatusDot({
@@ -38,26 +60,14 @@ export function MemberStatusDot({
   status: MemberStatus
   className?: string
 }) {
-  if (status === 'working') {
-    // Amber spinner — identical treatment to StatusDot's loading state so a
-    // working teammate looks exactly like a running session. Pure CSS animation
-    // (always rotates, incl. Reduce Motion: it's functional feedback).
-    return (
-      <span
-        role="img"
-        aria-label={LABEL.working}
-        className={cn(
-          'sm-status-spinner inline-block size-3 shrink-0 rounded-full border-2 border-transparent border-t-status-active',
-          className,
-        )}
-      />
-    )
-  }
   return (
-    <span
-      role="img"
-      aria-label={LABEL[status]}
-      className={cn('size-2 shrink-0 rounded-full', DISC_COLOR[status], className)}
+    <StatusDot
+      status={MEMBER_STATUS_TO_SESSION[status]}
+      className={className}
+      // The teammate's OWN word, not the session word it maps to. The mapping
+      // is a rendering decision; a screen-reader user is being told about a
+      // teammate, so "Needs you" must not become "Waiting".
+      label={LABEL[status]}
     />
   )
 }
