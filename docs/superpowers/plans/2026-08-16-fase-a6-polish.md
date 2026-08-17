@@ -1,3 +1,29 @@
+## Status (2026-08-17) — SHIPPED; the checkboxes below are history
+
+> **The whole Grok-UI program shipped.** Track A (A1–A6) and Track B (B0–B5) are on
+> `main`, together with the wave-1 follow-ups (#79–#85) and the session-state series
+> (#86–#89). Landing PRs: **A1 #57 · A5 #72 · A6 #76 · B1 #69 (+ #70 perf gate) ·
+> B2 #74 · B3 #75 · B4 #73 · B5 #78**. (A2–A4 landed earlier in the A-track sequence;
+> their PR numbers are deliberately not guessed here.)
+>
+> **The checkbox state below is historical, not authoritative.** These plans were
+> execution documents: boxes were ticked opportunistically while work was in flight,
+> so an unticked box does *not* mean unshipped, and a ticked box is not evidence that
+> the code exists (see the register's "finding 23 rule"). Nothing below has been
+> back-edited to match reality — this note is the only reconciliation.
+>
+> **The authority on what is actually done and what is still owed** is the debt
+> register snapshot committed alongside these plans:
+> [`debt-register-2026-08-17.md`](./debt-register-2026-08-17.md), which was verified
+> row-by-row against code on `origin/main`. That snapshot was generated at `6caafdf`
+> (#87), i.e. just before #88 and #89 merged, and it is the reason this banner exists:
+> the ledger and the code had drifted apart.
+>
+> **Stale-unchecked examples in this file:** **T3.1–T3.6** all shipped despite their
+> boxes being unticked. Read them as done unless the debt register says otherwise.
+
+---
+
 # Fase A6 — Polish & hardening (the last fase before the default flip)
 
 **Worktree** `/opt/projects/supermux-a6` · **branch** `feat/a6-polish`, off `origin/main` (`a7cc52c` = #74).
