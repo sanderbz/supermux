@@ -823,7 +823,15 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // session that is not an eligible local Claude one) ends the task.
         let row = match crate::db::sessions::get(&state.pool, &name).await {
             Ok(Some(row)) => row,
-            Ok(None) => break TailState::Stopped { reason: "session is gone", retry: false },
+            // Verbatim `CLOSE_REASON_NO_SESSION` so the client's `goneFor`
+            // recognises it and renders "This session no longer exists." — a
+            // generic phrasing here (the old "session is gone") closed 4404 but
+            // fell through `goneFor` to the flat "Couldn't load this
+            // conversation." over a session the user just deleted.
+            Ok(None) => break TailState::Stopped {
+                reason: super::ws::CLOSE_REASON_NO_SESSION,
+                retry: false,
+            },
             // A pool timeout / SQLITE_BUSY is NOT "the row was deleted".
             // Treating it as one killed the session's chat for good — the task
             // exited and nothing ever started another one for the open socket.
@@ -1729,7 +1737,7 @@ mod tests {
         // ping-ponging against a tail nobody maintains. The exit reason rides
         // the status channel instead — and says whether redialing helps.
         for (state, retry) in [
-            (TailState::Stopped { reason: "session is gone", retry: false }, false),
+            (TailState::Stopped { reason: crate::sessions::chat::ws::CLOSE_REASON_NO_SESSION, retry: false }, false),
             (TailState::Stopped { reason: "tail worker stopped", retry: true }, true),
         ] {
             let TailState::Stopped { reason, retry: got } = state else {

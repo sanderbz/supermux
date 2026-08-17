@@ -23,6 +23,7 @@
  */
 
 import type { ChatEntry } from './entries'
+import type { PtyNotice } from './peek-lens'
 
 export interface BlockedState {
   /** The uuid of the banner this state was decided on. */
@@ -67,6 +68,40 @@ export function blockedState(entries: readonly ChatEntry[]): BlockedState | null
  * send this" without "and here is when you can" is the half of the sentence
  * that makes a user reload the page.
  */
+/**
+ * The SECOND plane's block, in the shape the composer gate already speaks.
+ *
+ * `blockedState` only ever sees the TRANSCRIPT: a `kind:'blocked'` ChatEntry is
+ * produced from a parsed banner, never from the PTY lens. But a session can be
+ * limit-blocked with NO matching transcript line — Claude Code prints the wall
+ * on screen and the turn ends with an ordinary `Stop`, so the detector reports a
+ * green Idle and the transcript carries nothing. `peek-lens` catches exactly
+ * that as a `limit-blocked` `PtyNotice`, and the attention card + header chip
+ * already read it — but the composer gate did not, so the field stayed live and
+ * promised delivery into a bucket that is spent. This adapts the lens notice
+ * into the same `BlockedState` the composer already knows how to refuse on, so
+ * ONE gate covers both planes.
+ *
+ * Only `limit-blocked` maps: a `session-paused`/`turn-refused` notice is a
+ * different fact (a modal to answer, a dead turn) with its own card, not a
+ * "you cannot send" wall. `null` in → `null` out, so the caller can chain it
+ * behind the transcript plane with `??`.
+ */
+export function lensBlockedAsBlockedState(
+  notice: PtyNotice | null | undefined,
+): BlockedState | null {
+  if (!notice || notice.kind !== 'limit-blocked') return null
+  // The lens has no label/resets split — the transcript banner does. CC's own
+  // verbatim line carries the bucket AND its clock ("… weekly limit · resets
+  // …"), so it stands on its own as the label with no `resets` clause to join.
+  // A synthetic uuid marks the plane it came from; nothing keys off it.
+  return {
+    uuid: 'lens:limit-blocked',
+    label: notice.text,
+    text: notice.text,
+  }
+}
+
 export function blockedComposerNote(state: BlockedState): string {
   // Only the leading verb is lower-cased for the join — a blanket
   // `toLowerCase()` would eat the date and the timezone

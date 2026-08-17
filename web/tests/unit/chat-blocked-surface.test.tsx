@@ -11,7 +11,12 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { blockedComposerNote, blockedState } from '../../src/components/chat/blocked'
+import {
+  blockedComposerNote,
+  blockedState,
+  lensBlockedAsBlockedState,
+} from '../../src/components/chat/blocked'
+import type { PtyNotice } from '../../src/components/chat/peek-lens'
 import { attentionCopy, topAttention } from '../../src/components/chat/attention'
 import type { ChatEntry } from '../../src/components/chat/entries'
 import { toDisplayList } from '../../src/components/chat/entries'
@@ -73,6 +78,51 @@ describe('blockedState — the fact that outlives the turn', () => {
     // it knows.
     const credits = banner({ label: 'Usage credits', reply: undefined })
     expect(blockedComposerNote(blockedState([credits])!)).toBe('Usage credits')
+  })
+})
+
+describe('lensBlockedAsBlockedState — the SECOND plane the composer gate must read', () => {
+  // The states audit's residual: a session whose PTY shows the limit wall but
+  // whose TRANSCRIPT carries no `blocked` banner (the turn ended on an ordinary
+  // Stop). `blockedState` walks the transcript only, so it returns null and the
+  // composer stayed live — promising delivery into a spent bucket while the
+  // attention card and header chip already read the lens. This adapter is what
+  // lets the ONE composer gate cover both planes.
+  const limitNotice = (over: Partial<PtyNotice> = {}): PtyNotice => ({
+    kind: 'limit-blocked',
+    text: "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam)",
+    ...over,
+  })
+
+  test('a lens-only limit-blocked notice becomes a composer-gating block', () => {
+    const state = lensBlockedAsBlockedState(limitNotice())
+    expect(state).not.toBeNull()
+    // The verbatim CC line stands as the note — it already carries the bucket
+    // and the clock, and the lens has no label/resets split to join.
+    expect(blockedComposerNote(state!)).toBe(
+      "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam)",
+    )
+  })
+
+  test('only limit-blocked maps — a paused/refused notice is a different fact', () => {
+    // These have their own cards (a modal to answer, a dead turn); they are not
+    // a "you cannot send" wall, so they must NOT blank the composer.
+    expect(lensBlockedAsBlockedState(limitNotice({ kind: 'session-paused' }))).toBeNull()
+    expect(lensBlockedAsBlockedState(limitNotice({ kind: 'turn-refused' }))).toBeNull()
+    expect(lensBlockedAsBlockedState(null)).toBeNull()
+    expect(lensBlockedAsBlockedState(undefined)).toBeNull()
+  })
+
+  test('the transcript plane WINS when both planes see a block', () => {
+    // `chat-panel` feeds the gate `wireBlocked ?? lensBlockedAsBlockedState(...)`:
+    // the transcript banner carries the labelled/clocked split, so it is the
+    // richer sentence when present. The lens only fills the silence.
+    const wire = blockedState([banner()])
+    const chained = wire ?? lensBlockedAsBlockedState(limitNotice())
+    expect(chained).toBe(wire)
+    expect(blockedComposerNote(chained!)).toBe(
+      'Session limit · resets 4:40am (Europe/Amsterdam)',
+    )
   })
 })
 

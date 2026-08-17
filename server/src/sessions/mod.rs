@@ -1118,6 +1118,20 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // the archive path in lifecycle.rs.
     db::audit::log(&state.pool, "user", "session.delete", name, json!({})).await?;
 
+    // SYNCHRONOUS: broadcast a `sessions` delta with `removed: true` so every
+    // connected client drops the tile the instant the row is gone — the same
+    // mechanism `archive` uses (lifecycle.rs), but for a HARD delete. Without
+    // it `delete` broadcasts no removal at all (only wake_detector + a status
+    // re-send), so the frontend's `applyDelta` — which drops a row only on
+    // `archived`/`removed` — leaves the deleted session's tile, focus-header
+    // green Idle dot and enabled composer stale until an unrelated resync.
+    let _ = state.sse_tx.send(crate::state::SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({
+            "delta": [{ "name": name, "removed": true }],
+        }),
+    });
+
     // Nudge the per-session background loops to re-check their `exists_active`
     // guard immediately (detector via the wake handle; steering via a no-op
     // status-watch re-send), so they observe the deleted row and exit.

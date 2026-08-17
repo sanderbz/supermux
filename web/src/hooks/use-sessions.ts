@@ -70,14 +70,14 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
  *  delta rows keyed by `name`; unknown names are appended (a session created in
  *  another tab), known names are merged. A row carrying `missing: true` /
  *  `status: 'stopped'` stays in the list (the tile shows the right state) — we
- *  only drop rows the backend tells us are gone (`archived: true`) or the next
- *  full refetch removes.
+ *  only drop rows the backend tells us are gone (`archived: true` for a soft
+ *  archive, `removed: true` for a hard delete) or the next full refetch removes.
  *
  *  `allowAdd` gates the "append unknown name" branch: full `sessions` deltas
  *  may add (a session created in another tab); status-only deltas may NOT
  *  (otherwise a `stopped`-status event from a session we just optimistically
  *  removed via archive would re-add it — the archive bug). */
-function applyDelta(
+export function applyDelta(
   prev: ApiSession[] | undefined,
   delta: Partial<ApiSession>[],
   allowAdd: boolean,
@@ -91,8 +91,12 @@ function applyDelta(
     const idx = indexByName.get(row.name)
     // The backend broadcasts `archived: true` synchronously after flipping the
     // DB flag — drop the row immediately so every tab's overview updates
-    // without waiting for a refetch.
-    if (row.archived === true) {
+    // without waiting for a refetch. A hard DELETE broadcasts `removed: true`
+    // the same way (the row is gone from the DB, not just soft-archived): both
+    // mean "drop this tile now", so a deleted session's focus-header dot,
+    // roster tile and composer all clear at once instead of lingering as a
+    // green Idle until an unrelated focus/visibility/online resync.
+    if (row.archived === true || row.removed === true) {
       if (idx !== undefined) {
         list.splice(idx, 1)
         removed = true

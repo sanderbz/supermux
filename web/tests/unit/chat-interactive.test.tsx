@@ -26,7 +26,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatComposer } from '../../src/components/chat/composer'
 import { ChatConversation } from '../../src/components/chat/conversation'
-import type { PeekLens } from '../../src/components/chat/peek-lens'
+import type { PeekLens, PtyNotice } from '../../src/components/chat/peek-lens'
+import {
+  blockedComposerNote,
+  lensBlockedAsBlockedState,
+} from '../../src/components/chat/blocked'
 import type { PendingSend } from '../../src/components/chat/pending'
 import {
   composerSessionInput,
@@ -382,6 +386,37 @@ describe('the composer, live', () => {
     // …and the field is a REAL controlled input now, not a read-only prop.
     expect(html).toContain('data-testid="chat-composer-field"')
     expect(html).toContain('ship it')
+  })
+
+  test('a LENS-ONLY limit block gates the composer — readOnly, noted, un-sendable', () => {
+    // The states-audit residual: a session limit-blocked on the PTY/lens plane
+    // with NO matching transcript banner. `blockedState(entries)` returns null,
+    // so the OLD composer prop (`tail.gone ?? wireBlocked`) was undefined and the
+    // field stayed live — a paragraph typed into a spent bucket, with the
+    // positive-delivery promise. The gate now reads BOTH planes exactly as
+    // `chat-panel` wires it: `wireBlocked ?? lensBlockedAsBlockedState(lens)`.
+    const wireBlocked = null // transcript plane is silent
+    const lensBlocked: PtyNotice = {
+      kind: 'limit-blocked',
+      text: "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam)",
+    }
+    const gate = wireBlocked ?? lensBlockedAsBlockedState(lensBlocked)
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({ draft: 'a whole paragraph into nothing' })}
+        blocked={gate ? blockedComposerNote(gate) : undefined}
+      />,
+    )
+    // The strip appears with CC's own line…
+    expect(html).toContain('data-testid="chat-composer-blocked"')
+    expect(html).toContain('weekly limit')
+    // …the field is read-only, not merely disabled…
+    expect(html).toContain('readOnly=""')
+    expect(html).toContain('aria-disabled="true"')
+    // …and Send is refused even with a draft armed (canSend gates on `blocked`).
+    expect(html).not.toContain('data-testid="chat-send"')
   })
 
   test('Stop replaces the mic while the turn runs — same cell, no reflow', () => {

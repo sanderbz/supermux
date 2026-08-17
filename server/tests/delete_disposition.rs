@@ -138,6 +138,67 @@ async fn no_schedule_survives_its_session_delete() {
     );
 }
 
+/// A hard DELETE must BROADCAST its removal, not just mutate the DB.
+///
+/// The states-audit residual: `sessions::delete` flipped the row out of the DB
+/// but emitted no `sessions` removal delta, so every open tab kept the deleted
+/// session's tile — green "Idle" dot, selected in the roster, a live composer —
+/// until an unrelated focus/visibility/online resync. `archive` has always
+/// broadcast `{name, archived:true}`; the hard-delete twin now broadcasts
+/// `{name, removed:true}`, which the frontend's `applyDelta` drops on exactly
+/// like the archive flag. This is the failing test that fix was written against:
+/// without the broadcast, no `sessions` delta carrying `removed:true` ever
+/// reaches a subscriber.
+#[tokio::test]
+async fn delete_broadcasts_a_sessions_removal_delta() {
+    use std::time::Duration;
+
+    let (state, dir) = new_state().await;
+    db::sessions::create(&state.pool, &new_session("vanishing", &dir))
+        .await
+        .unwrap();
+
+    // Subscribe AFTER the create so the channel starts clean for the delete delta.
+    let mut rx = state.sse_tx.subscribe();
+
+    sessions::delete(&state, "vanishing").await.expect("delete");
+
+    // Drain up to ~2s: the delete's own detector/status re-sends may interleave;
+    // we only need the removal delta itself to reach subscribers.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_removed = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(ev)) if ev.event == "sessions" => {
+                let deltas = ev
+                    .payload
+                    .get("delta")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for d in deltas {
+                    let is_target =
+                        d.get("name").and_then(|n| n.as_str()) == Some("vanishing");
+                    let removed = d.get("removed").and_then(|a| a.as_bool()) == Some(true);
+                    if is_target && removed {
+                        saw_removed = true;
+                        break;
+                    }
+                }
+                if saw_removed {
+                    break;
+                }
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_removed,
+        "expected a `sessions` SSE delta with removed=true for the deleted session",
+    );
+}
+
 /// The same invariant on the purge path. `purge` is the only *user-facing*
 /// hard delete (the Archived sheet's "Delete forever"), so this is the one that
 /// actually happens in the wild.

@@ -213,6 +213,14 @@ export interface ApiSession {
    *  endpoint already filters archived rows out, so this flag only appears on
    *  the delta — clients drop the row from their cached list when they see it. */
   archived?: boolean
+  /** Set to `true` by the `sessions` SSE delta that announces a hard DELETE
+   *  (`sessions/mod.rs` delete broadcasts it synchronously after the row is
+   *  gone from the DB). Unlike `archived`, the row is DESTROYED — it will never
+   *  come back and appears in no archived-sessions view. Clients drop it from
+   *  their cached list the instant they see it, which is what makes a deleted
+   *  session's tile, focus-header dot and composer all clear at once instead of
+   *  lingering as a green Idle until an unrelated resync. */
+  removed?: boolean
   /** Live "current activity" line derived from the latest `PreToolUse` hook
    *  PAYLOAD (hooks-10x): a short emoji-prefixed label like `✎ tile.tsx` /
    *  `⚡ npm test`. In-memory only server-side (never persisted); present while

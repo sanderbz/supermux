@@ -34,7 +34,7 @@ import { useRosterMarks } from '@/hooks/use-roster-marks'
 import { claimChatSurface } from '@/lib/live-region-owner'
 
 import { detailFor, topAttention } from './attention'
-import { blockedComposerNote, blockedState } from './blocked'
+import { blockedComposerNote, blockedState, lensBlockedAsBlockedState } from './blocked'
 import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
 import { CHAT_GONE, isPlaneDown } from './connection'
@@ -513,6 +513,14 @@ export default function ChatPanel({
   // is dead and it looked like a transient API error.
   const lensPaused = peek.lens.notice?.kind === 'session-paused' ? peek.lens.notice : null
   const lensRefused = peek.lens.notice?.kind === 'turn-refused' ? peek.lens.notice : null
+  // The composer gate reads BOTH planes. The transcript-plane block
+  // (`wireBlocked`) is the richer sentence when present — it carries the
+  // labelled bucket and its clock — so it wins; the PTY lens' own
+  // `limit-blocked` sighting fills the silence when the transcript shows none
+  // (the turn ended on an ordinary Stop, so no banner was ever written). Wiring
+  // only `wireBlocked` was the half-fix: the attention card + header read the
+  // lens, but the composer stayed live and promised delivery into a spent bucket.
+  const composerBlock = wireBlocked ?? lensBlockedAsBlockedState(lensBlocked)
   const attention = topAttention([
     lensPaused ? ('session-paused' as const) : null,
     wireBlocked ? ('agent-blocked' as const) : null,
@@ -695,11 +703,13 @@ export default function ChatPanel({
           // active, or anything else — and an enabled composer over a deleted
           // session invites someone to type a paragraph into nothing. This is
           // the same slot, so the surface still says exactly one thing.
+          // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE (there is no session left
+          // to block); otherwise the both-planes `composerBlock` decides.
           blocked={
             tail.gone !== null
               ? CHAT_GONE[tail.gone].detail
-              : wireBlocked
-                ? blockedComposerNote(wireBlocked)
+              : composerBlock
+                ? blockedComposerNote(composerBlock)
                 : undefined
           }
           onOpenTerminal={onOpenTerminal}
