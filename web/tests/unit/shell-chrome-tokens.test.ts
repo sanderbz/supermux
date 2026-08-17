@@ -246,3 +246,68 @@ describe('motion bank — exits are always faster than entries', () => {
     expect(springs.settle.damping).toBe(30)
   })
 })
+
+/**
+ * Header grammar (B1 §2), asserted against the SOURCE of every header rather
+ * than the token block alone.
+ *
+ * The gap this closes: `border-hairline` (the warm 0.086-alpha separator) landed
+ * on Overview and Settings, while Files, the focus pane header, the file viewer
+ * and the teammate panes kept the pre-B1 `border-border` — a COOL
+ * rgb(56,56,58) line drawn on a warm substrate, one route apart from the
+ * correct one. And the focus header hard-coded `h-11` instead of resolving
+ * `--sm-toolbar-min-h-compact`, so the documented "never a fixed height, always
+ * floor + additive pt-safe" contract was false in the one place it was proven.
+ */
+describe('header grammar — one separator, one height source', () => {
+  const HEADER_FILES = [
+    'src/routes/overview.tsx',
+    'src/routes/settings.tsx',
+    'src/routes/files.tsx',
+    'src/components/files/file-viewer.tsx',
+    'src/components/focus-mode/focus-header.tsx',
+    'src/components/focus-mode/teammate-pane.tsx',
+    'src/components/team/teammate-focus.tsx',
+    'src/components/shell/shell-overlay.tsx',
+  ]
+
+  /** Every className string in `file` that opts into the header contract. */
+  function headerClassNames(file: string): string[] {
+    // Comments first: prose apostrophes ("the route's header") would otherwise
+    // open a phantom string literal and swallow the real className after it.
+    const src = readFileSync(
+      fileURLToPath(new URL(`../../${file}`, import.meta.url)),
+      'utf8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    return (src.match(/'[^'\n]*safe-header[^'\n]*'|"[^"\n]*safe-header[^"\n]*"/g) ?? [])
+      .map((s) => s.slice(1, -1))
+  }
+
+  test('every header opts into the safe-header contract (guards a dead test)', () => {
+    for (const file of HEADER_FILES) {
+      expect(headerClassNames(file).length, file).toBeGreaterThan(0)
+    }
+  })
+
+  test('no header draws the cool border-border separator', () => {
+    const offenders: string[] = []
+    for (const file of HEADER_FILES) {
+      for (const cls of headerClassNames(file)) {
+        if (/\bborder-border\b/.test(cls)) offenders.push(`${file}: ${cls}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  test('no header hard-codes its height', () => {
+    const offenders: string[] = []
+    for (const file of HEADER_FILES) {
+      for (const cls of headerClassNames(file)) {
+        if (/\bh-\d+(\.\d+)?\b/.test(cls)) offenders.push(`${file}: ${cls}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})

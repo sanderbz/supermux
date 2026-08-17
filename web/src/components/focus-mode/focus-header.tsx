@@ -126,7 +126,7 @@ export function DesktopFocusHeader({
     provider === 'claude' || provider === 'codex' || provider === 'kimi'
   return (
     <header
-      className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
+      className="glass safe-header-compact flex shrink-0 items-center gap-2.5 border-b border-hairline px-3"
       // Shared-element View Transition target: carries the SAME
       // `view-transition-name` as the session's overview tile, so the tile
       // morphs into this header bar on navigate (Chromium). No-op elsewhere.

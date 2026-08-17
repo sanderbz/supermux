@@ -267,15 +267,15 @@
    subtree wins over the ancestor `.dark` regardless of source order. */
 :root,
 [data-theme='light'] {
-  --sm-paper: #faf7f4;              /* the page the whole app sits on */
+  --sm-paper: #f4f0ec;              /* the page the whole app sits on */
   --sm-paper-raised: #fdfbf9;       /* conversation pane — above the paper */
   --sm-surface: rgba(255, 253, 251, 0.86); /* raised glass: bars, composer */
   --sm-bubble-agent: #f1ece8;       /* fixed warm neutral — never accent-tinted */
   --sm-bubble-user: #1c1917;
   --sm-bubble-user-ink: #f7f3ef;
   --sm-ink: #1c1917;
-  --sm-ink-2: #79716b;
-  --sm-ink-3: #a8a09a;
+  --sm-ink-2: #5c5651;
+  --sm-ink-3: #736c66;
   --sm-hairline: rgba(28, 20, 10, 0.09);
   --sm-hairline-soft: rgba(28, 20, 10, 0.05);
   --sm-fill-soft: rgba(28, 20, 10, 0.045);
@@ -304,7 +304,7 @@
   --sm-bubble-user-ink: #1c1917;
   --sm-ink: #f5f1ec;
   --sm-ink-2: #a8a29b;
-  --sm-ink-3: #7d766f;
+  --sm-ink-3: #918a83;
   --sm-hairline: rgba(255, 246, 235, 0.085);
   --sm-hairline-soft: rgba(255, 246, 235, 0.055);
   --sm-fill-soft: rgba(255, 246, 235, 0.06);

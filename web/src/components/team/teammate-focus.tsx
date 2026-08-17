@@ -62,7 +62,7 @@ export function TeammateFocus({
     >
       {/* Glass header — chevron-back, colour rail + status + name, team subtitle.
           safe-header packages the top safe-area inset (notch / Dynamic Island). */}
-      <header className="safe-header glass z-10 flex items-center gap-2 border-b border-border/60 px-2">
+      <header className="safe-header glass z-10 flex items-center gap-2 border-b border-hairline px-2">
         <button
           type="button"
           aria-label="Back to overview"

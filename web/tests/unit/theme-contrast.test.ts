@@ -34,10 +34,36 @@ const css = readFileSync(
   'utf8',
 ).replace(/\/\*[\s\S]*?\*\//g, '')
 
-/** The `:root` (light) block — everything before `.dark {`. */
-const lightBlock = css.slice(css.indexOf(':root {'), css.indexOf('.dark {'))
-/** The `.dark {` block. */
-const darkBlock = css.slice(css.indexOf('.dark {'), css.indexOf('}', css.indexOf('.dark {')))
+/**
+ * Concatenate every top-level rule whose selector list names a theme. The
+ * tokens are spread over several blocks (`:root`, `:root, [data-theme='light']`,
+ * `.dark, [data-theme='dark']`, plus theme-independent `:root` blocks at the
+ * file tail), so slicing "everything before .dark" would silently miss half of
+ * them — and a token this test cannot find is a token it cannot guard.
+ */
+function themeBlocks(match: (selector: string) => boolean): string {
+  const out: string[] = []
+  let i = 0
+  while (i < css.length) {
+    const open = css.indexOf('{', i)
+    if (open === -1) break
+    const selector = css.slice(css.lastIndexOf('}', open) + 1, open).trim()
+    let depth = 1
+    let j = open + 1
+    for (; j < css.length && depth > 0; j++) {
+      if (css[j] === '{') depth++
+      else if (css[j] === '}') depth--
+    }
+    if (match(selector)) out.push(css.slice(open + 1, j - 1))
+    i = j
+  }
+  return out.join('\n')
+}
+
+const lightBlock = themeBlocks(
+  (sel) => /(^|,)\s*:root\s*(,|$)/.test(sel) || sel.includes("[data-theme='light']"),
+)
+const darkBlock = themeBlocks((sel) => /(^|,)\s*\.dark\s*(,|$)/.test(sel))
 
 function declaration(block: string, name: string): string {
   const m = block.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))
@@ -175,5 +201,106 @@ describe('clampToLightSurface — the untokenisable colour spaces', () => {
       const [r, g, b] = clampToLightSurface(...rgb).match(/\d+/g)!.map(Number)
       expect(contrastOnWhite(r, g, b)).toBeGreaterThanOrEqual(AA_TEXT)
     }
+  })
+})
+
+/** Contrast ratio between two hex colours. */
+function ratio(a: string, b: string): number {
+  const la = contrastOnWhite(...hexToRgb(a))
+  const lb = contrastOnWhite(...hexToRgb(b))
+  // contrastOnWhite(c) = 1.05 / (L(c) + 0.05) ⇒ L(c) = 1.05/r − 0.05.
+  const L = (r: number) => 1.05 / r - 0.05
+  const [hi, lo] = [Math.max(L(la), L(lb)), Math.min(L(la), L(lb))]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * The ink ladder's tertiary step failed AA in BOTH themes — dark #7d766f on
+ * #201f1d = 3.68:1, light #a8a09a on #fdfbf9 = 2.49:1 — while carrying real
+ * 10–11.5px metadata: palette section headers, the "cloud · manage" subtitle,
+ * the light mobile tab-bar active label. Light ink-2 was itself only at 4.64:1,
+ * so ink-3 could not simply be darkened past it without collapsing the ladder
+ * into two indistinguishable steps; both light steps moved together.
+ */
+describe('the ink ladder is legible at every step', () => {
+  const surfaces = { light: ['#fdfbf9', '#f4f0ec'], dark: ['#201f1d', '#1a1a18'] }
+
+  for (const theme of ['light', 'dark'] as const) {
+    const block = theme === 'light' ? lightBlock : darkBlock
+    for (const step of ['--sm-ink', '--sm-ink-2', '--sm-ink-3'] as const) {
+      test(`${theme} ${step} clears 4.5:1 on both paper steps`, () => {
+        const ink = declaration(block, step)
+        for (const bg of surfaces[theme]) {
+          expect(ratio(ink, bg), `${step} on ${bg}`).toBeGreaterThanOrEqual(AA_TEXT)
+        }
+      })
+    }
+
+    test(`${theme} ink → ink-2 → ink-3 is still a LADDER`, () => {
+      // Each step must be visibly weaker than the one above it, or the fix has
+      // merely flattened three tiers into one.
+      const bg = surfaces[theme][0]
+      const steps = ['--sm-ink', '--sm-ink-2', '--sm-ink-3'].map((s) =>
+        ratio(declaration(block, s), bg),
+      )
+      expect(steps[0]).toBeGreaterThan(steps[1] * 1.4)
+      expect(steps[1]).toBeGreaterThan(steps[2] * 1.2)
+    })
+  }
+})
+
+/**
+ * The tinted-columns DNA: the rail sits one step below the content column. In
+ * dark that step was 6/255; in light it was 3/255 (~1.2%), i.e. invisible — the
+ * light theme read as one flat white sheet.
+ */
+describe('the substrate step reads in both themes', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${theme} paper → paper-raised is at least 6/255 per channel`, () => {
+      const block = theme === 'light' ? lightBlock : darkBlock
+      const rail = hexToRgb(declaration(block, '--sm-paper'))
+      const content = hexToRgb(declaration(block, '--sm-paper-raised'))
+      const deltas = rail.map((v, i) => Math.abs(content[i] - v))
+      // The dark ladder — the one that reads correctly — is (6, 5, 5). Light was
+      // (3, 4, 5), i.e. ~1.2%: a flat white sheet with no visible rail.
+      expect(Math.max(...deltas), 'strongest channel step').toBeGreaterThanOrEqual(6)
+      expect(Math.min(...deltas), 'weakest channel step').toBeGreaterThanOrEqual(5)
+    })
+  }
+})
+
+/**
+ * `index.html` used to carry a single hard-coded `theme-color` (#0a0a0a) and no
+ * inline theme bootstrap: a light-theme user got dark browser chrome and a dark
+ * PWA splash, and the `.dark`/`.light` class only landed once main.tsx parsed.
+ */
+describe('the document bootstraps its own theme', () => {
+  const html = readFileSync(
+    fileURLToPath(new URL('../../index.html', import.meta.url)),
+    'utf8',
+  )
+
+  test('theme-color has a light and a dark media variant', () => {
+    expect(html).toContain('media="(prefers-color-scheme: dark)"')
+    expect(html).toContain('media="(prefers-color-scheme: light)"')
+  })
+
+  test('an inline script applies the stored theme before the bundle', () => {
+    const head = html.slice(0, html.indexOf('</head>'))
+    expect(head).toContain("localStorage.getItem('supermux-theme')")
+    expect(head).toContain('colorScheme')
+    // It must run BEFORE the module that would otherwise own first paint.
+    expect(html.indexOf("localStorage.getItem('supermux-theme')")).toBeLessThan(
+      html.indexOf('src/main.tsx'),
+    )
+  })
+
+  test('the bootstrap mirrors the provider — same key, same dark default', () => {
+    const provider = readFileSync(
+      fileURLToPath(new URL('../../src/components/theme-provider.tsx', import.meta.url)),
+      'utf8',
+    )
+    expect(provider).toContain("const STORAGE_KEY = 'supermux-theme'")
+    expect(provider).toContain("return 'dark' // dark default")
   })
 })

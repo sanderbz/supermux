@@ -50,6 +50,33 @@ interface AnchorRect {
 
 const CARD_W = 280
 const GAP = 12 // px between anchor and card
+/** Minimum breathing room between the card and the viewport edge, ON TOP of the
+ *  device's safe-area inset. */
+const EDGE = 12
+/** Only used for the no-anchor fallback's vertical centring. */
+const CARD_H_ESTIMATE = 220
+/** A side has "room" once it can show the card without scrolling its body. */
+const MIN_FIT = 200
+
+/** The device's safe-area insets in px. Evaluated by the engine rather than
+ *  guessed: a throwaway fixed element is given `env()` paddings and its computed
+ *  style read back. 0 on every desktop browser, ~47–59px top on a notched iPhone
+ *  in standalone. Measured per call — the tour mounts once, and rotation changes
+ *  the answer. */
+function safeInsets(): { top: number; bottom: number } {
+  if (typeof document === 'undefined') return { top: 0, bottom: 0 }
+  const probe = document.createElement('div')
+  probe.style.cssText =
+    'position:fixed;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)'
+  document.body.appendChild(probe)
+  const cs = getComputedStyle(probe)
+  const insets = {
+    top: Number.parseFloat(cs.paddingTop) || 0,
+    bottom: Number.parseFloat(cs.paddingBottom) || 0,
+  }
+  probe.remove()
+  return insets
+}
 
 /** Measure the anchor element; re-measures on resize + scroll so the card
  *  tracks it. Returns `null` until measured (or if the anchor is absent).
@@ -101,43 +128,80 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(Math.max(n, lo), hi)
 }
 
-/** Compute the card's fixed-position style + pointer placement from the anchor
- *  rect. Falls back to screen-centre when no anchor was found. */
+/**
+ * Compute the card's fixed-position style from the anchor rect. Falls back to
+ * screen-centre when no anchor was found.
+ *
+ * VIEWPORT COLLISION IS THE POINT, and it is solved WITHOUT measuring the card.
+ * The earlier version parked a `top`-placed card by its BOTTOM edge
+ * (`bottom: vh - top`) and clamped only the anchor-derived coordinate, so a card
+ * taller than the space above its anchor grew straight off the screen. Measured:
+ * tour step 3 (Settings, placement 'top') landed at top −24.3 at 1440×900 and
+ * −13.0 at 1280×700 — the dismiss ✕ clipped away, the tip covering the page
+ * title.
+ *
+ * The rule now: pick the side of the anchor with room (the requested one when it
+ * has at least `MIN_FIT`, otherwise the roomier one), then hand the card a
+ * `maxHeight` equal to the space actually available on that side. The card is
+ * on-screen BY CONSTRUCTION rather than by a height guess that goes stale the
+ * moment the copy changes — and long copy scrolls inside the card instead of
+ * escaping the viewport. Bounds include the device safe-area insets, so a
+ * notched iPhone never puts the ✕ under the Dynamic Island.
+ */
 function position(
   rect: AnchorRect | null,
   placement: TipPlacement,
 ): { style: React.CSSProperties; centred: boolean } {
   const vw = window.innerWidth
   const vh = window.innerHeight
+  const insets = safeInsets()
+  const top0 = EDGE + insets.top // highest the card may reach
+  const bottom0 = vh - EDGE - insets.bottom // lowest the card may reach
+  const minLeft = EDGE
+  const maxLeft = Math.max(minLeft, vw - EDGE - CARD_W)
+
   if (!rect) {
     return {
       style: {
-        left: clamp(vw / 2 - CARD_W / 2, 12, vw - CARD_W - 12),
-        top: Math.min(vh / 2, vh - 220),
+        left: clamp(vw / 2 - CARD_W / 2, minLeft, maxLeft),
+        top: clamp(vh / 2 - CARD_H_ESTIMATE / 2, top0, Math.max(top0, bottom0)),
+        maxHeight: Math.max(0, bottom0 - top0),
       },
       centred: true,
     }
   }
+
+  const spaceAbove = rect.top - GAP - top0
+  const spaceBelow = bottom0 - (rect.top + rect.height + GAP)
+  const wants = placement === 'top' || placement === 'left' ? 'above' : 'below'
+  const side =
+    wants === 'above'
+      ? spaceAbove >= MIN_FIT || spaceAbove >= spaceBelow
+        ? 'above'
+        : 'below'
+      : spaceBelow >= MIN_FIT || spaceBelow >= spaceAbove
+        ? 'below'
+        : 'above'
+
   let left = rect.left + rect.width / 2 - CARD_W / 2
-  let top = rect.top + rect.height + GAP
-  if (placement === 'top') top = rect.top - GAP
-  if (placement === 'left') {
-    left = rect.left - CARD_W - GAP
-    top = rect.top + rect.height / 2
-  }
-  if (placement === 'right') {
-    left = rect.left + rect.width + GAP
-    top = rect.top + rect.height / 2
-  }
-  // Keep the whole card on screen.
-  left = clamp(left, 12, vw - CARD_W - 12)
-  top = clamp(top, 12, vh - 220)
-  // `top`/`left` placements grow downward/rightward from the parked corner;
-  // `bottom`/`top` keep the card edge against the gap.
+  if (placement === 'left') left = rect.left - CARD_W - GAP
+  if (placement === 'right') left = rect.left + rect.width + GAP
+
   const style: React.CSSProperties =
-    placement === 'top'
-      ? { left, bottom: vh - top }
-      : { left, top }
+    side === 'above'
+      ? {
+          left: clamp(left, minLeft, maxLeft),
+          // Anchored by its BOTTOM edge, but bounded: `maxHeight` is exactly the
+          // room between the safe top and the anchor, so the top edge cannot
+          // cross `top0`.
+          bottom: vh - (rect.top - GAP),
+          maxHeight: Math.max(0, spaceAbove),
+        }
+      : {
+          left: clamp(left, minLeft, maxLeft),
+          top: rect.top + rect.height + GAP,
+          maxHeight: Math.max(0, spaceBelow),
+        }
   return { style, centred: false }
 }
 
@@ -169,7 +233,8 @@ export function FloatingTip({
       transition={reduce ? { duration: 0.14 } : springs.cardExpand}
       style={{ position: 'fixed', width: CARD_W, ...style }}
       className={cn(
-        'z-[80] rounded-2xl border border-border bg-card p-4 shadow-xl',
+        'z-[80] overflow-y-auto overscroll-contain rounded-2xl border border-hairline',
+        'bg-card p-4 shadow-xl',
         'pointer-events-auto',
       )}
     >

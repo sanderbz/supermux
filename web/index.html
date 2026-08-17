@@ -19,9 +19,56 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <!-- Brand splash color: kept identical to manifest background_color
-         and globals.css --background so the PWA splash has no flash of white. -->
-    <meta name="theme-color" content="#0a0a0a" />
+    <!-- Browser chrome / PWA splash colour. The dark value is kept identical to
+         manifest background_color and globals.css --background so the PWA splash
+         has no flash of white. It used to be the ONLY value, which handed a
+         light-theme user dark browser chrome and a dark splash; the two media
+         variants below are the no-JS answer, and the bootstrap script prepends a
+         media-less meta carrying the user's ACTUAL choice (which need not match
+         the OS preference) — the first matching meta wins, so that one does. -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#0a0a0a"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#ffffff"
+    />
+    <!-- Theme bootstrap. Runs before the app bundle so the FIRST paint is
+         already in the user's theme: <html> gets the class and color-scheme that
+         <ThemeProvider> would otherwise apply only once main.tsx has parsed.
+         Deliberately a mirror, not a second source of truth — same storage key,
+         same 'dark' default as components/theme-provider.tsx, which re-applies
+         the identical result at module-eval time.
+         Pinned by tests/unit/theme-contrast.test.ts. -->
+    <script>
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('supermux-theme')
+          var systemDark = matchMedia('(prefers-color-scheme: dark)').matches
+          var t =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : stored === 'system'
+                ? systemDark
+                  ? 'dark'
+                  : 'light'
+                : 'dark'
+          var root = document.documentElement
+          root.classList.remove('light', 'dark')
+          root.classList.add(t)
+          root.style.colorScheme = t
+          var meta = document.createElement('meta')
+          meta.setAttribute('name', 'theme-color')
+          meta.setAttribute('content', t === 'dark' ? '#0a0a0a' : '#ffffff')
+          document.head.insertBefore(meta, document.head.firstChild)
+        } catch (e) {
+          /* private mode / no localStorage — the media metas still apply */
+        }
+      })()
+    </script>
     <!-- Apple PWA meta -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />

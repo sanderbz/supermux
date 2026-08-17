@@ -99,7 +99,7 @@ export function FileViewer({
           rather than eating into a fixed 56px — otherwise the back button, filename
           and actions are squished under the Dynamic Island in the iOS standalone
           PWA. Desktop resets pt-safe (sm:pt-0), where min-h-14 == h-14. */}
-      <header className="glass flex min-h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0">
+      <header className="glass safe-header flex shrink-0 items-center gap-1 border-b border-hairline px-2 sm:pt-0">
         <button
           type="button"
           onClick={onBack}

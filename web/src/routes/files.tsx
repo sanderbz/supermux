@@ -190,7 +190,7 @@ export function Files() {
           hidden on mobile and the viewer below carries the inset instead. */}
       <header
         className={cn(
-          'glass safe-header shrink-0 items-center gap-1 border-b border-border px-2 sm:pt-0',
+          'glass safe-header shrink-0 items-center gap-1 border-b border-hairline px-2 sm:pt-0',
           selected ? 'hidden md:flex' : 'flex',
         )}
       >

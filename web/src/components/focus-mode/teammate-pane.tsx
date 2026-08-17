@@ -35,7 +35,7 @@ export function TeammatePane({ team, member }: TeammatePaneProps) {
       {/* Header — mirrors DesktopFocusHeader geometry (glass, h-11) but carries
           the teammate identity + the read-only affordance instead of Detach/Stop
           (a read-only teammate has nothing to detach or stop). */}
-      <header className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3">
+      <header className="glass safe-header-compact flex shrink-0 items-center gap-2.5 border-b border-hairline px-3">
         <span
           aria-hidden
           className="h-5 w-[2px] shrink-0 rounded-full"

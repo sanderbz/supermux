@@ -89,15 +89,15 @@ export interface PaperLadder {
 /** The ladder, per theme. Keys match `[data-theme='…']` in globals.css. */
 export const PAPER: { readonly light: PaperLadder; readonly dark: PaperLadder } = {
   light: {
-    paper: '#faf7f4',
+    paper: '#f4f0ec',
     paperRaised: '#fdfbf9',
     surface: 'rgba(255, 253, 251, 0.86)',
     bubbleAgent: '#f1ece8',
     bubbleUser: '#1c1917',
     bubbleUserInk: '#f7f3ef',
     ink: '#1c1917',
-    ink2: '#79716b',
-    ink3: '#a8a09a',
+    ink2: '#5c5651',
+    ink3: '#736c66',
     hairline: 'rgba(28, 20, 10, 0.09)',
     hairlineSoft: 'rgba(28, 20, 10, 0.05)',
     fillSoft: 'rgba(28, 20, 10, 0.045)',
@@ -119,7 +119,7 @@ export const PAPER: { readonly light: PaperLadder; readonly dark: PaperLadder } 
     bubbleUserInk: '#1c1917',
     ink: '#f5f1ec',
     ink2: '#a8a29b',
-    ink3: '#7d766f',
+    ink3: '#918a83',
     hairline: 'rgba(255, 246, 235, 0.085)',
     hairlineSoft: 'rgba(255, 246, 235, 0.055)',
     fillSoft: 'rgba(255, 246, 235, 0.06)',
