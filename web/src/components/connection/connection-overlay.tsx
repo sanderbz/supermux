@@ -38,6 +38,7 @@ import {
   type ConnectionStatus,
 } from '@/hooks/use-connection-status'
 import { isOverlayState } from '@/stores/api-status-store'
+import { useChatSurfaceMounted } from '@/lib/live-region-owner'
 
 interface VisualSpec {
   Icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>
@@ -186,7 +187,24 @@ function OverlayBody({ visual, status, onCta }: OverlayBodyProps) {
  */
 export function ConnectionOverlay() {
   const status = useConnectionStatus()
-  const visible = isOverlayState(status.kind)
+  // THE CURTAIN STANDS DOWN FOR THE CHAT SURFACE.
+  //
+  // The chat plane's documented contract is that an outage never blanks what is
+  // on screen: the transcript stays, under a chip that says it is not current.
+  // This overlay is `fixed inset-0 z-[60]`, so during a total backend outage it
+  // covered that chip ~416 ms in and the promise became false — measured with
+  // `elementFromPoint`, which is the only way to see it, since Playwright's
+  // `toBeVisible()` ignores occlusion and the spec that tests this scenario
+  // stayed green throughout.
+  //
+  // When a chat surface is mounted it already tells the whole story, in place
+  // and without covering anything: the honesty chip (tappable to redial on
+  // `offline`), the undelivered row with Retry, and the global `ReconnectBanner`
+  // above the route. There is nothing this curtain adds there except the
+  // occlusion. Everywhere else — the roster, files, settings, a terminal-only
+  // focus route — it is still exactly right, and still appears.
+  const chatOwnsTheStory = useChatSurfaceMounted()
+  const visible = isOverlayState(status.kind) && !chatOwnsTheStory
 
   // Pick the visual spec for the current kind. On a healthy transition we want
   // to keep painting the PREVIOUS visual while AnimatePresence runs the exit

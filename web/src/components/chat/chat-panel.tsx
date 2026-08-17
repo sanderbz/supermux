@@ -31,6 +31,7 @@ import { agentsApi, commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { useRosterMarks } from '@/hooks/use-roster-marks'
+import { claimChatSurface } from '@/lib/live-region-owner'
 
 import { detailFor, topAttention } from './attention'
 import { ConnectionNote } from './connection-note'
@@ -122,6 +123,13 @@ export default function ChatPanel({
   )
 
   React.useEffect(() => exposeLatency(), [])
+  // WHO OWNS THE OUTAGE STORY. While this panel is on screen the chat plane's
+  // own chrome — the honesty chip in the header, the undelivered row in the
+  // band — carries what is wrong, over a transcript that deliberately STAYS.
+  // The app-root `ConnectionOverlay` reads this claim and stands its
+  // full-screen curtain down, because a curtain over the transcript makes that
+  // documented promise false in exactly the scenario the reconnect specs test.
+  React.useEffect(() => claimChatSurface(), [])
   // One pass over the ring per render (the ticker re-renders us every second).
   const latency = latencySummary()
 

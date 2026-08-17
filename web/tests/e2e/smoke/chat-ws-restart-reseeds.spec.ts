@@ -97,6 +97,7 @@ test.describe('chat WS — a server restart mid-stream (A6 T3.1)', () => {
     await expect(chip).toBeVisible()
     await expect(chip).toHaveText(/Reconnecting/i)
 
+
     // The transcript STAYS. The server's own contract (`tailer.rs:153`) is that
     // a reconnect never blanks what is on screen — it only stops being a claim
     // about now.
@@ -104,7 +105,47 @@ test.describe('chat WS — a server restart mid-stream (A6 T3.1)', () => {
 
     // (d) the watchdog does not manufacture a false failure out of a silence it
     // caused itself. `WATCHDOG_MS` is 5 s; this window is well past two of them.
-    await page.waitForTimeout(12_000)
+    //
+    // (e) …AND THE CHIP IS NEVER COVERED, sampled across that same window.
+    // `toBeVisible()` above answers a DOM question and ignores occlusion
+    // entirely, which is why this spec stayed green while the app-root
+    // `ConnectionOverlay` — a `fixed inset-0 z-[60]` curtain — painted over the
+    // chip during exactly this outage. "The transcript stays on screen" was
+    // false in the one scenario this file exists to prove.
+    //
+    // Sampled ACROSS the window rather than polled to first-true, because the
+    // curtain is SLOW: measured against the embedded binary on this machine it
+    // arrives ~25 s after the kill (the honesty verifier saw 416 ms on its rig),
+    // so any single early sample — or an `expect.poll` that stops at the first
+    // pass — reads clean and proves nothing.
+    const occluders: string[] = []
+    for (let i = 0; i < 12; i++) {
+      try {
+        occluders.push(
+          ...(await chip.evaluate(
+            (el) => {
+              const r = el.getBoundingClientRect()
+              const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+              if (!hit) return ['nothing at the chip’s own centre']
+              if (hit === el || el.contains(hit) || hit.contains(el)) return []
+              return [`${hit.tagName.toLowerCase()}.${hit.className || '(no class)'}`]
+            },
+            undefined,
+            // Bounded per sample: the chip going AWAY is itself a violation of
+            // "what is on screen stays", and it must be reported as one rather
+            // than hang the run waiting for an element that will never return.
+            { timeout: 5_000 },
+          )),
+        )
+      } catch {
+        occluders.push('the chip itself disappeared')
+      }
+      await page.waitForTimeout(2_500)
+    }
+    expect(
+      [...new Set(occluders)],
+      'nothing may cover the chat honesty chip during an outage',
+    ).toEqual([])
     await expect(page.getByTestId('chat-pending')).toHaveAttribute('data-state', 'unconfirmed')
 
     // Two entries land while nothing is listening. Only a full re-seed can

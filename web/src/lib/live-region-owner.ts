@@ -28,6 +28,7 @@
 import * as React from 'react'
 
 let connectionClaims = 0
+let chatSurfaceClaims = 0
 const listeners = new Set<() => void>()
 
 function emit() {
@@ -46,6 +47,36 @@ export function claimConnectionVoice(): () => void {
     if (released) return
     released = true
     connectionClaims -= 1
+    emit()
+  }
+}
+
+/**
+ * Declare that a chat surface is mounted. Same mechanism, a different question:
+ * not "who speaks" but "who owns the outage story on screen".
+ *
+ * The chat plane's documented contract is that a reconnect NEVER blanks what is
+ * on screen — the transcript stays, under a chip that says it is not current
+ * (`server/src/sessions/chat/tailer.rs`, and `BRAND.md`'s connection
+ * vocabulary). `ConnectionOverlay` is a `fixed inset-0` curtain, so during a
+ * TOTAL backend outage it covered that chip 416 ms later and the promise became
+ * false in exactly the scenario the reconnect specs test — while
+ * `toBeVisible()` kept passing, because Playwright's visibility ignores
+ * occlusion.
+ *
+ * Presence, not chip state, on purpose: keying the suppression off "the chip is
+ * currently saying something" would let the curtain paint for the few hundred
+ * milliseconds before the socket notices, i.e. a flash of exactly the thing
+ * being suppressed.
+ */
+export function claimChatSurface(): () => void {
+  chatSurfaceClaims += 1
+  emit()
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    chatSurfaceClaims -= 1
     emit()
   }
 }
@@ -69,7 +100,21 @@ export function useConnectionVoiceTaken(): boolean {
   return React.useSyncExternalStore(subscribe, claimed, unclaimed)
 }
 
-/** Test seam: the count, without a React render. */
+const chatMounted = () => chatSurfaceClaims > 0
+
+/**
+ * `true` when a chat surface is on screen and therefore owns the outage story —
+ * i.e. the full-screen `ConnectionOverlay` must stand down so the transcript and
+ * its honesty chip stay visible, as documented.
+ */
+export function useChatSurfaceMounted(): boolean {
+  return React.useSyncExternalStore(subscribe, chatMounted, unclaimed)
+}
+
+/** Test seam: the counts, without a React render. */
 export function connectionVoiceClaims(): number {
   return connectionClaims
+}
+export function chatSurfaceMountCount(): number {
+  return chatSurfaceClaims
 }

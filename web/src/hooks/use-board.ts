@@ -361,6 +361,21 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
       return arr
     },
     staleTime: 30_000,
+    // AN EMPTY BOARD ID IS NOT A BOARD, so it is not a request either.
+    //
+    // `IssueSurface` and `IssueList` both fall back to `''` when given neither a
+    // `session` nor a `boardId`, and `team-card.tsx` hands them
+    // `boardId={teamBoardId ?? ''}` UNCONDITIONALLY — even while the overlay is
+    // shut, because the surface is mounted next to the rollup rather than
+    // inside it. The result was `GET /api/boards//cards`: a doubled slash, an
+    // empty id, a 404 by construction and a red console error on first paint,
+    // once per team card on every page load, for a request whose answer was
+    // always going to be "no board".
+    //
+    // Disabled HERE rather than at that one call site so every future consumer
+    // inherits the guarantee: no id, no request, and `issues` degrades to `[]` —
+    // which renders exactly the empty state the 404 rendered, minus the 404.
+    enabled: boardId.trim().length > 0,
   })
   const statusesQuery = useQuery({
     queryKey: [...STATUSES_KEY],
