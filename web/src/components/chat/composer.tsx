@@ -464,12 +464,22 @@ function ComposerBanner({
             notice.detail && (
               <span className="min-w-0 truncate text-ink-2">{notice.detail}</span>
             )}
-          {/* The recipient reads as a name, in the sentence, after "Handed to".
+          {/* The recipient reads as a name, in the sentence, after "Sent to".
               Not a chip: this banner is transient chrome and a face here would
               compete with the durable `Delegated to ●x` line the ledger writes
-              into the transcript a moment later. */}
+              into the transcript a moment later.
+              The clause after the name is the honest half. A delegation is
+              one-way: the server delivered a prompt into a colleague's pane,
+              and whatever they answer is written in THEIR transcript. The old
+              receipt said "Handed to X" and then never changed again, which
+              reads as a completed exchange — a promise this surface cannot keep
+              and cannot retract. The durable `Delegated to ●x` line under it
+              carries the chip that goes there. */}
           {notice.kind === 'handoff-sent' && notice.detail && (
-            <span className="min-w-0 truncate font-medium text-ink">{notice.detail}</span>
+            <>
+              <span className="min-w-0 truncate font-medium text-ink">{notice.detail}</span>
+              <span className="text-ink-2">— their reply lands in their pane.</span>
+            </>
           )}
           <span className="ml-auto flex items-center gap-2">
             {/* A NOTE is not a refusal: the message went. Offering the terminal
@@ -556,9 +566,11 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   'slash-unverified': 'is a terminal command chat can’t verify — it wasn’t sent.',
   'slash-note': 'isn’t a built-in command — the session got it as text.',
   // The receipt for the one action on this surface whose result is somewhere
-  // else entirely. It names the recipient and it says "handed", not "sent":
-  // what landed is a request in a colleague's context, not a message here.
-  'handoff-sent': 'Handed to',
+  // else entirely. It names the recipient and it states the DELIVERY, which is
+  // the whole of what this app knows: the prompt reached that session's pane.
+  // It deliberately does not read as a completed hand-over — nothing here can
+  // learn whether the colleague acted on it, so nothing here may imply it did.
+  'handoff-sent': 'Sent to',
   // The draft is still in the box, and saying so is the point — the user's
   // instinct after a failed send is to check whether they lost the sentence.
   'handoff-failed': 'That hand-off didn’t go through — your message is still here.',
