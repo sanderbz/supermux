@@ -344,27 +344,49 @@ except `status-dot-pulse.spec.ts`, which T1.3 deliberately *adopted* (it was cov
 round-trips. Both need a live backend run that did not happen — see T3 below. The static claim is
 evidence; the dynamic one is not, and is not claimed.
 
-### T3 reconnect correctness — NOT RUN
+### T3 reconnect correctness — RUN, in a follow-up branch
 
-**The five e2e specs (T3.1–T3.5) were not written and were not run.** Saying otherwise would be the
-one unforgivable outcome, so: they do not exist.
+> This section said **NOT RUN** when the fase closed, and that was true then. Five specs were
+> written and run afterwards on `test/a6-reconnect-e2e`; what follows replaces the old entry rather
+> than hiding it, because the fase's own rule is that the ledger says what happened.
 
-What DOES cover this mechanism, and what it is worth:
+**Five specs, `web/tests/e2e/smoke/chat-ws-*.spec.ts`, each green three times individually against
+a real debug binary** (one browser context per file — chromium is `--single-process` on this host):
 
-- **21 unit tests** across `chat-connection.test.ts` and `chat-a7-blockers.test.ts` drive the socket
-  through a fake `WebSocket` and a manual clock: the close-code table, the redial's fresh attempt
-  budget after all 8 are burned, the dispose totality, the staleness clock ticking on frames and
-  **not** on `auth_ok`, the ceiling against A0's measured latencies, the retry of a failed
-  fetch-full, and the watchdog's `planeDown` suppression.
-- That is genuine coverage of the *logic* and **no** coverage of the *integration*: nothing here
-  proves the real server's close codes match the table, that a real re-seed leaves no duplicate or
-  gap, that the follow-bottom pin survives a real reconnect, or that toggle-thrash and a re-dial do
-  not collide (T3.5, the pairing the plan calls the program's two hardest mechanisms).
+| spec | what it proves |
+|---|---|
+| `chat-ws-restart-reseeds` | kill mid-stream → `reconnecting` is VISIBLE → restart → the fresh seed fills the gap → every token exactly once → and a server-ACKed send stays `unconfirmed`, never falsely `undelivered` (T2.5) |
+| `chat-ws-staleness-ceiling` | 90 s of real silence on a socket that never closes → `stale`, inside the [90 s, 120 s] the ceiling and the 30 s clock bucket imply; a wrapped `WebSocket` counter proves no drop and no redial |
+| `chat-ws-foreground-redial` | all eight attempts burned (~68 s of real backoff) → `offline` → hidden → server back → visible → dials itself, budget forgiven, gap filled |
+| `chat-ws-resync-epoch` | a >500-entry conversation with a REAL paged-in backlog, then the pointer moves through the real hook endpoint: the seed replaces and the paged-in block goes with it |
+| `chat-ws-stopped-handover` | a stopped session hands over to the stopped surface, the socket is disposed with it and never re-dials, and the 4404 refusal is read off the real wire from the browser |
 
-**T3 is the highest-value unfinished work in this fase and should be the next thing done.** The
-plan's §0.6 already names the primitives (`harness.ts`'s `killBackend()`/`restartBackend()`), the
-debug binary is built, and the chip carries `data-vr="chat-connection"` + `data-state` as ready-made
-assertion hooks.
+**The mapping is not the plan's numbering.** These are the five scenarios that were commissioned,
+and two of the plan's original items are still open: **T3.3's flaky-network case**
+(`context.setOffline` around a turn) and **T3.5's toggle-thrash under a re-dial** — the pairing the
+plan calls the program's two hardest mechanisms, and still the largest uncovered risk here. The
+plan's T3.4 as written (a stale pointer raising the Attention card) is also not what
+`chat-ws-resync-epoch` asserts; that spec covers the pointer MOVING, not the pointer being
+suspect.
+
+**What made it possible**, for whoever writes the sixth: `chat-fixture.ts`. A real `claude` cannot
+supply a byte-asserted transcript here (the rig isolates `$CLAUDE_CONFIG_DIR`, an isolated config
+dir has no credentials, and a Claude on a login screen writes no transcript and fires no
+`SessionStart`), so the fixture starts a chat-eligible session whose pane is a shell — `flags` is
+interpolated into the launch line — writes the transcript itself, and drives the conversation
+pointer through the REAL hook endpoint with the session's real per-session token, which the pane
+writes out because that token exists nowhere else. Everything else in the path is the real server.
+
+**One real defect found by writing them**, and fixed in the same branch: `ConnectionNote` dropped
+`data-state` on its `offline` branch (the only state that renders a `<button>` rather than a
+`<span>`), so the state that most needs a machine-readable marker had none — and an unlabelled chip
+is indistinguishable from the healthy case, which renders nothing at all.
+
+**Still true, and worth keeping:** the **21 unit tests** across `chat-connection.test.ts` and
+`chat-a7-blockers.test.ts` remain the coverage of the *logic* — the close-code table, the fresh
+attempt budget, the dispose totality, the staleness clock ticking on frames and **not** on
+`auth_ok`, the ceiling against A0's measured latencies, the fetch-full retry, the watchdog's
+`planeDown` suppression. The specs above are what makes them a claim about the product.
 
 ### T9 mobile reality — NOT RUN
 
