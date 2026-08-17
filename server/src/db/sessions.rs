@@ -190,7 +190,17 @@ pub async fn ensure_runtime(
 }
 
 /// Delete a session. `session_runtime` and child rows cascade via FK.
+///
+/// `schedules` does NOT — its `session` column is a bare `TEXT` with no foreign
+/// key (`0003_schedules.sql`) — so the disposition is enforced in code here
+/// (B5/T7.1). Without it a deleted session's schedules kept firing, failing,
+/// and pushing an error notification to the user's phone every tick. Soft, so
+/// the `schedule_runs` ledger (which DOES cascade) survives.
 pub async fn delete(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    let disposed = super::schedules::soft_delete_for_session(pool, name).await?;
+    if disposed > 0 {
+        tracing::info!(session = %name, schedules = disposed, "disposed of schedules with their session");
+    }
     sqlx::query("DELETE FROM sessions WHERE name = ?")
         .bind(name)
         .execute(pool)
@@ -208,6 +218,16 @@ pub async fn purge_archived(pool: &SqlitePool, name: &str) -> sqlx::Result<u64> 
         .bind(name)
         .execute(pool)
         .await?;
+    // Schedules have no FK to cascade on (see [`delete`]), so dispose of them
+    // explicitly (B5/T7.1) — but only if the guarded DELETE actually removed
+    // the row. A purge that raced an unarchive removes nothing, and must
+    // therefore destroy nothing either.
+    if res.rows_affected() > 0 {
+        let disposed = super::schedules::soft_delete_for_session(pool, name).await?;
+        if disposed > 0 {
+            tracing::info!(session = %name, schedules = disposed, "disposed of schedules with their purged session");
+        }
+    }
     Ok(res.rows_affected())
 }
 

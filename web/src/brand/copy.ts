@@ -199,7 +199,52 @@ export const LIFECYCLE = {
    *  nothing mutated on the schedule rows. */
   archivePausesSchedules:
     'Scheduled jobs on an archived session are paused, and start running again when you restore it.',
+
+  /** B5/T7.3 — archive named as the undo window §15.3 asks for. It always WAS
+   *  the undo; it was simply never called one, so users reached for it without
+   *  knowing it was reversible (and reached past it for things that were not). */
+  archiveIsTheUndo:
+    'Archiving is reversible — restore a session any time from the Archived sheet.',
+
+  /** B5/T7.2 — the single most important sentence in the delete dialog. It is
+   *  first in the disposition table below and repeated here because it is the
+   *  fact users are most surprised by: supermux removes its own record of a
+   *  session, never your code. */
+  purgeLeavesYourFilesAlone:
+    'Your working directory, git branch and worktree are never touched — on archive or on delete.',
 } as const
+
+/** B5/T7.2 — what each destructive verb actually disposes of, as DATA.
+ *
+ *  R3 is that this dialog "becomes a lie the moment the handler changes": the
+ *  most surprising facts live in copy, not in code. The mitigation is that the
+ *  disposition is asserted from both ends — `server/tests/delete_disposition.rs`
+ *  asserts the behaviour, and `web/tests/unit/delete-honesty.test.tsx` asserts
+ *  that every row here reaches the screen. A handler change that forgets the
+ *  copy fails CI on one side or the other.
+ *
+ *  Ordered most-surprising-first, which is also least-destructive-sounding
+ *  first — the two happen to agree here. */
+export const PURGE_DISPOSITION = [
+  {
+    thing: 'Working directory, branch, worktree',
+    archive: 'Untouched',
+    purge: 'Untouched',
+  },
+  { thing: 'The session in supermux', archive: 'Hidden, restorable', purge: 'Deleted' },
+  {
+    thing: 'Conversation, tracked files, share links',
+    archive: 'Kept',
+    purge: 'Deleted',
+  },
+  { thing: 'Scheduled jobs', archive: 'Paused', purge: 'Stopped for good' },
+  { thing: 'Past schedule runs', archive: 'Kept', purge: 'Kept in the log' },
+  { thing: 'Scrollback', archive: 'Saved to a file', purge: 'Deleted' },
+] as const satisfies readonly {
+  thing: string
+  archive: string
+  purge: string
+}[]
 
 // ── Connection / status banner ────────────────────────────────────────────────
 

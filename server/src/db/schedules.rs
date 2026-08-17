@@ -161,6 +161,41 @@ pub async fn soft_delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
     Ok(res.rows_affected() > 0)
 }
 
+/// Soft-delete every live schedule targeting `session` (B5/T7.1). Returns how
+/// many rows were disposed of, so the caller can log the disposition.
+///
+/// **Why this exists.** `schedules.session` is a bare `TEXT NOT NULL` with no
+/// FK (`0003_schedules.sql`), so removing a session used to leave its schedules
+/// pointing at a name that no longer resolves. The tick loop kept picking them
+/// up, every fire failed its existence check, and the runner pushed a
+/// *notification to the user's phone* on each one — forever, for a session they
+/// had deleted. There is no schema-level cascade to lean on, so the disposition
+/// is enforced here, at both removal paths.
+///
+/// **Why SOFT.** `schedule_runs` and `schedule_run_keys` both
+/// `REFERENCES schedules(id) ON DELETE CASCADE`, so a hard DELETE would take
+/// the run ledger with it. The tick loop filters `deleted IS NULL`, so a soft
+/// delete stops the firing just as completely while keeping the history — the
+/// same promise the manual delete-schedule path already makes ("Past runs stay
+/// in the log").
+///
+/// Deliberately NOT called on archive: T5's contract is that archiving *pauses*
+/// schedules as a pure function of `sessions.archived`, so unarchive resumes
+/// them with nothing to restore.
+pub async fn soft_delete_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result<u64> {
+    let now = Utc::now().timestamp();
+    let res = sqlx::query(
+        "UPDATE schedules SET deleted = ?, updated = ?
+         WHERE session = ? AND deleted IS NULL",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(session)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Persist a real fire: bump `last_run`/`run_count`, set the recomputed
 /// `next_run` (NULL disables a finished one-shot).
 pub async fn record_fire(

@@ -35,7 +35,7 @@ import {
   type UseArchivedSessionsResult,
 } from '@/hooks/use-archived-sessions'
 import { displayLabel, type ApiSession } from '@/lib/api'
-import { LIFECYCLE } from '@/brand/copy'
+import { LIFECYCLE, PURGE_DISPOSITION } from '@/brand/copy'
 
 export interface ArchivedSheetProps {
   open: boolean
@@ -65,6 +65,13 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
   const recovery = useArchivedSessions(open)
   const { archived, isLoading, isError } = recovery
 
+  // B5/T7.2 — the bulk-delete confirm is armed in the header's trailing slot,
+  // but the disposition it needs to state is far too big to live on that
+  // 28px-high row. Lifting just the armed flag lets the table render in the
+  // sheet BODY, where there is room to be honest, while the buttons stay where
+  // the user's finger already is.
+  const [confirmingPurgeAll, setConfirmingPurgeAll] = React.useState(false)
+
   const count = archived.length
   const description = isLoading
     ? 'Loading…'
@@ -83,11 +90,26 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
       // list, keeps the action discoverable at the same eye line as the count
       // it modifies ("N items · delete them all").
       descriptionTrailing={
-        count > 0 ? <DeleteAllAction recovery={recovery} /> : null
+        count > 0 ? (
+          <DeleteAllAction
+            recovery={recovery}
+            confirming={confirmingPurgeAll}
+            setConfirming={setConfirmingPurgeAll}
+          />
+        ) : null
       }
       className="sm:max-w-md"
     >
       <div className="px-2 py-2 sm:px-3">
+        {/* B5/T7.2 — the disposition, shown at the moment it is decided rather
+            than buried in docs. Only while the irreversible bulk delete is
+            armed: on the resting sheet it would be a wall of rules about an
+            action nobody has reached for. */}
+        {confirmingPurgeAll ? (
+          <div className="px-1 pb-2">
+            <DispositionTable />
+          </div>
+        ) : null}
         {isError ? (
           <p className="px-3 py-10 text-center text-sm text-muted-foreground">
             Couldn’t load archived sessions.
@@ -119,7 +141,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
             archived: on an empty sheet it would be a rule about nothing. */}
         {count > 0 && !isError ? (
           <p className="px-3 pb-1 pt-3 text-[12px] leading-snug text-muted-foreground">
-            {LIFECYCLE.archivePausesSchedules}
+            {LIFECYCLE.archiveIsTheUndo} {LIFECYCLE.archivePausesSchedules}
           </p>
         ) : null}
       </div>
@@ -132,11 +154,20 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
  *  fighting the per-row mutation otherwise). On confirm, fans out every
  *  archived row's purge in parallel; the sheet empties progressively as each
  *  request resolves. */
-function DeleteAllAction({ recovery }: { recovery: UseArchivedSessionsResult }) {
+function DeleteAllAction({
+  recovery,
+  confirming,
+  setConfirming,
+}: {
+  recovery: UseArchivedSessionsResult
+  /** B5/T7.2 — owned by `ArchivedSheet` so the disposition table can render in
+   *  the sheet body while these buttons stay on the description row. */
+  confirming: boolean
+  setConfirming: (v: boolean) => void
+}) {
   const { archived, purgeAll, pending } = recovery
   const { toast } = useToast()
   const reduce = useReducedMotion()
-  const [confirming, setConfirming] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   // Lock out the bulk action while ANY individual purge is mid-flight to avoid
   // racing with a per-row delete-confirm the user already kicked off.
@@ -165,7 +196,7 @@ function DeleteAllAction({ recovery }: { recovery: UseArchivedSessionsResult }) 
     } finally {
       setBusy(false)
     }
-  }, [purgeAll, toast])
+  }, [purgeAll, toast, setConfirming])
 
   // Compact inline action sized to fit ON the description row (h-7 / text-xs)
   // so the sheet header gains zero vertical space vs the count alone. The
@@ -209,6 +240,41 @@ function DeleteAllAction({ recovery }: { recovery: UseArchivedSessionsResult }) 
       <Trash2 className="size-3.5" aria-hidden />
       Delete all
     </button>
+  )
+}
+
+/** B5/T7.2 — the disposition, rendered. "Delete forever" is the only truly
+ *  irreversible verb in supermux, and until now it asked for confirmation
+ *  without ever saying what it disposed of. This renders `PURGE_DISPOSITION`
+ *  row by row (archive vs purge, side by side) so the comparison the user is
+ *  actually making is on screen instead of in their head.
+ *
+ *  It is driven by the exported table rather than hand-written markup, and
+ *  `delete-honesty.test.tsx` asserts every row reaches the DOM — so a row added
+ *  to the table cannot be silently left out of the dialog (R3). */
+export function DispositionTable() {
+  return (
+    <div className="rounded-lg border border-border/60 bg-muted/30 p-2">
+      <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        What happens
+      </p>
+      <dl className="flex flex-col gap-1">
+        {PURGE_DISPOSITION.map((row) => (
+          <div
+            key={row.thing}
+            className="flex items-baseline justify-between gap-3 px-1"
+          >
+            <dt className="text-[12px] text-muted-foreground">{row.thing}</dt>
+            <dd className="shrink-0 text-[12px] font-medium text-foreground">
+              {row.purge}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p className="px-1 pt-2 text-[11px] leading-snug text-muted-foreground">
+        {LIFECYCLE.purgeLeavesYourFilesAlone}
+      </p>
+    </div>
   )
 }
 
