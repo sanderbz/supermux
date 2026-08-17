@@ -36,7 +36,7 @@
 //! | the paste prompt has **no trailing newline**, so any byte written after it re-matches | the prompt is required to be the last row that is not TUI CHROME ([`is_chrome_row`]), and rejection is read off the `Invalid code…` line rather than off a reappearance count |
 //! | the authorize host moved to `claude.com` (`redirect_uri` `platform.claude.com`) | [`URL_HOSTS`] |
 //! | `/design-login` prints the IDENTICAL prompt string | [`Flow`], disambiguated on the lines above the prompt |
-//! | the field is masked, so nothing echoes back | success is confirmed from `Login successful`, never from an echo read |
+//! | the field's echo is version-dependent — 2.1.227 masks it, 2.1.233 prints the code back verbatim | success is confirmed from `Login successful`, never from an echo read; and [`is_paste_row`] accepts the field's contents either way |
 
 use std::time::{Duration, Instant};
 
