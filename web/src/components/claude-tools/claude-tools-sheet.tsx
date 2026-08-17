@@ -190,7 +190,7 @@ function CodexToolsBody({
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-sm font-medium text-foreground">{title}</span>
             <span className="text-xs leading-snug text-muted-foreground">{detail}</span>
-            <code className="mt-0.5 font-mono text-[11px] text-muted-foreground/80">/{command}</code>
+            <code className="mt-0.5 font-mono text-[11px] text-muted-foreground">/{command}</code>
           </span>
         </motion.button>
       ))}
@@ -1161,7 +1161,7 @@ function SkillRow({
               {entry.description}
             </span>
           )}
-          <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+          <span className="truncate font-mono text-[11px] text-muted-foreground">
             {entry.linked && entry.link_target ? `${entry.path} → ${entry.link_target}` : entry.path}
           </span>
         </div>
@@ -1271,7 +1271,7 @@ function CommandRowView({
             </span>
           )}
           {entry.path && (
-            <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+            <span className="truncate font-mono text-[11px] text-muted-foreground">
               {entry.path}
             </span>
           )}

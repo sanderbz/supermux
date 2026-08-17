@@ -413,7 +413,7 @@ function AgentForm({
           onChange={(e) => setDesc(e.target.value)}
           rows={2}
           placeholder="Always run the unit suite before you claim green."
-          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
       </Field>
 
@@ -441,7 +441,7 @@ function AgentForm({
           onChange={(e) => setPrompt(e.target.value)}
           rows={2}
           placeholder="Read the plan in docs/… and start with task 1."
-          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
       </Field>
 

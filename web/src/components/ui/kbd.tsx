@@ -39,7 +39,7 @@ const VARIANT = {
   // inside the focus-strip row + overview tile without the chip dominating
   // the title — verified at desktop densities Compact through Wide.
   muted:
-    'border-border/60 bg-background/60 text-muted-foreground/80 px-1 py-0.5 text-[11px]',
+    'border-border/60 bg-background/60 text-muted-foreground px-1 py-0.5 text-[11px]',
 } as const
 
 export const Kbd = React.forwardRef<HTMLElement, KbdProps>(function Kbd(

@@ -122,8 +122,10 @@ export function ActivityLine({ activity, subagents, className }: ActivityLinePro
           initial={reduce ? false : { opacity: 0, y: 2 }}
           animate={{ opacity: 1, y: 0 }}
           transition={reduce ? motionOff : springs.statusMorph}
-          // Muted /70 + tabular so the count is calm and non-jittering.
-          className="ml-1 inline-block align-baseline whitespace-nowrap tabular-nums text-muted-foreground/70"
+          // Muted + tabular so the count is calm and non-jittering. NOT `/70`:
+          // an alpha modifier on text composites to 2.89:1 on the light card
+          // (round-2 finding 17), and the token itself is already the quiet one.
+          className="ml-1 inline-block align-baseline whitespace-nowrap tabular-nums text-muted-foreground"
         >
           {label ? '· ' : ''}
           {n} subagents

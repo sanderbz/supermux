@@ -30,12 +30,12 @@ const TOKENS: Record<
 > = {
   card: {
     secondary:
-      'ml-auto hidden shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted-foreground/70 sm:flex',
+      'ml-auto hidden shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted-foreground sm:flex',
     spellTasks: true,
   },
   strip: {
     secondary:
-      'ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/70',
+      'ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground',
     spellTasks: false,
   },
 }

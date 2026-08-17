@@ -1433,7 +1433,7 @@ function GroupSection({
             collapsed ? 'Expand' : 'Collapse'
           } Ungrouped (${section.sessions.length})`}
           onClick={onToggleCollapsed}
-          className="flex w-full items-center gap-1.5 rounded-md px-1 pb-1 pt-0.5 text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:py-2"
+          className="flex w-full items-center gap-1.5 rounded-md px-1 pb-1 pt-0.5 text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:py-2"
         >
           <ChevronRight
             aria-hidden

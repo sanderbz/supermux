@@ -92,7 +92,7 @@ export function TeammateCard({
             {activity ? (
               <ActivityLine activity={activity} className="text-xs" />
             ) : (
-              <div className="truncate text-xs text-muted-foreground/70">
+              <div className="truncate text-xs text-muted-foreground">
                 {member.model || 'teammate'}
               </div>
             )}
@@ -104,7 +104,7 @@ export function TeammateCard({
           </span>
         ) : (
           taskTotal > 0 && (
-            <span className="mt-0.5 shrink-0 px-1 text-[11px] font-medium tabular-nums text-muted-foreground/70">
+            <span className="mt-0.5 shrink-0 px-1 text-[11px] font-medium tabular-nums text-muted-foreground">
               {taskDone}/{taskTotal}
             </span>
           )

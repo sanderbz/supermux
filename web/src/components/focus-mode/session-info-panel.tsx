@@ -802,7 +802,7 @@ function DescEditor({ name, desc }: { name: string; desc: string }) {
       placeholder="Durable rules for this agent — always run the unit suite, never touch main…"
       aria-label="Standing instructions"
       data-vr="session-desc"
-      className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+      className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
     />
   )
 }
@@ -866,7 +866,7 @@ function TagsEditor({ name, tags }: { name: string; tags: string[] }) {
         disabled={pending}
         placeholder="Add a tag…"
         aria-label="Add a tag"
-        className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
       />
     </div>
   )

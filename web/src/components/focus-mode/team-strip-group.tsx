@@ -211,7 +211,7 @@ function TeammateStripRow({
       <MemberStatusDot status={member.status} className="shrink-0" />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px] font-medium">{member.name}</span>
-        <span className="truncate text-[11px] text-muted-foreground/70">
+        <span className="truncate text-[11px] text-muted-foreground">
           {member.model || 'teammate'}
         </span>
       </span>
@@ -222,7 +222,7 @@ function TeammateStripRow({
           </span>
         ) : (
           taskTotal > 0 && (
-            <span className="px-1 text-[11px] font-medium tabular-nums text-muted-foreground/70">
+            <span className="px-1 text-[11px] font-medium tabular-nums text-muted-foreground">
               {taskDone}/{taskTotal}
             </span>
           )

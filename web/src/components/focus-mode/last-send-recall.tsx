@@ -355,7 +355,7 @@ function RecallPanel({
           {displayGroups.map((group, gi) => (
             <li key={`g-${gi}-${group.sessionId}`}>
               {scope === 'project' && group.sessionId !== sessionName && (
-                <div className="flex items-center gap-1.5 px-1 pb-1 pt-2 text-[10.5px] uppercase tracking-wide text-muted-foreground/70">
+                <div className="flex items-center gap-1.5 px-1 pb-1 pt-2 text-[10.5px] uppercase tracking-wide text-muted-foreground">
                   <MessageSquareText className="size-3" />
                   <span className="truncate">
                     {group.sessionTitle || group.sessionId.slice(0, 8)}
@@ -431,7 +431,7 @@ function RecallPanel({
 
       {/* Session label as a calm subscript — same affordance the old
           single-prompt body had so the user knows which session is in view. */}
-      <p className="text-[10.5px] text-muted-foreground/60">{sessionLabel}</p>
+      <p className="text-[10.5px] text-muted-foreground">{sessionLabel}</p>
     </div>
   )
 }
@@ -620,7 +620,7 @@ const RecallRow = React.memo(function RecallRow({
             </p>
           )}
           {truncated && expanded && (
-            <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
+            <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
               preview · {RECALL_PROMPT_MAX_CHARS} chars max
             </p>
           )}

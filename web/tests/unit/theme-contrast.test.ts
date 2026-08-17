@@ -304,3 +304,78 @@ describe('the document bootstraps its own theme', () => {
     expect(provider).toContain("return 'dark' // dark default")
   })
 })
+
+/**
+ * ALPHA MODIFIERS ARE INVISIBLE TO A TOKEN WALK (round-2 finding 17).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Everything above this block walks RAW tokens, which is why the last live AA
+ * failures on the product routes were not tokens at all but `text-…/70` and
+ * `/80` in classNames: `--muted-foreground` is #6c6c70 = 4.83:1 on white, and at
+ * 70% over the same white it is 2.89:1 — the model label on every teammate row,
+ * "Ungrouped", the group counts, the keycap chips. Measured live across five
+ * surfaces: 16 failures on light/overview, 18 on light/focus, 7 and 10 in dark
+ * at 3.58–3.85:1.
+ *
+ * Two assertions, because the fix has two halves: the composited maths (so
+ * nobody re-derives that 70% of a 4.8:1 ink is fine) and a scan of the source
+ * (so the next `text-muted-foreground/70` is caught at `bun test` rather than by
+ * a contrast walk six months later).
+ */
+describe('alpha-modified text ink', () => {
+  /** `color-mix`-equivalent: `ink` at `alpha` over an opaque `bg`. */
+  function composite(
+    ink: [number, number, number],
+    bg: [number, number, number],
+    alpha: number,
+  ): [number, number, number] {
+    return [0, 1, 2].map((i) => Math.round(ink[i] * alpha + bg[i] * (1 - alpha))) as [
+      number,
+      number,
+      number,
+    ]
+  }
+
+  const ink = hexToRgb(declaration(lightBlock, '--muted-foreground'))
+  const paper = hexToRgb(declaration(lightBlock, '--sm-paper'))
+  const raised = hexToRgb(declaration(lightBlock, '--sm-paper-raised'))
+
+  test('the token itself carries text on every light surface', () => {
+    for (const [name, bg] of [
+      ['white', [255, 255, 255] as [number, number, number]],
+      ['--sm-paper', paper],
+      ['--sm-paper-raised', raised],
+    ] as const) {
+      const ratio = contrastOnWhite(...composite(ink, bg, 1))
+      expect([name, ratio >= AA_TEXT]).toEqual([name, true])
+    }
+  })
+
+  test('…and the /70 and /80 forms do not — which is why they are banned below', () => {
+    expect(contrastOnWhite(...composite(ink, [255, 255, 255], 0.7))).toBeLessThan(AA_TEXT)
+    expect(contrastOnWhite(...composite(ink, raised, 0.8))).toBeLessThan(AA_TEXT)
+  })
+
+  test('no text in the app dims muted-foreground with an alpha modifier', () => {
+    // The heuristic is the one a reviewer uses: a `text-muted-foreground/NN` in
+    // a class list that also sets a TEXT SIZE is prose, not a glyph. Icon-only
+    // buttons (`size-4` chevrons, the drag handles) keep their alphas — the
+    // non-text contrast rule is 3:1 and they are not this test's business —
+    // and so does a `marker:` bullet.
+    const files = new Bun.Glob('**/*.{ts,tsx}').scanSync({
+      cwd: fileURLToPath(new URL('../../src', import.meta.url)),
+      absolute: true,
+    })
+    const sized = /text-(xs|sm|base|lg|\[\d+(?:\.\d+)?px\])/
+    const offenders: string[] = []
+    for (const file of files) {
+      const lines = readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        if (!/text-muted-foreground\/\d+/.test(line)) return
+        if (/marker:text-muted-foreground/.test(line)) return
+        if (!sized.test(line)) return
+        offenders.push(`${file.split('/src/')[1]}:${i + 1}`)
+      })
+    }
+    expect(offenders).toEqual([])
+  })
+})

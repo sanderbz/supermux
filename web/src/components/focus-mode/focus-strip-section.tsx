@@ -116,9 +116,11 @@ export function FocusStripSection({
             // headers sit visually nested under it). h-7 keeps the strip
             // density without making the chevron feel cramped.
             'group/strip-section flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] font-semibold tracking-tight text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            // Implicit Ungrouped sits a touch more muted so a real user group
-            // wins the eye — mirrors the overview's `Ungrouped · N` treatment.
-            group.isImplicit && 'text-muted-foreground/70',
+            // Implicit Ungrouped sits a touch quieter so a real user group wins
+            // the eye — by WEIGHT, not by alpha. `text-muted-foreground/70`
+            // composites to 2.89:1 on the light card, which is a hierarchy paid
+            // for with legibility (round-2 finding 17).
+            group.isImplicit && 'font-normal',
           )}
         >
           <ChevronRight
@@ -131,7 +133,7 @@ export function FocusStripSection({
           <span className="min-w-0 truncate">{group.groupName}</span>
           <span
             aria-hidden
-            className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground/70"
+            className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground"
           >
             · {group.sessions.length}
           </span>
@@ -167,7 +169,7 @@ export function FocusStripSection({
             // Zero-state for a user-defined group with no sessions — keeps the
             // section visible (the user explicitly created it) but signals it
             // empty without competing for attention.
-            <p className="px-2 py-1 text-[11px] text-muted-foreground/70">
+            <p className="px-2 py-1 text-[11px] text-muted-foreground">
               No sessions in this group yet.
             </p>
           ) : (

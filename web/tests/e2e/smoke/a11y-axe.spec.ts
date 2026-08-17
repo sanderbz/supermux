@@ -47,13 +47,16 @@ const THEMES = ['dark', 'light'] as const
 /**
  * Known-failing today. Each line is `<route> <theme>/<surface> <rule>`.
  *
- *   color-contrast     — the light-theme token gap and the ink-3 ladder, both
- *                        open findings against the theme tokens rather than
- *                        against any component here ("Light theme is
- *                        incomplete…" and the ink-3 clause of the motion/theme
- *                        polish batch). Present in DARK too because the ink
- *                        ladder's tertiary step fails AA in both themes
- *                        (#7d766f on #201f1d = 3.68:1).
+ *   color-contrast     — RE-ATTRIBUTED (round-2 finding 17). This rationale used
+ *                        to name the light-theme token gap and the ink-3 ladder;
+ *                        both are closed, and the live offender was neither. It
+ *                        was ALPHA MODIFIERS in classNames —
+ *                        `text-muted-foreground/70` composites to 2.89:1 on the
+ *                        light card, `/80` to 3.34:1 — which a token walk cannot
+ *                        see by construction, and which `theme-contrast.test.ts`
+ *                        now bans for text outright. Whatever remains on these
+ *                        dev benches is fixture-only chrome; the routes a user
+ *                        actually opens are the ones the unit guard covers.
  *   nested-interactive — the focus surface nests controls inside a control.
  *                        Carried, not excused: it belongs with the roster
  *                        keyboard work ("The roster has no roving tabindex…"),

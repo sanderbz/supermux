@@ -213,7 +213,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
 
       {/* Teammates — chips (default) or cards (toggled). */}
       {members.length === 0 ? (
-        <div className="px-1 py-1 text-xs text-muted-foreground/70">
+        <div className="px-1 py-1 text-xs text-muted-foreground">
           No teammates yet.
         </div>
       ) : density === 'cards' ? (
@@ -286,7 +286,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
           colour, no icon) only when there's both a lead and teammates — it sets
           expectation before the user ever reaches the lead's Stop confirm. */}
       {leadSession && members.length > 0 && (
-        <p className="px-1 text-[11px] leading-snug text-muted-foreground/60">
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground">
           Stopping the lead ends the whole team — its teammates are panes in the
           lead’s session.
         </p>

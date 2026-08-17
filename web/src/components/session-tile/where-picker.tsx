@@ -375,7 +375,7 @@ function Section({
           {label}
         </h3>
         {hint && (
-          <span className="text-[10px] text-muted-foreground/70">{hint}</span>
+          <span className="text-[10px] text-muted-foreground">{hint}</span>
         )}
       </header>
       <div className="flex flex-col gap-1">{children}</div>

@@ -225,7 +225,7 @@ export function MarkdownViewer({ source, basePath }: MarkdownViewerProps) {
             {lang && (
               <span
                 aria-hidden
-                className="pointer-events-none absolute right-2 top-2 select-none rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground/80 opacity-0 transition-opacity group-hover:opacity-100"
+                className="pointer-events-none absolute right-2 top-2 select-none rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
               >
                 {lang}
               </span>

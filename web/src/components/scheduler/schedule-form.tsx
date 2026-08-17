@@ -436,7 +436,7 @@ function NotifyField({
                       transition={springs.cardExpand}
                       className="overflow-hidden"
                     >
-                      <p className="mt-2.5 text-[11px] font-medium text-muted-foreground/80">
+                      <p className="mt-2.5 text-[11px] font-medium text-muted-foreground">
                         Appended to your prompt:
                       </p>
                       <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
@@ -823,7 +823,7 @@ function SubField({
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-[11px] font-medium text-muted-foreground/80">
+      <span className="text-[11px] font-medium text-muted-foreground">
         {label}
       </span>
       {children}

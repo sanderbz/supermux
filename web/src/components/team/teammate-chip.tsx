@@ -115,7 +115,7 @@ export function TeammateChip({
         {activity ? (
           <ActivityLine activity={activity} className="text-xs" />
         ) : (
-          <span className="truncate text-xs text-muted-foreground/70">
+          <span className="truncate text-xs text-muted-foreground">
             {member.model || 'teammate'}
           </span>
         )}
@@ -131,7 +131,7 @@ export function TeammateChip({
           </span>
         ) : (
           taskTotal > 0 && (
-            <span className="shrink-0 px-1 text-[11px] font-medium tabular-nums text-muted-foreground/70">
+            <span className="shrink-0 px-1 text-[11px] font-medium tabular-nums text-muted-foreground">
               {taskDone}/{taskTotal}
             </span>
           )
