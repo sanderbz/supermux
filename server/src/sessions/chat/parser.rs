@@ -229,6 +229,7 @@ struct Header {
     session_id: Option<String>,
     is_sidechain: bool,
     agent_id: Option<String>,
+    is_meta: bool,
 }
 
 impl Header {
@@ -244,6 +245,9 @@ impl Header {
             session_id: str_at(obj, &["session_id", "sessionId"]).map(str::to_string),
             is_sidechain: bool_at(obj, &["isSidechain", "is_sidechain"]).unwrap_or(false),
             agent_id: str_at(obj, &["agentId", "agent_id"]).map(str::to_string),
+            // A LINE-level flag, like `isSidechain`: the harness marks the whole
+            // record, and every block of it inherits the mark.
+            is_meta: bool_at(obj, &["isMeta", "is_meta"]).unwrap_or(false),
         }
     }
 
@@ -267,6 +271,7 @@ impl Header {
             ok: None,
             is_sidechain: self.is_sidechain,
             agent_id: self.agent_id.clone(),
+            is_meta: self.is_meta,
             oversize: false,
             body,
         }
@@ -412,6 +417,11 @@ fn oversize_entry(line: &str, offset: u64) -> ChatEntry {
         ok: None,
         is_sidechain: line.contains("\"isSidechain\":true"),
         agent_id: scan_field(line, "agentId"),
+        // Scanned the same textual way `isSidechain` is: this line is too big
+        // to hand to serde, and a 950 KB command dump is EXACTLY the shape that
+        // arrives with `isMeta` set, so guessing `false` here would put the one
+        // entry the flag exists for back on screen.
+        is_meta: line.contains("\"isMeta\":true"),
         oversize: true,
         body: Value::Null,
     }
@@ -503,6 +513,73 @@ mod tests {
             .join("tests/fixtures/chat")
             .join(name);
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("fixture {}: {e}", p.display()))
+    }
+
+    /// `isMeta` REACHES THE WIRE (verified finding 18).
+    ///
+    /// One managed slash command writes TWO user records: a 191-byte
+    /// `<command-name>` envelope (correctly `Kind::Command` downstream) and a
+    /// 6.8 KB plain prompt carrying the whole command file, which the raw JSONL
+    /// marks `isMeta: true` and gives no `promptSource` at all. `recall.rs` has
+    /// filtered the second since A1; the chat wire could not, because the field
+    /// was not on it — so B4's own headline flow (`/supermux-schedule`) drew a
+    /// giant beige user bubble ending in `ARGUMENTS: …`.
+    ///
+    /// A LINE-level flag: every block of a marked record inherits it, the way
+    /// `isSidechain` does.
+    #[test]
+    fn is_meta_rides_the_line_onto_every_block_and_onto_the_wire() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "u1",
+            "isMeta": true,
+            "timestamp": "2026-08-16T10:00:00.000Z",
+            "message": { "content": [
+                { "type": "text", "text": "Base directory for this skill: /x" },
+                { "type": "text", "text": "ARGUMENTS: in 2m — reply with exactly X" },
+            ] },
+        })
+        .to_string();
+        let ParsedLine::Entry(entries) = parse_line(&line, 0) else {
+            panic!("expected entries")
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.is_meta), "both blocks inherit the line's mark");
+
+        // …and it survives sealing, under the name the client reads.
+        let sealed = WireEntry::seal(1, &entries[0]);
+        let json = serde_json::to_value(&sealed).unwrap();
+        assert_eq!(json.get("meta").and_then(|v| v.as_bool()), Some(true));
+
+        // An ordinary prompt is unmarked, and pays NO wire bytes for the field.
+        let plain = serde_json::json!({
+            "type": "user",
+            "uuid": "u2",
+            "message": { "content": "just a question" },
+        })
+        .to_string();
+        let ParsedLine::Entry(plain) = parse_line(&plain, 0) else {
+            panic!("expected entries")
+        };
+        assert!(!plain[0].is_meta);
+        let json = serde_json::to_value(WireEntry::seal(2, &plain[0])).unwrap();
+        assert!(json.get("meta").is_none(), "the field is skipped when false");
+    }
+
+    /// An oversize line cannot go through serde, and a 950 KB command dump is
+    /// EXACTLY the shape that arrives marked — so the textual scan has to see it
+    /// too, or the one entry the flag exists for comes back.
+    #[test]
+    fn an_oversize_line_is_still_read_as_meta() {
+        let body = "x".repeat(MAX_LINE_BYTES + 10);
+        let line = format!(
+            "{{\"type\":\"user\",\"uuid\":\"u3\",\"isMeta\":true,\"message\":{{\"content\":\"{body}\"}}}}"
+        );
+        let ParsedLine::Entry(entries) = parse_line(&line, 0) else {
+            panic!("expected entries")
+        };
+        assert!(entries[0].oversize);
+        assert!(entries[0].is_meta);
     }
 
     #[test]

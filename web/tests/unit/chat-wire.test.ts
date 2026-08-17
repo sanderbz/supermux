@@ -369,6 +369,62 @@ describe('the adapter', () => {
     ])
   })
 
+  /**
+   * A SLASH COMMAND IS ONE ROW, NOT TWO (verified finding 18).
+   *
+   * `/supermux-schedule` writes two user records: the 191-byte
+   * `<command-name>` envelope — correctly `kind:'command'` — and a 6.8 KB plain
+   * prompt carrying the ENTIRE command file, which the raw JSONL marks
+   * `isMeta: true` and gives no `promptSource`. `recall.rs` has filtered the
+   * second since A1 (step 8 → `Kind::System`); this plane could not, because
+   * the flag was not on the wire, and B4's own headline flow rendered a giant
+   * beige user bubble ending in `ARGUMENTS: …`.
+   */
+  test('an isMeta harness aside is not something the human said', () => {
+    const entries = toChatEntries([
+      block({
+        uuid: 'c1',
+        kind: 'prompt',
+        body: {
+          text: '<command-name>/supermux-schedule</command-name><command-args>in 2m</command-args>',
+        },
+      }),
+      block({
+        uuid: 'c2',
+        kind: 'prompt',
+        meta: true,
+        body: {
+          text: 'Base directory for this skill: /home/x/.claude/skills/supermux-schedule\n\n# Schedule\n\nARGUMENTS: in 2m — reply with exactly X',
+        },
+      }),
+    ])
+    expect(entries.map((e) => [e.uuid, e.kind])).toEqual([['c1', 'command']])
+  })
+
+  test('…but a marked line a WRAPPER already named keeps that name', () => {
+    // `recall.rs` checks `isMeta` at step 8 — after the wrapper rules (6/7),
+    // before the plain-prompt fallback (9). The arm has to sit in the same
+    // place or a delegated prompt that happened to be marked would vanish.
+    const entries = toChatEntries([
+      block({
+        uuid: 'd1',
+        kind: 'prompt',
+        meta: true,
+        body: {
+          text: '<supermux-delegation from="ceo-root">ship it</supermux-delegation>',
+        },
+      }),
+    ])
+    expect(entries.map((e) => [e.uuid, e.kind])).toEqual([['d1', 'delegation']])
+  })
+
+  test('…and an unmarked prompt is untouched', () => {
+    const entries = toChatEntries([
+      block({ uuid: 'p1', kind: 'prompt', body: { text: 'ARGUMENTS: not a dump' } }),
+    ])
+    expect(entries.map((e) => e.kind)).toEqual(['prompt'])
+  })
+
   test('the calm view: everything A1 hid stays hidden', () => {
     const entries = toChatEntries([
       block({ uuid: 'th', kind: 'thinking', body: { text: 'hmm' } }),

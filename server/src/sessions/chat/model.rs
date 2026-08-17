@@ -84,6 +84,18 @@ pub struct ChatEntry {
     pub agent_id: Option<String>,
     /// The source line exceeded [`MAX_LINE_BYTES`]; `body` is a placeholder.
     pub oversize: bool,
+    /// The JSONL record's own `isMeta` flag — a harness ASIDE written as a user
+    /// turn.
+    ///
+    /// `recall.rs::classify_user` step 8 has always routed these to
+    /// `Kind::System`, so the recall plane never showed them. The chat wire did
+    /// not carry the field at all, and `wire-entries.ts` says so in a comment
+    /// costing "one distinction only" — which on B4's own headline flow is the
+    /// whole screen: one `/supermux-schedule` writes a 191-byte `<command-name>`
+    /// envelope AND a 6.8 KB plain prompt holding the entire command file
+    /// (`isMeta: true`, no `promptSource`), and the renderer drew the second as
+    /// the owner's own bubble, ending in `ARGUMENTS: …`.
+    pub is_meta: bool,
     /// Kind-specific payload, pre-cap.
     pub body: Value,
 }
@@ -103,6 +115,7 @@ impl ChatEntry {
             ok: None,
             is_sidechain: false,
             agent_id: None,
+            is_meta: false,
             oversize: false,
             body: serde_json::json!({ "text": text }),
         }
@@ -150,6 +163,11 @@ mod sealed {
         pub(super) ok: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub(super) agent_id: Option<String>,
+        /// `isMeta` on the source record. Skipped when false, which is every
+        /// entry but a handful — the wire pays for this field only where it
+        /// carries information.
+        #[serde(rename = "meta", skip_serializing_if = "std::ops::Not::not")]
+        pub(super) is_meta: bool,
         pub(super) oversize: bool,
         pub(super) truncated: bool,
         pub(super) body: Value,
@@ -195,6 +213,7 @@ impl WireEntry {
             label: e.label.as_deref().map(|l| clip_chars(l, LABEL_MAX_CHARS)),
             ok: e.ok,
             agent_id: e.agent_id.as_deref().map(|s| clip_chars(s, ID_MAX_CHARS)),
+            is_meta: e.is_meta,
             oversize: e.oversize,
             truncated: false,
             body: Value::Null,
@@ -406,6 +425,7 @@ mod tests {
             ok: None,
             is_sidechain: false,
             agent_id: Some(huge(500_000)),
+            is_meta: false,
             oversize: false,
             body: serde_json::json!({ "text": "hi" }),
         };
@@ -438,6 +458,7 @@ mod tests {
             ok: Some(false),
             is_sidechain: true,
             agent_id: Some("x1".to_string()),
+            is_meta: false,
             oversize: false,
             body: serde_json::json!({ "text": "ok" }),
         };

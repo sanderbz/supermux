@@ -57,6 +57,17 @@ export interface WireEntry {
   label?: string
   ok?: boolean
   agent_id?: string
+  /**
+   * The source record's `isMeta` — a harness ASIDE written as a user turn.
+   * Absent (skipped) on everything else, so it costs no wire bytes.
+   *
+   * `recall.rs::classify_user` step 8 has routed these to the system bucket
+   * since A1; this plane could not, because the flag was not on it. One managed
+   * slash command writes TWO user records — the `<command-name>` envelope and a
+   * 6.8 KB plain prompt holding the whole command file — and without this the
+   * second was drawn as the owner's own bubble.
+   */
+  meta?: boolean
   /** The source line was over `MAX_LINE_BYTES`; `body` is a placeholder. */
   oversize: boolean
   /** `WireEntry::seal` clipped the body at `MAX_ENTRY_BYTES`. Fetch-full

@@ -881,6 +881,7 @@ mod tests {
             ok: None,
             is_sidechain: false,
             agent_id: None,
+            is_meta: false,
             oversize: false,
             body: serde_json::json!({ "text": text }),
         }

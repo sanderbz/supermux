@@ -425,6 +425,21 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       const raw = textOf(w.body)
       if (!raw.trim()) continue
       const c = classifyPrompt(raw)
+      // `isMeta` — THE FLAG HALF, now that the wire carries it (finding 18).
+      //
+      // `recall.rs::classify_user` checks it at step 8: AFTER the wrapper and
+      // image rules (6/7), BEFORE the plain-prompt fallback (9). So the arm sits
+      // exactly there — a marked line that a wrapper already named keeps that
+      // name, and only an unrecognised marked line is the harness aside. Rust
+      // routes it to `Kind::System`; System has never been in `SURVIVING_KINDS`,
+      // so dropping it here is the same outcome by the same rule.
+      //
+      // The one thing `recall.rs` does that this cannot is step 4's
+      // `promptSource: "typed"` override, which would rescue a human who typed
+      // something marked meta. It has never fired in practice — no `isMeta`
+      // record in any transcript on this host carries a `promptSource` at all —
+      // and the giant command dump this arm exists for carries neither.
+      if (w.meta && c.kind === 'prompt') continue
       // The calm view: only the user-initiated kinds, the same rule
       // `recall.rs::Kind::is_user_initiated` applies. Everything else the
       // harness writes as a user-role line stays out.
