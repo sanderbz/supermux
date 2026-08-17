@@ -55,6 +55,14 @@ import {
   type RosterDensity,
   type RosterMember,
 } from './dev-roster.cast'
+import { Trash2 } from 'lucide-react'
+
+import { ArmedButton } from '@/components/ui/armed-button'
+import type { ArmedConfirm } from '@/hooks/use-armed-confirm'
+import {
+  AutoHealToggle,
+  RecoveryLadder,
+} from '@/components/recovery/recovery-ladder'
 
 /* ── page furniture ──────────────────────────────────────────────────────── */
 
@@ -415,7 +423,98 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
             </div>
           </Plate>
         </Section>
+
+        {/* ── B5/T13.3 ─────────────────────────────────────────────────────
+            Bench states for the two mechanisms B5 introduces that have a
+            LOOK: the armed confirm (T9) and the recovery ladder (T8). Both
+            are states you otherwise have to break something to reach — a
+            terminal has to die before the ladder renders, and the armed
+            state disarms itself after 4 s — so without a bench they can only
+            be reviewed live, in the one situation where nobody wants to be
+            fiddling with CSS. */}
+        <Section
+          id="armed-confirm"
+          title="The armed confirm — both halves"
+          note="One idiom replacing three (B5/T9). Resting reads as the action; armed reads as the CONSEQUENCE, with Cancel first so a mis-click has somewhere safe to land. The armed half is the whole point of benching this: it lives for four seconds, so it is otherwise near-impossible to look at properly."
+        >
+          <ArmedConfirmMatrix />
+        </Section>
+
+        <Section
+          id="recovery-ladder"
+          title="The recovery ladder"
+          note="Ordered by what each rung PRESERVES, least-destructive first — never by how drastic the verb sounds. Every row states both halves; the destroys sentence is never softened, because it is the one that prevents regret. The blocked row shows a rung that cannot help this session type, saying why rather than offering a button whose only answer is 'unsupported'."
+        >
+          <RecoveryLadderMatrix />
+        </Section>
       </div>
+    </div>
+  )
+}
+
+/** Resting and armed, side by side — the armed half cannot otherwise be held
+ *  still long enough to review. */
+function ArmedConfirmMatrix() {
+  const resting: ArmedConfirm = {
+    armed: false,
+    press: () => {},
+    cancel: () => {},
+  }
+  const armed: ArmedConfirm = { armed: true, press: () => {}, cancel: () => {} }
+  return (
+    <div className="flex flex-wrap items-start gap-8">
+      <Plate label="resting — the action">
+        <div className="p-3">
+          <ArmedButton
+            confirm={resting}
+            label="Delete host"
+            confirmLabel="Delete"
+            icon={<Trash2 className="size-3.5" aria-hidden />}
+          />
+        </div>
+      </Plate>
+      <Plate label="armed — the consequence, 4s">
+        <div className="p-3">
+          <ArmedButton
+            confirm={armed}
+            label="Delete host"
+            confirmLabel="Delete host"
+          />
+        </div>
+      </Plate>
+      <Plate label="armed — bulk verb">
+        <div className="p-3">
+          <ArmedButton
+            confirm={armed}
+            label="Delete all"
+            confirmLabel="Delete 12"
+          />
+        </div>
+      </Plate>
+    </div>
+  )
+}
+
+/** The canonical ladder, in both of its shapes: a session that CAN be
+ *  recovered in place, and one that cannot (so the first rung is blocked). */
+function RecoveryLadderMatrix() {
+  return (
+    <div className="flex flex-col gap-6">
+      <Plate label="native + local — every rung available">
+        <div className="p-3">
+          <RecoveryLadder session={{ runtime: 'native', host_id: null }} />
+        </div>
+      </Plate>
+      <Plate label="tmux — recover blocked, and says why">
+        <div className="p-3">
+          <RecoveryLadder session={{ runtime: 'tmux', host_id: null }} />
+        </div>
+      </Plate>
+      <Plate label="auto-recovery toggle — the pref that had no UI">
+        <div className="p-3">
+          <AutoHealToggle enabled onChange={() => {}} />
+        </div>
+      </Plate>
     </div>
   )
 }

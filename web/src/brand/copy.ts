@@ -188,7 +188,7 @@ export function killTeamLeadConfirm(teammateCount: number): ConfirmCopy {
  *  everywhere", so the sentence lives here and the surfaces import it rather
  *  than each inventing its own phrasing and drifting apart.
  *
- *  `BRAND.md` §6g carries the full verb-by-verb table; these are the strings
+ *  `BRAND.md` §6h carries the full verb-by-verb table; these are the strings
  *  that table describes, and a change to one is a diff in both. */
 export const LIFECYCLE = {
   /** B5/T5 — the archive/schedule contract, chosen at gate G4 (option a).
@@ -266,7 +266,7 @@ export const PURGE_DISPOSITION = [
  *
  *  Blocked rungs state WHY with the same sentence in both places they appear
  *  (§15.5): the inline affordance on a dead tile, and the canonical list in
- *  Settings. `BRAND.md` §6g carries the full table. */
+ *  Settings. `BRAND.md` §6h carries the full table. */
 export const RECOVERY = {
   recover: {
     label: 'Recover terminal',

@@ -1566,7 +1566,7 @@ pub async fn unarchive(state: &AppState, name: &str) -> Result<(), AppError> {
 //   | Restart        | conversation, worktree, schedules  | live pty + in-memory buffer |
 //   | Reset          | worktree, schedules, config        | conversation + scrollback   |
 //
-// `BRAND.md` §6g carries the same three sentences the UI shows.
+// `BRAND.md` §6h carries the same three sentences the UI shows.
 
 /// Rung 2 — **Restart**: stop and start as ONE server-side operation.
 ///

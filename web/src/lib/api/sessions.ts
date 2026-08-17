@@ -426,7 +426,7 @@ export interface SessionConfigPatch {
  *    just stays quiet.
  *
  *  The server mirrors these four strings exactly (`notify::NotifPolicy`), and
- *  `BRAND.md` §6f carries the tier × policy table. */
+ *  `BRAND.md` §6g carries the tier × policy table. */
 export type NotifPolicy = 'inherit' | 'all' | 'attention' | 'off'
 
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode

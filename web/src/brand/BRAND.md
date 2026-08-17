@@ -737,6 +737,129 @@ What is **not** acceptable, and what A6 fixed:
   two loops. In particular a fan-out must not consume the auto-fetch window, or
   it pushes real clipped messages out of it and makes them unrecoverable.
 
+## 6g. Notifications — tier x policy x category (B5)
+
+Three vocabularies decide whether a phone buzzes, and they are **different sets
+that share exactly one word**. That single overlap (`unread`) is what makes them
+look unifiable; they are not, because they answer different questions.
+
+| vocabulary | lives in | answers |
+|---|---|---|
+| `Tier` | `server/src/notify.rs` | what KIND of thing this push is |
+| `NotifPolicy` | `sessions.notif` (0028) | does THIS BOT push at all |
+| `NotifCategory` | `prefs` k/v | does this EVENT TYPE push, globally |
+| `TIERS` | `web/src/lib/attention-tiers.ts` | what this session LOOKS like in the roster |
+
+### The mapping (asserted from both sides)
+
+`Tier::client_tier` in Rust and `attention-tiers.test.ts` in TypeScript both pin
+this table, so a rename on either side fails a test instead of drifting.
+
+| server `Tier` | client tier | banner | badge | may re-buzz |
+|---|---|---|---|---|
+| `attention` | `needs` | yes | yes | yes |
+| `error` | `needs` | yes | yes | yes |
+| `unread` | `unread` | yes, replaces silently | no | no |
+| `schedule` | *(none)* | yes | no | no |
+
+The client's `working` and `quiet` are **unreachable from a push**, deliberately:
+they describe a session nobody needs to hear about, which is exactly the set
+that must never ring. A future server tier mapping onto either is a product
+decision, not a refactor.
+
+### The effective decision
+
+```text
+buzz = global_category_pref(category) AND session_policy(session, tier)
+```
+
+Applied ONCE, server-side, in `push::send_push_for`. Two layers can silence a
+push, so "muted" alone no longer answers "why didn't my phone ring" — every
+attempt records WHICH layer (`global:<category>` or `session:<policy>`) in the
+ring behind Settings.
+
+The **schedule lane passes no session** on purpose: a schedule's "notify me when
+done" is an explicit per-schedule opt-in, and an explicit opt-in outranks a
+passive per-bot mute.
+
+### The six categories
+
+`agent_waiting`, `agent_finished`, `agent_error`, `agent_stopped`,
+`schedule_error`, `schedule_finished` — **all default ON**. `agent_error` is the
+agent still running and telling you the work did not land; `agent_stopped` is the
+process going away. Different events, different next actions.
+
+### The four per-bot policies
+
+`inherit` (follow the global toggles — the default and the backfill) · `all`
+(this bot adds no mute of its own) · `attention` (only blocking tiers; the calm
+finish is muted) · `off` (this bot never pushes — its roster tier still works,
+the phone just stays quiet).
+
+### Who raises a push
+
+Pushes are **hook-anchored**: raised at the hook arms in `hooks::apply_payload`,
+never as a side effect of the status detector. `codex` / `kimi` / `shell` emit no
+hooks, so for those the detector remains the only path and stays live as an
+explicit fallback. There is exactly ONE writer of `pending_pushes` per session;
+a second is a silent dropped notification.
+
+`Notification` is deliberately NOT a trigger: Claude Code fires it ~60 s after a
+turn finishes, so wiring it would buzz a minute after every completed turn.
+
+## 6h. Lifecycle — what each verb preserves (B5)
+
+Every destructive verb is named by **what it preserves**, not by its mechanism.
+"Restart" and "Reset" mean nothing to someone deciding under pressure whether
+they are about to lose a conversation; "keeps your scrollback" does.
+
+| verb | preserves | destroys |
+|---|---|---|
+| **Stop** | everything on disk and in the DB | the live terminal |
+| **Archive** | everything; fully reversible | the live terminal; the tile leaves the overview |
+| **Purge** | working dir, branch, worktree | the session row and its children, permanently |
+| **Restart** | conversation, worktree, schedules | live pty + in-memory scrollback |
+| **Recover terminal** | scrollback and conversation | nothing else |
+| **Reset** | working dir, worktree, schedules, config | conversation, scrollback, activity |
+| **Duplicate** | makes a copy in the SAME directory | nothing (the original is untouched) |
+
+### The three sentences that carry the most weight
+
+These live in `brand/copy.ts` and each has MORE THAN ONE call site by design —
+§15.5 asks that a blocked or surprising thing state why with the same sentence
+everywhere, so a reworded explanation is a diff in every place it appears.
+
+- **`purgeLeavesYourFilesAlone`** — your working directory, git branch and
+  worktree are never touched, on archive or on delete. The single most
+  surprising fact, and the reason a delete dialog is not a threat to your code.
+- **`archivePausesSchedules`** — scheduled jobs on an archived session are
+  paused, and run again when you restore it. Before B5 the scheduler was
+  archive-blind and a hidden session was silently restarted by its own cron.
+- **`archiveIsTheUndo`** — archiving is reversible. It always WAS the undo
+  window; it was simply never called one, so users reached past it.
+
+### Rules
+
+- **Ordered by what they preserve**, least-destructive first — in the recovery
+  ladder, and in any menu that offers more than one.
+- **The `destroys` half is never softened or hidden** behind a disclosure. It is
+  the sentence that prevents regret; a verb that only says what it keeps reads
+  as a promise.
+- **Blocked verbs say why**, with the same sentence in every place they appear.
+- **Duplicate is a template, not a daemon.** The copy carries settings, avatar
+  and notification policy, and its scheduled jobs arrive **switched off**.
+
+### Which confirm
+
+- *destructive and cheap* → `useArmedConfirm` + `<ArmedButton>`. Two presses,
+  4 s window, no modal.
+- *destructive and consequential* → `useConfirm()`, a dialog that ENUMERATES the
+  consequences. Killing a team lead lists each teammate; switching to Bypass
+  names the relaunch and the skipped prompts.
+- **Never** `window.confirm` — it blocks the tab, cannot be styled, and can only
+  render a string, so it can never enumerate anything. CI-gated by
+  `scripts/lint-microcopy.sh`.
+
 ## 7. How the rest of the app consumes this
 
 - **Theme**: extend the `:root` brand block in `globals.css`; keep `--brand` /

@@ -182,7 +182,7 @@ impl Tier {
     /// not grow one: they describe a session nobody needs to hear about, which
     /// is precisely the set that should never push.
     ///
-    /// `BRAND.md` §6f carries the full table, and
+    /// `BRAND.md` §6g carries the full table, and
     /// `web/tests/unit/attention-tiers.test.ts` asserts the same mapping from
     /// the client side — so a rename on either side fails a test rather than
     /// silently drifting.

@@ -517,7 +517,7 @@ interface NotifTypeSpec {
  *
  *  These are the GLOBAL half of the mute. The per-BOT half lives in each
  *  session's own info panel, and a push goes out only when both allow it —
- *  see `BRAND.md` §6f for the full tier × policy × category table. */
+ *  see `BRAND.md` §6g for the full tier × policy × category table. */
 const NOTIF_TYPES: NotifTypeSpec[] = [
   {
     key: 'agent_waiting',

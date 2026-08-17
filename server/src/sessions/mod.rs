@@ -119,7 +119,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/seen", axum::routing::patch(seen_handler))
         // ── the manual recovery ladder (B5/T8) ──
         // Labelled by what they PRESERVE, not by how drastic they sound; see
-        // `lifecycle`'s ladder table and BRAND.md §6g.
+        // `lifecycle`'s ladder table and BRAND.md §6h.
         .route("/api/sessions/{name}/restart", post(restart_handler))
         .route("/api/sessions/{name}/recover", post(recover_handler))
         .route("/api/sessions/{name}/reset", post(reset_handler))

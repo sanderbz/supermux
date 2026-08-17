@@ -1099,7 +1099,7 @@ pub enum Heal {
 
 impl Heal {
     /// The wire/UI identifier. Stable strings: they reach the sessions delta and
-    /// the recovery UI, and `BRAND.md` §6g pairs each with the sentence the user
+    /// the recovery UI, and `BRAND.md` §6h pairs each with the sentence the user
     /// reads (B5/T8.2).
     pub const fn as_str(self) -> &'static str {
         match self {
