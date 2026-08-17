@@ -29,8 +29,16 @@
 //                              the transcript plane has produced nothing —
 //                              Claude Code is not writing a transcript for this
 //                              session, so chat can only show the terminal.
-//   send-unconfirmed           `use-pending-sends` (T4), when the watchdog gave
-//                              up on a send: no transcript echo, no aliveness.
+//   send-unconfirmed           NOBODY, today. It was raised by
+//                              `use-pending-sends` (T4) for a send the watchdog
+//                              gave up on — but that send has a BUBBLE, and the
+//                              inline row under it already states the failure
+//                              and carries the Retry. One failed send was being
+//                              announced three times (row + card + composer
+//                              banner, ~40% of the reading column), so the row
+//                              won: it is anchored to the thing that failed.
+//                              The sentence stays here for a send-level failure
+//                              with no bubble to attach to.
 //   session-blocked            the panel, when the LENS sees a usage-limit
 //                              banner or a startup gate on the live screen —
 //                              the one cause that is not about this app at all.

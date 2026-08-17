@@ -430,3 +430,41 @@ export function latchUndelivered(
   })
   return changed ? next : pending
 }
+
+/* ── one owner per failed send ─────────────────────────────────────────────── */
+
+/**
+ * Errors whose failure is ALREADY STATED on the transcript row.
+ *
+ * A refused send used to be announced three times at once: the inline row under
+ * the failed bubble (the server's sentence + Retry / Open terminal / Dismiss),
+ * the attention card, and the composer's banner repeating the same sentence
+ * with its own Dismiss — ~330px, roughly 40% of the reading column at
+ * 1440x900, pushing the conversation off screen and putting the reason string
+ * in `body.innerText` twice on a phone.
+ *
+ * The inline row wins, because it is anchored to the thing that failed and it
+ * already carries Retry. So the tracked `submit` marks the error it rethrows,
+ * and the composer's banner stays quiet for a failure that already has a row.
+ * A send with no row of its own — an untracked input plane — is unmarked, and
+ * the banner still speaks for it.
+ *
+ * A `WeakSet` rather than a field on the error: the object belongs to the
+ * caller (it can be a server `Error`, a `DOMException`, anything `fetch`
+ * rejects with), and marking it must not be visible to anyone reading it.
+ */
+const INLINE_OWNED = new WeakSet<object>()
+
+/** Mark `err` as reported by an inline pending row, and hand it back so it can
+ *  be rethrown in place. A non-object rejection is wrapped, so the marker holds
+ *  for the `throw 'string'` case too without losing the message. */
+export function markInlineOwned(err: unknown): unknown {
+  const obj = typeof err === 'object' && err !== null ? err : new Error(String(err))
+  INLINE_OWNED.add(obj)
+  return obj
+}
+
+/** Whether this failure is already stated on a transcript row. */
+export function isInlineOwned(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && INLINE_OWNED.has(err)
+}

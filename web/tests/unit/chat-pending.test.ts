@@ -13,13 +13,17 @@
  * this message land? has it been long enough to say it didn't?) are here, where
  * `bun test` can hold them to account without a DOM, a clock or a server.
  */
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, test } from 'bun:test'
 
 import type { ChatEntry } from '../../src/components/chat/entries'
 import {
   applyReceipt,
   CONFIRM_SKEW_MS,
+  isInlineOwned,
   latchUndelivered,
+  markInlineOwned,
   normalizeSend,
   PROMPT_CLAMP_CHARS,
   reconcile,
@@ -313,5 +317,61 @@ describe('the server’s delivery receipt', () => {
     expect(watchdogState(p, { nowMs: WATCHDOG_MS * 10, sawActiveSince: () => false })).toBe(
       'undelivered',
     )
+  })
+})
+
+/**
+ * ONE OWNER PER FAILED SEND.
+ *
+ * A refused send used to be stated three times at once — the inline row under
+ * the failed bubble, the attention card, and the composer's banner repeating
+ * the same sentence with its own Dismiss. At 1440x900 that is ~330px, roughly
+ * 40% of the reading column, and on a phone the reason string appeared in
+ * `body.innerText` twice. The row wins: it is anchored to the thing that
+ * failed and it already carries Retry.
+ *
+ * The marker is pure and asserted directly; the two suppressions it drives live
+ * in hooks, so they are asserted against the source — the same way
+ * `session-schedules.test.tsx` pins its dependency rule.
+ */
+describe('one owner per failed send', () => {
+  test('an error the inline row has stated is recognised; anything else is not', () => {
+    const err = new Error('the session refused this')
+    expect(isInlineOwned(err)).toBe(false)
+    expect(markInlineOwned(err)).toBe(err)
+    expect(isInlineOwned(err)).toBe(true)
+    // A different error carrying the SAME message is not the same failure.
+    expect(isInlineOwned(new Error('the session refused this'))).toBe(false)
+    expect(isInlineOwned(undefined)).toBe(false)
+    expect(isInlineOwned('nope')).toBe(false)
+  })
+
+  test('a non-object rejection is wrapped, keeps its message, and stays marked', () => {
+    const wrapped = markInlineOwned('boom')
+    expect(isInlineOwned(wrapped)).toBe(true)
+    expect((wrapped as Error).message).toBe('boom')
+  })
+
+  test('the tracked submit marks what it rethrows', () => {
+    const src = readFileSync(
+      new URL('../../src/components/chat/use-pending-sends.ts', import.meta.url),
+      'utf8',
+    )
+    expect(src).toContain('throw markInlineOwned(err)')
+    // …and it no longer raises the card for a send that has a bubble.
+    expect(src).not.toContain("? 'send-unconfirmed' : null")
+    expect(src).toContain('attention: null as PendingAttention | null')
+  })
+
+  test('the composer banner stays quiet for a failure that already has a row', () => {
+    const src = readFileSync(
+      new URL('../../src/components/chat/use-composer.ts', import.meta.url),
+      'utf8',
+    )
+    // The send-failed banner is raised only under the guard.
+    const guard = src.indexOf('if (!isInlineOwned(err)) {')
+    const banner = src.indexOf("kind: 'send-failed'")
+    expect(guard).toBeGreaterThan(-1)
+    expect(banner).toBeGreaterThan(guard)
   })
 })

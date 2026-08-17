@@ -24,6 +24,7 @@ import type { PeekLens } from './peek-lens'
 import { armedRefusal } from './registry/armed'
 import { classifySlash, readTrigger, slashName } from './slash'
 import type { PickerJump } from './composer-keys'
+import { isInlineOwned } from './pending'
 
 /** How much of the terminal's own draft the block banner quotes back. Enough to
  *  recognise the sentence, short enough that the banner stays one line. */
@@ -576,10 +577,19 @@ export function useComposer({
           setNotice({ kind: 'slash-note', detail: slashName(text) ?? undefined })
         }
       } catch (err) {
-        setNotice({
-          kind: 'send-failed',
-          detail: err instanceof Error ? err.message : undefined,
-        })
+        // ONE OWNER PER FAILED SEND. When the input plane is the tracked one
+        // (`use-pending-sends`), the failure is already on the transcript row
+        // under the bubble that failed — the server's sentence, a Retry, an
+        // Open terminal and a Dismiss. Saying it again here stacked a third
+        // ~110px panel under a card that was already repeating it, and put the
+        // reason string in the page twice. The draft is still in the box either
+        // way: it is only cleared after a POST resolves.
+        if (!isInlineOwned(err)) {
+          setNotice({
+            kind: 'send-failed',
+            detail: err instanceof Error ? err.message : undefined,
+          })
+        }
       } finally {
         sendingRef.current = false
         setSending(false)

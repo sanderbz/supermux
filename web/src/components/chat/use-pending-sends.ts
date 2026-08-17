@@ -32,6 +32,7 @@ import type { PeekLens } from './peek-lens'
 import {
   applyReceipt,
   latchUndelivered,
+  markInlineOwned,
   reconcile,
   watchdogState,
   WATCHDOG_MS,
@@ -133,7 +134,10 @@ export interface PendingSendsHandle {
   input: SessionInput
   retry: (id: string) => void
   dismiss: (id: string) => void
-  /** The T5 Attention cause an undelivered send raises, or null. */
+  /** The T5 Attention cause this hook raises — always null since the inline
+   *  row became the single owner of a failed send. Kept in the shape so the
+   *  panel's `topAttention([…])` list still reads as "every raiser, ranked",
+   *  and so a future connection-level raiser has somewhere to land. */
   attention: PendingAttention | null
 }
 
@@ -307,10 +311,12 @@ export function usePendingSends({
         patch(name, id, { state: 'unconfirmed', atMs: serverNowMs() })
       } catch (err) {
         patch(name, id, { state: 'undelivered', note: errorNote(err) })
-        // Rethrown so the composer's own banner still speaks: the echo says
-        // "this one did not land", the banner says "and your text is still in
-        // the box". Two different facts, two different places.
-        throw err
+        // Rethrown so the composer still knows the send failed (it keeps the
+        // draft in the box on this path), but MARKED: this failure is already
+        // stated on the row above, with the server's sentence and a Retry, so
+        // the banner must not say it a second time. `markInlineOwned` is the
+        // whole of the precedence rule — see `pending.ts`.
+        throw markInlineOwned(err)
       }
     },
     [input, name],
@@ -379,7 +385,14 @@ export function usePendingSends({
     input: tracked,
     retry,
     dismiss,
-    attention: items.some((p) => p.state === 'undelivered') ? 'send-unconfirmed' : null,
+    // NO CARD FROM HERE. Every undelivered send has a bubble, and the row under
+    // that bubble already states the failure and offers the Retry — so a card
+    // saying the same sentence a third of a screen higher is the second of
+    // three sayings of one fact (the third was the composer banner, now
+    // suppressed by `markInlineOwned`). The cause and its copy stay in
+    // `attention.ts` for a failure that has NO bubble to attach to; this hook
+    // is not that raiser.
+    attention: null as PendingAttention | null,
   }
 }
 
