@@ -375,6 +375,7 @@ fn confirm_footer(schedule_id: &str) -> String {
          When this scheduled task is FULLY complete (not before), signal completion \
          so I'm notified — run exactly:\n\
          curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
+         \x20 -H 'Content-Type: application/json' \\\n\
          \x20 \"$SUPERMUX_URL/api/hook/schedule/done\" \\\n\
          \x20 -d '{{\"session\":\"'$SUPERMUX_SESSION'\",\"schedule_id\":\"{schedule_id}\"}}'\n\
          Call it only once, only when the work is genuinely done."

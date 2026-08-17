@@ -25,6 +25,8 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
+
+use crate::extract::LenientJson;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -109,7 +111,7 @@ struct CommentBody {
 async fn comment_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CommentBody>,
+    LenientJson(req): LenientJson<CommentBody>,
 ) -> Result<Json<Value>, AppError> {
     let issue = auth_and_scope(&state, &headers, &req.session).await?;
     let body = req.body.trim();
@@ -144,7 +146,7 @@ struct StatusBody {
 async fn status_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<StatusBody>,
+    LenientJson(req): LenientJson<StatusBody>,
 ) -> Result<Json<Value>, AppError> {
     let issue = auth_and_scope(&state, &headers, &req.session).await?;
     let status = req.status.trim();
@@ -188,7 +190,7 @@ struct NeedsInputBody {
 async fn needs_input_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<NeedsInputBody>,
+    LenientJson(req): LenientJson<NeedsInputBody>,
 ) -> Result<Json<Value>, AppError> {
     let issue = auth_and_scope(&state, &headers, &req.session).await?;
     let question = req.question.trim();
@@ -264,7 +266,7 @@ struct CheckBody {
 async fn check_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CheckBody>,
+    LenientJson(req): LenientJson<CheckBody>,
 ) -> Result<Json<Value>, AppError> {
     let issue = auth_and_scope(&state, &headers, &req.session).await?;
     // The item must belong to the scoped issue — otherwise the agent could tick
@@ -304,7 +306,7 @@ struct LinkBody {
 async fn link_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<LinkBody>,
+    LenientJson(req): LenientJson<LinkBody>,
 ) -> Result<Json<Value>, AppError> {
     let issue = auth_and_scope(&state, &headers, &req.session).await?;
     let kind = req.kind.trim();
@@ -403,7 +405,7 @@ mod tests {
         let _ = comment_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "body": "done step 1" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "body": "done step 1" })).unwrap()),
         )
         .await
         .expect("comment ok");
@@ -426,7 +428,7 @@ mod tests {
         let _ = status_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "status": "done" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "status": "done" })).unwrap()),
         )
         .await
         .expect("status ok");
@@ -445,7 +447,7 @@ mod tests {
         let bad = status_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "status": "nope" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "status": "nope" })).unwrap()),
         )
         .await;
         assert!(matches!(bad, Err(AppError::BadRequest(_))));
@@ -462,7 +464,7 @@ mod tests {
         let res = comment_handler(
             State(state.clone()),
             token_header("WRONG"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "body": "x" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "body": "x" })).unwrap()),
         )
         .await;
         assert!(matches!(res, Err(AppError::Unauthorized)));
@@ -485,7 +487,7 @@ mod tests {
         let cross_auth = comment_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-b", "body": "hijack" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-b", "body": "hijack" })).unwrap()),
         )
         .await;
         assert!(matches!(cross_auth, Err(AppError::Unauthorized)));
@@ -494,7 +496,7 @@ mod tests {
         let _ = comment_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "body": "mine" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "body": "mine" })).unwrap()),
         )
         .await
         .unwrap();
@@ -518,7 +520,7 @@ mod tests {
         let _ = check_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "item_id": a_item, "done": true })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "item_id": a_item, "done": true })).unwrap()),
         )
         .await
         .expect("own item ok");
@@ -528,7 +530,7 @@ mod tests {
         let cross = check_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "item_id": b_item, "done": true })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "item_id": b_item, "done": true })).unwrap()),
         )
         .await;
         assert!(matches!(cross, Err(AppError::NotFound(_))));
@@ -548,7 +550,7 @@ mod tests {
         let _ = needs_input_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(
+            LenientJson(
                 serde_json::from_value(
                     json!({ "session": "worker-a", "question": "Drop the legacy column?" }),
                 )
@@ -580,7 +582,7 @@ mod tests {
         let bad = needs_input_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "question": "  " })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "question": "  " })).unwrap()),
         )
         .await;
         assert!(matches!(bad, Err(AppError::BadRequest(_))));
@@ -597,7 +599,7 @@ mod tests {
         let res = needs_input_handler(
             State(state.clone()),
             token_header("WRONG"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "question": "x" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "question": "x" })).unwrap()),
         )
         .await;
         assert!(matches!(res, Err(AppError::Unauthorized)));
@@ -615,7 +617,7 @@ mod tests {
         let _ = status_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "status": "done" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "status": "done" })).unwrap()),
         )
         .await
         .expect("status done ok");
@@ -633,7 +635,7 @@ mod tests {
         let _ = link_handler(
             State(state.clone()),
             token_header("tok-a"),
-            Json(serde_json::from_value(json!({ "session": "worker-a", "kind": "pr", "ref": "https://x/pr/9" })).unwrap()),
+            LenientJson(serde_json::from_value(json!({ "session": "worker-a", "kind": "pr", "ref": "https://x/pr/9" })).unwrap()),
         )
         .await
         .expect("link ok");

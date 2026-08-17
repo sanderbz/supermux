@@ -14,6 +14,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod external_edit;
+pub mod extract;
 pub mod files;
 pub mod hooks;
 pub mod hosts;

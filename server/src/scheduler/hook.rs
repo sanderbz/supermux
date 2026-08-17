@@ -43,6 +43,16 @@
 //!   `schedule_expr` from the grammar `/supermux-schedule` teaches it; the
 //!   server validates with the same `parser::parse` the bearer path uses.
 //!
+//! ## The body is read `Content-Type`-agnostically
+//!
+//! Both handlers take [`crate::extract::LenientJson`], not `axum::Json`. The
+//! documentation an agent copies (`agents/supermux-schedule.md`, and
+//! [`super::runner`]'s confirm footer) writes the body with `curl -d`, whose
+//! default content type is `application/x-www-form-urlencoded` — which `Json`
+//! answers with a bare 415 and an empty JSON body, i.e. `curl -fsS` exit 22 and
+//! nothing the agent can read. See the extractor's module doc for why accepting
+//! it is not a CSRF hole (the auth header is not CORS-simple).
+//!
 //! What is NOT here, and is recorded as a known limitation rather than an
 //! oversight: an agent still cannot DELEGATE with its hook token
 //! (`/api/agents/delegate` is bearer-only), and it cannot run, patch, enable or
@@ -57,6 +67,7 @@ use serde_json::{json, Value};
 
 use crate::db;
 use crate::error::AppError;
+use crate::extract::LenientJson;
 use crate::state::AppState;
 
 use super::watch;
@@ -108,7 +119,7 @@ struct DoneBody {
 async fn done_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<DoneBody>,
+    LenientJson(body): LenientJson<DoneBody>,
 ) -> Result<Json<Value>, AppError> {
     authenticate(&state, &headers, &body.session).await?;
 
@@ -195,7 +206,7 @@ struct CreateBody {
 async fn create_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<CreateBody>,
+    LenientJson(body): LenientJson<CreateBody>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
     let session = body.session.trim().to_string();
     authenticate(&state, &headers, &session).await?;

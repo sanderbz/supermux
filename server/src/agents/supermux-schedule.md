@@ -87,6 +87,7 @@ with enough context to act on cold: you will not remember this conversation.
 
 ```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
   "$SUPERMUX_URL/api/hook/schedule/create" \
   -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"Check whether the 08:00 deploy went green; if it did not, summarise the failure.","schedule_expr":"every weekday at 08:00"}'
 ```
@@ -113,6 +114,7 @@ the intent is visible):
 
 ```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
   "$SUPERMUX_URL/api/hook/schedule/create" \
   -d '{"session":"'"$SUPERMUX_SESSION"'","title":"CI follow-up","prompt":"Check whether the CI run on this branch finished, and report the result.","schedule_expr":"in 20m","done_action":"disable"}'
 ```

@@ -454,3 +454,141 @@ async fn the_hook_route_is_outside_the_bearer_layer_and_the_admin_routes_are_not
     }
     h.cleanup();
 }
+
+// ── 6. the DOCUMENTED curl actually works ───────────────────────────────────
+
+/// POST a raw body with an explicit (or absent) `Content-Type`, bypassing the
+/// `create_with` helper's hard-coded `application/json`.
+async fn post_raw(
+    h: &Harness,
+    uri: &str,
+    content_type: Option<&str>,
+    token: Option<&str>,
+    body: &str,
+) -> (StatusCode, Vec<u8>) {
+    let mut req = Request::builder().method(Method::POST).uri(uri);
+    if let Some(ct) = content_type {
+        req = req.header(header::CONTENT_TYPE, ct);
+    }
+    if let Some(t) = token {
+        req = req.header(HOOK_HEADER, t);
+    }
+    let resp = h
+        .app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, bytes)
+}
+
+#[tokio::test]
+async fn the_documented_curl_d_form_creates_a_schedule() {
+    // THE CONTRACT BUG. `agents/supermux-schedule.md` teaches `curl -d '{…}'`,
+    // and `curl -d` sends `application/x-www-form-urlencoded`. axum's `Json`
+    // extractor answered that with a bare 415 and a plain-text body, so the
+    // shipped documentation failed on its own first example: `curl -fsS` exits
+    // 22 and the agent gets nothing readable back. Every agent that follows the
+    // documentation burns a tool call, and some fraction never recovers.
+    //
+    // Both of curl's shapes are asserted: `-d` (form) and `-d` with the header
+    // stripped entirely by a proxy (no content type at all).
+    let h = spawn_harness().await;
+    let a = make_session(&h, "b4-doc").await;
+    let body = valid("b4-doc").to_string();
+
+    for ct in [Some("application/x-www-form-urlencoded"), None] {
+        db::schedules::list(&h.state.pool).await.unwrap();
+        let (status, raw) = post_raw(
+            &h,
+            "/api/hook/schedule/create",
+            ct,
+            Some(&a),
+            &body,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "content-type {ct:?} must be accepted: {}",
+            String::from_utf8_lossy(&raw),
+        );
+    }
+    assert_eq!(
+        schedules_for(&h, "b4-doc").await.len(),
+        2,
+        "both documented forms must have landed a row",
+    );
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn the_done_hook_takes_the_documented_curl_d_form_too() {
+    // `scheduler::runner::confirm_footer` teaches the same `-d` shape for
+    // `/done`, so the same 415 killed agent-declared completion. Auth failure is
+    // the interesting bit: the request must reach the AUTHENTICATOR (401), not
+    // die at the content-type gate (415), because 401 is a status an agent can
+    // act on and 415 is not.
+    let h = spawn_harness().await;
+    make_session(&h, "b4-done").await;
+    let (status, _) = post_raw(
+        &h,
+        "/api/hook/schedule/done",
+        Some("application/x-www-form-urlencoded"),
+        Some("not-the-token"),
+        &json!({ "session": "b4-done", "schedule_id": "SCHED-nope" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_json_is_a_readable_400_not_a_bare_415() {
+    // T7.2: "a rejected request is a 400/401/429 with a readable message". A 415
+    // with an empty body is neither — it is the one refusal an agent cannot
+    // parse. Whatever the content type, an unparseable body must come back in
+    // the documented `{ ok: false, error: … }` envelope.
+    let h = spawn_harness().await;
+    let a = make_session(&h, "b4-junk").await;
+
+    for (ct, body) in [
+        (Some("application/json"), "session=b4-junk&title=x"),
+        (Some("text/plain"), "not json at all"),
+        (None, ""),
+    ] {
+        let (status, raw) =
+            post_raw(&h, "/api/hook/schedule/create", ct, Some(&a), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "ct {ct:?} body {body:?}");
+        let parsed: Value = serde_json::from_slice(&raw)
+            .unwrap_or_else(|e| panic!("the error body must be JSON ({e}): {:?}", String::from_utf8_lossy(&raw)));
+        assert_eq!(parsed["ok"], json!(false));
+        assert!(
+            parsed["error"].as_str().is_some_and(|s| s.len() > 10),
+            "the error must be a readable sentence, got {parsed}",
+        );
+    }
+    assert!(schedules_for(&h, "b4-junk").await.is_empty());
+    h.cleanup();
+}
+
+#[test]
+fn every_d_curl_in_the_skill_file_sets_the_json_content_type() {
+    // The file IS the agent's only interface to the endpoint. `curl -d` without
+    // this header is form-encoded, which is exactly the request the server had
+    // to be taught to accept; the documentation must not teach the shape that
+    // only works because of a tolerance.
+    let md = supermux_server::agents::skills::SUPERMUX_SCHEDULE_SKILL;
+    for block in md.split("```bash").skip(1) {
+        let block = block.split("```").next().unwrap_or_default();
+        if !block.contains(" -d ") {
+            continue;
+        }
+        assert!(
+            block.contains("Content-Type: application/json"),
+            "a `-d` curl in supermux-schedule.md must set the JSON content type:\n{block}",
+        );
+    }
+}
