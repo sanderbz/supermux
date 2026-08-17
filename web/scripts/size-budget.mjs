@@ -169,8 +169,9 @@ const BUDGET_ENTRY_JS = 160 * KB
 // rediscover it:
 //
 //   measured on this branch        215.61 KB     (B5's 215.91 + 0.22, see below)
+//   measured at wave-1 integration 218.54 KB     (all seven fix streams on one tree)
 //   documented policy              measured × 1.02
-//   ceiling                        219.92 -> 220 KB
+//   ceiling                        218.54 × 1.02 = 222.91 -> 223 KB
 //
 // THIS IS NOT SHELTER FOR THIS PR'S BYTES. fix/perf-a11y-net measures 215.61,
 // i.e. it fits under the OLD 216 ceiling with room to spare; the ratchet is the
@@ -190,7 +191,7 @@ const BUDGET_ENTRY_JS = 160 * KB
 // is a gate. This one is an awareness ceiling: every PR that moves it must still
 // justify its bytes in the PR body, which is the rule that has actually been
 // doing the work all along.
-const BUDGET_APP_JS = 220 * KB
+const BUDGET_APP_JS = 223 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
