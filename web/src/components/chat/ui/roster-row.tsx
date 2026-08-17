@@ -51,6 +51,10 @@ import { ATTENTION_DOT, attentionDotSeat, FACEPILE, MARK_SIZE } from './metrics'
  *  move. See the density table in this file's header. */
 export type RosterDensity = 'list' | 'strip' | 'picker'
 
+/** Which dot the row draws. Mirrors `Attention.dotKind` — the roster's two
+ *  visible tiers, deliberately not four. */
+export type AttentionKind = 'needs' | 'unread'
+
 export interface RosterRowProps {
   /** The session's name — its face, and by default its label. */
   seed: string
@@ -63,8 +67,14 @@ export interface RosterRowProps {
   preview?: string
   state?: MarkState
   selected?: boolean
-  /** Needs you: permission, plan approval, question, inbound delegation. */
-  attention?: boolean
+  /** The attention dot on the mark's shoulder.
+   *
+   *  `'needs'` (or the legacy `true`) is the red demand — permission, plan
+   *  approval, question, inbound delegation. `'unread'` is the calmer, smaller
+   *  dot for "it has spoken since you last looked": the model's middle tier,
+   *  which existed in `lib/attention-tiers.ts` from the start and was drawn
+   *  nowhere, so an unread row looked exactly like a quiet one. */
+  attention?: boolean | AttentionKind
   /** A team row: the cluster replaces the single mark, same footprint. */
   crew?: readonly FacepileMember[]
   /** Keyline colour for a crew cluster — the row's own paper. */
@@ -85,10 +95,18 @@ export interface RosterRowProps {
    *  Interaction chrome the primitive deliberately knows nothing about. */
   trailing?: React.ReactNode
   onClick?: () => void
+  onFocus?: () => void
   onMouseEnter?: () => void
   onMouseLeave?: () => void
   onContextMenu?: (e: React.MouseEvent) => void
   onKeyDown?: (e: React.KeyboardEvent) => void
+  /** Roving-tabindex seam (`hooks/use-roving.ts`): `-1` for every row but the
+   *  one the arrow keys have landed on, so a 40-session roster is ONE tab stop
+   *  and not forty. Undefined ⇒ the browser default (0) — a row outside a roving
+   *  list is an ordinary tab stop, exactly as before. */
+  tabIndex?: number
+  /** The same seam's handle on the DOM node, so the list owner can move focus. */
+  buttonRef?: React.Ref<HTMLButtonElement>
   /** Accessible label — the wrappers know the status word, the primitive does
    *  not. Falls back to the visible name. */
   ariaLabel?: string
@@ -122,16 +140,21 @@ export function RosterRow({
   meta,
   trailing,
   onClick,
+  onFocus,
   onMouseEnter,
   onMouseLeave,
   onContextMenu,
   onKeyDown,
+  tabIndex,
+  buttonRef,
   ariaLabel,
   title,
   dataVr,
   className,
 }: RosterRowProps) {
   const d = DENSITY[density]
+  const dotKind: AttentionKind | null =
+    attention === true ? 'needs' : attention === false || !attention ? null : attention
   // A picker row is arrowed through: no ticking timestamp, and the face holds
   // still. Both halves of that decision live here so no caller can forget one.
   const still = density === 'picker'
@@ -139,11 +162,14 @@ export function RosterRow({
   return (
     <button
       type="button"
+      ref={buttonRef}
       onClick={onClick}
+      onFocus={onFocus}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onContextMenu={onContextMenu}
       onKeyDown={onKeyDown}
+      tabIndex={tabIndex}
       title={title}
       aria-label={ariaLabel}
       data-selected={selected || undefined}
@@ -176,13 +202,14 @@ export function RosterRow({
             label={null}
           />
         )}
-        {attention && (
+        {dotKind && (
           <AttentionDot
             seed={seed}
             pin={pin}
             crew={Boolean(crew)}
             ring={ring}
             size={d.mark}
+            kind={dotKind}
           />
         )}
       </span>
@@ -225,6 +252,7 @@ function AttentionDot({
   crew,
   ring,
   size = MARK_SIZE.roster,
+  kind = 'needs',
 }: {
   seed: string
   pin?: MarkPin
@@ -233,20 +261,31 @@ function AttentionDot({
   /** The mark's box, which the seat is derived in — a 24px picker face has its
    *  shoulder somewhere very different from a 40px list face. */
   size?: number
+  kind?: AttentionKind
 }) {
+  // Same SEAT for both kinds — the shoulder is a property of the silhouette, not
+  // of the news. Only the diameter and the pigment change, so the two tiers read
+  // as one channel at two volumes. The unread dot is centred on the needs dot's
+  // seat rather than seated on its own smaller box, or the two would visibly
+  // jump when a row escalated from unread to needs.
+  const unread = kind === 'unread'
+  const dot = unread ? ATTENTION_DOT.unreadSize : ATTENTION_DOT.size
+  const inset = (ATTENTION_DOT.size - dot) / 2
   const seat = crew
     ? { left: FACEPILE.cluster.box - ATTENTION_DOT.size, top: 0 }
     : attentionDotSeat(characterFromSeed(seed, pin), size, VIEWBOX)
   return (
     <span
       aria-hidden
+      data-vr="attention-dot"
+      data-attention-kind={kind}
       className="absolute rounded-full"
       style={{
-        left: seat.left,
-        top: seat.top,
-        width: ATTENTION_DOT.size,
-        height: ATTENTION_DOT.size,
-        background: ATTENTION_DOT.color,
+        left: seat.left + inset,
+        top: seat.top + inset,
+        width: dot,
+        height: dot,
+        background: unread ? ATTENTION_DOT.unreadColor : ATTENTION_DOT.color,
         boxShadow: `0 0 0 ${ATTENTION_DOT.ringWidth}px ${ring ?? 'var(--sm-paper)'}`,
       }}
     />

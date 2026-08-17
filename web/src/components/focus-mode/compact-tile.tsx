@@ -32,7 +32,7 @@ import { sessionTitle } from '@/lib/api/sessions'
 import { markStateFor } from '@/lib/mark-status'
 import { usePin } from '@/hooks/use-roster-marks'
 import { useRowAttention } from '@/hooks/use-attention'
-import { RosterRow } from '@/components/chat/ui'
+import { RosterRow, type AttentionKind } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import type { TileSession } from '@/components/session-tile/types'
 
@@ -73,7 +73,10 @@ export function CompactTile({
   const reduce = useReducedMotion()
   const pin = usePin(session.name)
   const rowAttention = useRowAttention(session)
-  const showAttention = attention ?? rowAttention.dot
+  // `dotKind`, not the boolean: the strip draws the calm unread dot too. `true`
+  // from a caller still means the red needs dot (benches, fixtures).
+  const showAttention: boolean | AttentionKind =
+    attention === true ? 'needs' : attention === false ? false : (rowAttention.dotKind ?? false)
   const [peeking, setPeeking] = React.useState(false)
   const dwellRef = React.useRef<number | null>(null)
 

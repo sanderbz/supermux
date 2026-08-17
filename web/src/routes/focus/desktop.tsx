@@ -74,11 +74,19 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   // session object: the object changes identity on every SSE delta, and
   // re-recording the cursor on every tail line would silently mark a session
   // read while you were looking at a different tab.
+  //
+  // The `current != null` key is load-bearing and was missing: on a COLD load —
+  // a bookmark, a refresh, a link — the roster query has not resolved on the
+  // first render, so `current` is undefined and this effect wrote nothing. With
+  // `[name]` alone it never ran again, so opening a session directly left NO
+  // seen cursor at all, and `tierFor` (which reads "no cursor" as never-opened)
+  // reported `quiet` for that session forever after. The mobile route has always
+  // keyed it this way; this is the desktop half catching up.
   const { markRead } = useAttentionContext()
   React.useEffect(() => {
     if (current) markRead(current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
+  }, [name, current != null])
   // Detected Agent Teams — the SAME shared `['teams']` cache the overview TEAM
   // CARD reads (GET on mount, then SSE-live). Mock injection bypasses the hook's
   // network so the /dev/focus harness can eyeball team states offline.

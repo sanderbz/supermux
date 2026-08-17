@@ -17,10 +17,12 @@ import {
   activityStamp,
   attentionFor,
   cursorFor,
+  mergeCursors,
   rollup,
   tierFor,
   TIERS,
   unreadCount,
+  unreadCursorFor,
   unreadSessions,
   type AttentionSession,
   type SeenCursor,
@@ -356,5 +358,126 @@ describe('the server push tiers map onto the roster tiers', () => {
     // the client renders it as a dot rather than a demand.
     expect(SERVER_TO_CLIENT.unread).toBe('unread')
     expect(TIERS as readonly string[]).toContain('unread')
+  })
+})
+
+// ── R3: the unread tier is REACHABLE and VISIBLE ────────────────────────────
+//
+// The three-tier model shipped as a one-tier model. Three independent defects,
+// all of which had to be fixed together — fixing any one alone still yields no
+// unread anywhere on the roster:
+//
+//   RENDER  `attentionFor` set `dot: tier === 'needs'`, so an unread row was
+//           pixel-identical to a quiet one and `Attention.count` (fed by the
+//           whole T5 server change: entry_count / epoch / last_entry_ts) had no
+//           consumer at all.
+//   ENTRY   the desktop focus route's markRead effect was keyed on `[name]`
+//           while `current` is undefined on the first render, so a cold load
+//           wrote no cursor and `tierFor` reported `quiet` forever after.
+//           (Covered by the e2e — it is a React deps array, not arithmetic.)
+//   TOGGLE  `markUnread` DELETED the cursor, and `tierFor` treats "no cursor"
+//           as never-opened ⇒ quiet. It was arithmetically incapable of marking
+//           anything unread.
+//
+// What follows pins the arithmetic halves, including the case the 108-test
+// suite was missing: markUnread on a session with a stamp ⇒ tier 'unread'.
+describe('mark unread actually marks unread', () => {
+  test('the cursor it writes lands the row in the `unread` tier', () => {
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    // Read it first — this is the state the bug was invisible in.
+    expect(tierFor(s, cursorFor(s, NOW), NOW)).toBe('quiet')
+    expect(tierFor(s, unreadCursorFor(s), NOW)).toBe('unread')
+  })
+
+  test('DELETING the cursor — the old implementation — does not', () => {
+    // The regression itself, stated as a fact about the model rather than about
+    // the hook: "no cursor" is *never opened*, which is deliberately quiet.
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    expect(tierFor(s, undefined, NOW)).toBe('quiet')
+  })
+
+  test('it survives later activity — the row stays unread, not re-read', () => {
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    const cursor = unreadCursorFor(s)
+    const spokeAgain = { ...s, activity_at: NOW - 1_000 }
+    expect(tierFor(spokeAgain, cursor, NOW)).toBe('unread')
+  })
+
+  test('`needs` still outranks it — a blocked row is never merely unread', () => {
+    const s = session({ status: 'waiting', activity_at: NOW - 10_000 })
+    expect(tierFor(s, unreadCursorFor(s), NOW)).toBe('needs')
+  })
+
+  test('a row with NO activity stamp cannot be marked unread, and says so', () => {
+    // There is no "since" to be after. A cursor at 0 reads as no cursor, i.e.
+    // quiet — honest, rather than a badge that means nothing.
+    const s = session({ activity_at: undefined, last_activity: undefined, updated_at: undefined })
+    expect(activityStamp(s)).toBe(0)
+    expect(unreadCursorFor(s).ts).toBe(0)
+    expect(tierFor(s, unreadCursorFor(s), NOW)).toBe('quiet')
+  })
+
+  test('the count degrades to a dot — we no longer know how many you had read', () => {
+    const s = session({
+      status: 'idle',
+      activity_at: NOW - 10_000,
+      chat_tail: { entry_count: 12, epoch: 3 } as AttentionSession['chat_tail'],
+    })
+    const att = attentionFor(s, unreadCursorFor(s), NOW)
+    expect(att.tier).toBe('unread')
+    expect(att.count).toBeNull()
+  })
+})
+
+describe('a local mark-unread outlives the server cursor (B5/T4.4)', () => {
+  test('newest-wins would undo it, so the rewind wins outright', () => {
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    const local = unreadCursorFor(s)
+    // The server's cursor is a real read that really did happen later — it is
+    // ALWAYS newer than the rewind, so without the exception "Mark unread" was
+    // undone on the very next render of the roster.
+    const server: SeenCursor = { ts: NOW }
+    expect(server.ts).toBeGreaterThan(local.ts)
+    expect(mergeCursors(local, server)).toBe(local)
+    expect(tierFor(s, mergeCursors(local, server), NOW)).toBe('unread')
+  })
+
+  test('an ordinary read still loses to a newer server cursor', () => {
+    const local: SeenCursor = { ts: NOW - 5_000 }
+    const server: SeenCursor = { ts: NOW }
+    expect(mergeCursors(local, server)).toBe(server)
+  })
+
+  test('reading the session afterwards clears the flag and the tier', () => {
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    const reread = cursorFor(s, NOW)
+    expect(reread.unread).toBeUndefined()
+    expect(tierFor(s, reread, NOW)).toBe('quiet')
+  })
+})
+
+describe('every visible tier has a visible affordance', () => {
+  test('`unread` draws a dot — it used to draw nothing at all', () => {
+    const s = session({ status: 'idle', activity_at: NOW - 10_000 })
+    const att = attentionFor(s, unreadCursorFor(s), NOW)
+    expect(att.dot).toBe(true)
+    expect(att.dotKind).toBe('unread')
+  })
+
+  test('`needs` keeps its own, louder dot — the two are distinguishable', () => {
+    const att = attentionFor(session({ status: 'waiting' }), seen(), NOW)
+    expect(att.dot).toBe(true)
+    expect(att.dotKind).toBe('needs')
+  })
+
+  test('`working` and `quiet` draw nothing — the signal stays a signal', () => {
+    for (const s of [
+      session({ status: 'active', activity_at: NOW - 60_000 }),
+      session({ status: 'idle', activity_at: NOW - 60_000 }),
+    ]) {
+      const att = attentionFor(s, seen(), NOW)
+      expect(att.dot).toBe(false)
+      expect(att.dotKind).toBeNull()
+    }
   })
 })

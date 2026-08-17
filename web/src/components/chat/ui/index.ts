@@ -71,7 +71,7 @@ export {
   type Receipt,
   type ReceiptGroupProps,
 } from './receipt-group'
-export { RosterRow, type RosterRowProps } from './roster-row'
+export { RosterRow, type RosterRowProps, type AttentionKind } from './roster-row'
 export {
   MentionChip,
   SystemEntity,

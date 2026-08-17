@@ -56,6 +56,21 @@ export interface SeenCursor {
   /** The store epoch `count` was recorded under. A different epoch ⇒ the count
    *  is a different counter and must not be subtracted. */
   epoch?: number
+  /** This cursor was written by "Mark unread", not by reading.
+   *
+   *  It is NOT decoration. Two things depend on it:
+   *
+   *  * `markUnread` cannot express itself by DELETING the cursor. `tierFor`
+   *    treats "no cursor" as *never opened*, which is deliberately quiet (the
+   *    #41/#43 false-positive class), so deleting was arithmetically incapable
+   *    of marking anything unread. Instead it rewinds `ts` to just BEFORE the
+   *    row's own activity stamp, which is the one value that makes the ordinary
+   *    `stamp > seen` comparison say `unread` without inventing a second rule.
+   *  * Since B5 the server persists its own cursor and `mergeCursors` takes the
+   *    newer of the two — and the server's is always newer than a rewind. So a
+   *    deliberate local rewind has to be able to win, and this flag is how it
+   *    says so. See `mergeCursors`. */
+  unread?: true
 }
 
 /** The subset of a session this module reads. `ApiSession` satisfies it. */
@@ -95,6 +110,22 @@ export function serverCursor(s: AttentionSession): SeenCursor | undefined {
   }
 }
 
+/** The cursor "Mark unread" writes.
+ *
+ *  One millisecond BEFORE the row's own activity stamp, so the ordinary
+ *  `stamp > seen` comparison in `tierFor` reports `unread` — no second rule, no
+ *  sentinel tier. `count`/`epoch` are deliberately dropped: the row is unread
+ *  again, and we no longer know how many of its entries you had read, so it
+ *  degrades to a dot rather than to a wrong number.
+ *
+ *  A row with no stamp at all (`activityStamp === 0` — a session that has never
+ *  reported activity) cannot be marked unread: there is no "since" to be after.
+ *  It returns a cursor at 0, which `tierFor` reads as no cursor, i.e. quiet. */
+export function unreadCursorFor(s: AttentionSession): SeenCursor {
+  const stamp = activityStamp(s)
+  return { ts: stamp > 0 ? stamp - 1 : 0, unread: true }
+}
+
 /** Newest-wins merge of the local and server cursors (B5/T4.4).
  *
  *  localStorage is NOT replaced by the server cursor — it stays as the
@@ -107,13 +138,21 @@ export function serverCursor(s: AttentionSession): SeenCursor | undefined {
  *  * both         → whichever `ts` is greater
  *
  *  Ties go to LOCAL. A tie means the same read, and preferring local keeps the
- *  count/epoch this device actually observed rather than a round-tripped copy. */
+ *  count/epoch this device actually observed rather than a round-tripped copy.
+ *
+ *  ONE exception, and it is the whole reason `SeenCursor.unread` exists: a local
+ *  cursor written by "Mark unread" always wins. Newest-wins would otherwise undo
+ *  it on the very next render — the server cursor is a real read that really did
+ *  happen later, so it is always newer than the rewind. "Come back to this" is a
+ *  private note to yourself on this device (`markUnread` is local-only by
+ *  design); a note that a background sync erases is not a note. */
 export function mergeCursors(
   local: SeenCursor | undefined,
   server: SeenCursor | undefined,
 ): SeenCursor | undefined {
   if (!local) return server
   if (!server) return local
+  if (local.unread) return local
   return server.ts > local.ts ? server : local
 }
 
@@ -208,11 +247,23 @@ export function unreadCount(s: AttentionSession, cursor?: SeenCursor): number | 
   return delta
 }
 
+/** Which of the two "look at me" tiers a row's dot is drawn for, or `null` for
+ *  no dot. Surfaces need the DISTINCTION, not just the boolean: a red needs-you
+ *  dot and a calm unread dot are different promises. */
+export type DotKind = 'needs' | 'unread'
+
 /** A row's full attention state — what a surface actually renders. */
 export interface Attention {
   tier: Tier
-  /** `true` for `needs` — the 7px dot on the mark's shoulder. */
+  /** `true` for `needs` AND for `unread` — the dot on the mark's shoulder.
+   *
+   *  It used to be `needs` only, which made the middle tier of a three-tier
+   *  model pixel-identical to a quiet row: `unread` was computed, ordered on and
+   *  counted, and then drawn nowhere. A tier nothing draws is not a tier. */
   dot: boolean
+  /** WHICH dot — `needs` is the red demand, `unread` the calm "it spoke since
+   *  you looked". `null` when there is no dot. */
+  dotKind: DotKind | null
   /** A number, or `null` for "a dot, no number". */
   count: number | null
   /** The stamp the tier was decided on (server-clock ms). Ordering key. */
@@ -225,9 +276,11 @@ export function attentionFor(
   now: number = Date.now(),
 ): Attention {
   const tier = tierFor(s, cursor, now)
+  const dotKind: DotKind | null = tier === 'needs' ? 'needs' : tier === 'unread' ? 'unread' : null
   return {
     tier,
-    dot: tier === 'needs',
+    dot: dotKind !== null,
+    dotKind,
     count: tier === 'unread' ? unreadCount(s, cursor) : null,
     stamp: activityStamp(s),
   }

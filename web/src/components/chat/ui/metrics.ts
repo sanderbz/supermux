@@ -54,6 +54,22 @@ export const ATTENTION_DOT = {
   /** Page-coloured keyline, so the dot separates from the silhouette under it. */
   ringWidth: 2,
   color: '#e5484d',
+  /**
+   * The UNREAD dot — the middle tier of the three-tier model, which had no
+   * affordance at all until now (`attentionFor` set `dot: tier === 'needs'`, so
+   * an unread row was pixel-identical to a quiet one).
+   *
+   * Smaller and calmer than the needs dot ON PURPOSE, and that difference is the
+   * whole design: `needs` is a demand ("decide something"), `unread` is a fact
+   * ("it spoke while you were away"). Same seat, same keyline, so the two read
+   * as one channel at two volumes rather than as two competing badges — and a
+   * roster where everything is loud is a roster nobody reads.
+   *
+   * The pigment is the app's own accent rather than a second alarm colour, for
+   * the same reason §3.2 keeps the error family off the alert dot.
+   */
+  unreadSize: 5,
+  unreadColor: 'var(--primary)',
 } as const
 
 /**
