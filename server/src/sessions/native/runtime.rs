@@ -378,6 +378,20 @@ impl NativeSession {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(false);
+        // The pane must NOT inherit the daemon's agent-nesting markers.
+        // `envs` above ADDS to the parent environment, so a daemon started from
+        // inside a Claude Code pane would hand `CLAUDE_CODE_CHILD_SESSION=1` to
+        // every agent it launches — which turns transcript saving OFF, and with
+        // no transcript the whole chat plane has nothing to read. `main` already
+        // scrubs the daemon's own environ; this is the same rule enforced at the
+        // spawn itself, so a var set after boot (or a holder spawned by some
+        // future non-main entry point) cannot reintroduce it.
+        // See `sessions::lifecycle::AGENT_NESTING_ENV`.
+        for key in crate::sessions::lifecycle::AGENT_NESTING_ENV {
+            if !env.contains_key(*key) {
+                cmd.env_remove(key);
+            }
+        }
         // SAFETY: `setsid` is async-signal-safe. It detaches the holder from
         // the daemon's session/process group so a signal aimed at the daemon
         // (or its group) can never reach a holder or its agent.
@@ -2324,6 +2338,70 @@ mod tests {
 
         session.stop_pump();
         crate::sessions::native::forget("spawnreset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pane must never inherit the daemon's AGENT-NESTING markers.
+    ///
+    /// The failure: supermux started from inside a Claude Code session carries
+    /// `CLAUDE_CODE_CHILD_SESSION=1` in its environ, `Command::envs` only ADDS
+    /// to the parent environment, so every `claude` we launch reads itself as a
+    /// nested child — prints "Transcript saving is off", writes no `.jsonl`, and
+    /// leaves the entire chat plane with nothing to read.
+    ///
+    /// Asserted END TO END on the real spawn: the holder stand-in is a script
+    /// that dumps the environment it was handed. (`spawn` itself never
+    /// completes — nothing binds the socket — but the exec happens up front,
+    /// which is the whole point.)
+    #[tokio::test]
+    async fn a_spawned_pane_never_inherits_the_daemons_agent_nesting_markers() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::sessions::native::test_serial().await;
+        let dir = data_dir("envscrub");
+        let dumped = dir.join("child-env.txt");
+        let script = dir.join("holder-stub.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nenv > '{}'\n", dumped.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The poison, exactly as an agent-launched daemon would carry it.
+        for key in crate::sessions::lifecycle::AGENT_NESTING_ENV {
+            std::env::set_var(key, "1");
+        }
+        // …and one env var we DO pass, to prove the scrub is surgical.
+        let mut env = HashMap::new();
+        env.insert("SUPERMUX_SESSION".to_string(), "envscrub".to_string());
+
+        let session = NativeSession::new("envscrub", &dir);
+        std::env::set_var("SUPERMUX_HOLDER_BIN", &script);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(1500),
+            session.spawn(&dir, &env, "sh"),
+        )
+        .await;
+        std::env::remove_var("SUPERMUX_HOLDER_BIN");
+        for key in crate::sessions::lifecycle::AGENT_NESTING_ENV {
+            std::env::remove_var(key);
+        }
+
+        let child_env = std::fs::read_to_string(&dumped)
+            .expect("the holder stand-in must have run and dumped its environment");
+        for key in crate::sessions::lifecycle::AGENT_NESTING_ENV {
+            assert!(
+                !child_env.lines().any(|l| l.starts_with(&format!("{key}="))),
+                "a spawned pane inherited {key}:\n{child_env}",
+            );
+        }
+        assert!(
+            child_env.lines().any(|l| l == "SUPERMUX_SESSION=envscrub"),
+            "the scrub must not touch the per-pane env supermux sets:\n{child_env}",
+        );
+
+        session.stop_pump();
+        crate::sessions::native::forget("envscrub");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

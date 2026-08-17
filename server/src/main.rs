@@ -37,6 +37,25 @@ async fn main() -> anyhow::Result<()> {
 
     init_tracing();
 
+    // Drop the agent-nesting markers this process INHERITED before anything can
+    // spawn. Start supermux from inside a Claude Code pane (routine when an
+    // agent deploys or dogfoods the server) and its environ carries
+    // `CLAUDE_CODE_CHILD_SESSION=1` / `CLAUDECODE=1` / `CLAUDE_CODE_SESSION_ID`;
+    // `Command::envs` ADDS to the parent environment, so every pane we spawn
+    // would inherit them, every `claude` in one would treat itself as a nested
+    // child, and transcript saving — the whole chat plane's only data source —
+    // would be off with a one-line warning nobody reads. See
+    // `sessions::lifecycle::AGENT_NESTING_ENV`. First thing after tracing so the
+    // scrub precedes the tmux server, every holder, and the reconcile.
+    let scrubbed = sessions::lifecycle::scrub_inherited_agent_env();
+    if !scrubbed.is_empty() {
+        tracing::warn!(
+            vars = ?scrubbed,
+            "supermux was started from inside an agent session; dropped its nesting markers \
+             so spawned panes get a clean environment (transcript saving would otherwise be off)",
+        );
+    }
+
     let config = config::load()?;
 
     // Install the `$EDITOR` bridge wrapper (`<data_dir>/bin/supermux-edit`) that

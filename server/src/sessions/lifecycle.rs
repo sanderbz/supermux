@@ -109,6 +109,65 @@ pub fn effective_remote_callback_url(config: &crate::config::Config, scheme: &st
     format!("{scheme}://{}", config.bind)
 }
 
+/// Environment variables an agent CLI exports to mark its OWN child processes as
+/// nested runs — poison for a supermux pane, and never legitimate in one.
+///
+/// **The failure this exists for.** Start supermux from inside a Claude Code
+/// session (a routine thing for this user: an agent deploying or dogfooding the
+/// server) and the daemon's environ carries `CLAUDE_CODE_CHILD_SESSION=1`,
+/// `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_ID=…`. Every pane it spawns inherits
+/// them — `Command::envs` ADDS to the parent environment, it does not replace
+/// it — so every `claude` we launch believes it is a nested child of the agent
+/// that happened to start the daemon. It prints "⚠ Transcript saving is off —
+/// inherited CLAUDE_CODE_CHILD_SESSION marker", writes no `.jsonl`, and with no
+/// transcript the ENTIRE chat plane (recall, the tailer, the chat renderer) has
+/// nothing to read. A whole verification wave was invalidated by exactly this.
+///
+/// `CLAUDE_CODE_MESSAGING_TOKEN`/`_SOCKET` are on the list for a second reason:
+/// they are a live credential + channel belonging to the parent agent, and
+/// handing them to every pane we spawn hands every session a way to talk on it.
+///
+/// Production runs as a systemd daemon, so none of this is a shipping default —
+/// but it is a real hazard whenever supermux is started by hand from an agent
+/// pane, and the fix is one scrub at startup.
+///
+/// The list is deliberately CONSERVATIVE: only markers an agent exports about
+/// ITSELF. supermux's own per-pane `CLAUDE_CODE_*` injections (see
+/// [`build_env`]) are re-set for every pane and must not be listed here.
+pub const AGENT_NESTING_ENV: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+];
+
+/// Remove [`AGENT_NESTING_ENV`] from THIS process's environment, returning the
+/// names that were actually present.
+///
+/// Called once at startup (`main`), before anything can spawn: scrubbing the
+/// daemon's own environ is what makes every downstream spawn path clean at once
+/// — the native holder, the tmux server, hook curls, the `$EDITOR` bridge — with
+/// no per-path list to keep in sync. The native spawn ALSO drops them from the
+/// child (`native::runtime::spawn`), so a var set after boot cannot reach a pane
+/// either.
+///
+/// Safe here: `main` is single-threaded at this point, the same place that
+/// already sets `TMUX_TMPDIR`.
+pub fn scrub_inherited_agent_env() -> Vec<&'static str> {
+    let mut removed = Vec::new();
+    for key in AGENT_NESTING_ENV {
+        if std::env::var_os(key).is_some() {
+            std::env::remove_var(key);
+            removed.push(*key);
+        }
+    }
+    removed
+}
+
 /// Per-session tmux env. Excludes the dashboard bearer by construction.
 ///
 /// `agent_teams` gates the experimental Claude Code Agent Teams feature:
@@ -1982,6 +2041,54 @@ mod build_env_tests {
             github_token: None,
             statusline_tap: false,
             extra_origins: Vec::new(),
+        }
+    }
+
+    /// The startup scrub, which is what makes the TMUX and hook-curl spawn
+    /// paths clean too (the native one enforces the same rule at the spawn).
+    ///
+    /// Serialised on the process-wide test lock: it mutates the environment.
+    #[tokio::test]
+    async fn the_startup_scrub_drops_inherited_nesting_markers_and_nothing_else() {
+        let _serial = crate::sessions::native::test_serial().await;
+        // A daemon started from inside a Claude Code pane.
+        for key in AGENT_NESTING_ENV {
+            std::env::set_var(key, "1");
+        }
+        // Something supermux itself sets per pane — must survive.
+        std::env::set_var("CLAUDE_CODE_FORCE_SYNC_OUTPUT", "1");
+
+        let mut removed = scrub_inherited_agent_env();
+        removed.sort_unstable();
+        let mut expected = AGENT_NESTING_ENV.to_vec();
+        expected.sort_unstable();
+        assert_eq!(removed, expected, "the scrub must report what it removed");
+
+        for key in AGENT_NESTING_ENV {
+            assert!(
+                std::env::var_os(key).is_none(),
+                "{key} survived the scrub — every pane would inherit it",
+            );
+        }
+        assert!(
+            std::env::var_os("CLAUDE_CODE_FORCE_SYNC_OUTPUT").is_some(),
+            "the scrub must not touch supermux's own CLAUDE_CODE_* injections",
+        );
+        // Idempotent, and honest about a clean environment.
+        assert!(scrub_inherited_agent_env().is_empty());
+        std::env::remove_var("CLAUDE_CODE_FORCE_SYNC_OUTPUT");
+    }
+
+    /// `build_env`'s own injections must never overlap the scrub list, or the
+    /// scrub would silently disarm a per-pane escape hatch.
+    #[test]
+    fn the_scrub_list_and_the_injected_env_are_disjoint() {
+        let env = build_env(&cfg(), "s", "tok", "claude", true, None);
+        for key in AGENT_NESTING_ENV {
+            assert!(
+                !env.contains_key(*key),
+                "{key} is both injected and scrubbed — pick one",
+            );
         }
     }
 
