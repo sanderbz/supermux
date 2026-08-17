@@ -205,15 +205,40 @@ export const SURVIVING_KINDS: ReadonlySet<ClassifiedPrompt['kind']> = new Set([
   'schedule',
 ] as const)
 
+/**
+ * The three tags one slash invocation's envelope is made of. Claude Code emits
+ * them in either order: BUILT-INS are name-first (`<command-name>/clear…`),
+ * MANAGED commands — anything in `~/.claude/commands` or `<dir>/.claude/commands`
+ * — are message-first (`<command-message>supermux-task…`). Host corpus: 253
+ * name-first, 7 message-first, and every one of the seven was a real command
+ * somebody ran.
+ */
+const COMMAND_ENVELOPE_TAGS: ReadonlySet<string> = new Set([
+  'command-name',
+  'command-message',
+  'command-args',
+])
+
 export function classifyPrompt(raw: string): ClassifiedPrompt {
   const trimmed = raw.trim()
-  const tag = leadingTag(trimmed)
-  if (!tag) {
+  const leading = leadingTag(trimmed)
+  if (!leading) {
     if (trimmed.startsWith('[Image: ')) {
       return { kind: 'image', text: trimmed.split('\n')[0] }
     }
     return { kind: 'prompt', text: sanitiseText(trimmed) }
   }
+  // CLASSIFY BY CONTENT, NOT BY THE LEADING TAG. Switching on the first tag gave
+  // the envelope one arm — `command-name` — so a message-first managed command
+  // fell to `default:` → `system`, which `SURVIVING_KINDS` does not carry: the
+  // user turn VANISHED from the transcript (the answer rendered with no question
+  // above it) and the composer's pending receipt never resolved against it.
+  // A `<command-name>` anywhere inside a command envelope is what makes it a
+  // command, whichever tag happens to open the string.
+  const tag =
+    COMMAND_ENVELOPE_TAGS.has(leading) && tagInner(trimmed, 'command-name') !== null
+      ? 'command-name'
+      : leading
   switch (tag) {
     case 'task-notification': {
       const status = tagInner(trimmed, 'status')

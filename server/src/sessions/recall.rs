@@ -1204,11 +1204,31 @@ fn is_supermux_wrapper(body: &str) -> bool {
     matches!(leading_tag(body), Some(DELEGATION_TAG) | Some(SCHEDULE_TAG))
 }
 
+/// The three tags one slash invocation's envelope is made of, in whichever
+/// order Claude Code wrote them (see [`classify_by_wrapper`]).
+const COMMAND_ENVELOPE_TAGS: [&str; 3] = ["command-name", "command-message", "command-args"];
+
 /// Inspect the leading tag (if any) and produce a classified entry for the
 /// known harness wrappers. Returns `None` when the string doesn't start with
 /// a tag we want to special-case.
 fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
-    let tag = leading_tag(body)?;
+    let leading = leading_tag(body)?;
+
+    // CLASSIFY BY CONTENT, NOT BY THE LEADING TAG. One slash invocation's
+    // envelope is three tags, and Claude Code emits them in either order:
+    // BUILT-INS are name-first (`<command-name>/clear…`), MANAGED commands —
+    // anything in `~/.claude/commands` or `<dir>/.claude/commands` — are
+    // message-first. With only a `command-name` arm the message-first ones fell
+    // through to the unknown-wrapper arm below and became `Kind::System`, which
+    // `is_user_initiated` drops: the user's own turn disappeared from both the
+    // calm view and the chat transcript. Host corpus: 253 name-first, 7
+    // message-first, and all seven were commands somebody actually ran.
+    let tag = if COMMAND_ENVELOPE_TAGS.contains(&leading) && tag_inner(body, "command-name").is_some()
+    {
+        "command-name"
+    } else {
+        leading
+    };
 
     match tag {
         "task-notification" => {
