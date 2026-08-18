@@ -429,3 +429,198 @@
 [data-grok] [data-shell-tabs] a:not([aria-current='page']) {
   color: var(--sm-sidebar-text-tertiary);
 }
+/* ══ GROK MODE — MOTION (WS3, the CSS half) ══════════════════════════════════
+   The stylesheet counterpart of `lib/grok-motion.ts`. That file owns the
+   framer-motion vocabulary (durations, curves in array + css-string form, the
+   `transition` presets); this owns the KEYFRAMES and the `[data-grok]`-scoped
+   animation utilities that later workstreams (WS5 roster, WS6 rows, WS8 chat,
+   WS9 states) attach to elements. Split for the same reason `springs.ts` ↔
+   `globals.css` are split: a framer transition cannot live in a stylesheet and a
+   `@keyframes` cannot live in TS. `tests/unit/grok-motion.test.ts` keeps the two
+   halves numerically honest, exactly as `motion-tokens.test.ts` does for the
+   default bank.
+
+   THE SPEC'S THREE RULES (spec §4 / tokens.md §12 / mechanics.md §8):
+     1. Three speeds, exits always faster than entries.
+     2. Axis is identity — the transcript enters VERTICALLY, roster rows slide in
+        HORIZONTALLY, popovers scale, same-cell state swaps are pure opacity. The
+        axis is encoded here, in the keyframes.
+     3. One slow identity settle — `.60s` on the mascot recolour, the slowest
+        motion in Grok mode.
+
+   SCOPING & REVERT. `@keyframes` are global by nature (CSS gives no way to scope
+   a keyframe), so they are DEFINED globally but inert until referenced; every
+   APPLICATION (`animation:` / `transition:`) is scoped under `[data-grok]`, so
+   removing the attribute is a byte-exact revert — the file-wide invariant. Names
+   reuse the spec's `sm-*` vocabulary and were verified free of collision with
+   globals.css's existing keyframes (`sm-breathe`, `sm-blip`, `sm-spin`,
+   `sm-status-spin`, `sm-skeleton-sweep`). The 2.4s tool spinner is the existing
+   global `.sm-spin` / `@keyframes sm-spin` — reused, never redefined.
+
+   OFFSCREEN PAUSE is inherited, not re-declared: globals.css ships
+   `[data-offscreen] *,::before,::after { animation-play-state: paused }`, and
+   every Grok keyframe below is an ordinary CSS animation under that subtree, so
+   an offscreen roster tile pauses its typing wave for free.
+
+   REDUCED MOTION. Transitions (hover, swap, the `.grok-identity` recolour) are
+   already neutralised by globals.css's app-wide `* { transition-duration: 0.01ms
+   }` blanket, so they need no twin here. The keyframe ANIMATIONS below — which
+   the blanket deliberately does NOT touch, because `animation` is where the
+   functional/decorative line lives — each get a COLOCATED
+   `prefers-reduced-motion` twin that stops the loop AND restores the informative
+   static end-state (never a blanket kill that also kills information). */
+
+/* ── Keyframes (global definitions, inert until referenced under [data-grok]) ── */
+@keyframes sm-entry-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sm-row-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sm-receipt-check {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sm-pending-label {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sm-mount-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes sm-typing-dot {
+  0%,
+  55%,
+  100% {
+    opacity: 0.25;
+  }
+  25% {
+    opacity: 0.7;
+  }
+}
+
+/* ── The [data-grok]-scoped animation utilities ───────────────────────────────
+   Consumers attach these to already-mounted elements; the `both` fill means the
+   from-state is held before the first frame WITHOUT the consumer pre-hiding the
+   element with `opacity:0` (which would strand it invisible under the
+   reduced-motion twin). Durations/curves are the exact values from
+   `grok-motion.ts` — `grok-motion.test.ts` pins each pair. */
+
+/* Transcript entry — VERTICAL pop with a slight overshoot; .28s, .42s fresh. */
+[data-grok] .grok-entry {
+  animation: sm-entry-enter 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
+}
+[data-grok] .grok-entry[data-fresh] {
+  animation-duration: 0.42s;
+}
+
+/* Container mount fade — the one-shot settle behind a freshly-opened transcript. */
+[data-grok] .grok-mount-fade {
+  animation: sm-mount-fade 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Roster row — HORIZONTAL slide from the rail's own edge; .45s, the slowest
+   arrival (a new colleague is a bigger event than a new message). A DIFFERENT
+   AXIS than the transcript above, by design — axis is identity. */
+[data-grok] .grok-row-enter {
+  animation: sm-row-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The ✓ on a completed tool-call receipt — a small scale-up pop; .28s. */
+[data-grok] .grok-receipt {
+  animation: sm-receipt-check 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The pending/thinking label — staggered after its .28s avatar on a softer
+   curve; .35s. */
+[data-grok] .grok-pending-label {
+  animation: sm-pending-label 0.35s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+/* Typing dots — three dots, staggered by delay; 1.3s ease-in-out loop. The
+   `<i>` children carry it; the container is `.grok-typing`. */
+[data-grok] .grok-typing i {
+  animation: sm-typing-dot 1.3s ease-in-out infinite;
+}
+[data-grok] .grok-typing i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+[data-grok] .grok-typing i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+/* The ONE slow identity transition — .60s on the mascot/monogram recolour when
+   the focused session or the theme flips. A transition (not a keyframe), so the
+   reduced-motion transition blanket in globals.css neutralises it for free. */
+[data-grok] .grok-identity {
+  transition:
+    fill 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Reduced-motion twins (colocated; stop the loop, keep the information) ───── */
+@media (prefers-reduced-motion: reduce) {
+  /* Entrances collapse to their end-state: present, unmoved. `animation: none`
+     drops the `both` fill, so the element rests at its natural CSS (opacity 1,
+     no transform) — the informative static form of "it is here". */
+  [data-grok] .grok-entry,
+  [data-grok] .grok-entry[data-fresh],
+  [data-grok] .grok-mount-fade,
+  [data-grok] .grok-row-enter,
+  [data-grok] .grok-pending-label {
+    animation: none;
+  }
+  /* The completed-tool ✓ STILL SHOWS — it is information (the call finished),
+     not decoration; only its scale-up pop is removed. */
+  [data-grok] .grok-receipt {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  /* Typing dots keep their .25/.45/.7 stagger so the row still reads as three
+     dots mid-wave, not three identical dots (Grok's standard — the same fix
+     globals.css applies to `.sm-dots`). */
+  [data-grok] .grok-typing i {
+    animation: none;
+  }
+  [data-grok] .grok-typing i:nth-child(1) {
+    opacity: 0.25;
+  }
+  [data-grok] .grok-typing i:nth-child(2) {
+    opacity: 0.45;
+  }
+  [data-grok] .grok-typing i:nth-child(3) {
+    opacity: 0.7;
+  }
+}
