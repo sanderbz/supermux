@@ -663,21 +663,43 @@ function BotPanelBody({
         )}
       </header>
 
-      {/* tab bar */}
-      <nav
+      {/* tab bar — a plain `div` carries `role="tablist"` (a `nav` is a landmark
+          and may not take an interactive role: jsx-a11y/no-noninteractive-
+          element-to-interactive-role). Full WAI-ARIA tab pattern: roving
+          `tabindex`, arrow-key movement, and each tab `aria-controls` the one
+          panel it drives (`aria-labelledby` points back). */}
+      <div
         role="tablist"
         aria-label="Bot settings"
         className="flex shrink-0 items-center gap-1 border-b border-border px-4"
       >
-        {TABS.map((t) => (
+        {TABS.map((t, ti) => (
           <button
             key={t.key}
             type="button"
             role="tab"
+            id={`bot-tab-${t.key}`}
             aria-selected={tab === t.key}
+            aria-controls="bot-tabpanel"
+            tabIndex={tab === t.key ? 0 : -1}
             data-vr="bot-tab"
             data-vr-tab={t.key}
             onClick={() => setTab(t.key)}
+            // Roving-tabindex arrow movement lives on the tabs themselves (they
+            // are the focusable elements); the tablist container stays a plain,
+            // non-focusable grouping so it needs no tabindex.
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+              e.preventDefault()
+              const next =
+                e.key === 'ArrowRight'
+                  ? (ti + 1) % TABS.length
+                  : (ti - 1 + TABS.length) % TABS.length
+              setTab(TABS[next].key)
+              e.currentTarget.parentElement
+                ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]
+                ?.focus()
+            }}
             className={cn(
               'relative -mb-px min-h-11 px-3 text-[13px] font-medium transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -689,7 +711,7 @@ function BotPanelBody({
             {t.label}
           </button>
         ))}
-      </nav>
+      </div>
 
       {/* scrolling tab body */}
       <div
@@ -698,6 +720,9 @@ function BotPanelBody({
           variant === 'sheet' && 'max-h-[70vh]',
         )}
         role="tabpanel"
+        id="bot-tabpanel"
+        aria-labelledby={`bot-tab-${tab}`}
+        tabIndex={0}
       >
         {restartAdvised && <div className="mb-4"><RestartHint /></div>}
         {tab === 'overview' && <OverviewTab name={name} session={session} />}
