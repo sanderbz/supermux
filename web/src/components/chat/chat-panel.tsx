@@ -52,7 +52,7 @@ import {
   shouldLoadOlder,
   type ScrollMark,
 } from './backlog'
-import { ChatComposer } from './composer'
+import { ChatComposer, type ChatComposerActions } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
@@ -90,7 +90,7 @@ export default function ChatPanel({
   surface,
   headerLeading,
   headerTrailing,
-  onMore,
+  actions,
 }: {
   name: string
   session: TileSession | null
@@ -125,14 +125,16 @@ export default function ChatPanel({
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
   /**
-   * Open the composer's folded-actions sheet (mobile chat only). The phone's old
-   * global dock — session switcher, command palette, snippets, dictation — is
-   * gone under chat; those actions now live behind ONE expander in the composer,
-   * so the surface is a single input bar. The route owns the sheet (it holds the
-   * picker, the dictation plane and the snippet drawer); the panel only forwards
-   * the trigger to the composer. Omit → no expander (desktop, bench).
+   * The route-owned actions behind the composer's leading `+` (mobile chat only).
+   * The phone's old global dock — session switcher, command palette, snippets —
+   * is gone under chat; those actions now live inside the composer's own
+   * add-menu, so the surface is a single input bar. The route provides them (it
+   * holds the picker and the snippet drawer); the composer owns the sheet and
+   * adds its own mention/command/schedule/dictate — dictation being the
+   * composer's own rest-state mic, not a route plane. Omit → the desktop leading
+   * pair, no sheet (desktop split, bench).
    */
-  onMore?: () => void
+  actions?: ChatComposerActions
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
@@ -759,7 +761,7 @@ export default function ChatPanel({
           // same rule as `mentions`/`names`.
           pickerData={pickerData}
           onSchedule={scheduleDraft}
-          onMore={onMore}
+          actions={actions}
           // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
           //
           // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`

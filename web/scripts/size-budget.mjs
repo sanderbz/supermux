@@ -287,6 +287,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // header measure 241.65 total. The ENTRY (hero-path) chunk actually DROPPED to
 // 147.13 / 160 (92%) because the picker sheet is now lazy — the growth is all
 // in on-demand chunks, which is exactly where new surface belongs. ceil(measured).
+//
+// HELD at 242 through the composer redesign reconciliation (the leading `+`
+// anchored add-menu + `AtIcon` symmetric bar landing on TOP of the real
+// `useDictation` mic). That reconciliation is +0.86 KB raw, which would have
+// pushed the total to 242.66 — so it was paid back to land exactly at 242.00:
+//   · the add-menu sheet rides the (already-lazy) `chat-panel` chunk instead of
+//     a ~0.8 KB standalone `React.lazy` chunk that gzipped far worse for having
+//     no shared window — still off the hero path (entry stays 146.91 / 160);
+//   · the composer's duplicate local clock glyph folds into `ui/icons`'
+//     `ClockIcon`, and the 44pt coarse-pointer target recipe is one shared const
+//     instead of three copies;
+//   · the redundant "Dictate" menu row is dropped — the trailing rest-state mic
+//     is the single dictation control, so the row was only a second face on it.
+// The ceiling stays 242 (NOT ratcheted up): new surface here must code-split or
+// pay itself back, as this batch did.
 const BUDGET_APP_JS = 242 * KB
 const BUDGET_CSS = 30 * KB
 

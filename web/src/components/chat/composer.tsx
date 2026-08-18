@@ -41,12 +41,45 @@ import type { EntityPickerProps } from './entity-picker'
 import { pickerOptionId, PICKER_LISTBOX_ID, type EntityPickerData } from './slash'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
-import { Composer, MicIcon, PlusIcon } from './ui'
+import { AtIcon, ClockIcon, Composer, MicIcon, PlusIcon } from './ui'
+import ChatActionsSheet from './chat-actions-sheet'
+
+/** The invisible 44pt touch target every disc on the bar grows on a coarse
+ *  pointer: an `::after` inset so pointer-events ride the pseudo-element and a
+ *  thumb landing a few px wide of the glyph still presses the button and nothing
+ *  else. One const, referenced by the leading `+`, the trailing send/stop, and
+ *  the rest-state mic — so the recipe is stated once, not copied three ways. */
+const COARSE_TARGET =
+  '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1 [@media(pointer:coarse)]:after:content-[""]'
 
 /** The `@`/`/` popover (fase A4 T9), lazily — it is reached only when somebody
  *  types a trigger, so its list, its filter and its two queries stay out of the
  *  chunk the surface pays for on open (T12's budget rule). */
 const EntityPicker = React.lazy(() => import('./entity-picker'))
+
+/** The composer's folded-actions sheet rides in the `chat-panel` chunk (imported
+ *  at the top of this file). That chunk is itself lazy — loaded only when a chat
+ *  pane mounts, never on the hero path — so the sheet stays out of the ENTRY
+ *  chunk exactly as the budget rule requires, WITHOUT paying the app-total gzip
+ *  penalty a ~0.8 KB standalone `React.lazy` chunk costs (a tiny chunk has no
+ *  shared compression window). The `sheetMounted` gate below still defers the
+ *  RUNTIME cost — Vaul is not constructed until the first `+` tap. */
+
+/**
+ * The route-owned half of the leading `+` menu (mobile chat). The composer owns
+ * the sheet and the compose actions it can serve itself — mention, command,
+ * schedule — but these four reach OUT of the composer, so the surface that
+ * mounts it (`routes/focus/mobile.tsx`) passes them in. Present ⇒ the leading
+ * control is the single `+` add-menu; absent ⇒ the desktop minimal pair.
+ */
+export interface ChatComposerActions {
+  /** Open the session switcher (the picker sheet). */
+  onSwitchSession: () => void
+  /** Open the global command palette (⌘K) — search / jump / new session. */
+  onCommandPalette: () => void
+  /** Open the snippets drawer; omitted → the row is not drawn. */
+  onSnippets?: () => void
+}
 
 /** The same 260ms opacity crossfade `live-layer.tsx`'s `SwapCell` uses for P13.
  *  Send→Stop is the same kind of event — one cell, two occupants — so it is the
@@ -96,14 +129,20 @@ export interface ChatComposerProps {
    */
   onSchedule?: (draft: string) => void
   /**
-   * Open the folded-actions sheet (mobile chat only). On the phone the old
-   * global dock below the composer is gone — its session switcher, command
-   * palette, snippets and dictation now live behind ONE expander in the
-   * composer's leading cluster, so the surface has a single input bar
-   * (`routes/focus/mobile.tsx`). Omit and the expander is not drawn: the desktop
-   * split keeps its sidebar, the bench renders no dead control.
+   * The route-owned actions behind the leading `+` (mobile chat only). Present ⇒
+   * the leading control is ONE `+` that owns the whole add-menu: the composer's
+   * own mention/command/schedule PLUS these (switch session, command palette,
+   * snippets), all in a snug sheet anchored to the `+`. Dictation is NOT in that
+   * menu — the composer's trailing rest-state mic (a real `useDictation` toggle)
+   * is the single dictation control, so a menu row would only duplicate it. The
+   * old three leading buttons (`⋯` / `@`-as-plus / clock) collapse into the `+`,
+   * so the phone has a single, symmetric input bar.
+   *
+   * Omit (desktop split, bench, tests) ⇒ the leading control is the desktop
+   * minimal PAIR: a real `@` mention button and, when `onSchedule` is wired, the
+   * clock — each glyph matching its action, no sheet drawn behind them.
    */
-  onMore?: () => void
+  actions?: ChatComposerActions
   /**
    * This session cannot work — a quota bucket, an auth death (`blocked.ts`).
    * The string is the REASON, already naming the limit and, where there is one,
@@ -130,12 +169,43 @@ export function ChatComposer({
   renderPicker,
   pickerData,
   onSchedule,
-  onMore,
+  actions,
   blocked,
   className,
 }: ChatComposerProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
+  // THE LEADING `+` MENU (mobile chat). Owned HERE, not by the route, so the
+  // sheet is literally anchored to the control that opens it — the fix for a
+  // menu that read as a floating, disconnected list. `mounted` gates the lazy
+  // chunk on the FIRST open so the sheet's Vaul + icons never touch the surface
+  // until a thumb asks for them.
+  const [sheetOpen, setSheetOpen] = React.useState(false)
+  const [sheetMounted, setSheetMounted] = React.useState(false)
+  const toggleSheet = React.useCallback(() => {
+    setSheetOpen((open) => {
+      if (!open) setSheetMounted(true)
+      return !open
+    })
+  }, [])
+  // Vaul returns focus to the trigger (`+`) on close; a compose action that
+  // stages a trigger needs the caret back in the FIELD instead, so the picker
+  // it just opened is what the next keystroke types into. The picker itself is
+  // draft-derived (`use-composer.ts`), so it shows regardless — this only keeps
+  // the field hot.
+  const refocusField = React.useCallback(() => {
+    window.requestAnimationFrame(() => handle.ref.current?.focus())
+  }, [handle.ref])
+  const onMention = React.useCallback(() => {
+    setSheetOpen(false)
+    handle.insert('@')
+    refocusField()
+  }, [handle, refocusField])
+  const onSlash = React.useCallback(() => {
+    setSheetOpen(false)
+    handle.insert('/')
+    refocusField()
+  }, [handle, refocusField])
   // ── the rest-state mic IS dictation ─────────────────────────────────────────
   // Not decoration: at rest the trailing cell is a real mic that toggles Web
   // Speech through `useDictation` — the SAME hook the dock's mic uses, which
@@ -183,7 +253,8 @@ export function ChatComposer({
   }, [insert])
   // Mic tap: STOPPING flushes the unsent tail inside the user gesture (WS still
   // open) THEN stops — independent of whether `onend` ever arrives. STARTING just
-  // starts; final segments stream in via `onFinal` while listening.
+  // starts; final segments stream in via `onFinal` while listening. Shared by the
+  // rest-state mic AND the add-menu's Dictate row (one instance, no dead second).
   const onMicTap = React.useCallback(() => {
     if (dictation.listening) {
       flushDictation()
@@ -258,78 +329,67 @@ export function ChatComposer({
         size={phone ? 'mobile' : 'desktop'}
         placeholder={`Message ${label}`}
         leading={
-          <>
-          {/* THE FOLDED-ACTIONS EXPANDER (mobile chat only). On the phone the
-              redundant global dock below the composer is gone; its session
-              switcher, command palette, snippets and dictation live behind this
-              one control, so the surface is a single input bar. Leftmost — the
-              conventional place for "expand" — and set off from the insert pair
-              by the row's own `gap-3`, so it reads as its own group. */}
-          {onMore && (
-            <button
-              type="button"
-              data-testid="chat-composer-more"
-              aria-label="More actions"
-              onClick={onMore}
-              className={cn(
-                'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
-                '[@media(pointer:coarse)]:size-11',
-              )}
+          // ONE CLEAN LEADING CONTROL, TWO SHAPES.
+          //
+          // ALIGNMENT (owner feedback #2). Every control on this bar is now the
+          // SAME disc — `size-9` on the phone / `size-10` on desktop, a `grid
+          // place-items-center` cell with its glyph optically centred and a 44pt
+          // touch target grown by a coarse-pointer `::after` (see
+          // `LeadingButton`, the exact recipe `TrailingButton` uses on the right).
+          // So the row is symmetric: an add disc on the left, the send disc on
+          // the right, both on one baseline — not the old cluster of a 26px `⋯`,
+          // an overlapped `@`/clock pair on negative margins, and a 40px mic.
+          //
+          // SEMANTICS (owner feedback #1). Under `actions` the leading control is
+          // a single `+` that OPENS THE MENU — `+` genuinely means "add
+          // something". It no longer silently types an `@`. Mentions, commands
+          // and schedule live inside that menu (and `@`/`/` still work typed
+          // directly). Absent `actions` (desktop) the pair keeps DIRECT buttons,
+          // each with the glyph of the thing it does: an `@` for mention, a clock
+          // for schedule.
+          actions ? (
+            <LeadingButton
+              testId="chat-composer-add"
+              label={sheetOpen ? 'Close actions' : 'Add to your message'}
+              phone={phone}
+              expanded={sheetOpen}
+              onClick={toggleSheet}
             >
-              <MoreIcon />
-            </button>
-          )}
-          {/* THE INSERT PAIR — mention (`@`) and schedule (clock). A related
-              pair, so they are grouped in one flex box at a tight gap rather
-              than served the row's full `gap-3` each: the boards drew them as
-              siblings, not as two lone accessories a field-width apart (mobile
-              polish #2). Each cell keeps its own 44pt touch floor on a coarse
-              pointer; the tight gap only pulls the GLYPHS together. */}
-          <div className="flex flex-none items-center [@media(pointer:coarse)]:-space-x-1.5">
-          <button
-            type="button"
-            data-testid="chat-composer-at"
-            aria-label="Mention a file or a session"
-            // The boards' `+` was decoration; this is the same 26px cell doing
-            // what the boards' caption always said it did (attach / @files /
-            // /commands). It types the trigger rather than opening a menu of its
-            // own, so there is exactly ONE picker on this surface and the caret
-            // ends up where the user would have put it themselves.
-            onClick={() => handle.insert('@')}
-            // 26px of GLYPH inside a 44px of TARGET on touch. The cell is the
-            // boards' 26px on a pointer device and grows to the 44pt floor under
-            // `pointer: coarse` — measured at 26×26 on a phone, against a row of
-            // 44×44 controls one line below it. The pill's `gap-3` keeps the two
-            // accessories 12px apart, so the grown cells tile instead of
-            // overlapping (the mis-tap the renderer switch shipped).
-            className={cn(
-              'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
-              '[@media(pointer:coarse)]:size-11',
-            )}
-          >
-            <PlusIcon />
-          </button>
-          {onSchedule && (
-            <button
-              type="button"
-              data-testid="chat-composer-schedule"
-              aria-label="Schedule this instead of sending now"
-              title="Schedule this instead of sending now"
-              // The draft is COPIED, not moved (T9.2): the sheet gets a prompt
-              // to start from and the composer keeps every character, so
-              // cancelling leaves the box exactly as it was.
-              onClick={() => onSchedule(handle.draft)}
-              // Same 26 → 44 on touch as its neighbour above.
-              className={cn(
-                'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
-                '[@media(pointer:coarse)]:size-11',
+              <motion.span
+                className="grid place-items-center"
+                animate={{ rotate: sheetOpen ? 45 : 0 }}
+                transition={reduce ? motionOff : springs.buttonPress}
+              >
+                <PlusIcon />
+              </motion.span>
+            </LeadingButton>
+          ) : (
+            <div className="flex flex-none items-center gap-2">
+              <LeadingButton
+                testId="chat-composer-at"
+                label="Mention a file or a session"
+                phone={phone}
+                // Types the trigger and opens the ONE picker this surface has —
+                // the caret ends up where the user would have put it. Now drawn
+                // as an `@`, the glyph of what it does.
+                onClick={() => handle.insert('@')}
+              >
+                <AtIcon />
+              </LeadingButton>
+              {onSchedule && (
+                <LeadingButton
+                  testId="chat-composer-schedule"
+                  label="Schedule this instead of sending now"
+                  phone={phone}
+                  // The draft is COPIED, not moved (T9.2): the sheet starts from
+                  // a prompt and the composer keeps every character.
+                  onClick={() => onSchedule(handle.draft)}
+                >
+                  <ClockIcon className="size-4" />
+                </LeadingButton>
               )}
-            >
-              <ClockIcon />
-            </button>
-          )}
-          </div>
-          </>
+            </div>
+          )
         }
         field={{
           ref: handle.ref,
@@ -457,14 +517,13 @@ export function ChatComposer({
                       // The invisible 44pt target on a coarse pointer — same
                       // `::after` inset the Send/Stop control uses, so the disc is
                       // unchanged but a thumb landing 4px wide still presses it.
-                      '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1',
-                      '[@media(pointer:coarse)]:after:content-[""]',
+                      COARSE_TARGET,
                     )}
                   >
                     <MicIcon />
                   </motion.button>
                 ) : (
-                  /* No Web Speech at all — draw nothing rather than a dead mic. The
+                  /* No Web Speech here — draw nothing rather than a dead mic. The
                      cell keeps its footprint so the field width does not jump
                      between the idle and the armed states. */
                   <span aria-hidden className={phone ? 'size-9' : 'size-10'} />
@@ -474,7 +533,72 @@ export function ChatComposer({
           </div>
         }
       />
+      {/* THE ADD-MENU, ANCHORED (owner feedback #3). The sheet is owned by the
+          composer and opened by the `+` above it, not floated in by the route —
+          so it reads as belonging to this bar. It carries the composer's own
+          materials (glass, radius, safe-area) and its rows use one considered
+          icon set. `sheetMounted` holds it out of the tree until the first tap,
+          so Vaul is never constructed on a surface that does not open it. */}
+      {actions && sheetMounted && (
+        <ChatActionsSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          onMention={onMention}
+          onSlash={onSlash}
+          onSchedule={onSchedule ? () => onSchedule(handle.draft) : undefined}
+          onSnippets={actions.onSnippets}
+          onSwitchSession={actions.onSwitchSession}
+          onCommandPalette={actions.onCommandPalette}
+        />
+      )}
     </ComposerFrame>
+  )
+}
+
+/**
+ * A leading disc — the ADD `+`, or a desktop mention/schedule button. The exact
+ * counterpart of `TrailingButton` on the right: same `size-9`/`size-10` cell,
+ * same `grid place-items-center`, same invisible 44pt target grown by a
+ * `::after` inset on a coarse pointer. Ghost, not inverted — the send disc is
+ * the one filled control on the bar, and a filled `+` would compete with it.
+ */
+function LeadingButton({
+  testId,
+  label,
+  phone,
+  onClick,
+  expanded,
+  children,
+}: {
+  testId: string
+  label: string
+  phone: boolean
+  onClick: () => void
+  /** The add control announces its sheet — `aria-expanded` for a screen reader,
+   *  and it is what tells the caller this button owns a disclosure. */
+  expanded?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-label={label}
+      title={label}
+      aria-expanded={expanded}
+      onClick={onClick}
+      className={cn(
+        'relative grid flex-none place-items-center rounded-full text-ink-2 transition-colors',
+        phone ? 'size-9' : 'size-10',
+        'hover:text-ink active:bg-fill-soft',
+        // The invisible 44pt target — pointer-events ride the pseudo-element, so
+        // a thumb landing a few px wide of the glyph still hits this and nothing
+        // else. The pill's `gap-3` leaves clearance to the field.
+        COARSE_TARGET,
+      )}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -525,8 +649,7 @@ function TrailingButton({
         // the pseudo-element, so a thumb landing 4px wide of the disc still
         // presses this button and nothing else — it is inside the pill, whose
         // `gap-3` leaves 8px of clearance to the field either way.
-        '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1',
-        '[@media(pointer:coarse)]:after:content-[""]',
+        COARSE_TARGET,
         disabled && 'opacity-60',
       )}
     >
@@ -728,39 +851,6 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // The draft is still in the box, and saying so is the point — the user's
   // instinct after a failed send is to check whether they lost the sentence.
   'handoff-failed': 'That hand-off didn’t go through — your message is still here.',
-}
-
-/** Schedule — a clock face, matching the `⏱` the transcript's schedule lines
- *  and the scheduler's own chips carry. Monochrome `currentColor` like every
- *  other glyph on this surface; the emoji taxonomy is terminal/tile-only. */
-function ClockIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
-      <circle cx="9" cy="9" r="6.4" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M9 5.6V9l2.4 1.6"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-/** More actions — a 2×2 grid of dots, the app's word for "a small set of
- *  things behind one control". Deliberately NOT a second plus (the `@` cell
- *  already carries one) and not the dock's `···` (that meant the key bar):
- *  distinct from every glyph it sits beside. Monochrome `currentColor`. */
-function MoreIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 18 18" fill="currentColor" aria-hidden>
-      <circle cx="6" cy="6" r="1.6" />
-      <circle cx="12" cy="6" r="1.6" />
-      <circle cx="6" cy="12" r="1.6" />
-      <circle cx="12" cy="12" r="1.6" />
-    </svg>
-  )
 }
 
 /** Send — an upward arrow, the one glyph every messenger agrees on. */
