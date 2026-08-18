@@ -177,7 +177,16 @@ pub fn parse_scan<R: BufRead>(
             }
             ParsedLine::Skip => {}
             ParsedLine::Malformed(m) => {
-                tracing::debug!(offset, error = %m, "skipping malformed transcript line")
+                // NO silent drop. A newline-terminated line that is not
+                // parseable JSON used to only debug-log and advance the cursor,
+                // so a malformed blocked/error record vanished entirely and the
+                // stated no-silent-loss / totality property was violated. Emit a
+                // visible placeholder instead — the reader sees an 'unparseable
+                // line' marker rather than a hole in the transcript.
+                tracing::debug!(offset, error = %m, "malformed transcript line — emitting placeholder");
+                if !sink(malformed_entry(&text, offset)) {
+                    stop = true;
+                }
             }
         }
         offset += n as u64;
@@ -828,6 +837,35 @@ fn oversize_agent_error_body(text: &str, info: &agent_error::AgentErrorInfo) -> 
     body
 }
 
+/// A visible placeholder for a newline-terminated line that is not parseable
+/// JSON (or whose top-level value is not an object). The totality contract
+/// forbids a silent drop: without this the cursor advances past the line and a
+/// malformed blocked/error record disappears with no trace on the wire. The
+/// renderer shows an 'unparseable line' marker; `fetch-full` can still stream
+/// the raw bytes for anyone who needs to inspect them.
+fn malformed_entry(text: &str, offset: u64) -> ChatEntry {
+    // Best-effort id/timestamp recovery so a partially-corrupt line still
+    // threads the ring in order; the scan never parses, mirroring the oversize
+    // path. A bounded preview lets the reader see WHAT failed.
+    let uuid = scan_field(text, "uuid").unwrap_or_else(|| format!("@{offset}"));
+    let preview: String = text.chars().take(200).collect();
+    ChatEntry {
+        uuid,
+        kind: Kind::Unknown,
+        ts_ms: parse_ts_ms(scan_field(text, "timestamp").as_deref()),
+        offset,
+        session_id: None,
+        tool_use_id: None,
+        label: Some("unparseable".to_string()),
+        ok: None,
+        is_sidechain: false,
+        agent_id: None,
+        is_meta: false,
+        oversize: false,
+        body: serde_json::json!({ "unparseable": true, "preview": preview }),
+    }
+}
+
 fn kind_for_top_level(ty: &str) -> Kind {
     match ty {
         "assistant" => Kind::Assistant,
@@ -1320,6 +1358,30 @@ mod tests {
         assert_eq!(entries[1].uuid, "after");
         assert_eq!(entries[1].offset, (huge.len() + 1) as u64);
         assert_eq!(off, buf.len() as u64);
+    }
+
+    #[test]
+    fn a_malformed_complete_line_emits_a_placeholder_and_is_never_silently_dropped() {
+        // #14 (LOW): a newline-terminated line that is not parseable JSON used to
+        // only debug-log and advance the cursor, so a malformed blocked/error
+        // record vanished with no trace on the wire. The no-silent-loss property
+        // requires a visible placeholder, and the cursor must still advance past
+        // the good line that follows.
+        let bad = r#"{"type":"assistant" NOT JSON blocked=true"#;
+        let good = r#"{"type":"user","uuid":"after","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"ok"}}"#;
+        let buf = format!("{bad}\n{good}\n");
+        let (entries, off) = parse_stream(std::io::Cursor::new(buf.as_bytes()), 0);
+        assert_eq!(entries.len(), 2, "the malformed line must still yield an entry");
+        assert_eq!(entries[0].kind, Kind::Unknown);
+        assert_eq!(entries[0].label.as_deref(), Some("unparseable"));
+        assert_eq!(
+            entries[0].body.get("unparseable").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(entries[0].offset, 0);
+        assert_eq!(entries[1].uuid, "after");
+        assert_eq!(entries[1].offset, (bad.len() + 1) as u64);
+        assert_eq!(off, buf.len() as u64, "cursor stays aligned past both lines");
     }
 
     #[test]
