@@ -374,11 +374,15 @@ const composer = (over: Partial<ComposerHandle> = {}, active = false) =>
 const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 
 describe('the composer, live', () => {
-  test('at rest the boards’ mic keeps its cell — no send button on an empty draft', () => {
+  test('at rest — no send button on an empty draft; the mic is gated on Web Speech', () => {
     const html = composer()
-    expect(html).toContain('sm-mic')
+    // No send/stop control while the box is empty and no turn runs.
     expect(html).not.toContain('data-testid="chat-send"')
     expect(html).not.toContain('data-testid="chat-stop"')
+    // The rest-state mic is a dictation affordance, gated on the Web Speech API
+    // (mobile polish #3): absent in this SSR env (the iPhone case), so no mic
+    // glyph. Its presence-when-supported is covered by chat-composer-mic.test.tsx.
+    expect(html).not.toContain('sm-mic')
   })
 
   test('a draft arms Send', () => {

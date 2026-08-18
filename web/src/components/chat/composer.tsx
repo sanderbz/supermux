@@ -37,6 +37,7 @@ import { cn } from '../../lib/utils'
 import { ComposerFrame } from './composer-shell'
 import type { EntityPickerProps } from './entity-picker'
 import { pickerOptionId, PICKER_LISTBOX_ID, type EntityPickerData } from './slash'
+import { speechRecognitionSupported } from './speech'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { Composer, MicIcon, PlusIcon } from './ui'
@@ -124,6 +125,11 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
+  // The rest-state mic is a dictation affordance, and dictation is the Web Speech
+  // API — which iOS Safari / WKWebView do not expose. Read once (the constructor
+  // does not appear after load) so an iPhone never shows a mic that is dead the
+  // moment it is tapped. See `speech.ts`.
+  const micSupported = React.useMemo(() => speechRecognitionSupported(), [])
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
@@ -341,10 +347,16 @@ export function ChatComposer({
                   >
                     <StopIcon />
                   </TrailingButton>
-                ) : (
+                ) : micSupported ? (
                   /* At rest the boards' mic keeps its cell. It is decoration
                      until dictation lands — so it is `aria-hidden` and not a
-                     button, exactly as B0 draws it. */
+                     button, exactly as B0 draws it.
+
+                     GATED ON WEB SPEECH (mobile polish #3). The mic reads as a
+                     dictation control, and dictation is the Web Speech API that
+                     iOS Safari / WKWebView do not expose — so on an iPhone it
+                     was a dead glyph. Absent support, the cell is empty rather
+                     than promising a capability the browser cannot deliver. */
                   <span
                     aria-hidden
                     className={cn(
@@ -354,6 +366,11 @@ export function ChatComposer({
                   >
                     <MicIcon />
                   </span>
+                ) : (
+                  /* No Web Speech here — draw nothing rather than a dead mic. The
+                     cell keeps its footprint so the field width does not jump
+                     between the idle and the armed states. */
+                  <span aria-hidden className={phone ? 'size-9' : 'size-10'} />
                 )}
               </motion.div>
             </AnimatePresence>
