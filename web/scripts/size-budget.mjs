@@ -399,7 +399,32 @@ const BUDGET_ENTRY_JS = 160 * KB
 // A genuine additive feature — the owner's top-priority surface, not a regression
 // to trim: ceil(measured) = 268. The `.cs-*` store skin (base + the scoped
 // `[data-grok]` glass) lands in the CSS budget (29.47/30, 98%), not here.
-const BUDGET_APP_JS = 268 * KB
+// 271 as of the ROUND-1 JURY FIXES (connector store polish + connect wiring):
+// measured 270.69; +2.92 KB over the 267.77 store baseline. The whole of it is the
+// design-blocker close-out on the always-reachable store atoms (the store-view
+// chunk is lazy; these atoms are pulled statically by the bot-panel/chat, which is
+// why the weight lands here and not on a lazy chunk):
+//   +~2.0 KB  `store/brand-marks.tsx` — REAL brand marks (GitHub/Notion/Slack/
+//             Linear/Sentry/Playwright/iCloud canonical single-path SVGs + a
+//             brand-hued Postgres/browser glyph) replacing the initials-on-
+//             gradient monogram, which the jury called the single loudest
+//             placeholder tell (B1). The catalog ships NO icon bytes, so without
+//             this every card fell back to a monogram; the marks are bundled
+//             (never hotlinked) and drawn on App-Store-style tiles.
+//   +~0.9 KB  the connect/verb/featured polish across `connector-card`,
+//             `connector-detail` (the OAuth "Sign in with {service}" lead, B4;
+//             the unified Connect verb, B3; the neutral-disabled CTA, H2) and
+//             `store-view` (Featured given an actionable brand-washed treatment
+//             + de-duplicated from the grid, H1) + the inline connect-card's
+//             derived OAuth lead. `chat/ui/connect-card` gained the has_oauth
+//             derivation; its dispatch is unchanged.
+// The ENTRY (hero-path) gate moved only 151.40 -> 151.45 / 160 (95%, a rounding
+// crumb — the connectors client barrel already carried the store types): none of
+// this is on the cold hero path. A design-quality close-out the owner required,
+// not a regression to trim: ceil(measured) = 271. The store skin stays in the CSS
+// budget (29.53/30, 98% — net FLAT: the orphaned `.cs-rail`/`.cs-featured-glow`
+// rules were removed as the Featured rail became a grid), not here.
+const BUDGET_APP_JS = 271 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

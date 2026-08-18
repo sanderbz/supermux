@@ -31,7 +31,6 @@ import {
   Files as FilesIcon,
   FolderOpen,
   Loader2,
-  Wrench,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -500,11 +499,8 @@ function ToolsTab({ name, session }: { name: string; session: ApiSession | null 
   const mcp = session?.mcp?.trim() || ''
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Skills" hint="Which skills this bot may reach for.">
-        <div className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-3 text-[13px] text-muted-foreground">
-          <Wrench className="size-4 shrink-0" aria-hidden />
-          Per-bot skill selection is coming — the bot uses the workspace defaults for now.
-        </div>
+      <Field label="Skills" hint="Uses the workspace defaults — per-bot selection lands with a later release.">
+        <p className="text-[13px] text-muted-foreground">Workspace defaults.</p>
       </Field>
 
       <GrantedConnectors name={name} />

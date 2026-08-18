@@ -20,6 +20,7 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod connect_ask;
 pub mod connector_config;
 pub mod elicitation;
 pub mod host_pool;
@@ -299,6 +300,15 @@ pub struct SessionView {
     /// asking, so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<elicitation::ElicitationAsk>,
+    /// **The live connect ask**, from the `PreToolUse` hook: a bot's
+    /// `connect(service)` tool (the store's credential affordance, spec §8)
+    /// stopped for a human. Names WHICH connector stalled; the web `ConnectCard`
+    /// resolves the display name / tool count / OAuth capability from the
+    /// secret-free card schema. In-memory only, and the credential NEVER touches
+    /// this plane (the card POSTs it straight to the vault). Omitted when nothing
+    /// is asking, so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_request: Option<connect_ask::ConnectAsk>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -529,6 +539,7 @@ fn view(
             })
         }),
         elicitation: act.as_ref().and_then(|a| a.elicitation.clone()),
+        connect_request: act.as_ref().and_then(|a| a.connect_request.clone()),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,

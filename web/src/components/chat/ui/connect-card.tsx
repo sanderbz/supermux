@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, Eye, EyeOff, Lock } from 'lucide-react'
 
 import {
+  connectorHasOAuth,
   getConnector,
   grant as apiGrant,
   plainFields,
@@ -91,7 +92,11 @@ export function ConnectCard({
     ? secretField(card)
     : { key: 'API_KEY', title: 'API key', sensitive: true, required: true }
   const plains = card ? plainFields(card) : []
-  const hasOAuth = request.has_oauth ?? false
+  // The server ask names WHICH connector stalled; whether it offers a branded
+  // sign-in is derived from the (secret-free) card schema when the ask doesn't
+  // say — so the inline card leads with "Sign in with {service}" for OAuth
+  // connectors, consistent with the store detail (blocker B4).
+  const hasOAuth = request.has_oauth ?? (card ? connectorHasOAuth(card) : false)
 
   const name = request.display_name ?? card?.display_name ?? request.connector_id
   const toolsLine = useMemo(() => {

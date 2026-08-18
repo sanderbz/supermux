@@ -20,7 +20,8 @@ import { useConnectors, useSessionConnectors } from '@/stores/connectors-store'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 
 import { CATEGORIES } from './catalog'
-import { ConnectorCard } from './connector-card'
+import { brandMark } from './brand-marks'
+import { ConnectorCard, StateChip, chipFor } from './connector-card'
 import { ConnectorDetail } from './connector-detail'
 import { ConnectorIcon } from './connector-icon'
 import type { GrantScope } from './grant-control'
@@ -73,11 +74,24 @@ export function StoreView({
     [allSet, botSet, botName],
   )
 
-  const featured = React.useMemo(() => cards.filter((c) => c.featured), [cards])
+  // Featured is a curated highlight, not the whole catalog: cap the rail so it
+  // reads as an editorial shelf and never sprawls (blocker H1). In a bot scope
+  // (row layout) the rail is skipped entirely — the sheet is a working list.
+  const featured = React.useMemo(() => cards.filter((c) => c.featured).slice(0, 3), [cards])
+
+  // The featured rail is only shown at rest (no search, All/Featured) and not in
+  // the row/sheet layout — matches the render condition below.
+  const railVisible = !q && (cat === 'all' || cat === 'featured') && variant === 'page'
+  const featuredIds = React.useMemo(
+    () => (railVisible ? new Set(featured.map((c) => c.id)) : new Set<string>()),
+    [railVisible, featured],
+  )
 
   const filtered = React.useMemo(() => {
     const needle = q.trim().toLowerCase()
     return cards.filter((c) => {
+      // Don't repeat the Featured cards as the first grid rows (blocker H1).
+      if (featuredIds.has(c.id)) return false
       if (cat !== 'all') {
         if (cat === 'featured' ? !c.featured : !(c.categories ?? []).includes(cat)) return false
       }
@@ -88,7 +102,7 @@ export function StoreView({
         c.description.toLowerCase().includes(needle)
       )
     })
-  }, [cards, q, cat])
+  }, [cards, q, cat, featuredIds])
 
   const openCard = cards.find((c) => c.id === openId) ?? null
   const isRow = variant === 'sheet'
@@ -129,15 +143,20 @@ export function StoreView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-1 sm:px-6">
-        {/* featured rail — only at rest (no search, All/Featured) */}
-        {!q && (cat === 'all' || cat === 'featured') && featured.length > 0 && (
-          <section className="mb-6">
+        {/* featured — a filling responsive shelf at rest (no search, All/Featured).
+            A grid, not a fixed-width scroll rail, so a short curated set never
+            leaves a dead void on wide desktops (blocker H1). */}
+        {railVisible && featured.length > 0 && (
+          <section className="mb-7">
             <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Featured</h2>
-            <div className="cs-rail -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {featured.map((c) => (
                 <FeaturedCard
                   key={c.id}
                   card={c}
+                  installed={c.source === 'local'}
+                  granted={grantedFor(c.id)}
+                  botScope={!!botName}
                   onOpen={() => setOpenId(c.id)}
                 />
               ))}
@@ -224,27 +243,58 @@ function SearchBox({ value, onChange }: { value: string; onChange: (v: string) =
   )
 }
 
-function FeaturedCard({ card, onOpen }: { card: Card; onOpen: () => void }) {
+function FeaturedCard({
+  card,
+  installed,
+  granted,
+  botScope,
+  onOpen,
+}: {
+  card: Card
+  installed: boolean
+  granted: GrantScope
+  botScope: boolean
+  onOpen: () => void
+}) {
   const n = connectorToolCount(card)
+  const chip = chipFor(installed, granted, botScope)
+  // The hero wash is the connector's OWN brand hue — editorial, distinct from the
+  // calm grid card below it (blocker H1). Falls back to the app primary.
+  const hue = brandMark(card)?.hex ?? 'var(--primary)'
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <div
       data-vr="connector-featured"
-      className="cs-featured group relative flex w-[248px] shrink-0 snap-start flex-col justify-between overflow-hidden rounded-[22px] border border-border bg-card p-4 text-left transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[0_10px_32px_-16px_rgba(0,0,0,0.4)]"
+      className="cs-featured group relative flex min-h-[168px] flex-col justify-between overflow-hidden rounded-[22px] border border-border bg-card p-4 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[0_12px_36px_-16px_rgba(0,0,0,0.42)]"
     >
-      <span className="cs-featured-glow pointer-events-none absolute inset-0 opacity-70" aria-hidden />
-      <span className="relative flex items-start justify-between">
-        <ConnectorIcon card={card} size={52} />
-      </span>
-      <span className="relative mt-4 flex flex-col">
-        <span className="text-[16px] font-semibold text-foreground">{card.display_name}</span>
-        <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
+      <span
+        className="pointer-events-none absolute inset-0"
+        aria-hidden
+        style={{
+          background: `radial-gradient(130% 100% at 100% 0%, color-mix(in srgb, ${hue} 20%, transparent), transparent 62%)`,
+        }}
+      />
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`Open ${card.display_name}`}
+        className="absolute inset-0 z-0 rounded-[22px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      />
+      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-3">
+        <ConnectorIcon card={card} size={54} className="cs-icon-lift transition-transform duration-150 group-hover:scale-[1.03]" />
         {n !== null && (
-          <span className="mt-2 text-[11.5px] font-medium tabular-nums text-muted-foreground">{n} tools</span>
+          <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground backdrop-blur-sm">
+            {n} tools
+          </span>
         )}
-      </span>
-    </button>
+      </div>
+      <div className="relative z-10 mt-4 flex flex-col">
+        <span className="text-[16.5px] font-semibold tracking-tight text-foreground">{card.display_name}</span>
+        <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
+        <button type="button" onClick={onOpen} className="pointer-events-auto relative z-10 mt-3 self-start" tabIndex={-1}>
+          <StateChip kind={chip} count={card.tools?.length || card.tool_count || 0} />
+        </button>
+      </div>
+    </div>
   )
 }
 

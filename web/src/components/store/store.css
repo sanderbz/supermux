@@ -6,22 +6,11 @@
  * removing `data-grok` from the shell root is a byte-exact revert to the base
  * look. Nothing here leaks outside `.cs-*`. */
 
-/* Featured card accent glow — a single soft gradient, calm, sitting back. */
-.cs-featured-glow {
-  background: radial-gradient(
-    120% 90% at 100% 0%,
-    color-mix(in oklab, var(--primary) 14%, transparent),
-    transparent 60%
-  );
-}
-
-/* The category-chip / featured rails hide their scrollbar but stay scrollable. */
-.cs-chips,
-.cs-rail {
+/* The category-chip rail hides its scrollbar but stays scrollable. */
+.cs-chips {
   scrollbar-width: none;
 }
-.cs-chips::-webkit-scrollbar,
-.cs-rail::-webkit-scrollbar {
+.cs-chips::-webkit-scrollbar {
   display: none;
 }
 
@@ -60,14 +49,6 @@
 [data-grok] .cs-featured:hover {
   box-shadow: 0 12px 40px -18px color-mix(in oklab, var(--sm-accent, #000) 55%, transparent);
   border-color: color-mix(in oklab, var(--sm-accent, var(--border)) 30%, transparent);
-}
-
-[data-grok] .cs-featured-glow {
-  background: radial-gradient(
-    120% 90% at 100% 0%,
-    color-mix(in oklab, var(--sm-accent, var(--primary)) 22%, transparent),
-    transparent 62%
-  );
 }
 
 [data-grok] .cs-chip-primary {

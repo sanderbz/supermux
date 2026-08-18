@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::activity::PermissionAsk;
+use crate::sessions::connect_ask::ConnectAsk;
 use crate::sessions::elicitation::ElicitationAsk;
 use crate::sessions::host_pool::HostPool;
 use crate::sessions::pty::PtyStream;
@@ -80,6 +81,14 @@ pub struct SessionActivity {
     /// as the backstop. In-memory only, and every string in it is third-party
     /// text (see `sessions::elicitation`).
     pub elicitation: Option<ElicitationAsk>,
+    /// **The live connect ask** (`connectors.connect`): a bot's `connect(service)`
+    /// tool carried the `requiresUserInteraction` marker and stopped for a human.
+    /// Set by the `PreToolUse` hook when it recognises the connect affordance
+    /// ([`crate::sessions::connect_ask::parse`]) and cleared by the same
+    /// "something after it happened" events as [`permission`](Self::permission) —
+    /// no hook reports the credential outcome (it never touches this plane; the
+    /// card POSTs it straight to the vault). In-memory only.
+    pub connect_request: Option<ConnectAsk>,
 }
 
 impl SessionActivity {
@@ -93,6 +102,7 @@ impl SessionActivity {
             && self.subagents == 0
             && self.permission.is_none()
             && self.elicitation.is_none()
+            && self.connect_request.is_none()
     }
 }
 
@@ -929,7 +939,8 @@ impl AppState {
             || entry.error != before.error
             || entry.subagents != before.subagents
             || entry.permission != before.permission
-            || entry.elicitation != before.elicitation;
+            || entry.elicitation != before.elicitation
+            || entry.connect_request != before.connect_request;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -1034,6 +1045,25 @@ impl AppState {
     pub fn clear_elicitation(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.elicitation = None;
+        })
+    }
+
+    /// Set `name`'s live connect ask (from a `PreToolUse` payload whose tool is
+    /// the store's `connect(service)` affordance). Returns whether it changed —
+    /// a re-fired identical call broadcasts nothing.
+    pub fn set_connect_request(&self, name: &str, ask: ConnectAsk) -> bool {
+        self.mutate_activity(name, |a| {
+            a.connect_request = Some(ask);
+        })
+    }
+
+    /// Clear `name`'s live connect ask — on any event that proves the connect
+    /// tool call moved on (the credential outcome itself is never reported by a
+    /// hook, so "something after it happened" IS the resolution signal, exactly
+    /// like the permission dialog). Returns whether it changed.
+    pub fn clear_connect_request(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.connect_request = None;
         })
     }
 

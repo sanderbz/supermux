@@ -9,6 +9,7 @@ import * as React from 'react'
 import { Check, Eye, EyeOff, Loader2, Lock, Trash2 } from 'lucide-react'
 
 import {
+  connectorHasOAuth,
   plainFields,
   secretField,
   toolCountLabel,
@@ -16,6 +17,7 @@ import {
   type CredentialField,
 } from '@/lib/api/connectors'
 import { useConnectorActions } from '@/stores/connectors-store'
+import { cn } from '@/lib/utils'
 
 import { ConnectorIcon } from './connector-icon'
 import { GrantControl, type GrantScope } from './grant-control'
@@ -49,6 +51,12 @@ export function ConnectorDetail({
   const [phase, setPhase] = React.useState<Phase>(granted ? 'added' : 'idle')
   const [restartHint, setRestartHint] = React.useState(false)
   const [localGrant, setLocalGrant] = React.useState<GrantScope>(granted)
+  // OAuth-capable connectors LEAD with the branded "Sign in" primary; the key
+  // paste is demoted behind an "or use an API key" divider (blocker B4). There is
+  // no live OAuth lane on the server yet, so tapping sign-in reveals the key lane
+  // with a calm line — the same honest fallback the inline connect-card uses.
+  const hasOAuth = connectorHasOAuth(card) && !!secret
+  const [keyLaneOpen, setKeyLaneOpen] = React.useState(!hasOAuth)
 
   const needsSecret = !!secret
   const requiredMissing =
@@ -121,8 +129,30 @@ export function ConnectorDetail({
         <AddedPanel restartHint={restartHint} target={grantTarget} />
       ) : (
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
-          {needsSecret ? (
+          {/* OAuth primary — the branded sign-in, leading the trust hierarchy. */}
+          {hasOAuth && !keyLaneOpen && (
             <>
+              <button
+                type="button"
+                onClick={() => setKeyLaneOpen(true)}
+                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+              >
+                Sign in with {card.display_name}
+              </button>
+              <div className="flex items-center gap-3 text-[11.5px] text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or use an API key
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          )}
+          {needsSecret && keyLaneOpen ? (
+            <>
+              {hasOAuth && (
+                <p className="text-[12px] text-muted-foreground">
+                  Sign-in isn’t available here yet — paste an API key instead.
+                </p>
+              )}
               {plains.map((f) => (
                 <PlainField
                   key={f.key}
@@ -146,7 +176,7 @@ export function ConnectorDetail({
                     onChange={(e) => setSecretVal(e.target.value)}
                     placeholder="Paste your key"
                     aria-label={secret!.title || 'API key'}
-                    className="h-11 w-full rounded-xl border border-input bg-background px-3 pr-11 font-mono text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:ring-2 focus-visible:ring-ring"
+                    className="h-11 w-full rounded-xl border border-input bg-background px-3 pr-11 font-mono text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <button
                     type="button"
@@ -163,21 +193,33 @@ export function ConnectorDetail({
                 Stored securely, never shown to your bot.
               </p>
             </>
-          ) : (
+          ) : !needsSecret ? (
             <p className="text-[13px] text-muted-foreground">
               No sign-in needed — {card.kind === 'builtin_browser' ? 'this is built in.' : 'grant it to a bot to use it.'}
             </p>
-          )}
+          ) : null}
 
-          <button
-            type="button"
-            onClick={connect}
-            disabled={phase === 'saving' || requiredMissing}
-            className="mt-1 inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            {phase === 'saving' && <Loader2 className="size-4 animate-spin" aria-hidden />}
-            {needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Install'}
-          </button>
+          {/* The bottom CTA belongs to the key/no-secret path; during the OAuth
+              lead the branded "Sign in" above is the primary, so it stands alone.
+              Enabled/working: SOLID brand-blue + white label (>=4.5:1). Blocked (a
+              required field still empty) is a NEUTRAL muted fill — never a washed
+              blue that could read as a live-but-dim CTA (blocker H2). */}
+          {(keyLaneOpen || !needsSecret) && (
+            <button
+              type="button"
+              onClick={connect}
+              disabled={phase === 'saving' || requiredMissing}
+              className={cn(
+                'mt-1 inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-[14px] font-semibold shadow-sm transition-colors',
+                requiredMissing
+                  ? 'cursor-not-allowed bg-muted text-muted-foreground shadow-none'
+                  : 'bg-primary text-primary-foreground hover:bg-primary/90 disabled:hover:bg-primary',
+              )}
+            >
+              {phase === 'saving' && <Loader2 className="size-4 animate-spin" aria-hidden />}
+              {needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Install'}
+            </button>
+          )}
         </div>
       )}
 
@@ -270,7 +312,7 @@ function PlainField({
         autoComplete="off"
         onChange={(e) => onChange(e.target.value)}
         aria-label={field.title || field.key}
-        className="h-11 w-full rounded-xl border border-input bg-background px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-11 w-full rounded-xl border border-input bg-background px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
       />
     </label>
   )

@@ -277,6 +277,22 @@ export function toolCountLabel(card: ConnectorCard): string {
   return n === 1 ? '1 tool' : `${n} tools`
 }
 
+/** Services that offer a branded OAuth sign-in (the "Sign in with {service}"
+ *  primary). The set is intentionally explicit: an OAuth lead is a trust promise,
+ *  so we only make it for connectors that genuinely have a hosted sign-in. Others
+ *  lead with the secure key paste. Mirrors the server's `auth` hint until the
+ *  catalog carries it per-row. */
+const OAUTH_BRANDS = /github|notion|slack|linear|sentry|google|gmail|drive|calendar|figma|intercom/i
+
+/** Does this connector advertise a branded OAuth sign-in? Drives the detail's
+ *  "Sign in with {service}" primary (blocker B4). */
+export function connectorHasOAuth(card: ConnectorCard): boolean {
+  // An explicit per-row hint wins when the catalog carries one.
+  const auth = (card as { auth?: string | null }).auth
+  if (typeof auth === 'string') return auth.toLowerCase() === 'oauth'
+  return OAUTH_BRANDS.test(`${card.id} ${card.display_name}`)
+}
+
 /** The single sensitive field (the secure paste), if the schema declares one. */
 export function secretField(card: ConnectorCard): CredentialField | undefined {
   return card.credentials?.find((f) => f.sensitive)

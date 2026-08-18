@@ -8,26 +8,19 @@
 import * as React from 'react'
 import { Check, MoreHorizontal } from 'lucide-react'
 
-import { cn } from '@/lib/utils'
 import { toolCountLabel, type ConnectorCard as Card } from '@/lib/api/connectors'
 
 import { ConnectorIcon } from './connector-icon'
 import type { GrantScope } from './grant-control'
 
 /** The chip's derived state. */
-type ChipKind = 'get' | 'connect' | 'grant' | 'added'
+export type ChipKind = 'get' | 'connect' | 'grant' | 'added'
 
-function chipFor(installed: boolean, granted: GrantScope, botScope: boolean): ChipKind {
+export function chipFor(installed: boolean, granted: GrantScope, botScope: boolean): ChipKind {
   if (granted) return 'added'
   if (botScope) return 'connect' // bot scope: one tap = install-if-needed + connect + grant
   if (installed) return 'grant' // library view, installed, not granted to any scope
   return 'get'
-}
-
-const KIND_DOT: Record<string, { label: string; className: string }> = {
-  mcp_catalog: { label: 'From the catalog', className: 'bg-sky-500' },
-  agent_authored: { label: 'Agent-authored', className: 'bg-violet-500' },
-  builtin_browser: { label: 'Built-in', className: 'bg-emerald-500' },
 }
 
 export function ConnectorCard({
@@ -51,7 +44,6 @@ export function ConnectorCard({
 }) {
   const chip = chipFor(installed, granted, botScope)
   const tools = toolCountLabel(card)
-  const dot = KIND_DOT[card.kind] ?? { label: card.kind, className: 'bg-muted-foreground' }
   const n = card.tools?.length || card.tool_count || 0
 
   if (layout === 'row') {
@@ -78,7 +70,7 @@ export function ConnectorCard({
   return (
     <div
       data-vr="connector-card"
-      className="cs-card group relative flex flex-col rounded-[20px] border border-border bg-card p-4 transition-[transform,box-shadow,background-color] duration-150 hover:-translate-y-0.5 hover:shadow-[0_8px_28px_-14px_rgba(0,0,0,0.35)]"
+      className="cs-card group relative flex flex-col rounded-[20px] border border-border bg-card p-4 transition-[transform,box-shadow,background-color] duration-150 hover:-translate-y-0.5 hover:shadow-[0_8px_28px_-14px_rgba(0,0,0,0.35)] active:translate-y-0 active:shadow-none"
     >
       <button
         type="button"
@@ -117,7 +109,10 @@ export function ConnectorCard({
         {card.description}
       </p>
 
-      <div className="relative z-10 mt-3.5 flex items-center justify-between">
+      {/* One interactive affordance, left-aligned. The connector KIND is surfaced
+          on the detail sheet ("12 tools · Catalog"), not as an unlabelled dot on
+          the card face (blocker H3). */}
+      <div className="relative z-10 mt-3.5 flex items-center">
         <button
           type="button"
           onClick={onOpen}
@@ -126,9 +121,6 @@ export function ConnectorCard({
         >
           <StateChip kind={chip} count={n} />
         </button>
-        <span className="pointer-events-auto flex items-center gap-1.5 text-[11px] text-muted-foreground" title={dot.label}>
-          <span className={cn('size-1.5 rounded-full', dot.className)} aria-hidden />
-        </span>
       </div>
     </div>
   )
@@ -142,7 +134,7 @@ function ToolPill({ children }: { children: React.ReactNode }) {
   )
 }
 
-function StateChip({ kind, count }: { kind: ChipKind; count: number }) {
+export function StateChip({ kind, count }: { kind: ChipKind; count: number }) {
   if (kind === 'added') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-status-ready/15 px-3 py-1.5 text-[12.5px] font-medium text-status-ready-ink">
@@ -158,9 +150,11 @@ function StateChip({ kind, count }: { kind: ChipKind; count: number }) {
       </span>
     )
   }
-  const label = kind === 'get' ? 'Get' : 'Connect'
+  // One verb system end-to-end (blocker B3): Connect → Added · N → Grant…. The
+  // library "get" and the bot-scope "connect" are the SAME action, one label.
+  const label = 'Connect'
   return (
-    <span className="cs-chip-primary inline-flex items-center rounded-full bg-primary px-4 py-1.5 text-[12.5px] font-semibold text-primary-foreground shadow-sm">
+    <span className="cs-chip-primary inline-flex items-center rounded-full bg-primary px-4 py-1.5 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition-transform duration-100 group-active:scale-95">
       {label}
     </span>
   )
