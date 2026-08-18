@@ -22,8 +22,11 @@ import * as React from 'react'
 
 export interface KeyboardViewport {
   /** Current visual-viewport height in px (the area NOT covered by the keyboard
-   *  / browser chrome). `null` until measured / when visualViewport is absent —
-   *  callers then fall back to a CSS height (100dvh). */
+   *  / browser chrome). Published only while an editable field is focused AND the
+   *  keyboard overlaps the viewport; `null` otherwise (no editable focus, keyboard
+   *  closed, or visualViewport absent) so callers fall back to their CSS height
+   *  (`100svh` — the SMALL viewport, so a late null frame can never slam the bar
+   *  behind the keyboard the way the larger `100dvh` could). */
   height: number | null
   /** Pixels the soft keyboard (and any bottom OS chrome) overlaps the layout
    *  viewport: `layoutHeight - visualViewport.height - visualViewport.offsetTop`.
@@ -138,18 +141,45 @@ export function useKeyboardViewport(): KeyboardViewport {
       raf = 0
       const measuredHeight = visual.height
       const { inset, open: keyboardOpen } = detect(visual)
-      // KEY INVARIANT (PWA-black-bar fix): only publish a concrete `height` when
-      // the keyboard is actually OPEN. When the keyboard is closed, `null` lets
-      // callers fall back to the CSS `100dvh` layout — which on iOS PWA cold
-      // launch already over-paints into the home-indicator region via the
-      // `min-height: 100vh` belt-and-suspenders in globals.css. Without this
-      // gate, every consumer (MobileSheet, focus route…) would pin `style.height
-      // = visualViewport.height` immediately on mount, and on iOS PWA cold
-      // launch `visualViewport.height` evaluates to physical-screen-minus-home-
-      // indicator → a black bar appears below the app. Once the keyboard
-      // actually opens we DO want to drive layout off visualViewport (that's
-      // the whole reason the hook exists), so the gate flips off then.
-      const publishedHeight = keyboardOpen ? measuredHeight : null
+      // WHEN TO DRIVE LAYOUT OFF visualViewport (the PWA-black-bar gate, hardened).
+      //
+      // Original invariant: publish a concrete `height` only when the keyboard is
+      // OPEN (inset > 80). When closed, `null` lets callers fall back to their CSS
+      // height — needed because on iOS PWA cold launch `visualViewport.height`
+      // briefly evaluates to physical-screen-minus-home-indicator, and pinning
+      // `style.height` to it there paints a black bar below the app.
+      //
+      // BUT the `inset > 80` boolean gated the fallback the WRONG way while TYPING:
+      // during the keyboard-open animation (and on any detection wobble) `inset`
+      // dips under 80, `height` flips to `null`, and the composer's sheet snaps
+      // back to its full-height CSS fallback — dropping the `absolute bottom-0`
+      // composer BEHIND the keyboard (the reported sliver of input + dark gap).
+      // iOS never shrinks `dvh`/the layout viewport for the keyboard, so a
+      // full-height fallback is always wrong mid-type.
+      //
+      // Hardened gate — a strict SUPERSET of the old `keyboardOpen`-only rule, so
+      // it cannot regress any case the old gate already handled:
+      //   · keyboardOpen (inset > 80)                     → drive (as before), OR
+      //   · an EDITABLE field is focused AND the viewport  → drive (NEW: catches
+      //     is even slightly overlapped (inset > 1)          the transition frames)
+      //
+      // The NEW clause is the fix: while the keyboard animates open (and on any
+      // detection wobble) `inset` sits between 1 and 80, the old gate published
+      // `null`, and the sheet fell back to full height with the composer behind
+      // the keyboard. Gating the new clause on `inset > 1` keeps the cold-launch
+      // case (xterm auto-focus, keyboard CLOSED → inset ≈ 0) on the `null`→CSS
+      // path, so the PWA black-bar fix holds — and the CSS fallback is now `svh`
+      // (mobile-sheet.tsx), which is the correct resting position with no keyboard
+      // anyway, so there is nothing to publish when the keyboard is closed.
+      //
+      // BLUR RE-SYNC: the instant the field blurs, the keyboard dismisses — once
+      // `inset` drops back under 80 both clauses are false, `driving` is false,
+      // and the sheet resets to its CSS height, clearing any residual
+      // `offsetTop`/`height` iOS leaves behind (documented: `offsetTop` does not
+      // reliably return to 0 after dismiss). The `focusout` listener below re-runs
+      // this measure so the reset does not wait for the next resize/scroll frame.
+      const driving = keyboardOpen || (hasEditableFocus() && inset > 1)
+      const publishedHeight = driving ? measuredHeight : null
       setVp((prev) => {
         // Skip a state write if nothing meaningfully changed (rAF can still fire
         // on a no-op scroll) — sub-pixel churn shouldn't re-render the tree.
