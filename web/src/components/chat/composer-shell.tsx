@@ -61,7 +61,16 @@ export function ComposerFrame({
   return (
     <div
       data-testid="chat-composer"
-      className={cn(phone ? 'px-[14px] pb-[14px]' : 'px-8 pb-[18px]', className)}
+      className={cn(
+        // On the phone the composer is now the SINGLE bottom bar (the old dock
+        // below it is folded away under chat — mobile polish #4), so it owns the
+        // home-indicator inset: `max(env(safe-area-inset-bottom), 14px)` keeps the
+        // 14px breathing room on a flat-bottom phone and lifts clear of the
+        // indicator on a notched one. `env()` collapses to 0 above the soft
+        // keyboard, so nothing double-pads when the field sits at the keyboard top.
+        phone ? 'px-[14px] pb-[max(env(safe-area-inset-bottom),14px)]' : 'px-8 pb-[18px]',
+        className,
+      )}
     >
       <div className={cn('group relative mx-auto w-full', !phone && 'max-w-[744px]')}>
         {stat && (

@@ -95,6 +95,15 @@ export interface ChatComposerProps {
    */
   onSchedule?: (draft: string) => void
   /**
+   * Open the folded-actions sheet (mobile chat only). On the phone the old
+   * global dock below the composer is gone — its session switcher, command
+   * palette, snippets and dictation now live behind ONE expander in the
+   * composer's leading cluster, so the surface has a single input bar
+   * (`routes/focus/mobile.tsx`). Omit and the expander is not drawn: the desktop
+   * split keeps its sidebar, the bench renders no dead control.
+   */
+  onMore?: () => void
+  /**
    * This session cannot work — a quota bucket, an auth death (`blocked.ts`).
    * The string is the REASON, already naming the limit and, where there is one,
    * when it lifts.
@@ -120,6 +129,7 @@ export function ChatComposer({
   renderPicker,
   pickerData,
   onSchedule,
+  onMore,
   blocked,
   className,
 }: ChatComposerProps) {
@@ -197,6 +207,26 @@ export function ChatComposer({
         placeholder={`Message ${label}`}
         leading={
           <>
+          {/* THE FOLDED-ACTIONS EXPANDER (mobile chat only). On the phone the
+              redundant global dock below the composer is gone; its session
+              switcher, command palette, snippets and dictation live behind this
+              one control, so the surface is a single input bar. Leftmost — the
+              conventional place for "expand" — and set off from the insert pair
+              by the row's own `gap-3`, so it reads as its own group. */}
+          {onMore && (
+            <button
+              type="button"
+              data-testid="chat-composer-more"
+              aria-label="More actions"
+              onClick={onMore}
+              className={cn(
+                'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
+                '[@media(pointer:coarse)]:size-11',
+              )}
+            >
+              <MoreIcon />
+            </button>
+          )}
           {/* THE INSERT PAIR — mention (`@`) and schedule (clock). A related
               pair, so they are grouped in one flex box at a tight gap rather
               than served the row's full `gap-3` each: the boards drew them as
@@ -647,6 +677,21 @@ function ClockIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  )
+}
+
+/** More actions — a 2×2 grid of dots, the app's word for "a small set of
+ *  things behind one control". Deliberately NOT a second plus (the `@` cell
+ *  already carries one) and not the dock's `···` (that meant the key bar):
+ *  distinct from every glyph it sits beside. Monochrome `currentColor`. */
+function MoreIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="currentColor" aria-hidden>
+      <circle cx="6" cy="6" r="1.6" />
+      <circle cx="12" cy="6" r="1.6" />
+      <circle cx="6" cy="12" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
     </svg>
   )
 }
