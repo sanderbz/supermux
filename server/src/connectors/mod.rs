@@ -18,6 +18,7 @@
 //! dir. This module only records grants (`session_connectors`) + secrets.
 
 pub mod api;
+pub mod catalog;
 pub mod manifest;
 
 use axum::routing::{delete, get, post};
@@ -57,7 +58,14 @@ pub fn connect_tool_descriptor(service: &str) -> Value {
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         // Store: list cards / read one / create-or-update a manifest / remove.
+        // `GET /api/connectors` merges local rows + the catalog mirror (secret-
+        // free) and accepts `?source=`/`?q=`/`?category=`/`?featured=` filters.
         .route("/api/connectors", get(api::list).post(api::upsert))
+        // The PulseMCP catalog mirror on its own: real, installable MCP cards.
+        .route("/api/connectors/catalog", get(api::catalog))
+        .route("/api/connectors/catalog/refresh", post(api::catalog_refresh))
+        // Locally-cached (never hotlinked) catalog icon bytes.
+        .route("/api/connectors/catalog/icon/{id}", get(api::catalog_icon))
         .route("/api/connectors/{id}", get(api::get_one).delete(api::remove))
         // Import a `.mcpb` manifest.json → a connector card.
         .route("/api/connectors/import", post(api::import_mcpb))

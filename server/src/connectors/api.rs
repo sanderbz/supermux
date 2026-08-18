@@ -18,6 +18,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 use crate::vault::Vault;
 
+use super::catalog;
 use super::manifest::{valid_connector_id, Manifest};
 
 /// Shape one connector row into a secret-free store card (the credential SCHEMA
@@ -31,15 +32,137 @@ fn card(c: &connectors::Connector) -> Value {
         "description": c.description,
         "tools": serde_json::from_str::<Value>(&c.tools_json).unwrap_or_else(|_| json!([])),
         "credentials": serde_json::from_str::<Value>(&c.credentials_json).unwrap_or_else(|_| json!([])),
+        // Provenance tag so the merged grid (local rows + catalog mirror) can be
+        // filtered by `?source=`. Catalog cards carry `"catalog"`.
+        "source": "local",
         "created_at": c.created_at,
     })
 }
 
-/// `GET /api/connectors` — the store card grid (secret-free).
-pub async fn list(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+/// Query for the merged store grid.
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQuery {
+    /// `local` | `catalog` | `all` (default `all`).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Free-text search over id / display_name / description.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// A category tag (or `featured`) a card must carry.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Only featured cards.
+    #[serde(default)]
+    pub featured: Option<bool>,
+}
+
+impl ListQuery {
+    fn to_filter(&self) -> catalog::CardFilter {
+        catalog::CardFilter {
+            source: self.source.clone(),
+            q: self.q.clone(),
+            category: self.category.clone(),
+            featured_only: self.featured.unwrap_or(false),
+        }
+    }
+}
+
+/// `GET /api/connectors` — the store card grid (secret-free): locally-created /
+/// agent-authored connectors merged with the PulseMCP catalog mirror.
+///
+/// The catalog half is read from the in-memory cache only (never blocks on the
+/// network); if that cache is stale a refresh is kicked off in the background so
+/// the next request is warm. Filters: `?source=local|catalog|all` (default
+/// `all`), `?q=`, `?category=`, `?featured=true`.
+pub async fn list(
+    State(state): State<AppState>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let filter = q.to_filter();
+    let want_catalog = filter.source.as_deref().map(|s| s != "local").unwrap_or(true);
+
     let rows = connectors::list(&state.pool).await.map_err(db_err)?;
-    let cards: Vec<Value> = rows.iter().map(card).collect();
+    let local: Vec<Value> = rows.iter().map(card).collect();
+
+    let catalog_cards = if want_catalog {
+        let mirror = catalog::mirror();
+        if mirror.is_stale().await {
+            // Warm the cache off the request path — this response is instant.
+            let data_dir = state.config.data_dir.clone();
+            tokio::spawn(async move {
+                let _ = catalog::mirror().refresh(&data_dir).await;
+            });
+        }
+        mirror.cached_cards().await
+    } else {
+        Vec::new()
+    };
+
+    let cards = catalog::merge_and_filter(local, catalog_cards, &filter);
     Ok(Json(json!({ "connectors": cards })))
+}
+
+/// `GET /api/connectors/catalog` — the PulseMCP mirror on its own (secret-free).
+/// Fetches on-demand when the cache is cold/stale (bounded timeout; degrades to
+/// the curated + last-good set on failure). Same `?q=`/`?category=`/`?featured=`
+/// filters as the merged list.
+pub async fn catalog(
+    State(state): State<AppState>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let cards = catalog::mirror().cards(&state.config.data_dir).await;
+    let mut filter = q.to_filter();
+    filter.source = Some("catalog".to_string());
+    let cards = catalog::merge_and_filter(Vec::new(), cards, &filter);
+    Ok(Json(json!({ "connectors": cards, "source": "catalog" })))
+}
+
+/// `POST /api/connectors/catalog/refresh` — force a mirror refetch now.
+pub async fn catalog_refresh(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    match catalog::mirror().refresh(&state.config.data_dir).await {
+        Ok(cards) => Ok(Json(json!({ "ok": true, "count": cards.len() }))),
+        Err(e) => Err(AppError::Internal(anyhow::anyhow!("catalog refresh failed: {e}"))),
+    }
+}
+
+/// `GET /api/connectors/catalog/icon/{id}` — the locally-mirrored icon bytes for
+/// a catalog card (never a hotlink to the upstream). 404 when not mirrored.
+pub async fn catalog_icon(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::response::IntoResponse;
+    let path = catalog::icon_path(&state.config.data_dir, &id)
+        .ok_or_else(|| AppError::BadRequest("invalid icon id".into()))?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| AppError::NotFound(format!("icon for '{id}'")))?;
+    let ctype = sniff_image_type(&bytes);
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, ctype),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Cheap magic-byte sniff so a mirrored icon serves with a plausible type.
+fn sniff_image_type(b: &[u8]) -> &'static str {
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if b.starts_with(b"GIF8") {
+        "image/gif"
+    } else if b.starts_with(b"RIFF") && b.len() > 11 && &b[8..12] == b"WEBP" {
+        "image/webp"
+    } else if b.starts_with(b"<svg") || b.starts_with(b"<?xml") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// `GET /api/connectors/{id}` — one card (secret-free).
