@@ -29,8 +29,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .cs-card,
-  .cs-featured {
+  .cs-featured,
+  .cs-chips button {
     transition: none !important;
+    transform: none !important;
   }
 }
 

@@ -36,6 +36,14 @@ export interface StoreViewProps {
   mockGranted?: { bot?: string[]; all?: string[] }
   /** `page` (the /store route) or `sheet` (bot-scoped dock). */
   variant?: 'page' | 'sheet'
+  /** Offline bench only: the theme (`light`/`dark`) stamped as `data-theme` on the
+   *  detail sheet's PORTALED content. The detail `ResponsiveSheet` renders through
+   *  a Radix portal at `document.body`, so it escapes a slab's local `data-theme`
+   *  wrapper and would otherwise inherit the ONE global `<html>` theme — which made
+   *  a bench reviewer opening the sheet from the "light" slab see it in the global
+   *  (dark) theme and mis-file it as "detail sheet dark in light mode". Undefined in
+   *  production (default), where the single global theme already matches. */
+  detailTheme?: 'light' | 'dark'
 }
 
 export function StoreView({
@@ -43,6 +51,7 @@ export function StoreView({
   mock,
   mockGranted,
   variant = 'page',
+  detailTheme,
 }: StoreViewProps) {
   const botName = grantTarget && grantTarget !== '*' ? grantTarget : null
   const [q, setQ] = React.useState('')
@@ -130,7 +139,7 @@ export function StoreView({
               onClick={() => setCat(c.key)}
               aria-pressed={cat === c.key}
               className={cn(
-                'shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors',
+                'shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-[transform,color,background-color] duration-100 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 cat === c.key
                   ? 'bg-foreground text-background'
                   : 'bg-secondary text-muted-foreground hover:text-foreground',
@@ -199,7 +208,12 @@ export function StoreView({
           onOpenChange={(o) => !o && setOpenId(null)}
           title={openCard.display_name}
           description={botName ? `For ${botName}` : 'Connector'}
+          contentTheme={detailTheme}
         >
+          {/* `detailTheme` (bench only) stamps the sheet shell via `contentTheme`; the
+              `[data-grok]` skin here resolves against that `[data-theme='…']` root
+              (grok-mode's `[data-theme='…'] [data-grok]` rules). Production leaves
+              `detailTheme` undefined and the portal inherits the global theme. */}
           <div data-grok>
             <ConnectorDetail
               card={openCard}

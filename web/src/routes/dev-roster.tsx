@@ -98,12 +98,13 @@ const MOCK_BOT: ApiSession = {
 } as ApiSession
 
 const BOT_PANEL_TABS: {
-  tab: 'overview' | 'instructions' | 'tools' | 'activity'
+  tab: 'overview' | 'instructions' | 'tools' | 'memory' | 'activity'
   label: string
 }[] = [
   { tab: 'overview', label: 'Overview' },
   { tab: 'instructions', label: 'Instructions' },
   { tab: 'tools', label: 'Tools' },
+  { tab: 'memory', label: 'Memory' },
   { tab: 'activity', label: 'Activity' },
 ]
 

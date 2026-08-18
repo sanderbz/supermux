@@ -47,7 +47,7 @@ function Slab({
           data-vr={`store-grid-${theme}${grok ? '-grok' : ''}`}
           className="h-[720px] overflow-hidden rounded-3xl border border-border"
         >
-          <StoreView grantTarget={null} mock={CURATED_FALLBACK} mockGranted={GRANTED} />
+          <StoreView grantTarget={null} mock={CURATED_FALLBACK} mockGranted={GRANTED} detailTheme={theme} />
         </div>
 
         {/* bot-scoped variant (rows) */}
@@ -55,7 +55,7 @@ function Slab({
           data-vr={`store-sheet-${theme}${grok ? '-grok' : ''}`}
           className="mx-auto h-[560px] w-full max-w-[560px] overflow-hidden rounded-3xl border border-border"
         >
-          <StoreView grantTarget="Ada" mock={CURATED_FALLBACK} mockGranted={GRANTED} variant="sheet" />
+          <StoreView grantTarget="Ada" mock={CURATED_FALLBACK} mockGranted={GRANTED} variant="sheet" detailTheme={theme} />
         </div>
 
         {/* the inline connect-cards (chat surface — needs the sm token slab) */}

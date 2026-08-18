@@ -53,6 +53,12 @@ export interface ResponsiveSheetProps {
   children: React.ReactNode
   /** Extra classes for the desktop SheetContent (e.g. `sm:max-w-md`). */
   className?: string
+  /** Offline bench only: stamp `data-theme` on the PORTALED content root so the
+   *  sheet shell resolves a specific theme instead of the single global `<html>`
+   *  theme. The sheet portals to `document.body` (escaping a slab's local theme
+   *  wrapper), so a multi-theme review page can otherwise only show the sheet in one
+   *  global theme. Undefined in production, where the global theme already matches. */
+  contentTheme?: 'light' | 'dark'
 }
 
 export function ResponsiveSheet(props: ResponsiveSheetProps) {
@@ -74,6 +80,7 @@ function MobileBody({
   headerActions,
   footer,
   children,
+  contentTheme,
 }: ResponsiveSheetProps) {
   return (
     <Drawer.Root
@@ -91,9 +98,11 @@ function MobileBody({
         <Drawer.Overlay className="fixed inset-0 z-[60] bg-black/40" />
         <Drawer.Content
           data-testid="responsive-sheet"
+          {...(contentTheme ? { 'data-theme': contentTheme } : {})}
           className={cn(
             'glass fixed inset-x-0 bottom-0 z-[60] flex max-h-[92vh] flex-col',
             'rounded-t-[10px] border-t border-border/60 pb-safe outline-none',
+            contentTheme === 'dark' && 'dark',
           )}
         >
           {/* Drag indicator — 36×5, 2.5px radius, tertiary tint.
@@ -155,12 +164,14 @@ function DesktopBody({
   footer,
   children,
   className,
+  contentTheme,
 }: ResponsiveSheetProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className={cn('flex w-full flex-col gap-0 p-0 sm:max-w-md', className)}
+        {...(contentTheme ? { 'data-theme': contentTheme } : {})}
+        className={cn('flex w-full flex-col gap-0 p-0 sm:max-w-md', contentTheme === 'dark' && 'dark', className)}
       >
         <SheetHeader className="border-b border-border px-5 py-4 text-left">
           <SheetTitle className="truncate pr-8">{title}</SheetTitle>
