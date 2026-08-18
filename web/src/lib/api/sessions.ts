@@ -78,6 +78,23 @@ export interface PermissionRequestInfo {
   mode?: string
 }
 
+/** A bot's pending `connect(service)` ask (spec §8). The card it drives is
+ *  supermux-native and posts the credential straight to the vault — the request
+ *  itself carries NO secret, only WHICH connector wants a human and enough of its
+ *  card to render (name, tool-count, whether it needs a sign-in / a key). */
+export interface ConnectRequestInfo {
+  /** Correlates the ask across SSE deltas (keys the card, like the form's id). */
+  id?: string
+  /** The connector id the bot asked to connect (`service` arg). */
+  connector_id: string
+  /** Display name for the card header (falls back to the id). */
+  display_name?: string
+  /** For the "N tools" line. */
+  tool_count?: number | null
+  /** True when the connector offers an OAuth sign-in (primary button). */
+  has_oauth?: boolean
+}
+
 /** One-line-per-side summary of a session's chat, for the tile (fase A2).
  *
  *  Rides the `sessions` SSE delta — there is NO extra request and no extra
@@ -305,6 +322,15 @@ export interface ApiSession {
    *  same `sessions` SSE delta (`null` clears). Every string in it is authored
    *  by the MCP server — see `components/chat/elicitation.ts`. */
   elicitation?: ElicitationAsk | null
+  /** **A bot's `connect(service)` tool is asking for a human** (the `_meta`
+   *  `requiresUserInteraction` marker reached the prompt). supermux renders the
+   *  inline Connect card from this — a secure sign-in / API-key paste that POSTs
+   *  straight to the vault, NEVER an MCP elicitation (spec forbids elicitation
+   *  for secrets). Rides the same `sessions` SSE delta (`null` clears). The
+   *  credential never travels the chat/MCP stream. Populated by the server's
+   *  connect-ask plumbing (a later Build-phase addition); the card is buildable
+   *  and testable against this typed shape via the `/dev/chat-live` fixture. */
+  connect_request?: ConnectRequestInfo | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor and the client's clock-skew sample. */
   activity_at?: number
