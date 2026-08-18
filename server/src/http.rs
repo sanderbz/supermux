@@ -155,6 +155,9 @@ fn protected_router(state: AppState) -> Router {
         .merge(agents::router_for(state.clone()))
         // Claude tools registry + MCP CRUD (bearer-protected).
         .merge(claude_tools::router_for(state.clone()))
+        // Connector store: manifest CRUD + .mcpb import + per-agent grants +
+        // write-only credential→vault (bearer-protected).
+        .merge(crate::connectors::router_for(state.clone()))
         .merge(prefs::router_for(state.clone())) // snippets + kbd-groups
         .merge(audit::router_for(state.clone())) // audit log read
         // Web-push VAPID key + subscribe/unsubscribe (single-user dashboard,

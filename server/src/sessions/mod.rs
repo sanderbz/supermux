@@ -20,6 +20,7 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod connector_config;
 pub mod elicitation;
 pub mod host_pool;
 pub mod lifecycle;

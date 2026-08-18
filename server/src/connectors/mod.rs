@@ -1,0 +1,85 @@
+//! Connector store (server foundation) — the manifest registry, the per-agent
+//! grant engine, the write-only credential vault surface, and the `connect()`
+//! affordance plumbing (spec §§3-6, 8).
+//!
+//! **Router-registry pattern** (same as [`crate::claude_tools`]): [`router_for`]
+//! returns this module's sub-router; `http::protected_router` merges it in with
+//! one `.merge` line. No shared-file edit beyond that line.
+//!
+//! **Secret hygiene (load-bearing).** Credential values are WRITE-ONLY: they land
+//! straight in the [`crate::vault`] (AES-256-GCM), are never logged, and every
+//! read path masks them with [`crate::claude_tools::MASKED`]. Decryption happens
+//! ONLY at launch, in [`crate::sessions::connector_config`], to inject the secret
+//! as an env var into the granted session's `claude` child.
+//!
+//! **Per-agent scoping** is NOT here — it lives in the launch path
+//! ([`crate::sessions::connector_config::assemble`], called from
+//! `sessions::lifecycle`), the single component that owns the per-session config
+//! dir. This module only records grants (`session_connectors`) + secrets.
+
+pub mod api;
+pub mod manifest;
+
+use axum::routing::{delete, get, post};
+use axum::Router;
+use serde_json::{json, Value};
+
+use crate::state::AppState;
+
+/// The `_meta` key that forces a tool to the human-in-the-loop prompt even when
+/// an allow-rule matches (Claude Code ≥ 2.1.199). supermux renders such a tool
+/// call as the inline Connect card (spec §8 step 2).
+pub const REQUIRES_USER_INTERACTION_META: &str = "anthropic/requiresUserInteraction";
+
+/// Build the MCP tool descriptor for a connector's `connect(service)` tool,
+/// carrying the `_meta` marker that always reaches the human prompt. This is the
+/// SERVER-SIDE plumbing (spec §8 step 2): the actual connect MCP server binary is
+/// a later phase, but the descriptor shape — and the marker that makes supermux
+/// render the inline Connect card instead of auto-running it — is fixed here so
+/// both the future server and the web card agree on it.
+pub fn connect_tool_descriptor(service: &str) -> Value {
+    json!({
+        "name": "connect",
+        "description": format!("Connect the '{service}' connector (opens a secure sign-in / API-key card; the credential is stored in the supermux vault and never shown to the agent)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "service": { "type": "string", "description": "The connector id to connect." }
+            },
+            "required": ["service"]
+        },
+        "_meta": { REQUIRES_USER_INTERACTION_META: true }
+    })
+}
+
+/// Build the connector-store sub-router (bearer-protected; the auth layer is
+/// applied by `http::protected_router`).
+pub fn router_for(state: AppState) -> Router {
+    Router::new()
+        // Store: list cards / read one / create-or-update a manifest / remove.
+        .route("/api/connectors", get(api::list).post(api::upsert))
+        .route("/api/connectors/{id}", get(api::get_one).delete(api::remove))
+        // Import a `.mcpb` manifest.json → a connector card.
+        .route("/api/connectors/import", post(api::import_mcpb))
+        // Write a credential → vault (write-only), optionally auto-granting.
+        .route("/api/connectors/{id}/credential", post(api::put_credential))
+        // Grant / revoke to a session (or the '*' all-agents sentinel).
+        .route("/api/connectors/{id}/grant", post(api::grant))
+        .route("/api/connectors/{id}/grant", delete(api::revoke))
+        // A session's connector grants (masked), for the store's grant state.
+        .route("/api/sessions/{name}/connectors", get(api::session_connectors))
+        .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_descriptor_carries_interaction_marker() {
+        let d = connect_tool_descriptor("icloud-mail");
+        assert_eq!(d["name"], json!("connect"));
+        assert_eq!(d["_meta"][REQUIRES_USER_INTERACTION_META], json!(true));
+        assert!(d["description"].as_str().unwrap().contains("icloud-mail"));
+    }
+}

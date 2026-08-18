@@ -510,7 +510,17 @@ fn build_env(
 /// a resume-picker escape (+ destructive `clear_cc`) is safe: it NEVER is on an
 /// intended resume (escaping abandons the exact conversation asked for and wiping
 /// the cc link breaks every later Start/Resume too). Always false for codex/shell.
-fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String, bool) {
+/// `mcp_flags` are the per-session connector flag WORDS computed by the shared
+/// seam ([`crate::sessions::connector_config`]) — an empty slice for the whole
+/// pre-connector fleet, which yields a BYTE-IDENTICAL launch line. When present
+/// they are the `--mcp-config <inline json> --strict-mcp-config` pair; each word
+/// is shell-escaped here, and they sit BESIDE the role/notes
+/// `--append-system-prompt` pair (neither clobbers the other).
+fn build_launch_command(
+    config: &crate::config::Config,
+    s: &Session,
+    mcp_flags: &[String],
+) -> (String, bool) {
     let (agent, resume_intended) = match s.provider.as_str() {
         "codex" => {
             // Keep Codex in the normal terminal buffer so the browser terminal
@@ -646,6 +656,19 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             if let Some(sys) = role_system_prompt(s) {
                 parts.push("--append-system-prompt".to_string());
                 parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(sys)).into_owned());
+            }
+            // ── connector store (migration 0031) ───────────────────────────
+            // The per-session connector flag pair (`--mcp-config <inline json>
+            // --strict-mcp-config`), computed by the shared seam
+            // `connector_config::assemble` from this session's enabled grants
+            // (its own + all-agents). COMPOSES with the role/notes block above:
+            // a separate, independent flag pair, appended after it, escaped word
+            // by word. Empty for a session with no grants ⇒ the launch line is
+            // byte-identical to the pre-connector fleet. The matching
+            // `CLAUDE_CONFIG_DIR` + `${VAR}` secret env is injected via
+            // `build_env`'s merge in `start_locked` — not here.
+            for word in mcp_flags {
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Borrowed(word)).into_owned());
             }
             (parts.join(" "), resume_intended)
         }
@@ -1264,7 +1287,7 @@ async fn start_locked(
         }
     }
 
-    let env = build_env(
+    let mut env = build_env(
         &state.config,
         name,
         &hook_token,
@@ -1272,6 +1295,31 @@ async fn start_locked(
         agent_teams,
         s.host_id,
     );
+
+    // ── connector store (migration 0031): the shared per-session seam ──────────
+    // ONE component owns creating this session's private CLAUDE_CONFIG_DIR +
+    // settings.json: `connector_config::assemble`. It returns `None` (and touches
+    // nothing) unless the session has enabled connector grants — so the launch is
+    // byte-identical for the pre-connector fleet. When present it yields the env
+    // to MERGE over `build_env`'s map (`CLAUDE_CONFIG_DIR`, the decrypted `${VAR}`
+    // secrets, and the account-connector kill switch) and the launch flag words
+    // (`--mcp-config … --strict-mcp-config`) threaded into `build_launch_command`
+    // below. Claude-only (codex ignores `--mcp-config`); best-effort — a failure
+    // logs and launches without connectors rather than blocking start.
+    let mut connector_flags: Vec<String> = Vec::new();
+    if launches_claude(&s.provider) {
+        match crate::sessions::connector_config::assemble(state, name).await {
+            Ok(Some(cfg)) => {
+                env.extend(cfg.env);
+                connector_flags = cfg.launch_flags;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
+            }
+        }
+    }
+
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 
@@ -1406,7 +1454,8 @@ async fn start_locked(
         _ => {
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let (cmd, resume_intended) = build_launch_command(&state.config, &s);
+            let (cmd, resume_intended) =
+                build_launch_command(&state.config, &s, &connector_flags);
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -2994,7 +3043,7 @@ mod build_env_tests {
             skills: "[]".into(),
         };
 
-        let (command, resume_intended) = build_launch_command(&config, &session);
+        let (command, resume_intended) = build_launch_command(&config, &session, &[]);
         // Per-session flags go through the SEC-01 escaper, which leaves ordinary
         // flag words alone — the rendered line is byte-identical to before.
         let invocation = "codex --no-alt-screen --model gpt-5-codex --ask-for-approval never";
@@ -3059,14 +3108,14 @@ mod build_env_tests {
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
-        let (cmd, resume) = build_launch_command(&config, &base);
+        let (cmd, resume) = build_launch_command(&config, &base, &[]);
         assert!(cmd.contains("--name worker"));
         assert!(!cmd.contains("--resume"));
         assert!(!resume);
 
         // A persisted conversation id → `--resume '<id>'`, resume-intended.
         let by_id = Session { cc_conversation_id: "abc-123".into(), ..base.clone() };
-        let (cmd, resume) = build_launch_command(&config, &by_id);
+        let (cmd, resume) = build_launch_command(&config, &by_id, &[]);
         assert!(cmd.contains("--resume 'abc-123'"));
         assert!(resume);
 
@@ -3076,7 +3125,7 @@ mod build_env_tests {
             cc_conversation_id: "abc-123".into(),
             ..base
         };
-        let (cmd, resume) = build_launch_command(&config, &by_name);
+        let (cmd, resume) = build_launch_command(&config, &by_name, &[]);
         assert!(cmd.contains("--resume 'my-chat'"));
         assert!(resume);
     }
@@ -3125,7 +3174,7 @@ mod build_env_tests {
             skills: "[]".into(),
         };
 
-        let (command, _resume) = build_launch_command(&config, &session);
+        let (command, _resume) = build_launch_command(&config, &session, &[]);
         let status = std::process::Command::new("bash")
             .args(["-n", "-c", &command])
             .status()
@@ -3165,7 +3214,7 @@ mod build_env_tests {
         s.memory = "The build is debug-only; never run cargo --release.".into();
         s.model = "opus".into();
 
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         // Role + notes ride ONE `--append-system-prompt` word.
         assert!(cmd.contains("--append-system-prompt"), "cmd: {cmd}");
         assert!(cmd.contains("meticulous code reviewer"), "role missing: {cmd}");
@@ -3186,7 +3235,7 @@ mod build_env_tests {
     fn no_role_no_notes_means_no_system_prompt_injection() {
         let config = cfg();
         let s = claude_session("plain", "");
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         assert!(!cmd.contains("--append-system-prompt"), "cmd: {cmd}");
         assert!(!cmd.contains("--model"), "no model column → no --model: {cmd}");
     }
@@ -3198,7 +3247,7 @@ mod build_env_tests {
         let config = cfg();
         let mut s = claude_session("legacy", "");
         s.model = "totally-made-up".into();
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         assert!(!cmd.contains("--model"), "an unmappable model must be dropped: {cmd}");
     }
 
@@ -3211,12 +3260,55 @@ mod build_env_tests {
         s.desc = "Mind the $PATH; use \"quotes\" & `ticks` — carefully.".into();
         s.memory = "Rule: don't `rm -rf`.".into();
         s.model = "sonnet".into();
-        let (command, _resume) = build_launch_command(&config, &s);
+        let (command, _resume) = build_launch_command(&config, &s, &[]);
         let status = std::process::Command::new("bash")
             .args(["-n", "-c", &command])
             .status()
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "role-injected launch must parse as shell: {command}");
+    }
+
+    /// Connector scoping COMPOSES with role/notes (migration 0031): a session
+    /// with both a role AND connector flags emits BOTH the role's
+    /// `--append-system-prompt` pair and the connector's `--mcp-config …
+    /// --strict-mcp-config` pair — neither clobbers the other, and the whole line
+    /// still parses as shell.
+    #[test]
+    fn connector_flags_compose_with_role_notes() {
+        let config = cfg();
+        let mut s = claude_session("compose", "");
+        s.desc = "You are the mail bot.".into();
+        s.memory = "Never delete a thread.".into();
+        let mcp_flags = vec![
+            "--mcp-config".to_string(),
+            r#"{"mcpServers":{"icloud-mail":{"command":"python","args":["s.py"]}}}"#.to_string(),
+            "--strict-mcp-config".to_string(),
+        ];
+        let (command, _resume) = build_launch_command(&config, &s, &mcp_flags);
+        // BOTH flag pairs present.
+        assert!(command.contains("--append-system-prompt"), "role flag missing: {command}");
+        assert!(command.contains("--mcp-config"), "connector flag missing: {command}");
+        assert!(command.contains("--strict-mcp-config"), "strict flag missing: {command}");
+        assert!(command.contains("icloud-mail"), "inline mcp config missing: {command}");
+        // The role's system prompt survived intact.
+        assert!(command.contains("You are the mail bot."), "role text missing: {command}");
+        // And the composed line is still valid shell (the inline JSON is quoted).
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "composed launch must parse as shell: {command}");
+    }
+
+    /// With NO connector flags (empty slice), the launch line is byte-identical to
+    /// the pre-connector fleet — the composition adds nothing.
+    #[test]
+    fn no_connector_flags_is_byte_identical() {
+        let config = cfg();
+        let s = claude_session("plain", "--yolo");
+        let (with_empty, _) = build_launch_command(&config, &s, &[]);
+        assert!(!with_empty.contains("--mcp-config"));
+        assert!(!with_empty.contains("--strict-mcp-config"));
     }
 
     // ── SEC-01: caller-supplied `flags` on a shell command line ──────────────
@@ -3352,7 +3444,7 @@ mod build_env_tests {
             "--version >/dev/null ; touch {} ; claude",
             sentinel.display()
         );
-        let (command, _) = build_launch_command(&cfg(), &claude_session("pwn", &payload));
+        let (command, _) = build_launch_command(&cfg(), &claude_session("pwn", &payload), &[]);
 
         // 1. It is still a VALID shell line (an unbalanced quote would 500 the
         //    pane instead of running the payload — also not acceptable).
