@@ -109,10 +109,18 @@ pub fn session_dir(data_dir: &Path, session: &str) -> PathBuf {
     data_dir.join("native").join(session)
 }
 
+/// Longest socket path the native runtime will bind. `sockaddr_un.sun_path` is
+/// 108 bytes on Linux; 100 leaves headroom and is checked at spawn time (see
+/// [`crate::sessions::native::runtime`]) rather than failing obscurely inside
+/// `bind`. It lives here, next to [`socket_path`], so every caller that has to
+/// BUDGET a session name against it (the scheduler's boot names) reads the same
+/// number the runtime enforces.
+pub const SOCKET_PATH_MAX: usize = 100;
+
 /// The holder's unix listener path for `session`.
 ///
-/// Unix socket paths are capped at ~108 bytes by the kernel, so this is
-/// validated at spawn time rather than failing obscurely inside `bind`.
+/// Unix socket paths are capped by the kernel, so the length is validated at
+/// spawn time against [`SOCKET_PATH_MAX`].
 pub fn socket_path(data_dir: &Path, session: &str) -> PathBuf {
     session_dir(data_dir, session).join("holder.sock")
 }

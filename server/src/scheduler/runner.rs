@@ -8,12 +8,15 @@
 //! run records a `schedule_runs` row and an `audit_log` entry, then recomputes
 //! `next_run` (or disables a finished one-shot).
 
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::db;
 use crate::db::schedules::Schedule;
 use crate::sessions;
+use crate::sessions::native::spool::{self, SOCKET_PATH_MAX};
 use crate::state::{AppState, SseEvent};
 
 use super::parser;
@@ -507,7 +510,7 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         }
     }
 
-    let name = boot_session_name(sched);
+    let name = boot_session_name(sched, &state.config.data_dir);
     let input = sessions::CreateInput {
         name: name.clone(),
         display_name: None,
@@ -524,7 +527,9 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         mcp: None,
         worktree: Some(sched.boot_worktree == 1),
         host_id: None,
-        // Scheduler-booted sessions take the default (tmux) runtime.
+        // Scheduler-booted sessions take the default runtime, which is native
+        // for a local session. That is why the name above is budgeted against
+        // the native socket path.
         runtime: None,
     };
     if let Err(e) = sessions::create(state, input).await {
@@ -583,18 +588,80 @@ async fn worktree_is_dirty(dir: &str) -> Result<bool, std::io::Error> {
 }
 
 /// A valid, unique session slug for a boot job (`[A-Za-z0-9_.-]+`).
-fn boot_session_name(sched: &Schedule) -> String {
-    let base: String = sched
+///
+/// The name is budgeted against the NATIVE RUNTIME'S SOCKET PATH, not just
+/// against [`sessions::valid_name`]'s 100-byte cap. A native session binds
+/// `<data_dir>/native/<name>/holder.sock`, and that whole path has to fit in
+/// [`SOCKET_PATH_MAX`] bytes. On the default `~/.supermux` data dir a name
+/// that passes `valid_name` at 100 bytes still produces a 130-byte socket path
+/// and the boot fails at spawn ("socket path ... is too long for a unix
+/// socket"). A boot schedule with a long title hit exactly that and the run was
+/// recorded as an error nobody saw.
+///
+/// So: the BASE (the sanitized title) is cut BEFORE the suffix is appended,
+/// never the finished name. The 8-hex suffix is what keeps two boots of the
+/// same schedule apart, so it must always survive; truncating the assembled
+/// string could eat it. The budget is derived from `data_dir` (configurable)
+/// rather than hardcoded.
+///
+/// One case the budget cannot rescue: a `data_dir` so long that even a bare
+/// 8-hex name overflows the cap (roughly 72 bytes and up). There is no name
+/// that fits then, so the function warns and lets the runtime report the
+/// spawn failure.
+fn boot_session_name(sched: &Schedule, data_dir: &Path) -> String {
+    let sanitized: String = sched
         .title
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' })
         .collect();
-    let base = base.trim_matches('-');
-    let base = if base.is_empty() { "boot" } else { base };
+    let trimmed = sanitized.trim_matches('-');
+    let mut base = if trimmed.is_empty() { "boot" } else { trimmed }.to_string();
     let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
-    let mut name = format!("{base}-{suffix}");
-    name.truncate(100);
-    name
+
+    // Shrink the base until `<data_dir>/native/<base>-<suffix>/holder.sock`
+    // fits. Measuring the real path (rather than doing arithmetic on the data
+    // dir's length) keeps this correct whatever `join` does with separators.
+    // Each pass drops the exact overflow, rounded down to a char boundary, so
+    // one or two passes settle it.
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        let len = spool::socket_path(data_dir, &candidate).as_os_str().len();
+        if len <= SOCKET_PATH_MAX || base.is_empty() {
+            break;
+        }
+        let over = len - SOCKET_PATH_MAX;
+        let mut keep = base.len().saturating_sub(over);
+        // Defensive only: the sanitizer above already forced `base` to ASCII,
+        // so every index is a char boundary today. The walk keeps the cut
+        // safe if that charset ever widens to multi-byte characters.
+        while keep > 0 && !base.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        base.truncate(keep);
+        // Don't leave the base ending in the separator that precedes the
+        // suffix (a `--` seam is harmless but ugly).
+        while base.ends_with('-') {
+            base.pop();
+        }
+    }
+
+    // Degenerate case: a data_dir so long that not even a bare suffix fits.
+    // Nothing sane can be built here, so hand back the suffix alone and let
+    // the runtime's own spawn-time check report the real path length. Warn
+    // loudly, because the real cause is the data_dir, not the title, and the
+    // spawn error alone does not say so.
+    if base.is_empty() {
+        let path_len = spool::socket_path(data_dir, suffix).as_os_str().len();
+        tracing::warn!(
+            data_dir = %data_dir.display(),
+            path_len,
+            max = SOCKET_PATH_MAX,
+            "data_dir is too long to budget a boot session name; the native \
+             socket path will exceed the cap even with an empty title"
+        );
+        return suffix.to_string();
+    }
+    format!("{base}-{suffix}")
 }
 
 /// Trim a note to a reasonable column size (matches v2's 500-char cap).
@@ -770,5 +837,113 @@ mod tests {
         let capped = truncate(&long);
         assert_eq!(capped.chars().count(), 501); // 500 '€' + '…'
         assert!(capped.ends_with('…'));
+    }
+
+    // ---- boot_session_name: socket-path budget -------------------------------
+
+    /// A boot-kind fixture whose only interesting field is the title.
+    fn boot_sched(title: &str) -> Schedule {
+        let mut s = sched_with("", "go");
+        s.kind = "boot".into();
+        s.title = title.into();
+        s
+    }
+
+    /// Every boot name ends in `-` + 8 hex chars (the uniqueness suffix).
+    fn assert_hex_suffixed(name: &str) {
+        assert!(name.len() > 9, "name too short to carry a suffix: {name}");
+        let (head, suffix) = name.split_at(name.len() - 8);
+        assert!(head.ends_with('-'), "no dash before the suffix: {name}");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix is not 8 hex chars: {name}"
+        );
+    }
+
+    /// The socket path the native runtime would bind for `name` must fit.
+    fn socket_len(data_dir: &Path, name: &str) -> usize {
+        crate::sessions::native::spool::socket_path(data_dir, name)
+            .as_os_str()
+            .len()
+    }
+
+    #[test]
+    fn boot_name_fits_the_native_socket_path() {
+        // The incident shape: a title of this length produces a socket path
+        // over the cap (105 bytes > 100 on the default data dir).
+        let data_dir = Path::new("/home/supermux/.supermux");
+        let title = "Nightly--archive--sweep-part-1-6--report--2026-08-17";
+        let name = boot_session_name(&boot_sched(title), data_dir);
+        assert!(
+            socket_len(data_dir, &name) <= SOCKET_PATH_MAX,
+            "socket path {} bytes > {SOCKET_PATH_MAX} for name {name}",
+            socket_len(data_dir, &name)
+        );
+        assert_hex_suffixed(&name);
+        // The head is still a PREFIX of the sanitized title, just shorter.
+        let head = &name[..name.len() - 9];
+        assert!(!head.is_empty());
+        assert!(title.starts_with(head), "head {head} is not a title prefix");
+        // And it stays a legal session name.
+        assert!(crate::sessions::valid_name(&name), "invalid name {name}");
+    }
+
+    #[test]
+    fn boot_name_keeps_a_short_title_intact() {
+        let data_dir = Path::new("/home/supermux/.supermux");
+        let name = boot_session_name(&boot_sched("nightly.sweep"), data_dir);
+        assert!(name.starts_with("nightly.sweep-"), "unexpected name {name}");
+        assert_eq!(name.len(), "nightly.sweep".len() + 9);
+        assert_hex_suffixed(&name);
+    }
+
+    #[test]
+    fn boot_name_truncates_a_very_long_title_and_stays_unique() {
+        let data_dir = Path::new("/home/supermux/.supermux");
+        let sched = boot_sched(&"a".repeat(200));
+        let one = boot_session_name(&sched, data_dir);
+        let two = boot_session_name(&sched, data_dir);
+        assert!(socket_len(data_dir, &one) <= SOCKET_PATH_MAX);
+        assert!(crate::sessions::valid_name(&one), "invalid name {one}");
+        assert_hex_suffixed(&one);
+        assert_ne!(one, two, "two boots of one schedule must differ");
+    }
+
+    #[test]
+    fn boot_name_falls_back_when_the_title_is_all_punctuation() {
+        let data_dir = Path::new("/home/supermux/.supermux");
+        let name = boot_session_name(&boot_sched("!!! ??? ***"), data_dir);
+        assert!(name.starts_with("boot-"), "unexpected name {name}");
+        assert_hex_suffixed(&name);
+    }
+
+    #[test]
+    fn boot_name_sanitizes_non_ascii_titles_to_a_legal_ascii_name() {
+        let data_dir = Path::new("/home/supermux/.supermux");
+        for title in ["🚀 launch 🚀", "café-über-groß", &"é".repeat(120)] {
+            let name = boot_session_name(&boot_sched(title), data_dir);
+            assert!(socket_len(data_dir, &name) <= SOCKET_PATH_MAX, "too long: {name}");
+            assert!(crate::sessions::valid_name(&name), "invalid name {name}");
+            assert_hex_suffixed(&name);
+        }
+    }
+
+    #[test]
+    fn boot_name_budget_shrinks_with_a_longer_data_dir() {
+        let title = "Nightly--archive--sweep-part-1-6--report--2026-08-17";
+        let short = boot_session_name(&boot_sched(title), Path::new("/d"));
+        let long = boot_session_name(
+            &boot_sched(title),
+            Path::new("/var/lib/supermux/instances/production/data-dir"),
+        );
+        assert!(
+            long.len() < short.len(),
+            "a longer data_dir must shrink the base: {short} vs {long}"
+        );
+        assert!(socket_len(Path::new("/d"), &short) <= SOCKET_PATH_MAX);
+        assert!(
+            socket_len(Path::new("/var/lib/supermux/instances/production/data-dir"), &long)
+                <= SOCKET_PATH_MAX
+        );
     }
 }

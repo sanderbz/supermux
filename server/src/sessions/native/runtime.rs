@@ -48,6 +48,7 @@ use tokio::sync::{broadcast, watch, Mutex as AsyncMutex, Notify};
 
 use super::keys::key_bytes;
 use super::vt::{Damage, Vt};
+use super::spool::SOCKET_PATH_MAX;
 use super::{proto, spool};
 use crate::sessions::runtime::TerminalDeath;
 use crate::sessions::tmux::HistoryWindow;
@@ -72,8 +73,6 @@ const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 const INPUT_CHUNK: usize = 256 * 1024;
 /// Grace between the polite kill signal and `SIGKILL`.
 const KILL_GRACE: Duration = Duration::from_secs(3);
-/// Unix socket paths are capped by `sockaddr_un.sun_path` (108 on Linux).
-const SOCKET_PATH_MAX: usize = 100;
 /// How long a capture/seed/history call waits for a fresh attach's spool replay
 /// to finish before answering with whatever grid it has. Bounded on purpose: a
 /// slightly stale screen beats a hung HTTP handler, and the attach-generation
