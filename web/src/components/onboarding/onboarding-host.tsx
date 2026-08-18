@@ -35,6 +35,7 @@ import {
   completeFirstLaunch,
   isFirstLaunch,
 } from '@/lib/onboarding'
+import { useOverlayOpen } from '@/stores/overlay-gate-store'
 import { WelcomeBanner } from './welcome-banner'
 import { TourOverlay } from './tour-overlay'
 
@@ -45,6 +46,14 @@ type Step = 'banner' | 'tour' | 'done'
 export function OnboardingHost() {
   const location = useLocation()
   const onOverview = location.pathname === '/'
+
+  // Suppress the non-blocking WelcomeBanner while a blocking overlay (the ⌘K
+  // command palette) is open: the banner is a fixed top coachmark and would
+  // otherwise render OVER the palette's search input + first rows. The tour is
+  // itself a full overlay and never co-occurs with the palette, so only the
+  // banner is gated. Called unconditionally (before the early returns below) so
+  // hook order is stable.
+  const overlayOpen = useOverlayOpen()
 
   // Decide first-launch eligibility ONCE, at mount — a later write of the flag
   // (from this very component) must not retroactively flip the branch.
@@ -111,7 +120,7 @@ export function OnboardingHost() {
   return (
     <>
       <AnimatePresence>
-        {phase === 'banner' && onOverview && (
+        {phase === 'banner' && onOverview && !overlayOpen && (
           <WelcomeBanner
             key="welcome-banner"
             sessionCount={count}

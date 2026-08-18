@@ -13,12 +13,15 @@
 // pinned glass surface vocabulary), SF-Pro 13px copy, sentence case, ≥44pt tap
 // targets via the action buttons' min-height. No UPPERCASE.
 
+import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
+import { useUI } from '@/stores/ui-store'
+import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 
 export interface WelcomeBannerProps {
   /** Migrated session count — drives the copy ("your N sessions are here"). */
@@ -36,10 +39,32 @@ export function WelcomeBanner({
 }: WelcomeBannerProps) {
   const reduce = useReducedMotion()
 
+  // GROK MODE anchor fix (read once at mount, like layout.tsx). In Grok mode the
+  // overview is the GrokRoster, whose header packs a search field (one row on
+  // desktop, wrapping to two on a phone) — a flush top-0 coachmark covered it.
+  // Push the capsule BELOW that header, ONLY under Grok, so the DEFAULT app's
+  // resting banner position stays byte-identical (the base overview header is a
+  // title-only 56px bar with no search to cover). The palette-open occlusion is
+  // handled separately — OnboardingHost suppresses the banner while a modal is
+  // open, in BOTH modes.
+  const [grok] = React.useState(() =>
+    grokModeOn(
+      useUI.getState().grokMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
+
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex justify-center pt-safe"
+      className={cn(
+        'pointer-events-none fixed inset-x-0 top-0 z-[60] flex justify-center',
+        grok
+          ? 'pt-[calc(env(safe-area-inset-top,0px)+10.5rem)] md:pt-[calc(env(safe-area-inset-top,0px)+7.5rem)]'
+          : 'pt-safe',
+      )}
     >
       <motion.div
         initial={reduce ? { opacity: 0 } : { y: -64, opacity: 0 }}

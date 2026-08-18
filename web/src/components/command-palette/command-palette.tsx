@@ -77,6 +77,7 @@ import { SessionFace } from '@/components/roster/session-face'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
+import { useOverlayGate } from '@/stores/overlay-gate-store'
 import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
 import { SnippetsManagerHost } from '@/components/snippets/snippets-manager-host'
 import { Kbd } from '@/components/ui/kbd'
@@ -271,6 +272,16 @@ export function CommandPalette() {
     e.preventDefault()
     el.focus()
   }, [])
+
+  // Raise the shared overlay gate while the palette is open, so top-anchored
+  // coachmarks (the onboarding WelcomeBanner) suppress themselves instead of
+  // rendering over the palette's search input + first rows. The cleanup lowers
+  // the gate on close (open→false) AND on unmount, and the store is a counter so
+  // a second overlay can't let this one's close prematurely re-show the banner.
+  React.useEffect(() => {
+    if (!open) return
+    return useOverlayGate.getState().openOverlay()
+  }, [open])
 
   // ⌘K toggles THROUGH the wrapper, so the reset-on-open above is the one and
   // only definition of "the palette opened" (fase B3 T1.4).

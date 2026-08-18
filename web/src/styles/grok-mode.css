@@ -785,6 +785,10 @@
      line); nudged to #5f6773 → 5.19:1 for margin. Dark override (#9a9a9a ≈
      6.55:1 on #141414) already clears and is left as-is. */
   --gr-meta: #5f6773;
+  /* inactive segmented-toggle label ink. Secondary alpha-ink composited to
+     4.49:1 on the seg track in LIGHT — a hair under AA — so light pins the solid
+     meta grey (>=4.5 on the track); dark keeps secondary (already ~6.2:1). */
+  --gr-seg-ink: #5f6773;
   /* state words (the firewall's status half — never the agent hue) */
   --gr-work: var(--sm-tone-warning);
   --gr-need: var(--sm-tone-danger);
@@ -805,6 +809,8 @@
    --sm-*, but --gr-meta is a fixed tone, so it needs its own dark value). */
 .dark [data-grok] .grok-roster {
   --gr-meta: #9a9a9a;
+  /* dark seg-inactive keeps secondary (composites to ~6.2:1 on the dark track). */
+  --gr-seg-ink: var(--sm-text-secondary);
 }
 
 /* ── header — brand · live count · search · display · + ─────────────────────── */
@@ -909,7 +915,11 @@
   appearance: none;
   border: 0;
   background: transparent;
-  color: var(--sm-text-tertiary);
+  /* AA fix (overview minor): inactive segmented labels (A-Z / Compact / Cards)
+     at tertiary read 3.23:1 dark / 2.36:1 light — both fail 4.5. `--gr-seg-ink`
+     clears 4.5 on the seg track in both themes (light solid meta grey ~4.6:1,
+     dark secondary ~6.2:1); hover steps to primary so the state still moves. */
+  color: var(--gr-seg-ink);
   font-size: 12px;
   font-weight: 500;
   padding: 4px 9px;
@@ -921,7 +931,7 @@
   gap: 5px;
 }
 [data-grok] .grok-roster .gr-seg button:hover {
-  color: var(--sm-text-secondary);
+  color: var(--sm-text-primary);
 }
 [data-grok] .grok-roster .gr-seg button[aria-pressed='true'] {
   color: var(--sm-text-primary);
@@ -1043,7 +1053,10 @@
 [data-grok] .grok-roster .gr-grp .ct {
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--sm-text-tertiary);
+  /* AA fix (overview minor): the section-count digits (NEEDS YOU 3 / ACTIVE 4)
+     at tertiary read 3.31:1 dark — fails 4.5. Match the eyebrow's secondary ink
+     (4.63:1 light / 6.74:1 dark) so the count reads as strongly as its label. */
+  color: var(--sm-text-secondary);
 }
 [data-grok] .grok-roster .gr-grp .ln {
   flex: 1;
@@ -1660,10 +1673,30 @@
   border-width: 0.5px;
   border-color: var(--sm-border);
   border-radius: var(--sm-r-lg);
-  background: var(--sm-raised-fill);
+  /* MEASURED-GAP FIX (light picker AA). `--sm-raised-fill` (70% elevated) blended
+     over the blurred backdrop composited to a translucent GREY ~rgb(208); on that
+     ground the muted picker inks failed AA (snippet 2.36:1, group header 2.28:1,
+     placeholder 3.32:1). Lift the LIGHT dialog panel toward opaque near-white so
+     the muted ink has headroom — 95% elevated composites to ~rgb(246–250), still
+     letting a faint glass translucency through (Grok's subtle-glass feel kept).
+     The DARK panel measured fine, so it keeps the raised-glass fill (below). */
+  background: color-mix(in srgb, var(--sm-bg-elevated) 95%, transparent);
   -webkit-backdrop-filter: var(--sm-glass-raised);
   backdrop-filter: var(--sm-glass-raised);
   box-shadow: var(--sm-shadow-popover);
+  /* Darken the muted picker inks for AA on the lifted panel. `--sm-ink-3`
+     (the row snippet + leading glyph, via `text-ink-3`) references
+     `--sm-text-tertiary`, and the group-heading rule reads `--sm-text-tertiary`
+     directly — so re-pointing tertiary in the dialog scope lifts BOTH to a solid
+     mid-grey that clears 4.5:1 on the near-white panel. Dark nudges up one step. */
+  --sm-text-tertiary: #5f6773;
+}
+/* DARK: keep the raised-glass panel (its measured panel + names passed); only the
+   muted ink was marginal (snippet 3.34:1 / header 3.22:1) — nudge it up one step
+   to clear Grok's 3.92 floor and approach AA on the dark panel. */
+.dark [data-grok][role='dialog'] {
+  background: var(--sm-raised-fill);
+  --sm-text-tertiary: #9a9a9a;
 }
 /* GRID-BLOWOUT FIX (measured, settled-DOM regression on ⌘K).
    The Dialog Content is `display:grid`; a grid item defaults to `min-width:auto`,
@@ -1685,6 +1718,18 @@
    when grok is on, so the default app's DOM is untouched. */
 [data-grok][role='dialog'] [data-grok-search] {
   border-color: var(--sm-border);
+}
+/* MEASURED-GAP FIX (light picker AA): the palette's placeholder + search glyph
+   read too faint on the lifted panel (placeholder 3.32:1 before). Darken them to
+   the same solid mid-grey the muted body ink now uses, grok-scoped so the base
+   palette DOM is untouched. Dark uses the one-step-up grey. */
+[data-grok][role='dialog'] [data-grok-search] input::placeholder,
+[data-grok][role='dialog'] [data-grok-search] svg {
+  color: #5f6773;
+}
+.dark [data-grok][role='dialog'] [data-grok-search] input::placeholder,
+.dark [data-grok][role='dialog'] [data-grok-search] svg {
+  color: #9a9a9a;
 }
 
 /* Rows — ONE rule for both anchors (they share `[role=option]`). Field rows 8px;
