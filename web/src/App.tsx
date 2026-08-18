@@ -72,6 +72,12 @@ const DevShell = import.meta.env.DEV
 const DevChatLive = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-live'))
   : null
+// Composer attachment bench (feat/grok-mode): a REAL wired composer
+// (`useComposer` + REST input + `useStagedAttachments`) so an offline rig can
+// drive pick→upload→chip→send and assert the `/send` payload carries the path.
+const DevComposerAttach = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-composer-attach'))
+  : null
 // The picker bench (fase B3 T2.8): both anchors × nine kinds × empty/loading/
 // overflow, in both themes, with no server behind it.
 const DevPickers = import.meta.env.DEV
@@ -293,6 +299,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevChatLive />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevComposerAttach && (
+                <Route
+                  path="/dev/composer-attach"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevComposerAttach />
                     </Suspense>
                   }
                 />
