@@ -8,10 +8,13 @@
  * the shared glass `MobileActionSheet` shell (radius, backdrop, drag-to-dismiss,
  * safe-area), one considered icon set, and rows grouped by what they do.
  *
- * TWO GROUPS:
- *   · ADD TO YOUR MESSAGE — the things that stage into the draft the user is
- *     writing: mention a file/session (`@`), a slash command (`/`), a snippet,
- *     and schedule-instead-of-send. These are the reason the `+` exists.
+ * THE GROUPS (the sheet's own title, "Add to your message", governs all of them
+ * — so no group repeats that phrase as its header):
+ *   · ATTACH — Camera / Photo library / Files, present only when uploads are
+ *     wired (`onFiles`). The most common reason to open the `+`, so it leads.
+ *   · COMPOSE — the things that stage into the draft the user is writing:
+ *     mention a file/session (`@`), a slash command (`/`), a snippet, and
+ *     schedule-instead-of-send.
  *   · THIS SESSION — switch session, command palette. Reachable, but a step
  *     removed from composing, so they sit below a hairline.
  *
@@ -113,7 +116,7 @@ export function ChatActionsSheet({
             Folded IN (rather than a second "Attach…" sheet) so the `+` opens one
             menu with everything: one tap, one list. Labelled so the pickers
             don't read as part of the compose group below them; the compose group
-            keeps the sheet's own "Add to your message" title. */}
+            gets its own "Compose" label rather than echoing the sheet title. */}
         {onFiles && (
           <>
             <p className="px-3 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
@@ -136,7 +139,7 @@ export function ChatActionsSheet({
             />
             <div className="my-1.5 h-px bg-border/60" />
             <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
-              Add to your message
+              Compose
             </p>
           </>
         )}
