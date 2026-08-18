@@ -266,6 +266,10 @@ export interface ChatConversationProps {
    *  back button and the renderer switch (`routes/focus/mobile.tsx`). */
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
+  /** The quiet data-plane chip ("Not up to date" / "Offline"), separated from
+   *  `headerTrailing` (the renderer toggle) so the phone header groups the status
+   *  bits and gives the toggle its own place (mobile polish #1). */
+  headerStatus?: React.ReactNode
   /** The chat data plane has GIVEN UP (`ChatPresentation === 'offline'`, A6):
    *  greys the header presence dot so it stops reading as a live green "ready"
    *  next to the "Offline" chip. Composer gating is the panel's job (it owns the
@@ -340,6 +344,7 @@ export function ChatConversation({
   isLoading,
   headerLeading,
   headerTrailing,
+  headerStatus,
   offline = false,
   stat,
   scrollRef,
@@ -456,6 +461,7 @@ export function ChatConversation({
           surface={phone ? 'phone' : 'desktop'}
           leading={headerLeading}
           trailing={headerTrailing}
+          connection={headerStatus}
           offline={offline}
         />
       }

@@ -149,6 +149,15 @@ export interface SessionHeaderPillProps {
   leading?: React.ReactNode
   trailing?: React.ReactNode
   /**
+   * The quiet status bits — the data-plane chip (`<ConnectionNote>`: "Not up to
+   * date", "Offline", …). Separated from `trailing` (the renderer toggle) so the
+   * phone header can GROUP the status bits together and give the toggle its own
+   * clear place, instead of stacking chip-over-chip-over-toggle into one tall
+   * tower jammed against the card's edge (mobile polish #1). Rendered inline on
+   * the desktop, exactly where the bundled node used to sit.
+   */
+  connection?: React.ReactNode
+  /**
    * The chat data plane has GIVEN UP (`ChatPresentation === 'offline'`, A6) —
    * the socket is terminal or exhausted its redials. The status we hold is now
    * a stale claim, so the presence dot must stop reading as a live green
@@ -167,6 +176,7 @@ export function SessionHeaderPill({
   surface = 'desktop',
   leading,
   trailing,
+  connection,
   offline = false,
   className,
 }: SessionHeaderPillProps) {
@@ -183,6 +193,13 @@ export function SessionHeaderPill({
   // `normal` is the absence of a mode rather than a mode; a chip that always
   // reads "Normal" is one more thing to look past.
   const mode = session?.mode && session.mode !== 'normal' ? modeChipLabel(session.mode) : null
+
+  // The presence dot — green "ready" / the busy spinner / the grey offline disc.
+  // It doubles as the ACTIVITY spinner (busy states spin it), so there is one
+  // indicator, not two. On the desktop it rides the name row; on the phone it
+  // joins the grouped status cluster on the right (mobile polish #1), so it stops
+  // floating alone in the middle of the bar.
+  const presence = status ? offline ? <OfflineDot /> : <StatusDot status={status} /> : null
 
   return (
     <header
@@ -277,7 +294,9 @@ export function SessionHeaderPill({
                   the live dot stands down for the neutral offline dot: a green
                   "ready" disc beside an "Offline" chip is the exact contradiction
                   the honesty pass is closing. */}
-              {status && (offline ? <OfflineDot /> : <StatusDot status={status} />)}
+              {/* On the phone the presence dot moves into the grouped status
+                  cluster below; on the desktop it stays on the name row. */}
+              {!phone && presence}
               {/* THE UNRECOVERED AGENT ERROR, AS A LEGIBLE CHIP — not a bare dot.
                   `session.error` is the durable `StopFailure` field the roster,
                   the list row and the focus header all render as an amber badge;
@@ -302,26 +321,34 @@ export function SessionHeaderPill({
                 <WarningChip text={session.limit_warning} />
               )}
               {!session?.blocked && <UsageChip session={session} />}
-              {/* THE TRAILING CLUSTER, and on the phone it STACKS.
-                  The mode chip used to sit beside the renderer switch, and the
-                  two together took 187px of a 342px row: `ipc` in bypass mode
-                  rendered as `i…` (QA #6). Stacked, the pair costs the width of
-                  the WIDER of the two instead of their sum plus a gap, and the
-                  60px card has the height for both (26 + 3 + ~20). On the
-                  desktop nothing moves: the chip keeps its `ml-auto` and the row
-                  keeps its order. */}
+              {/* THE TRAILING CLUSTER — two tiers on the phone (mobile polish #1).
+                  The old layout stacked the mode chip, the connection chip AND
+                  the renderer switch into one column — three rows high, jammed
+                  against the card's edge, with the presence dot floating alone
+                  back by the name. Now the QUIET STATUS BITS (the presence dot,
+                  the mode chip, the connection chip) sit together on one tidy row
+                  that wraps if it must, and the renderer TOGGLE gets its own clear
+                  place on the row below. On the desktop nothing moves: the chip
+                  keeps its `ml-auto`, then the connection chip, then the toggle —
+                  the same order the bundled node produced. */}
               {phone ? (
-                (mode || trailing) && (
+                (presence || mode || connection || trailing) && (
                   // `shrink`, not `flex-none`: below ~370px the name has hit its
                   // floor and something must give — and it is this, by design.
-                  <div className="flex min-w-0 shrink flex-col items-end gap-[3px]">
-                    {/* Tighter than the desktop chip: stacked, the pair has 60px
-                        of card to live in, and the chip is a label rather than a
-                        control — it does not owe anybody a 34px tap target. */}
-                    {mode && (
-                      <ModeChip className="px-[7px] py-0 text-[11px] leading-[17px]">
-                        {mode}
-                      </ModeChip>
+                  <div className="flex min-w-0 shrink flex-col items-end gap-1">
+                    {(presence || mode || connection) && (
+                      // The grouped status bits — dot + bypass + version — on one
+                      // quiet line, right-aligned, wrapping only in the rare case
+                      // both chips are present on a narrow screen.
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        {mode && (
+                          <ModeChip className="px-[7px] py-0 text-[11px] leading-[17px]">
+                            {mode}
+                          </ModeChip>
+                        )}
+                        {connection}
+                        {presence}
+                      </div>
                     )}
                     {trailing}
                   </div>
@@ -329,6 +356,7 @@ export function SessionHeaderPill({
               ) : (
                 <>
                   {mode && <ModeChip className="ml-auto">{mode}</ModeChip>}
+                  {connection}
                   {trailing}
                 </>
               )}

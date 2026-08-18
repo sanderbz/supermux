@@ -632,14 +632,12 @@ export default function ChatPanel({
       overlay={overlay}
       surface={phone ? 'phone' : 'desktop'}
       headerLeading={headerLeading}
-      // The honesty chip rides in the header's own trailing slot rather than
-      // over the transcript: nothing is broken, so nothing should move.
-      headerTrailing={
-        <>
-          {connectionNote}
-          {headerTrailing}
-        </>
-      }
+      // The honesty chip rides in the header's own STATUS slot (grouped with the
+      // mode chip and presence dot), not bundled onto the renderer toggle — so the
+      // phone header keeps the toggle in its own clear place (mobile polish #1).
+      // Nothing is broken, so nothing moves over the transcript.
+      headerStatus={connectionNote}
+      headerTrailing={headerTrailing}
       pinFor={pinFor}
       // The header's honesty half: an `offline` plane greys the presence dot so
       // it stops reading as a live green "ready" beside the "Offline" chip. Only
