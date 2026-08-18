@@ -48,6 +48,7 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Archive,
+  Bot,
   CalendarClock,
   Command as CommandIcon,
   FolderClosed,
@@ -76,6 +77,7 @@ import { type ApiSession, type SlashCommand } from '@/lib/api'
 import { SessionFace } from '@/components/roster/session-face'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
+import { useNewSessionAction } from '@/stores/new-session-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { useOverlayGate } from '@/stores/overlay-gate-store'
 import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
@@ -196,6 +198,7 @@ export function CommandPalette() {
   // The Overview installs its handler while mounted; absent on every other
   // route, so the "New group" row is conditionally surfaced below.
   const newGroupAction = useNewGroupAction((s) => s.action)
+  const newSessionAction = useNewSessionAction((s) => s.action)
 
   const { toast } = useToast()
   const { resolvedTheme, setTheme } = useTheme()
@@ -370,6 +373,19 @@ export function CommandPalette() {
       group: 'Actions',
     })
     const base = [
+      // The create verb — FIRST, so ⌘K has an obvious way to start a bot. Only
+      // present while a surface (roster/overview) has installed the opener.
+      ...(newSessionAction
+        ? [
+            mk(
+              'action:new-bot',
+              'New bot',
+              'new bot session create hire agent start spawn',
+              Bot,
+              newSessionAction,
+            ),
+          ]
+        : []),
       mk(
         'action:view-archived',
         'View archived sessions',
@@ -402,7 +418,7 @@ export function CommandPalette() {
       )
     }
     return base
-  }, [openArchived, openClaudeTools, sessions, newGroupAction])
+  }, [openArchived, openClaudeTools, sessions, newGroupAction, newSessionAction])
 
   // Merge the slash-command list (built-ins + supermux skills) with the registry's
   // file commands (e.g. ~/.claude/commands/*.md, project commands) — deduped by

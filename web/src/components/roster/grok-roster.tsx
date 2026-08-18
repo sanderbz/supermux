@@ -27,13 +27,14 @@
  */
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, Settings, Sparkles } from 'lucide-react'
+import { Archive, Plus, Search, Settings, Sparkles } from 'lucide-react'
 
 import { useSessions } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
+import { useNewSessionAction } from '@/stores/new-session-store'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
 import { SessionMark } from '@/brand/marks'
@@ -423,6 +424,7 @@ export default function GrokRoster() {
   const { teams } = useTeams()
   const attention = useAttentionContext()
   const openArchived = useArchivedSheet((s) => s.openSheet)
+  const setNewSessionAction = useNewSessionAction((s) => s.setAction)
 
   const sessions = React.useMemo(
     () => splitTeamLeads(allSessions, teams).nonLeadSessions,
@@ -434,6 +436,14 @@ export default function GrokRoster() {
   const [density, setDensity] = React.useState<Density>(readDensity)
   const [selected, setSelected] = React.useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
+
+  // Install the "New bot" verb for the command palette while this roster is
+  // mounted; clear on unmount (parity with the New-group channel). The palette
+  // fires it from outside the route to open the same New Session sheet.
+  React.useEffect(() => {
+    setNewSessionAction(() => setSheetOpen(true))
+    return () => setNewSessionAction(null)
+  }, [setNewSessionAction])
 
   const setDensityPersist = React.useCallback((d: Density) => {
     setDensity(d)
@@ -554,6 +564,21 @@ export default function GrokRoster() {
           )}
         </span>
 
+        {/* The create verb — a LABELLED accent-filled primary pill, left-anchored
+            next to the count so the next action reads as an action, not a lone
+            glyph. The label folds away below `sm` (the 44×44 phone hitbox rule in
+            CSS keeps the tap target). */}
+        <button
+          type="button"
+          className="gr-newbot"
+          aria-label="New bot"
+          data-tour="new-session"
+          onClick={() => setSheetOpen(true)}
+        >
+          <Plus size={16} aria-hidden />
+          <span className="gr-newbot-lbl">New bot</span>
+        </button>
+
         <span className="gr-head-sp" />
 
         <span className="gr-search">
@@ -610,16 +635,6 @@ export default function GrokRoster() {
             Cards
           </button>
         </span>
-
-        <button
-          type="button"
-          className="gr-icon-btn gr-add"
-          aria-label="New session"
-          data-tour="new-session"
-          onClick={() => setSheetOpen(true)}
-        >
-          <Plus size={17} aria-hidden />
-        </button>
       </header>
 
       <div className="gr-two">
@@ -631,6 +646,28 @@ export default function GrokRoster() {
             data-fade-top={fade.top ? '' : undefined}
             data-fade-bottom={fade.bottom ? '' : undefined}
           >
+            {/* Persistent HIRE affordance — a ghost row pinned above the Teams
+                divider. Dashed hairline + placeholder mark, always inviting the
+                next hire (not just the zero-bots hint). Hidden while searching
+                (it is a create verb, not a result) and, via CSS, in the compact
+                feed density. */}
+            {!needle && (
+              <button
+                type="button"
+                className="gr-ghost grok-row-enter"
+                aria-label="Hire a new bot"
+                onClick={() => setSheetOpen(true)}
+              >
+                <span className="gr-ghost-mark" aria-hidden>
+                  <Plus size={18} aria-hidden />
+                </span>
+                <span className="gr-ghost-col">
+                  <span className="gr-ghost-t">Hire a new bot</span>
+                  <span className="gr-ghost-s">Give it a name and a job.</span>
+                </span>
+              </button>
+            )}
+
             {filteredTeams.length > 0 && (
               <>
                 <div className="gr-grp">
@@ -682,12 +719,23 @@ export default function GrokRoster() {
               SB
             </span>
             <span className="who">Sander</span>
+            {/* Two distinct destinations — the gear used to be an archive decoy.
+                Archive (box) → the archived sheet; Settings (gear) → /settings. */}
             <button
               type="button"
               className="set"
               aria-label="Archived sessions"
               onClick={openArchived}
               title="Archived sessions"
+            >
+              <Archive size={18} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="set"
+              aria-label="Settings"
+              onClick={() => navigate('/settings')}
+              title="Settings"
             >
               <Settings size={18} aria-hidden />
             </button>
@@ -711,6 +759,7 @@ export default function GrokRoster() {
       <NewSessionSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
+        botVoiced
         onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
       />
     </div>

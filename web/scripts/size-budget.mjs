@@ -315,7 +315,19 @@ const BUDGET_ENTRY_JS = 160 * KB
 // polish batch and B5's `/dev` benches made): weight on an on-demand chunk, the
 // hero path untouched. ceil(measured), the rule every fase since B3 has used; the
 // grok-mode.css half of WS5+WS6 lands in the CSS budget (25.94/30, 86%), not here.
-const BUDGET_APP_JS = 247 * KB
+//
+// 248 at bot-concept ASK 1 (the roster's create verb): measured 247.02 against
+// 247 — a +0.02 KB fase, ceil(measured) = 248. Where the bytes went, all of it
+// on the lazy `grok-roster` chunk plus a sliver on the entry (the palette's new
+// action, which IS in the shell): the labelled "+ New bot" primary pill
+// replacing the lone `+` glyph; the persistent dashed "Hire a new bot" ghost
+// row pinned above Teams; the footer's archive/settings split (two destinations,
+// not one decoy gear); the New-bot palette verb + its `new-session-store`
+// channel (mirrors `new-group-store`); and the sheet's opt-in bot voicing. The
+// ENTRY gate, the guard that matters, held at 147.71 / 160 (92%) — the create
+// verb's shell cost is a rounding sliver, the roster body stays on its lazy
+// chunk. ceil(measured), the rule every fase since B3 has used.
+const BUDGET_APP_JS = 248 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

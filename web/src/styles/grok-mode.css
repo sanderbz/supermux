@@ -80,6 +80,10 @@
   /* accent — links/focus/info ONLY (§3) */
   --sm-accent: #0a84ff;
   --sm-accent-fill: #006ceb;
+  /* text drawn ON a filled-accent surface (the New-bot pill). White clears
+     4.8:1 on the darker light-theme fill; the dark theme's fill is a bright
+     blue, so its on-accent ink is a dark navy instead. */
+  --gr-onaccent: #ffffff;
 
   /* borders — always applied at 0.5px (§4) */
   --sm-border: #0000001a;
@@ -205,6 +209,7 @@
 
   --sm-accent: #64b5ff;
   --sm-accent-fill: #64b5ff;
+  --gr-onaccent: #08243a;
 
   --sm-border: #ffffff1f;
 
@@ -938,32 +943,43 @@
   background: var(--gr-surf);
   box-shadow: 0 1px 2px #0000000f;
 }
-[data-grok] .grok-roster .gr-icon-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+/* the create verb — a LABELLED accent-FILLED primary pill, left-anchored by the
+   count. `+ New bot` reads as the next action, not a lone glyph. */
+[data-grok] .grok-roster .gr-newbot {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0 13px;
+  border-radius: 10px;
   border: 0;
   cursor: pointer;
-  color: var(--sm-text-secondary);
-  background: transparent;
-  transition: color 0.12s, background-color 0.12s;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--gr-onaccent);
+  background: var(--sm-accent-fill);
+  transition: filter 0.12s, background-color 0.12s;
 }
-[data-grok] .grok-roster .gr-icon-btn:hover {
-  background: var(--sm-bg-hover);
-  color: var(--sm-text-primary);
+[data-grok] .grok-roster .gr-newbot:hover {
+  filter: brightness(1.06);
 }
-/* the ONE `+` — soft accent wash on a 10px plate, NOT a filled disc (spec §3.5) */
-[data-grok] .grok-roster .gr-add {
-  color: var(--sm-accent);
-  background: color-mix(in srgb, var(--sm-accent) 10%, transparent);
+[data-grok] .grok-roster .gr-newbot:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--gr-bg), 0 0 0 4px color-mix(in srgb, var(--sm-accent) 55%, transparent);
 }
-[data-grok] .grok-roster .gr-add:hover {
-  background: color-mix(in srgb, var(--sm-accent) 16%, transparent);
-  color: var(--sm-accent);
+/* the label folds away on a narrow header; the 44×44 phone rule keeps the tap */
+@media (max-width: 520px) {
+  [data-grok] .grok-roster .gr-newbot {
+    padding: 0 9px;
+  }
+  [data-grok] .grok-roster .gr-newbot-lbl {
+    display: none;
+  }
 }
 
 /* ── two-pane body — rail (list) + detail pane ─────────────────────────────── */
@@ -1095,6 +1111,65 @@
 }
 [data-grok] .grok-roster .gr-rowA .gr-mark {
   flex: none;
+}
+
+/* ── the persistent HIRE ghost row (pinned above Teams) ─────────────────────── */
+[data-grok] .grok-roster .gr-ghost {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: calc(100% - 24px);
+  margin: 8px 12px 4px;
+  padding: 11px 14px;
+  border: 1px dashed var(--gr-line);
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.12s, background-color 0.12s;
+}
+[data-grok] .grok-roster .gr-ghost:hover {
+  border-color: color-mix(in srgb, var(--sm-accent) 55%, var(--gr-line));
+  background: color-mix(in srgb, var(--sm-accent) 5%, transparent);
+}
+[data-grok] .grok-roster .gr-ghost:focus-visible {
+  outline: none;
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
+}
+[data-grok] .grok-roster .gr-ghost-mark {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--gr-line);
+  color: var(--sm-accent);
+}
+[data-grok] .grok-roster .gr-ghost-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+[data-grok] .grok-roster .gr-ghost-t {
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  color: var(--sm-text-primary);
+}
+[data-grok] .grok-roster .gr-ghost-s {
+  font-size: 13px;
+  color: var(--sm-text-secondary);
+}
+/* the compact feed is a dense scan — the hire affordance lives in the header
+   pill there, so the ghost row folds away (comfortable + cards keep it). */
+[data-grok] .grok-roster[data-density='compact'] .gr-ghost {
+  display: none;
 }
 [data-grok] .grok-roster .gr-rowA .col {
   flex: 1;

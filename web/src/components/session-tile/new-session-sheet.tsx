@@ -40,6 +40,10 @@ export interface NewSessionSheetProps {
   defaultDir?: string
   /** Called after a successful create/start so the route can navigate to focus. */
   onCreated: (name: string) => void
+  /** Bot-mode voicing: swaps the header to "New bot" / "Give it a name and a
+   *  job." Opt-in (the Grok roster passes it) so the base overview's sheet copy
+   *  stays byte-identical. */
+  botVoiced?: boolean
 }
 
 /** The single boot panel. A `Claude | Codex` toggle selects an equivalent
@@ -51,13 +55,14 @@ export function NewSessionSheet({
   onOpenChange,
   defaultDir,
   onCreated,
+  botVoiced,
 }: NewSessionSheetProps) {
   return (
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="New session"
-      description={MISC.newSessionSubtitle}
+      title={botVoiced ? 'New bot' : 'New session'}
+      description={botVoiced ? 'Give it a name and a job.' : MISC.newSessionSubtitle}
     >
       {open && (
         <NewSessionPanel
