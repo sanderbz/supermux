@@ -336,7 +336,14 @@ function TeamRollup({
   // decorative: the team name right beside it is the accessible label.
   const crew: FacepileMember[] = [
     ...(team.lead_supermux_session ? [{ seed: team.lead_supermux_session }] : []),
-    ...team.members.map((m) => ({ seed: m.agent_id, name: m.name })),
+    // A teammate that needs you wears the red halo here too, exactly as the grok
+    // roster's TeamRow pile does (`attentionFor`'s `needs` tier) — the crew badge
+    // stops being idle placeholders. Grok-only channel, inert in the base pile.
+    ...team.members.map((m) => ({
+      seed: m.agent_id,
+      name: m.name,
+      attention: m.status === 'needs_you' ? ('needs' as const) : null,
+    })),
   ].slice(0, 3)
   return (
     <header className="flex items-center gap-2 px-0.5">

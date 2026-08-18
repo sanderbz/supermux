@@ -22,7 +22,7 @@
  */
 import type { ReactNode } from 'react'
 
-import { SessionMark, type MarkPin } from '../../../brand/marks'
+import { SessionMark, type MarkAttention, type MarkPin, type MarkState } from '../../../brand/marks'
 import { cn } from '../../../lib/utils'
 
 import { FACEPILE, MARK_SIZE } from './metrics'
@@ -31,6 +31,18 @@ export interface FacepileMember {
   seed: string
   pin?: MarkPin
   name?: string
+  /**
+   * The member's live expression, where the caller knows a session status
+   * (`markStateForSession`). Omit and the mark rests on `idle` — the right
+   * default for a face with no live session behind it (a bare @mention). Under
+   * the Grok skin this is what makes a pile of colleagues read their states.
+   */
+  state?: MarkState
+  /**
+   * The decoupled attention halo (`attentionFor`) — `needs`/`blocked`/`null`.
+   * Consumed only under the Grok skin, so it never touches the base pile.
+   */
+  attention?: MarkAttention
 }
 
 export interface FacepileProps {
@@ -80,6 +92,8 @@ export function Facepile({
               pin={m.pin}
               size={FACEPILE.cluster.size}
               ring={ring}
+              state={m.state}
+              attention={m.attention}
               animate={i === 0}
               label={null}
             />
@@ -105,7 +119,15 @@ export function Facepile({
               active && 'bg-fill-soft py-0.5 pl-0.5 pr-2.5',
             )}
           >
-            <SessionMark seed={m.seed} pin={m.pin} size={size} ring={ring} label={null} />
+            <SessionMark
+              seed={m.seed}
+              pin={m.pin}
+              size={size}
+              ring={ring}
+              state={m.state}
+              attention={m.attention}
+              label={null}
+            />
             {active && m.name && (
               <span className="whitespace-nowrap text-[12px] font-medium text-ink">{m.name}</span>
             )}

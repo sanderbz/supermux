@@ -463,6 +463,11 @@ export function ChatConversation({
           trailing={headerTrailing}
           connection={headerStatus}
           offline={offline}
+          // The live turn signal, straight from the chat plane: a running turn
+          // (`turnStart != null` while active) is the honest "streaming now" the
+          // status field only approximates. Grok wears it as the header's live
+          // activity light; inert off grok.
+          streaming={session?.status === 'active' && turnStart != null}
           // The tail itself could not be read (`isError`): the status we hold is
           // a stale claim, so under the grok skin the presence dot stops reading
           // as a live green "ready" beside a "Couldn't load this conversation."

@@ -39,8 +39,9 @@
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
-import { SessionMark, type MarkPin, type MarkState } from '../../brand/marks'
+import { SessionMark, grokSkinActive, type MarkPin, type MarkState } from '../../brand/marks'
 import type { SessionStatus } from '../../lib/api'
+import { attentionFor, markStateForSession } from '../../lib/mark-status'
 import { motionOff, tweens } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import { modeChipLabel } from '../focus-mode/mode-labels'
@@ -177,6 +178,15 @@ export interface SessionHeaderPillProps {
    * base app stays byte-identical.
    */
   tailError?: boolean
+  /**
+   * A live turn is streaming right now (the chat plane's `turnStart != null`, A4).
+   * The SSE status flip is the coarse signal the base dot already reads; this is
+   * the FINE one the chat surface actually holds, so under the GROK SKIN the
+   * header face wears the animated `streaming` expression the whole turn — the
+   * "live activity light" — instead of resting on whatever `status` last said.
+   * Inert off grok (the base face maps from `status` alone, unchanged).
+   */
+  streaming?: boolean
   className?: string
 }
 
@@ -190,10 +200,15 @@ export function SessionHeaderPill({
   connection,
   offline = false,
   tailError = false,
+  streaming = false,
   className,
 }: SessionHeaderPillProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
+  // The skin, latched once at mount like every mark (`grok-skin.ts`). It forks
+  // ONLY the face state + the attention halo below, both grok-only channels, so
+  // the base app's header stays byte-identical.
+  const [grokFace] = React.useState(grokSkinActive)
 
   // The label rule the whole app shares (`displayLabel`): a set display name
   // wins, the slug is the fallback. Inlined rather than imported because this
@@ -287,7 +302,17 @@ export function SessionHeaderPill({
                 seed={name}
                 pin={pin}
                 size={MARK_SIZE.gutter}
-                state={status ? MARK_STATE[status] : 'idle'}
+                // Grok: the richer live read — a streaming turn animates, and a
+                // needs/blocked session wears the halo (`mark-status.ts`, the one
+                // engine). Base: the shipped status→face map, untouched.
+                state={
+                  grokFace
+                    ? markStateForSession(session, { streaming })
+                    : status
+                      ? MARK_STATE[status]
+                      : 'idle'
+                }
+                attention={grokFace ? attentionFor(session) : null}
                 // The name is right there; a second announcement is noise.
                 label={null}
               />

@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils'
 import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import { usePin } from '@/hooks/use-roster-marks'
 import { displayLabel } from '@/lib/api/sessions'
+import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import type { AttentionSession } from '@/lib/attention-tiers'
 // Lazy: the picker sheet opens only on a tap, so it has no business in the
 // overview's entry chunk (the hero path). Splitting it keeps entry JS under its
@@ -211,7 +212,17 @@ function RollupFace({
       className={cn('relative', index > 0 && '-ml-1.5')}
       style={{ zIndex: index + 1 }}
     >
-      <Facepile members={[{ ...member, pin }]} variant="row" size={24} />
+      {/* Every face in this pile is by definition a needs-you session, so it
+          carries the SAME status→expression + attention halo the roster faces do
+          (`mark-status.ts`, one engine): needs/blocked eyes and the red halo,
+          not an idle placeholder. Grok-only channels — inert in the base pile. */}
+      <Facepile
+        members={[
+          { ...member, pin, state: markStateForSession(session), attention: attentionFor(session) },
+        ]}
+        variant="row"
+        size={24}
+      />
     </span>
   )
 }
