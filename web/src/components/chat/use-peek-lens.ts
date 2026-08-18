@@ -124,10 +124,26 @@ export function usePeekLens(
     [name],
   )
 
+  // AN IDENTICAL CAPTURE IS NOT NEWS (the iOS selection bug, half one).
+  //
+  // The poll ticks every `SLOW_PEEK_MS` for as long as the panel is mounted,
+  // and an IDLE session's 60 pty lines are byte-identical from one tick to the
+  // next. Publishing a fresh `Frame` object anyway re-rendered the whole chat
+  // panel every few seconds while nothing was happening — which is what kept
+  // firing the panel's dep-less follow-bottom effect, and a `scrollTop` write
+  // on the track ends a WebKit text selection (see `chat-panel.tsx`). It also
+  // paid for a full transcript reconciliation, once per tick, forever.
+  //
+  // `readLens` is PURE over `text`, so an unchanged capture cannot have a
+  // changed lens: holding `prev` is not a staleness risk, it is the correct
+  // reading. The name guard keeps a session switch a real update even in the
+  // (theoretical) case of two sessions with identical screens.
   const apply = React.useCallback(
     (text: string): PeekLens => {
       const next = readLens(text)
-      setFrame({ name, capture: text, lens: next })
+      setFrame((prev) =>
+        prev.name === name && prev.capture === text ? prev : { name, capture: text, lens: next },
+      )
       return next
     },
     [name],

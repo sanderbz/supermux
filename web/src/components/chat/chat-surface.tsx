@@ -236,7 +236,16 @@ export function ChatSurface({
         // read out loud before the user reached the message they asked for.
         role="region"
         aria-labelledby={hid}
-        className="min-h-0 flex-1 overflow-y-auto"
+        // The TRACK, addressable. Two behaviours need to name this exact
+        // element rather than guess at it from a ref they were handed:
+        //   · `chat-track` (globals.css) states out loud that everything the
+        //     agent said is selectable text with the native iOS callout — the
+        //     one thing a reader on a phone can do with a message is copy it;
+        //   · the phone's tap-to-dismiss (`use-tap-to-dismiss.ts`) listens here,
+        //     so "tapped above the keyboard" means "tapped the transcript" and
+        //     nothing wider.
+        data-chat-track=""
+        className="chat-track min-h-0 flex-1 overflow-y-auto"
       >
         {children}
       </div>

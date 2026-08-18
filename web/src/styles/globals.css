@@ -1305,3 +1305,19 @@
 [data-offscreen] * {
   animation-play-state: paused !important;
 }
+
+/* ── The chat track is READING MATERIAL (iOS selection) ─────────────────────
+   The one thing a reader on a phone can do with something the agent said is
+   select it and copy it, so the track says so explicitly rather than relying on
+   the initial value surviving whatever a parent surface declares. `text` (not
+   `auto`) also means a `user-select: none` on an ancestor — the sheet chrome,
+   a drag host — cannot inherit down into the conversation.
+
+   `-webkit-touch-callout: default` is the iOS half: it is what keeps the native
+   Copy / Look Up / Share callout available on a long press. Controls INSIDE the
+   track keep their own `select-none`; this rule is about prose. */
+.chat-track {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}

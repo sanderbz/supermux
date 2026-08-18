@@ -62,6 +62,7 @@ import { LoginCard, ProviderAuthCard } from './login-card'
 import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
+import { selectionInside } from './selection'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
@@ -327,9 +328,33 @@ export default function ChatPanel({
     }
   }, [])
 
+  // FOLLOW-BOTTOM, and the two things it must not do (iOS selection bug).
+  //
+  // No dependency array on purpose: "the track grew" is not expressible as a
+  // dep — new confirmed rows, the live layer, a receipt opening are all just
+  // renders of this component — so the pin re-asserts itself on every one.
+  // That generosity is what made it a SELECTION EATER on the phone:
+  //
+  //   · it fired on every render, and the peek poller re-renders this panel
+  //     once every SLOW_PEEK_MS while the agent is idle (`use-peek-lens.ts`
+  //     now holds the frame when the capture is byte-identical, which removes
+  //     the idle renders at the source — this guard is the second lock);
+  //   · `el.scrollTop = …` on the scroller a selection lives in ends the
+  //     selection gesture in WebKit: the native Copy callout is dismissed and
+  //     the highlight goes with it. A reader long-pressing a message therefore
+  //     lost the selection a second or two later, "as if some JS keeps
+  //     deselecting" — which is exactly what it was.
+  //
+  // So: never write while the reader holds a selection in the track, and never
+  // write a value the scroller is already at (a redundant write is still a
+  // scroll gesture as far as WebKit is concerned, and it is free to skip).
   React.useEffect(() => {
     const el = scrollRef.current
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
+    if (!el || !pinnedRef.current) return
+    if (selectionInside(el)) return
+    const bottom = el.scrollHeight - el.clientHeight
+    if (Math.abs(el.scrollTop - bottom) < 1) return
+    el.scrollTop = bottom
   })
 
   // …and the same pin, for the one thing that grows WITHOUT re-rendering this
@@ -343,6 +368,9 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (!el || !followsFooterGrowth(el, grewBy)) return
     pinnedRef.current = true
+    // Same rule as the effect above: a reader holding a selection in the track
+    // keeps it, even at the cost of the newest band being briefly covered.
+    if (selectionInside(el)) return
     el.scrollTop = el.scrollHeight
   }, [])
 
