@@ -332,17 +332,26 @@ export function silhouettePath(ch: Character): string {
 const blobCache = new Map<string, string>()
 
 /**
- * The Grok-skin body: an organic blob (`grok-blob.ts`) run through the same
- * pillowy spline as every base body. Deterministic per (silhouette, seed), so it
- * memoises on exactly that. The eyes still wrap onto `ch.body` (the invisible
- * face solid) exactly as the authored silhouettes do, so a blink reads the same
- * on a blob as on a sphere — only the *outline* differs under the skin.
+ * The Grok-skin body: an organic blob (`grok-blob.ts`), closed with the same
+ * Catmull-Rom→cubic-Bézier spline every base body uses. Deterministic per
+ * (silhouette, seed), so it memoises on exactly that. The eyes still wrap onto
+ * `ch.body` (the invisible face solid), so a blink reads the same on a blob as
+ * on a sphere — only the *outline* differs under the skin.
+ *
+ * CRITICAL — the blob's ~10–14 radial vertices are fed to `smoothClosed`
+ * DIRECTLY, never through `densify`. Catmull-Rom auto-derives a smooth tangent
+ * at every vertex, so the sparse ring becomes a genuinely round outline of cubic
+ * Béziers (this is exactly blobatar's `blobPath`). Densifying first would insert
+ * collinear points along the straight chords between vertices, and Catmull-Rom
+ * through collinear points collapses to straight segments — the corners keep
+ * only a ~4-unit fillet and the whole thing reads as an angular polygon. That
+ * pre-densify step was the "hoekige onzin" bug; the fix is to NOT do it.
  */
 export function grokSilhouettePath(ch: Character): string {
   const key = `${ch.silhouette}|${ch.seed}`
   const hit = blobCache.get(key)
   if (hit !== undefined) return hit
-  const path = smoothClosed(densify(grokBlobPoints(ch), 4))
+  const path = smoothClosed(grokBlobPoints(ch))
   if (blobCache.size >= BODY_CACHE_MAX) blobCache.delete(blobCache.keys().next().value!)
   blobCache.set(key, path)
   return path

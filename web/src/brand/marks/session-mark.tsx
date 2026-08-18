@@ -31,6 +31,7 @@ import {
   type MarkState,
 } from './character'
 import { eyePath, grokSilhouettePath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
+import { grokTune } from './grok-face'
 import { grokSkinActive } from './grok-skin'
 import { registerMark } from './ticker'
 import { useOnScreen } from './use-on-screen'
@@ -123,6 +124,12 @@ export function SessionMark({
   const [autoGrok] = useState(grokSkinActive)
   const grokFace = grok ?? autoGrok
 
+  // Under the skin the face is tuned (`grok-face.ts`): cleaner pigment, and eyes
+  // calmed to a confident forward-facing pair. Off the skin `face === ch`, so the
+  // base render is byte-identical. The blob outline is unaffected either way
+  // (`grokSilhouettePath` keys on silhouette+seed, both preserved by the tune).
+  const face = useMemo(() => (grokFace ? grokTune(ch) : ch), [ch, grokFace])
+
   const reduced = useReducedMotion()
   const host = useRef<HTMLSpanElement>(null)
   const leftEye = useRef<SVGPathElement>(null)
@@ -133,25 +140,25 @@ export function SessionMark({
   const live = wantsMotion && onScreen
 
   const { body, eyeL, eyeR } = useMemo(() => {
-    const q = poseQuat(ch)
-    const e = eyesFor(ch, state)
+    const q = poseQuat(face)
+    const e = eyesFor(face, state)
     return {
       // Under the Grok skin the body is an organic blob; off it, the shipped
-      // projected silhouette, byte-for-byte. The eyes wrap onto `ch.body` either
-      // way, so a blink reads identically on a blob and on a sphere.
-      body: grokFace ? grokSilhouettePath(ch) : silhouettePath(ch),
+      // projected silhouette, byte-for-byte. The eyes wrap onto the face solid
+      // either way (a centred sphere under the skin), so a blink reads the same.
+      body: grokFace ? grokSilhouettePath(face) : silhouettePath(face),
       // The still frame is the fully-open eye: what reduced motion keeps, and
       // what every mark paints before the first animation frame lands.
-      eyeL: eyePath(ch, q, e, -1, 1),
-      eyeR: eyePath(ch, q, e, 1, 1),
+      eyeL: eyePath(face, q, e, -1, 1),
+      eyeR: eyePath(face, q, e, 1, 1),
     }
-  }, [ch, state, grokFace])
+  }, [face, state, grokFace])
 
   useEffect(() => {
     const left = leftEye.current
     const right = rightEye.current
     if (!live || !left || !right) return
-    const stop = registerMark({ ch, state, left, right })
+    const stop = registerMark({ ch: face, state, left, right })
     return () => {
       stop()
       // Leave the face on the still frame: React will not rewrite `d` (the prop
@@ -159,7 +166,7 @@ export function SessionMark({
       left.setAttribute('d', eyeL)
       right.setAttribute('d', eyeR)
     }
-  }, [ch, state, live, eyeL, eyeR])
+  }, [face, state, live, eyeL, eyeR])
 
   const hidden = label === null
   // Facepile keyline: authored in viewBox units so it stays 2 CSS px at any size.
@@ -181,7 +188,7 @@ export function SessionMark({
             // glow reinforces identity while showing status (the colour firewall —
             // red is reserved for attention). Set only under the skin, so the base
             // app's `style` stays exactly `{ width, height }`.
-            ({ width: size, height: size, '--sm-mark-glow': ch.color } as CSSProperties)
+            ({ width: size, height: size, '--sm-mark-glow': face.color } as CSSProperties)
           : { width: size, height: size }
       }
       aria-hidden={hidden || undefined}
@@ -199,7 +206,7 @@ export function SessionMark({
         <path
           className="sm-mark__body"
           d={body}
-          fill={ch.color}
+          fill={face.color}
           {...(ring
             ? {
                 stroke: ring,
