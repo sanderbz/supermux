@@ -35,5 +35,7 @@ export {
 // something ON a silhouette (the roster row's attention dot) needs to convert
 // the character's solid into box pixels; the rest of `./geometry` stays internal.
 export { VIEWBOX } from './geometry'
-export { SessionMark, type SessionMarkProps } from './session-mark'
+export { grokBlobPoints, GROK_BLOB_ARCHETYPES } from './grok-blob'
+export { grokSkinActive } from './grok-skin'
+export { SessionMark, type MarkAttention, type SessionMarkProps } from './session-mark'
 export { useOnScreen } from './use-on-screen'

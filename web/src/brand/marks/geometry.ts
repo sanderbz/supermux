@@ -21,6 +21,7 @@
  * cheap (~80 points) and are recomputed per animation frame.
  */
 import { AUTHORED, type Character, type EyeGeometry, type Solid } from './character'
+import { grokBlobPoints } from './grok-blob'
 
 /** Half-extent of the authored coordinate system; the SVG viewBox is ±this. */
 export const VIEWBOX = 131
@@ -325,6 +326,25 @@ export function silhouettePath(ch: Character): string {
     : solidPath(ch.body, poseQuat(ch), ch.pose.persp)
   if (bodyCache.size >= BODY_CACHE_MAX) bodyCache.delete(bodyCache.keys().next().value!)
   bodyCache.set(key, path)
+  return path
+}
+
+const blobCache = new Map<string, string>()
+
+/**
+ * The Grok-skin body: an organic blob (`grok-blob.ts`) run through the same
+ * pillowy spline as every base body. Deterministic per (silhouette, seed), so it
+ * memoises on exactly that. The eyes still wrap onto `ch.body` (the invisible
+ * face solid) exactly as the authored silhouettes do, so a blink reads the same
+ * on a blob as on a sphere — only the *outline* differs under the skin.
+ */
+export function grokSilhouettePath(ch: Character): string {
+  const key = `${ch.silhouette}|${ch.seed}`
+  const hit = blobCache.get(key)
+  if (hit !== undefined) return hit
+  const path = smoothClosed(densify(grokBlobPoints(ch), 4))
+  if (blobCache.size >= BODY_CACHE_MAX) blobCache.delete(blobCache.keys().next().value!)
+  blobCache.set(key, path)
   return path
 }
 

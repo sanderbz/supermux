@@ -74,3 +74,77 @@ export function markStateFor(status: SessionStatus | string | undefined): MarkSt
  * not the same six.
  */
 export const MARK_STATE_WITHOUT_STATUS: MarkState = 'done'
+
+/* ── the Grok skin: richer state + a decoupled attention signal ─────────────────
+ * The base app renders the six `markStateFor` faces and MUST stay byte-identical,
+ * so nothing above changes. The Grok skin wants three more *moments* and an
+ * attention layer that is orthogonal to the status word. Both live here so there
+ * is still exactly ONE face-mapping module; both are consumed only by Grok-gated
+ * render sites, so the base app never sees them.
+ */
+
+/** The transient attention tier — read from the FIELDS, never the status string
+ *  (the audit's decoupling: a waiting session, an errored one and a
+ *  permission-blocked one are three different attention reads). */
+export type AttentionTier = 'needs' | 'blocked' | null
+
+/** The subset of a session the attention read consults. Structural on purpose —
+ *  any of `SessionSummary` / `SessionDetail` satisfies it. */
+export interface AttentionInput {
+  status?: SessionStatus | string
+  error?: { type: string; message: string } | null
+  permission_request?: unknown | null
+  elicitation?: unknown | null
+  blocked?: unknown | null
+}
+
+/**
+ * The attention tier for a session.
+ *
+ *   `blocked` — it cannot proceed without you: it fell over (`error`), a
+ *               permission dialog is open (`permission_request`), an MCP
+ *               elicitation is pending (`elicitation`), or the server flagged it
+ *               `blocked`. A STEADY red halo.
+ *   `needs`   — it finished its turn and is waiting on your call (`waiting`). A
+ *               PULSING red halo — a demand, not an emergency.
+ *   `null`    — nothing wants you; the mark carries only its state.
+ *
+ * `blocked` outranks `needs` (an open dialog is louder than a finished turn).
+ */
+export function attentionFor(s: AttentionInput | null | undefined): AttentionTier {
+  if (!s) return null
+  if (s.error || s.blocked || s.permission_request || s.elicitation) return 'blocked'
+  if (s.status === 'waiting') return 'needs'
+  return null
+}
+
+/** Live hints a caller may know that the status field cannot spell. */
+export interface SessionFaceHints {
+  /** An assistant text delta is streaming to the transcript right now. */
+  streaming?: boolean
+  /** A reasoning/thinking delta is in flight (pre-output). */
+  thinking?: boolean
+  /** This mark is showing a just-finished turn (the `done` moment). */
+  done?: boolean
+}
+
+/**
+ * Status (+ optional live hints) → face, for the Grok skin.
+ *
+ * Differs from `markStateFor` in exactly the ways the base app must NOT: it
+ * splits `starting → connecting` (honest "coming up, not yet productive", where
+ * the base app fakes `working`), and it surfaces the `thinking` / `streaming`
+ * moments when the caller knows them. Everything else defers to the base table,
+ * so a Grok roster and a base roster agree on the six shipped faces.
+ */
+export function markStateForSession(
+  s: AttentionInput | null | undefined,
+  hints: SessionFaceHints = {},
+): MarkState {
+  if (hints.done) return MARK_STATE_WITHOUT_STATUS
+  if (hints.thinking) return 'thinking'
+  if (hints.streaming) return 'streaming'
+  const status = s?.status
+  if (status === 'starting') return 'connecting'
+  return markStateFor(status)
+}
