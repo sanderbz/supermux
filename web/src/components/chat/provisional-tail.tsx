@@ -86,6 +86,7 @@ export function ProvisionalTailView({
   const name = seed
   return (
     <MessageRow
+      surface={surface}
       gutter={<SessionMark seed={name} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}
     >
       <Bubble

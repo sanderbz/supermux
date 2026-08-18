@@ -119,16 +119,36 @@ export const FACEPILE = {
 } as const
 
 /**
- * Bubble ceilings, in px. The assistant bubble is allowed to be wide because it
- * carries receipts, code and frames; the user bubble is deliberately narrower so
- * a human sentence never spans the column (mockup `.bubble` / `.msg.me .bubble`).
+ * Bubble ceilings. The assistant bubble is allowed to be wide because it carries
+ * receipts, code and frames; the user bubble is deliberately narrower so a human
+ * sentence never spans the column (mockup `.bubble` / `.msg.me .bubble`).
+ *
+ * DESKTOP is a px ceiling — the 744px track is wider than a comfortable measure,
+ * so the number is what stops a line from running too long.
+ *
+ * THE PHONE IS NOT A CEILING PROBLEM. It used to be: both sides carried the
+ * artboard's literal 266 / 250, lifted off `mobile-light.png`. On a real 390pt
+ * screen those px turned into a SECOND indent stacked on the track's own 14px
+ * gutter — the assistant bubble stopped 66px short of the right edge and the
+ * text column came out at 232px, 59% of the screen, inset on BOTH sides. A
+ * transcript is the one surface where horizontal room IS the product.
+ *
+ * So the phone reads like Grok instead, and the asymmetry does the work the two
+ * ceilings were doing:
+ *   · the agent runs the column — `100%`, i.e. only the track's gutter insets it,
+ *   · the human's own line is right-aligned and capped PROPORTIONALLY (`84%`),
+ *     so the indent is ~16% of whatever phone it is on rather than 126px on a
+ *     390 and nothing on a 320.
+ * Percentages, not px, because `max-width` here is resolved against the row —
+ * which is exactly the box that varies between phones.
  */
 export const BUBBLE_MAX = {
   assistant: 648,
   user: 420,
-  /** The phone column is 390 − 28 of gutter; `mobile-light.png`'s `.phone .bubble`. */
-  phoneAssistant: 266,
-  phoneUser: 250,
+  /** Phone, agent side: the column, less the track's own 14px gutter. */
+  phoneAssistant: '100%',
+  /** Phone, human side: right-aligned, indented ~16% — never a px cliff. */
+  phoneUser: '84%',
 } as const
 
 /**

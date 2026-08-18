@@ -48,7 +48,6 @@ import {
   ACCENT_INK_CLASS,
   accentInkVarsForSeed,
   BubbleCode,
-  BUBBLE_MAX,
   CapturedFrameCard,
   CAPTURED_FRAME,
   CodeAdd,
@@ -190,8 +189,9 @@ function diffNodes(lines: readonly string[]): React.ReactNode {
 /* ── the map ─────────────────────────────────────────────────────────────── */
 
 export function chatComponents(ctx: ChatMarkdownContext): Components {
-  const frameWidth =
-    ctx.surface === 'phone' ? BUBBLE_MAX.phoneAssistant : CAPTURED_FRAME.width
+  // Same width on both surfaces: `CapturedFrameCard` is `max-w-full`, so the
+  // phone clamps it to the bubble rather than to an artboard constant.
+  const frameWidth = CAPTURED_FRAME.width
   // A link wears the SPEAKER's pigment, the same mechanic a mention chip uses
   // (`accent-ink.ts`): the surface accent is the FOCUSED session, and a
   // colleague's bubble must not borrow it. No speaker, no pigment — the link

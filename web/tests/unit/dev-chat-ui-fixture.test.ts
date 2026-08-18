@@ -164,10 +164,14 @@ describe('the phone board is the approved phone board', () => {
 })
 
 describe('the phone has its own ceilings', () => {
-  test('both are narrower than desktop, and the user side stays the narrower one', () => {
-    expect(ui.BUBBLE_MAX.phoneAssistant).toBeLessThan(ui.BUBBLE_MAX.assistant)
-    expect(ui.BUBBLE_MAX.phoneUser).toBeLessThan(ui.BUBBLE_MAX.user)
-    expect(ui.BUBBLE_MAX.phoneUser).toBeLessThan(ui.BUBBLE_MAX.phoneAssistant)
+  test('both are proportional, and the user side stays the narrower one', () => {
+    // The phone stopped carrying px ceilings: they read as a second indent on
+    // top of the track's gutter. What survives is the ASYMMETRY — the agent
+    // takes the column, the human's own line is capped below it.
+    const pct = (v: string) => Number(v.replace('%', ''))
+    expect(ui.BUBBLE_MAX.phoneAssistant).toBe('100%')
+    expect(pct(ui.BUBBLE_MAX.phoneUser)).toBeLessThan(pct(ui.BUBBLE_MAX.phoneAssistant))
+    expect(pct(ui.BUBBLE_MAX.phoneUser)).toBeGreaterThan(70)
   })
 
   test('the artboard is 390x844 — mobile-light.png, to the pixel', () => {

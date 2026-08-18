@@ -887,7 +887,7 @@ export function PendingEchoes({
             // screen.
             transition={reduce ? motionOff : tweens.swap}
           >
-            <MessageRow me>
+            <MessageRow me surface={surface}>
               <div className="flex min-w-0 flex-col items-end">
                 <Bubble
                   variant="user"

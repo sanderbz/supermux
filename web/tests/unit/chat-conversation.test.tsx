@@ -98,10 +98,22 @@ describe('the boards’ composition', () => {
 describe('the phone is a composition, not a width', () => {
   const phone = render({ surface: 'phone' })
 
-  test('both bubble ceilings drop', () => {
-    expect(phone).toContain(`max-width:${BUBBLE_MAX.phoneAssistant}px`)
-    expect(phone).toContain(`max-width:${BUBBLE_MAX.phoneUser}px`)
+  test('the phone ceilings are PROPORTIONAL — the agent runs the column, the human is indented', () => {
+    // Not the artboard's 266 / 250 any more: a px ceiling on a 390pt screen is a
+    // second indent stacked on the track's own 14px gutter, and it cost the
+    // agent's text 41% of the width. See `BUBBLE_MAX`.
+    expect(phone).toContain(`max-width:${BUBBLE_MAX.phoneAssistant}`)
+    expect(phone).toContain(`max-width:${BUBBLE_MAX.phoneUser}`)
+    expect(BUBBLE_MAX.phoneAssistant).toBe('100%')
+    expect(phone).not.toContain('max-width:266px')
+    // Desktop is still a px measure — the 744px track is wider than a line
+    // wants to be, which is what the number is for.
     expect(render()).toContain(`max-width:${BUBBLE_MAX.assistant}px`)
+  })
+
+  test('the phone gutter is the mark, not the mark plus air', () => {
+    expect(phone).toContain('w-7')
+    expect(phone).not.toContain('flex w-8 flex-none')
   })
 
   test('the header becomes a floating card the track scrolls under', () => {

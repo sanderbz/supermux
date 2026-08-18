@@ -29,9 +29,9 @@ import {
   ArrivalDivider,
   BackIcon,
   Bubble,
-  BUBBLE_MAX,
   BubbleCode,
   CapturedFrameCard,
+  CAPTURED_FRAME,
   ChoiceCard,
   CodeAdd,
   CodeDel,
@@ -351,7 +351,7 @@ function PhoneBoard({ theme }: { theme: BenchTheme }) {
 
           <MessageRow grouped>
             <Bubble surface="phone">
-              <CapturedFrameCard caption={BOARD_FRAME.caption} width={BUBBLE_MAX.phoneAssistant}>
+              <CapturedFrameCard caption={BOARD_FRAME.caption} width={CAPTURED_FRAME.width}>
                 <MiniWindow />
               </CapturedFrameCard>
             </Bubble>

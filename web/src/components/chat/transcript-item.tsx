@@ -259,7 +259,7 @@ function UserRow({
   const text =
     command && item.text.startsWith(command) ? item.text.slice(command.length).trimStart() : item.text
   return (
-    <MessageRow me grouped={grouped}>
+    <MessageRow me grouped={grouped} surface={surface}>
       <Bubble variant="user" surface={surface} author={grouped ? undefined : 'You'}>
         {chip && (
           <span className={cn('font-medium tracking-[-0.1px] opacity-70', text && 'mr-1.5')}>
@@ -292,21 +292,21 @@ function AgentRow({
   const mark = gutter ? <Mark seed={gutter} pinFor={rest.pinFor} /> : undefined
   if (item.type === 'thinking') {
     return (
-      <MessageRow grouped={grouped} gutter={mark}>
+      <MessageRow grouped={grouped} gutter={mark} surface={rest.surface}>
         <ThinkingDisclosure item={item} surface={rest.surface} />
       </MessageRow>
     )
   }
   if (item.type === 'receipts') {
     return (
-      <MessageRow grouped={grouped} gutter={mark}>
+      <MessageRow grouped={grouped} gutter={mark} surface={rest.surface}>
         <Receipts item={item} surface={rest.surface} rawUrl={rest.rawUrl} />
       </MessageRow>
     )
   }
   if (item.type !== 'assistant') return null
   return (
-    <MessageRow grouped={grouped} gutter={mark}>
+    <MessageRow grouped={grouped} gutter={mark} surface={rest.surface}>
       <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
         {/* WITHDRAWN, NOT DELETED (catalog `err.refusal_fallback_dialog`).
             Claude Code retracted this reply — the prompt it came from was
@@ -482,6 +482,7 @@ function TeammateRow({
       )}
       <MessageRow
         grouped={grouped}
+        surface={rest.surface}
         gutter={!grouped && sender ? <Mark seed={seed} pinFor={rest.pinFor} /> : undefined}
       >
         <Bubble surface={rest.surface} author={grouped ? undefined : rest.names?.get(sender ?? '') ?? AGENT_VOICE}>
@@ -542,7 +543,7 @@ function ScheduleRow({
           )}
         </ArrivalDivider>
       )}
-      <MessageRow grouped={grouped}>
+      <MessageRow grouped={grouped} surface={rest.surface}>
         <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
           <Prose
             text={item.text}
@@ -881,7 +882,10 @@ function Receipts({
   if (item.type !== 'receipts') return null
   const rows = toReceiptRows(item.lines)
   const frames = framesIn(item.lines)
-  const width = surface === 'phone' ? BUBBLE_MAX.phoneAssistant : CAPTURED_FRAME.width
+  // One width for both compositions. The card is `max-w-full`, so on the phone
+  // it fills whatever the (now column-wide) bubble gives it instead of being
+  // pinned to a second, narrower artboard number.
+  const width = CAPTURED_FRAME.width
   return (
     <div className="flex min-w-0 flex-col items-start gap-2">
       <ReceiptGroup

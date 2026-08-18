@@ -880,6 +880,7 @@ export function OverlayReceipts({
   }, [lines, live])
   return (
     <MessageRow
+      surface={surface}
       gutter={<SessionMark seed={seed} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}
     >
       <ReceiptGroup rows={rows} max={RECEIPT_DEFAULT_MAX} surface={surface} />

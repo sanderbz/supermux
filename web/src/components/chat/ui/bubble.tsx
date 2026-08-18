@@ -35,6 +35,14 @@ export interface MessageRowProps {
   grouped?: boolean
   /** The gutter's content — a 28px `<SessionMark>`. Omitted while grouped. */
   gutter?: ReactNode
+  /**
+   * Which composition this row is in. The phone tightens the gutter to the
+   * mark's own 28px and the gap to 8px — 36px instead of 44px of left indent.
+   * That 8px is not decoration: on a 390pt screen every pixel the row spends on
+   * chrome is a pixel the sentence does not get, and the gutter is the only
+   * fixed cost in front of the agent's text.
+   */
+  surface?: 'desktop' | 'phone'
   className?: string
 }
 
@@ -43,20 +51,29 @@ export interface MessageRowProps {
  * in the column (bubbles, receipt groups, working rows, captured frames) goes
  * through it, which is what keeps their left edges on one line.
  */
-export function MessageRow({ children, me, grouped, gutter, className }: MessageRowProps) {
+export function MessageRow({ children, me, grouped, gutter, surface, className }: MessageRowProps) {
+  const phone = surface === 'phone'
   return (
     <div
       data-grouped={grouped || undefined}
       data-me={me || undefined}
       className={cn(
-        'flex items-start gap-3',
+        'flex items-start',
+        phone ? 'gap-2' : 'gap-3',
         grouped ? 'mt-2' : 'mt-3.5',
         me && 'justify-end',
         className,
       )}
     >
       {!me && (
-        <div className="flex w-8 flex-none justify-center pt-[3px]">{gutter}</div>
+        <div
+          className={cn(
+            'flex flex-none justify-center pt-[3px]',
+            phone ? 'w-7' : 'w-8',
+          )}
+        >
+          {gutter}
+        </div>
       )}
       {children}
     </div>
@@ -70,9 +87,10 @@ export interface BubbleProps {
   /** Wider inner padding, for a bubble whose content is a list (receipts). */
   padding?: 'text' | 'list'
   /**
-   * Which ceiling applies. The phone is not a narrower desktop: `mobile-*.png`
-   * pins its own two maxima (266 / 250) so a bubble still leaves the gutter and
-   * the reply-side asymmetry visible on a 390pt screen.
+   * Which ceiling applies. The phone is not a narrower desktop, but it is also
+   * not the artboard: it drops the two px maxima for a proportional pair
+   * (`100%` / `84%`), so the agent runs the column and the human's own line
+   * keeps the right-side asymmetry at any phone width. See `BUBBLE_MAX`.
    */
   surface?: 'desktop' | 'phone'
   /**
@@ -125,6 +143,10 @@ export function Bubble({
       }}
       className={cn(
         'rounded-[18px] text-[15px] leading-[1.45] tracking-[-0.1px]',
+        // The phone ceiling is a PERCENTAGE now, so nothing else stops a wide
+        // child (a fenced block, a frame) from pushing the flex item past the
+        // row. `min-w-0` is what lets the bubble shrink to the column instead.
+        phone && 'min-w-0',
         padding === 'list' ? 'px-[18px] py-3.5' : 'px-[17px] py-[11px]',
         user
           ? 'border-[0.5px] border-transparent bg-bubble-user text-bubble-user-ink'
