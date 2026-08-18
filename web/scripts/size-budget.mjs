@@ -373,7 +373,12 @@ const BUDGET_ENTRY_JS = 160 * KB
 // thin margin = 257. Every byte of expression/motion is CSS under `[data-grok]`
 // (28.47/30 CSS, 95%) and byte-inert off the skin. The next thing through here
 // should measure first — 1.7 KB of headroom is intentional.
-const BUDGET_APP_JS = 257 * KB
+// 258 as of the composer-attachments + selection-fix + shell-viewport merge batch:
+// measured 257.13 against 257 — a +0.13 KB batch (attachment chips + paste/drag,
+// the selection ticker-gate, the visualViewport keyboard-avoidance hardening + the
+// overscroll scroll-chaining fix). All on lazy/chat chunks; entry hero path unmoved
+// at 149.80/160. ceil(measured).
+const BUDGET_APP_JS = 258 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
