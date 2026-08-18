@@ -32,6 +32,7 @@ import {
   FolderOpen,
   Loader2,
   Plug,
+  Terminal,
   Wrench,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -584,12 +585,16 @@ function BotPanelBody({
   name,
   variant,
   onOpenThread,
+  onOpenTerminal,
   onNavigate,
   initialTab,
 }: {
   name: string
   variant: 'pane' | 'sheet'
   onOpenThread: () => void
+  /** When set, this bot cannot be a chat surface (Codex/shell/remote/team-lead),
+   *  so the header offers "Open terminal →" (→ /focus) INSTEAD of "Open thread". */
+  onOpenTerminal?: () => void
   onNavigate: (name: string) => void
   /** Dev/bench only: seat a specific tab so a still frame can show each one. */
   initialTab?: TabKey
@@ -627,15 +632,28 @@ function BotPanelBody({
           </div>
           {sub && <span className="mt-0.5 truncate text-[12.5px] capitalize text-muted-foreground">{sub}</span>}
         </div>
-        <button
-          type="button"
-          onClick={onOpenThread}
-          data-vr="bot-open-thread"
-          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[10px] bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Open thread
-          <ArrowRight className="size-3.5" aria-hidden />
-        </button>
+        {onOpenTerminal ? (
+          <button
+            type="button"
+            onClick={onOpenTerminal}
+            data-vr="bot-open-terminal"
+            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[10px] bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Terminal className="size-3.5" aria-hidden />
+            Open terminal
+            <ArrowRight className="size-3.5" aria-hidden />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onOpenThread}
+            data-vr="bot-open-thread"
+            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[10px] bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Open thread
+            <ArrowRight className="size-3.5" aria-hidden />
+          </button>
+        )}
         {session && (
           <SessionActionsMenu
             session={session}
@@ -713,6 +731,9 @@ export interface BotPanelProps {
   variant: 'pane' | 'sheet'
   /** Navigate to the bot's focus thread. */
   onOpenThread: () => void
+  /** pane only, ineligible bots: show "Open terminal →" (→ /focus) in the header
+   *  instead of "Open thread", since this bot cannot render as a chat surface. */
+  onOpenTerminal?: () => void
   /** Navigate to a session's focus route (used by Clone + issue focus). */
   onNavigate: (name: string) => void
   /** sheet only. */
@@ -726,6 +747,7 @@ export function BotPanel({
   name,
   variant,
   onOpenThread,
+  onOpenTerminal,
   onNavigate,
   open,
   onOpenChange,
@@ -766,6 +788,7 @@ export function BotPanel({
         name={name}
         variant="pane"
         onOpenThread={onOpenThread}
+        onOpenTerminal={onOpenTerminal}
         onNavigate={onNavigate}
         initialTab={initialTab}
       />
