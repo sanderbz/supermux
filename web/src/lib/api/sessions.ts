@@ -221,6 +221,15 @@ export interface ApiSession {
    *  session's tile, focus-header dot and composer all clear at once instead of
    *  lingering as a green Idle until an unrelated resync. */
   removed?: boolean
+  /** CLIENT-ONLY bookkeeping (never sent by `GET /api/sessions`): the `version`
+   *  of the last `status` SSE event this row's status was set from. The server
+   *  stamps every `status` event with a per-session monotonic counter
+   *  (`status_watch_for`); the reducer records the applied one here so a LATER
+   *  event carrying an OLDER version — two lifecycle tasks that allocated
+   *  versions N/N+1 and sent them reversed across an await — is dropped instead
+   *  of regressing a `stopped`/blocked row back to `active`/`idle`. Absent until
+   *  the first status event; a full refetch clears it (the list is truth). */
+  status_version?: number
   /** Live "current activity" line derived from the latest `PreToolUse` hook
    *  PAYLOAD (hooks-10x): a short emoji-prefixed label like `✎ tile.tsx` /
    *  `⚡ npm test`. In-memory only server-side (never persisted); present while

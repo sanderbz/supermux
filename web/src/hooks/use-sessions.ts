@@ -165,6 +165,24 @@ export function applyDelta(
     } else {
       // The row is present and alive: any stale tombstone for it is moot.
       if (tombstones.has(row.name)) tombstones.delete(row.name)
+      // Version guard for `status` events (w6 #8). The server stamps every
+      // status broadcast with a per-session monotonic counter. Two lifecycle
+      // tasks can allocate N/N+1 and, after an await, send them REVERSED — the
+      // stale N would then overwrite N+1 and regress a `stopped`/blocked row
+      // back to `active`/`idle`. Drop a status delta whose version is strictly
+      // older than the one already applied to the row. Only status events carry
+      // `status_version` (full `sessions` deltas do not), so this never gates a
+      // richer merge — and a first event on a freshly-fetched row (no stored
+      // version) always applies.
+      const incoming = row.status_version
+      const applied = list[idx].status_version
+      if (
+        typeof incoming === 'number' &&
+        typeof applied === 'number' &&
+        incoming < applied
+      ) {
+        continue
+      }
       list[idx] = mergeRow(list[idx], row)
     }
   }
@@ -175,14 +193,26 @@ export function applyDelta(
 }
 
 /** Normalise a `status` event payload (`{name, status, version}`) into the same
- *  delta shape `applyDelta` consumes. */
-function statusToDelta(payload: unknown): Partial<ApiSession>[] {
+ *  delta shape `applyDelta` consumes.
+ *
+ *  The `version` is carried through as `status_version` so `applyDelta` can drop
+ *  a status event that lost a race — see `ApiSession.status_version`. It is a
+ *  per-session monotonic counter, so any FINITE number is meaningful; a payload
+ *  without one (an older server) simply skips the version guard. */
+export function statusToDelta(payload: unknown): Partial<ApiSession>[] {
   if (!payload || typeof payload !== 'object') return []
   const p = payload as Record<string, unknown>
   if (typeof p.name !== 'string') return []
   const status = p.status
   if (typeof status !== 'string') return []
-  return [{ name: p.name, status: status as ApiSession['status'] }]
+  const row: Partial<ApiSession> = {
+    name: p.name,
+    status: status as ApiSession['status'],
+  }
+  if (typeof p.version === 'number' && Number.isFinite(p.version)) {
+    row.status_version = p.version
+  }
+  return [row]
 }
 
 /** DEV-only: `?mock=1` seeds the cache from the mocks (overview dogfooding

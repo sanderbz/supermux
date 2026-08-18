@@ -12,7 +12,11 @@
 
 import { describe, expect, test } from 'bun:test'
 
-import { applyDelta, clearRemovalTombstone } from '../../src/hooks/use-sessions'
+import {
+  applyDelta,
+  clearRemovalTombstone,
+  statusToDelta,
+} from '../../src/hooks/use-sessions'
 import type { ApiSession } from '../../src/lib/api'
 
 const row = (over: Partial<ApiSession> = {}): ApiSession => ({
@@ -99,5 +103,81 @@ describe('applyDelta — the delete resurrection race (w6 #3)', () => {
     // The exported clear is what the create mutation calls; exercise it so the
     // wiring cannot silently break.
     expect(() => clearRemovalTombstone('anything')).not.toThrow()
+  })
+})
+
+describe('status version — a reordered event cannot regress newer truth (w6 #8)', () => {
+  test('statusToDelta threads the per-session `version` through', () => {
+    // The root: the version used to be discarded here, so `applyDelta` had
+    // nothing to compare and applied arrival order.
+    expect(statusToDelta({ name: 'a', status: 'stopped', version: 7 })).toEqual([
+      { name: 'a', status: 'stopped', status_version: 7 },
+    ])
+    // An older server that sends no version still produces a valid delta — the
+    // guard simply does not engage for it.
+    expect(statusToDelta({ name: 'a', status: 'idle' })).toEqual([
+      { name: 'a', status: 'idle' },
+    ])
+    // A non-finite version is ignored rather than trusted.
+    expect(statusToDelta({ name: 'a', status: 'idle', version: Number.NaN })).toEqual([
+      { name: 'a', status: 'idle' },
+    ])
+  })
+
+  test('a stale (older-version) status event is dropped, not applied', () => {
+    // Two lifecycle tasks: N=10 → `active`, N+1=11 → `stopped`. They arrive
+    // REVERSED after an await. The newer `stopped` (v11) lands first…
+    let list = applyDelta(
+      [row({ name: 'vx-race', status: 'active' })],
+      statusToDelta({ name: 'vx-race', status: 'stopped', version: 11 }),
+      false,
+    )
+    expect(list[0].status).toBe('stopped')
+    expect(list[0].status_version).toBe(11)
+    // …then the stale `active` (v10) arrives. Before the fix arrival order won
+    // and it regressed the row to `active`; now it is dropped.
+    list = applyDelta(
+      list,
+      statusToDelta({ name: 'vx-race', status: 'active', version: 10 }),
+      false,
+    )
+    expect(list[0].status).toBe('stopped')
+    expect(list[0].status_version).toBe(11)
+  })
+
+  test('in-order events apply normally, version climbing', () => {
+    let list = applyDelta(
+      [row({ name: 'vx-ok', status: 'idle' })],
+      statusToDelta({ name: 'vx-ok', status: 'active', version: 3 }),
+      false,
+    )
+    expect(list[0].status).toBe('active')
+    list = applyDelta(
+      list,
+      statusToDelta({ name: 'vx-ok', status: 'stopped', version: 4 }),
+      false,
+    )
+    expect(list[0].status).toBe('stopped')
+    expect(list[0].status_version).toBe(4)
+  })
+
+  test('a versionless status delta always applies (no guard, no stored version)', () => {
+    // A `sessions` delta path or an old server: nothing to compare, so a status
+    // change is never dropped by the guard.
+    let list = applyDelta(
+      [row({ name: 'vx-nov', status: 'active', status_version: 9 })],
+      [{ name: 'vx-nov', status: 'stopped' }],
+      false,
+    )
+    expect(list[0].status).toBe('stopped')
+    // The stored version is untouched by a versionless delta.
+    expect(list[0].status_version).toBe(9)
+    // And a fresh row with no stored version accepts any first status event.
+    list = applyDelta(
+      [row({ name: 'vx-fresh', status: 'idle' })],
+      statusToDelta({ name: 'vx-fresh', status: 'stopped', version: 2 }),
+      false,
+    )
+    expect(list[0].status).toBe('stopped')
   })
 })
