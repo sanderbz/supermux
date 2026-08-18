@@ -282,6 +282,25 @@ describe('coverage: every state the surface can be in', () => {
     ])
   })
 
+  test('p1/p2/p3 isolate the three send-escalation PHASES, one per state', () => {
+    // The showcase holds these three side by side, so each must drive ONE
+    // distinct phase and read as anything but a healthy idle session — the
+    // regression is that `?state=p1|p2|p3` had no fixture state and fell back to
+    // `idle`, so all three rendered identical (p3-phone was byte-identical to
+    // p1). Each carries exactly one pending send in its own state.
+    const phases = { p1: 'sending', p2: 'unconfirmed', p3: 'undelivered' } as const
+    for (const [id, state] of Object.entries(phases)) {
+      const s = byId.get(id)!
+      expect(s.pending?.length).toBe(1)
+      expect(s.pending?.[0]?.state).toBe(state)
+    }
+    // p2 states the delivery receipt rather than "Sending…", so its phase is
+    // legibly the calm middle one and not a dimmer p1.
+    expect(byId.get('p2')!.pending?.[0]?.receipted).toBe(true)
+    // p3 carries the reason the watchdog gave up — the row that speaks.
+    expect(byId.get('p3')!.pending?.[0]?.note).toBeTruthy()
+  })
+
   test('the attention states carry a cause AND the evidence behind it', () => {
     for (const id of ['attention', 'attention-inline'] as const) {
       const s = byId.get(id)!

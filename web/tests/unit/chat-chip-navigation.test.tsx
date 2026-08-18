@@ -155,7 +155,7 @@ describe('a colleague named in prose', () => {
 
 /* ── 3. the schedule entity ──────────────────────────────────────────────── */
 
-describe('the ⏱ chip in a schedule line', () => {
+describe('the schedule chip in a schedule line', () => {
   const created = ev({
     action: 'schedule.create',
     target: 'SCHED-1a2b3c4d',

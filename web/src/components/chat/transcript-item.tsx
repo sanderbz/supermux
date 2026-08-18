@@ -59,6 +59,7 @@ import {
   BUBBLE_MAX,
   CapturedFrameCard,
   CAPTURED_FRAME,
+  ClockIcon,
   FaceName,
   MARK_SIZE,
   MentionChip,
@@ -137,7 +138,7 @@ export interface TranscriptItemProps {
   onOpenSchedule?: (ref: ScheduleRef) => void
 }
 
-/** What a `⏱` chip knows about the schedule it names. Both fields optional —
+/** What a schedule chip knows about the schedule it names. Both fields optional —
  *  see `TranscriptItemProps.onOpenSchedule`. */
 export interface ScheduleRef {
   id?: string
@@ -509,8 +510,9 @@ function TeammateRow({
  * The schedule is the SPEAKER, not a hat on the owner's bubble — a 03:00 prompt
  * with the owner's face on it is the transcript telling a lie about who was
  * awake. There is no mark in the gutter because a schedule has no identity mark
- * to hang: `⏱` (the one sanctioned glyph, matching the scheduler's own chips)
- * plus the title carries it, and the divider is where that belongs anyway.
+ * to hang: a monochrome `ClockIcon` (the surface's own icon set — the raw `⏱`
+ * codepoint tofu'd, not being in the bundled font) plus the title carries it,
+ * and the divider is where that belongs anyway.
  *
  * The prompt text arrives already stripped of the machine-generated confirm
  * footer (`recall.rs::strip_confirm_footer`), so the multi-line curl block that
@@ -531,7 +533,7 @@ function ScheduleRow({
             <>
               <span>Sent by schedule</span>
               <span className="font-medium text-ink">
-                <span aria-hidden="true">⏱ </span>
+                <ClockIcon className="mr-1 inline-block align-[-2px]" />
                 {title}
               </span>
             </>
@@ -695,8 +697,10 @@ export interface HarnessLineProps {
  * Four sentences, one per surfaced action. There is deliberately no default
  * branch: `grouping.ts` drops any action this file has no copy for, so an
  * unworded event ships dark instead of printing "System event ·" over a blob of
- * JSON. `⏱` is the one sanctioned glyph in UI copy, and it is here for the same
- * reason the scheduler's own chips carry it — a schedule has no identity mark.
+ * JSON. A monochrome `ClockIcon` marks the schedule (the surface's own icon set,
+ * `currentColor` — the raw `⏱` codepoint is not in the bundled font and tofu'd),
+ * for the same reason the scheduler's own chips carry a clock — a schedule has
+ * no identity mark.
  */
 export function HarnessLine({ ev, names, pinFor, onOpenSession, onOpenSchedule }: HarnessLineProps) {
   if (ev.action === 'session.delegate') {
@@ -751,7 +755,7 @@ export function HarnessLine({ ev, names, pinFor, onOpenSession, onOpenSchedule }
                 : undefined
             }
           >
-            <span aria-hidden="true">⏱ </span>
+            <ClockIcon className="mr-1 inline-block align-[-2px]" />
             {title}
           </SystemEntity>
         </>

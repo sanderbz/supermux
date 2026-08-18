@@ -54,10 +54,14 @@ try {
   // still reviewable via a manual `···` tap.
 }
 
+// The session the bench focuses when the URL carries no `:name`: a tile with a
+// cached `preview_ansi` so the pane shows a populated last-screen (the app's own
+// cold-open) rather than the empty placeholder terminal the bench captured.
+const FOCUS_NAME =
+  MOCK_TILES.find((t) => t.name === 'web-app')?.name ?? MOCK_TILES[0]?.name ?? ''
+
 export default function DevFocusMobile() {
   const { name } = useParams()
-  // Default to the first mock so a bare /dev/focus-mobile is still meaningful.
-  void name
   // `?chat=1` — seed the experiment ON for this review. Written during render on
   // purpose: `useUI` is read by <MobileFocus> in the SAME pass, so an effect
   // would paint one frame of the terminal composition into every screenshot.
@@ -71,7 +75,7 @@ export default function DevFocusMobile() {
   }
   return (
     <div className="h-dvh w-full">
-      <MobileFocus mockSessions={MOCK_TILES} />
+      <MobileFocus mockSessions={MOCK_TILES} mockName={name || FOCUS_NAME} />
     </div>
   )
 }

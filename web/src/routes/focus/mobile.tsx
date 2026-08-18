@@ -155,12 +155,20 @@ export interface MobileFocusProps {
   mockSessions?: TileSession[]
   /** DEV-only mock teams injection, same pattern as `DesktopFocusProps`. */
   mockTeams?: Team[]
+  /** DEV-only: the session to focus when the route carries no `:name`, so the
+   *  `/dev/focus-mobile` capture (which has none) resolves a concrete session
+   *  and its cached last-screen fills the pane instead of the placeholder's
+   *  empty terminal. Mirrors `DesktopFocusProps.mockName`. */
+  mockName?: string
 }
 
 // Self-contained route component (reads the `:name` param like
 // <DesktopFocus />) so the focus.tsx fork can call it with no props.
-export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) {
-  const { name = '' } = useParams()
+export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusProps = {}) {
+  const { name: routeName = '' } = useParams()
+  // The bench captures `/dev/focus-mobile` with no `:name`; `mockName` is the
+  // DEV-only fallback so a real session is focused. An explicit `:name` wins.
+  const name = routeName || mockName || ''
   const navigate = useNavigate()
   // View-Transition navigate: used by the discrete back-button tap so
   // it plays the reverse tile↔header morph. The left-edge SWIPE keeps the plain

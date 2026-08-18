@@ -176,6 +176,25 @@ export function TerminalGlyph({ className }: IconProps) {
   )
 }
 
+/**
+ * A schedule: the harness "Created schedule / Ran schedule" line, and the
+ * "Sent by schedule" arrival divider.
+ *
+ * Replaces the raw `⏱` (U+23F1 STOPWATCH) the copy used to carry: that codepoint
+ * is not in the surface's bundled font, so it rendered as a tofu box (▯) in both
+ * themes. Master plan §4.2 P3 keeps the emoji taxonomy terminal/tile-only —
+ * chat glyphs are monochrome `currentColor` SVG — so the schedule icon belongs
+ * in this set, not in UI copy. A 13px clock to sit inline with 13px system text.
+ */
+export function ClockIcon({ className }: IconProps) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden className={className}>
+      <circle cx="7" cy="7" r="5.3" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M7 3.9V7l2.2 1.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 /** Composer: dictation. */
 export function MicIcon({ className }: IconProps) {
   return (

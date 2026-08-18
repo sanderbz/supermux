@@ -53,10 +53,20 @@ export interface DesktopFocusProps {
   /** DEV-only mock teams injection (the /dev/focus verification page). Production
    *  omits it → the real `useTeams` store. */
   mockTeams?: Team[]
+  /** DEV-only: the session to focus when the route carries no `:name` (the
+   *  `/dev/focus` verification page is captured without one). Without it the
+   *  route resolves `current` to null and the main pane boots an empty terminal
+   *  with no session to draw — half the layout scenario missing. Production
+   *  omits it → the route `:name` is the only source. */
+  mockName?: string
 }
 
-export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}) {
-  const { name = '' } = useParams()
+export function DesktopFocus({ mockSessions, mockTeams, mockName }: DesktopFocusProps = {}) {
+  const { name: routeName = '' } = useParams()
+  // The bench captures `/dev/focus` with no `:name`; `mockName` is the DEV-only
+  // fallback so a concrete session is focused and its cached last-screen fills
+  // the main pane. Production passes no `mockName`, so the route param wins.
+  const name = routeName || mockName || ''
   // View-Transition navigate: focus→overview plays the reverse morph,
   // focus→focus cross-fades the main pane. Falls back to a plain navigate where
   // the API is unsupported / reduced-motion is set.

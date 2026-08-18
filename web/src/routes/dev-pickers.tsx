@@ -121,7 +121,16 @@ export default function DevPickers() {
         that only show up when a list is empty, loading or long.
       </p>
 
-      <div className="grid gap-10 lg:grid-cols-2">
+      {/* `grid-cols-1` is load-bearing on the phone, not cosmetic: without an
+          explicit base column the single implicit track is `auto` = max-content,
+          so the 40-row card sized to the FULL untruncated description (~456px)
+          and overflowed a 390px viewport — the row's own `truncate` fired
+          correctly but its ellipsis landed off-screen and the viewport clipped
+          the text flush to the edge. `minmax(0,1fr)` caps the track at the
+          container so the description truncates visibly, with the list's gutter
+          intact. In production the picker sits in a width-bounded composer
+          popover / sheet, so only the bench needed this. */}
+      <div className="grid grid-cols-1 gap-10 lg:grid-cols-2">
         <Panel
           title="Token anchor — up from an @ / token"
           note="Draws its own glass and shadow; floats over the transcript."

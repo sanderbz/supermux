@@ -110,22 +110,31 @@ describe('schedules', () => {
     detail: { session: 'web-ui', title: 'Nightly release watch' },
   })
 
-  test('a created schedule names itself, under the one sanctioned glyph', () => {
-    expect(text(HarnessLine({ ev: created }))).toBe('Created schedule · ⏱ Nightly release watch')
+  test('a created schedule names itself, under a rendered clock icon (never the raw ⏱, which tofus)', () => {
+    // The schedule marker is a monochrome `ClockIcon` SVG, not the raw `⏱`
+    // (U+23F1): that codepoint is absent from the surface's bundled font and
+    // shipped as a tofu box (▯) in both themes. So the sentence is just the
+    // words, and the icon is proven by the SVG being present with no `⏱` text.
+    const node = HarnessLine({ ev: created })
+    expect(text(node)).toBe('Created schedule · Nightly release watch')
+    const html = renderToStaticMarkup(node as ReactElement)
+    expect(html).toContain('<svg')
+    expect(html).not.toContain('⏱')
   })
 
   test('a fire reads as a fire, not as a creation', () => {
     const node = HarnessLine({
       ev: ev({ action: 'schedule.run', target: 'sched-1', detail: { title: 'Nightly release watch', status: 'ok' } }),
     })
-    expect(text(node)).toBe('Ran schedule · ⏱ Nightly release watch')
+    expect(text(node)).toBe('Ran schedule · Nightly release watch')
+    expect(renderToStaticMarkup(node as ReactElement)).not.toContain('⏱')
   })
 
   test('a failed fire is the same sentence in the error tone — a log line, not an alarm', () => {
     const failed = HarnessLine({
       ev: ev({ action: 'schedule.run', target: 'sched-1', detail: { title: 'Nightly', status: 'error' } }),
     })
-    expect(text(failed)).toBe('Ran schedule · ⏱ Nightly')
+    expect(text(failed)).toBe('Ran schedule · Nightly')
     expect(renderToStaticMarkup(failed as ReactElement)).toContain('text-status-error')
     const ok = HarnessLine({
       ev: ev({ action: 'schedule.run', target: 'sched-1', detail: { title: 'Nightly', status: 'ok' } }),

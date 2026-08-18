@@ -838,6 +838,75 @@ export function liveStates(nowMs: number): LiveState[] {
         },
       ],
     },
+    // The three send-escalation PHASES, one per screenshot (P10 / A4 T4). The
+    // `pending` state above stacks all three in one band so a single shot can
+    // catch any of them lying; these three isolate each phase so the showcase
+    // can hold p1→p2→p3 side by side and prove the escalation is legible — none
+    // of them the green-Idle a send used to disappear into. Same `PendingSend`
+    // shapes the watchdog produces, fed straight to the surface (the bench does
+    // not re-run `use-pending-sends`, so `state` here is display truth).
+    {
+      id: 'p1',
+      title: 'Send · phase 1 — the POST is in flight (grace)',
+      board: 'A4 T4 (P10 · sending)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      // `sending`: the bubble at reduced weight is the whole claim — "your Enter
+      // was received", nothing more. No receipt line yet.
+      pending: [{ id: 'p1', text: 'run the full test suite', atMs: nowMs - 400, state: 'sending' }],
+    },
+    {
+      id: 'p2',
+      title: 'Send · phase 2 — delivered, waiting for the transcript (watchdog window)',
+      board: 'A4 T4 (P10 · unconfirmed)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      // `unconfirmed` + `receipted`: the server has confirmed it typed the text
+      // into the pty, so the row states the delivery receipt (`deliveryLine`)
+      // instead of "Sending…". This is the calm middle phase — the normal
+      // seconds between a send and Claude writing it down.
+      pending: [
+        {
+          id: 'p2',
+          text: 'push the branch once it’s green',
+          atMs: nowMs - 2_600,
+          state: 'unconfirmed',
+          receipted: true,
+          activeAtSend: false,
+        },
+      ],
+    },
+    {
+      id: 'p3',
+      title: 'Send · phase 3 — the watchdog gave up (escalated, Retry offered)',
+      board: 'A4 T4 (P10 · undelivered)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      // `undelivered`: full-weight bubble, the calm-orange reason, and the two
+      // ways out — Retry (writes to the pty) and Open terminal. This is the one
+      // phase that speaks in the live region, because it is the only news.
+      pending: [
+        {
+          id: 'p3',
+          text: 'revert the migration',
+          atMs: nowMs - 9_000,
+          state: 'undelivered',
+          note: 'The session isn’t running.',
+        },
+      ],
+    },
     {
       id: 'attention',
       title: 'Attention — the honesty surface, expanded over the pane with its evidence',
@@ -1403,6 +1472,9 @@ export const STATE_IDS = [
   'offline',
   'patch',
   'pending',
+  'p1',
+  'p2',
+  'p3',
   'attention',
   'attention-inline',
   'stopping',

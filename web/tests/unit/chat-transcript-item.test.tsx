@@ -142,28 +142,31 @@ describe('a colleague', () => {
 })
 
 describe('a schedule', () => {
-  test('announces the schedule that fired it, once, with the ⏱ mark', () => {
-    const out = text(
-      render([
-        {
-          uuid: 's2',
-          ts: 1_760_000_002,
-          text: 'check the deploy',
-          kind: 'schedule',
-          label: 'Nightly release watch',
-        },
-        {
-          uuid: 's1',
-          ts: 1_760_000_001,
-          text: 'check the release',
-          kind: 'schedule',
-          label: 'Nightly release watch',
-        },
-      ]),
-    )
-    expect(out).toContain('Sent by schedule ⏱ Nightly release watch')
+  test('announces the schedule that fired it, once, with a clock icon (never the raw ⏱, which tofus)', () => {
+    const raw = render([
+      {
+        uuid: 's2',
+        ts: 1_760_000_002,
+        text: 'check the deploy',
+        kind: 'schedule',
+        label: 'Nightly release watch',
+      },
+      {
+        uuid: 's1',
+        ts: 1_760_000_001,
+        text: 'check the release',
+        kind: 'schedule',
+        label: 'Nightly release watch',
+      },
+    ])
+    const out = text(raw)
+    // The clock is a monochrome `ClockIcon` SVG, not the raw `⏱` (U+23F1),
+    // which is absent from the bundled font and tofu'd (▯) in both themes.
+    expect(out).toContain('Sent by schedule Nightly release watch')
     expect(out.match(/Sent by schedule/g)).toHaveLength(1)
     expect(out).toContain('check the release')
+    expect(raw).toContain('<svg')
+    expect(raw).not.toContain('⏱')
   })
 
   test('an unnamed schedule still says a schedule sent it', () => {
