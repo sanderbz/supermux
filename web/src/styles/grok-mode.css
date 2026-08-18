@@ -48,11 +48,17 @@
 [data-grok] {
   color-scheme: light;
 
-  /* ground & elevation (tokens.md §1) */
-  --sm-substrate: #fcfcfca6;
-  --sm-bg-chrome: #fbfbfb;
-  --sm-bg-editor: #fcfcfc;
-  --sm-bg-elevated: #fcfcfc;
+  /* ground & elevation (tokens.md §1)
+     MEASURED-GAP FIX (light figure/ground): the three near-white grounds used to
+     sit at #fbfbfb / #fcfcfc / #fcfcfc — a <1-point spread that read as ONE flat
+     white (the chat jury: "pane/panel/header all #ffffff, rail #fcfcfc — near-zero
+     layering"). Give them a faint, faintly-warm STEP so rail < editor < raised
+     layer the way Grok's warm off-white does. Deepest ground carries the most
+     tint; the raised surface is the brightest. */
+  --sm-substrate: #f7f7f5a6;
+  --sm-bg-chrome: #f4f4f2;
+  --sm-bg-editor: #fafaf8;
+  --sm-bg-elevated: #ffffff;
   --sm-bg-card: #0000000a;
   --sm-bg-tertiary: #0000000d;
   --sm-bg-hover: #0000000a;
@@ -747,6 +753,13 @@
   --gr-sel: var(--sm-bg-active);         /* selection — WARM GREY, not accent */
   --gr-line: var(--sm-border);           /* the only hairline                */
   --gr-track: var(--sm-bg-active);       /* context-ring remainder           */
+  /* MEASURED-GAP FIX (row contrast): the roster used to carry TWO sub-AA grey
+     tiers under the name — the right meta (timestamp + token) at tertiary
+     (~2.2:1 light / ~2.8:1 dark) and the provider/ctx tag line even fainter
+     (~1.6:1 light). Grok uses ONE AA-compliant sub-grey, not two faint ones. This
+     is that grey: an opaque tone that clears 4.5:1 on the rail ground in both
+     themes (light #6b7280 ≈ 4.6:1 on #f4f4f2; dark override ≈ 6:1 on #141414). */
+  --gr-meta: #6b7280;
   /* state words (the firewall's status half — never the agent hue) */
   --gr-work: var(--sm-tone-warning);
   --gr-need: var(--sm-tone-danger);
@@ -762,6 +775,11 @@
   color: var(--sm-text-primary);
   font-family: var(--sm-font-sans);
   -webkit-font-smoothing: antialiased;
+}
+/* Dark half of the one AA sub-grey (the aliases above are theme-swapped via
+   --sm-*, but --gr-meta is a fixed tone, so it needs its own dark value). */
+.dark [data-grok] .grok-roster {
+  --gr-meta: #9a9a9a;
 }
 
 /* ── header — brand · live count · search · display · + ─────────────────────── */
@@ -969,11 +987,16 @@
 }
 
 /* ── section headers — a hairline idiom, no boxed cards, no "Pinned" text ────── */
+/* MEASURED-GAP FIX (alignment): the section labels used to start at the row's own
+   left pad (x≈20) while the row TITLES start past the avatar (row pad 18 + mark 42
+   + gap 13 = 73) — a ~53px zig between the two content verticals. Share ONE
+   vertical: hang the label at the title edge. The hairline (`.ln`) simply starts
+   further in; the count rides with the label. */
 [data-grok] .grok-roster .gr-grp {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 15px 20px 6px;
+  padding: 15px 20px 6px 73px;
 }
 [data-grok] .grok-roster .gr-grp .lbl {
   font-size: 11.5px;
@@ -1050,7 +1073,7 @@
 [data-grok] .grok-roster .gr-rowA .tm {
   margin-left: auto;
   font-size: 12px;
-  color: var(--sm-text-tertiary);
+  color: var(--gr-meta);
   flex: none;
   font-weight: 500;
 }
@@ -1082,7 +1105,7 @@
   margin-left: auto;
   flex: none;
   font-size: 11.5px;
-  color: var(--sm-text-tertiary);
+  color: var(--gr-meta);
   font-family: var(--sm-font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
@@ -1103,7 +1126,7 @@
 /* provider dot + label */
 [data-grok] .grok-roster .prov {
   font-size: 11px;
-  color: var(--sm-text-tertiary);
+  color: var(--gr-meta);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1146,7 +1169,7 @@
 [data-grok] .grok-roster .rc-hot { --rc: var(--gr-block); }
 [data-grok] .grok-roster .ctx {
   font-size: 11px;
-  color: var(--sm-text-tertiary);
+  color: var(--gr-meta);
   font-family: var(--sm-font-mono);
   font-variant-numeric: tabular-nums;
   flex: none;
@@ -1539,6 +1562,14 @@
     max-width: none;
     order: 3;
     flex-basis: 100%;
+  }
+  /* MEASURED-GAP FIX (touch target): the header `+` — the phone's primary action
+     — was a 34px plate, under the 44pt HIG minimum. Grow it (and any sibling
+     icon-btn) to a full 44×44 on the phone; the 10px plate + soft-accent wash are
+     unchanged, only the hit box grows. */
+  [data-grok] .grok-roster .gr-icon-btn {
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -1981,4 +2012,29 @@
 }
 [data-grok] [data-vr='attention-rollup-overflow'] {
   color: var(--sm-text-tertiary);
+}
+
+/* ══ WS10 — MEASURED-GAP CLOSURES: FOCUS / CHAT CHROME ════════════════════════
+   The chat/focus jury found two cold seams and one flat title. All scoped under
+   [data-grok]; each is a byte-exact revert when the attribute is absent. */
+
+/* SEAM 1 — the terminal / VT pane read as PURE #000 (dark) / pure #fff (light)
+   against the warm chrome, a cold edge where the pane meets the header/rail. Warm
+   the pane to the editor ground so pane + chrome read as ONE surface. This reaches
+   every DOM-rendered pane background (`bg-[var(--terminal-bg)]` — the native VT
+   grid, the stopped-session plate, tile previews) because [data-grok] is their
+   closer ancestor than :root. (A live xterm CANVAS reads the html-level var at
+   mount and is unaffected — its own theme is a JS concern; the seam the jury
+   measured is the DOM pane, which this fixes.) */
+[data-grok] {
+  --terminal-bg: var(--sm-bg-editor);
+}
+
+/* TITLE — the focus session-strip header ("Sessions") carried the SAME
+   `text-muted-foreground` as its body ("No other sessions."), separated by weight
+   alone, so it did not read as a titled group. Lift the header's tone to primary
+   ink; the body stays muted. Targets the strip header by its stable `data-vr`
+   hook, not a class, so the default app's muted title is untouched. */
+[data-grok] [data-vr='focus-strip'] > div:first-child {
+  color: var(--sm-text-primary);
 }

@@ -84,7 +84,10 @@ function previewOf(s: ApiSession): string | undefined {
 
 function fmtTokens(n?: number): string | undefined {
   if (typeof n !== 'number' || n <= 0) return undefined
-  if (n < 1000) return String(n)
+  // MEASURED-GAP FIX (format consistency): one column must not mix "21k" with a
+  // raw "800". Everything renders in k-notation; sub-1k values become "0.8k"
+  // (floored at 0.1k so a live-but-tiny count never reads "0.0k").
+  if (n < 1000) return `${Math.max(0.1, n / 1000).toFixed(1)}k`
   return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`
 }
 
