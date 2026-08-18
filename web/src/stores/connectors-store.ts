@@ -1,0 +1,175 @@
+// Connector-store query cache + mutation verbs (TanStack Query).
+//
+// Mirrors the app's established query idiom (`use-sessions.ts`): a keyed
+// `useQuery` per read surface, plus optimistic mutation verbs that patch the
+// cache, call the API, and invalidate so the authoritative rows land. The
+// connector mutations emit no SSE (like the session-config PATCH), so the
+// invalidate is what propagates a grant/revoke to every other surface.
+//
+// Three read surfaces:
+//   • useConnectors(params)          — the merged store grid
+//   • useSessionConnectors(name)     — one bot's applied grants
+//   • useConnector(id)               — one card's detail
+//
+// One verb bag: useConnectorActions() → install / grant / revoke / putCredential
+// / remove, each resolving the server's `restartHint` so callers can surface the
+// honest "restart to apply" affordance.
+
+import * as React from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import {
+  grant as apiGrant,
+  getConnector,
+  listConnectors,
+  putCredential as apiPutCredential,
+  removeConnector,
+  revoke as apiRevoke,
+  sessionConnectors,
+  upsertConnector,
+  type ConnectorCard,
+  type ListParams,
+  type Manifest,
+  type PutCredentialArgs,
+  type SessionConnector,
+} from '@/lib/api/connectors'
+import { ApiError } from '@/lib/api/client'
+import { useToast } from '@/components/ui/use-toast'
+
+// ── query keys ────────────────────────────────────────────────────────────────
+
+export const CONNECTORS_KEY = ['connectors'] as const
+export const connectorsKey = (params: ListParams = {}) =>
+  [...CONNECTORS_KEY, params] as const
+export const sessionConnectorsKey = (name: string) =>
+  ['session-connectors', name] as const
+export const connectorKey = (id: string) => ['connector', id] as const
+
+// ── reads ─────────────────────────────────────────────────────────────────────
+
+/** The merged store grid. `params` narrows source / q / category / featured. A
+ *  404/501 (foundation not deployed) degrades to an empty grid, never a crash. */
+export function useConnectors(params: ListParams = {}) {
+  return useQuery<ConnectorCard[]>({
+    queryKey: connectorsKey(params),
+    queryFn: () => listConnectors(params),
+    staleTime: 30_000,
+    retry: (count, err) => !(err instanceof ApiError) && count < 2,
+  })
+}
+
+/** One bot's applied grants (own + all-agents). */
+export function useSessionConnectors(name: string | null | undefined) {
+  return useQuery<SessionConnector[]>({
+    queryKey: sessionConnectorsKey(name ?? ''),
+    queryFn: () => sessionConnectors(name as string),
+    enabled: !!name,
+    staleTime: 15_000,
+    retry: (count, err) => !(err instanceof ApiError) && count < 2,
+  })
+}
+
+/** One card's full detail (tools, credential schema). */
+export function useConnector(id: string | null | undefined) {
+  return useQuery<ConnectorCard>({
+    queryKey: connectorKey(id ?? ''),
+    queryFn: () => getConnector(id as string),
+    enabled: !!id,
+    staleTime: 60_000,
+  })
+}
+
+// ── mutation verbs ────────────────────────────────────────────────────────────
+
+export interface ConnectorActions {
+  pending: boolean
+  /** Install a catalog card into the local registry (idempotent upsert). Returns
+   *  the stored id. */
+  install: (manifest: Manifest) => Promise<string>
+  /** Grant a connector to one session or `*`. Resolves `restartHint`. */
+  grant: (id: string, sessionName: string, secretRef?: string) => Promise<boolean>
+  /** Revoke a grant from one session. Resolves `restartHint`. */
+  revoke: (id: string, sessionName: string) => Promise<boolean>
+  /** Seal a credential (write-only) + optional one-tap grant. Resolves the
+   *  secret_ref so a follow-up grant can attach it. */
+  putCredential: (id: string, args: PutCredentialArgs) => Promise<string | null>
+  /** Remove a connector (grants + vault CASCADE). */
+  remove: (id: string) => Promise<void>
+}
+
+export function useConnectorActions(): ConnectorActions {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+
+  const invalidateAll = React.useCallback(
+    (sessionName?: string) => {
+      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY })
+      void qc.invalidateQueries({ queryKey: ['session-connectors'] })
+      if (sessionName) {
+        void qc.invalidateQueries({ queryKey: sessionConnectorsKey(sessionName) })
+      }
+    },
+    [qc],
+  )
+
+  const install = useMutation({
+    mutationFn: (m: Manifest) => upsertConnector(m),
+    onSuccess: () => invalidateAll(),
+    onError: (e: unknown) =>
+      toast({ message: `Install failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const grantM = useMutation({
+    mutationFn: (v: { id: string; sessionName: string; secretRef?: string }) =>
+      apiGrant(v.id, { session_name: v.sessionName, secret_ref: v.secretRef }),
+    onSuccess: (_r, v) => invalidateAll(v.sessionName),
+    onError: (e: unknown) =>
+      toast({ message: `Grant failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const revokeM = useMutation({
+    mutationFn: (v: { id: string; sessionName: string }) => apiRevoke(v.id, v.sessionName),
+    onSuccess: (_r, v) => invalidateAll(v.sessionName),
+    onError: (e: unknown) =>
+      toast({ message: `Revoke failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const credM = useMutation({
+    mutationFn: (v: { id: string; args: PutCredentialArgs }) => apiPutCredential(v.id, v.args),
+    onSuccess: (_r, v) => invalidateAll(v.args.session_name),
+    onError: (e: unknown) =>
+      toast({ message: `Couldn't save — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const removeM = useMutation({
+    mutationFn: (id: string) => removeConnector(id),
+    onSuccess: () => invalidateAll(),
+    onError: (e: unknown) =>
+      toast({ message: `Remove failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const pending =
+    install.isPending ||
+    grantM.isPending ||
+    revokeM.isPending ||
+    credM.isPending ||
+    removeM.isPending
+
+  return {
+    pending,
+    install: (m) => install.mutateAsync(m),
+    grant: async (id, sessionName, secretRef) => {
+      const r = await grantM.mutateAsync({ id, sessionName, secretRef })
+      return !!r.restartHint
+    },
+    revoke: async (id, sessionName) => {
+      const r = await revokeM.mutateAsync({ id, sessionName })
+      return !!r.restartHint
+    },
+    putCredential: async (id, args) => {
+      const r = await credM.mutateAsync({ id, args })
+      return r.secret_ref ?? null
+    },
+    remove: (id) => removeM.mutateAsync(id),
+  }
+}
