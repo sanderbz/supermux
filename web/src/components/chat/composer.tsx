@@ -191,6 +191,13 @@ export function ChatComposer({
         placeholder={`Message ${label}`}
         leading={
           <>
+          {/* THE INSERT PAIR — mention (`@`) and schedule (clock). A related
+              pair, so they are grouped in one flex box at a tight gap rather
+              than served the row's full `gap-3` each: the boards drew them as
+              siblings, not as two lone accessories a field-width apart (mobile
+              polish #2). Each cell keeps its own 44pt touch floor on a coarse
+              pointer; the tight gap only pulls the GLYPHS together. */}
+          <div className="flex flex-none items-center [@media(pointer:coarse)]:-space-x-1.5">
           <button
             type="button"
             data-testid="chat-composer-at"
@@ -233,6 +240,7 @@ export function ChatComposer({
               <ClockIcon />
             </button>
           )}
+          </div>
           </>
         }
         field={{
