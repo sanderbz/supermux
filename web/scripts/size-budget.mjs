@@ -287,7 +287,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // header measure 241.65 total. The ENTRY (hero-path) chunk actually DROPPED to
 // 147.13 / 160 (92%) because the picker sheet is now lazy — the growth is all
 // in on-demand chunks, which is exactly where new surface belongs. ceil(measured).
-const BUDGET_APP_JS = 242 * KB
+// 243 as of WS4 (grok-mode identity marks): measured 242.06 against 241.65, a
+// +0.41 KB wave, all of it `lib/grok-agent-hue.ts` — the per-agent hue write WS1
+// SHIPPED AS A STUB and its own comment deferred to WS4 ("that runtime write is
+// WS4/WS5"). It is the one variable write that re-skins the ~6 non-semantic Grok
+// surfaces on a session switch (side-pane wash, mention chips, composer ring,
+// thinking coat), and it MUST live on the shell root in layout.tsx — the entry
+// chunk — because that is the element that owns `data-grok` and knows the focused
+// slug; it cannot be lazy without lazy-loading the shell. The whole of the wave
+// is the derivation (bodyColor/accentInk over the immutable slug) + the empty-on-
+// unfocused guard that keeps the identity/status firewall honest. The mark
+// EXPRESSION half (needs-you halo, working-only breathe, idle dim) is pure CSS,
+// so it lands in the CSS budget (23.35/30, 78%), not here. The ENTRY (hero-path)
+// gate is UNMOVED at 147.34 / 160 (92%): none of this touches the hero path — the
+// hue write is inert until a focus route mounts under grok. ceil(measured).
+const BUDGET_APP_JS = 243 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

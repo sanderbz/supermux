@@ -155,8 +155,16 @@
      produce byte-identical page pixels. */
   --sm-agent-tint: var(--sm-accent);
   --sm-agent-accent: var(--sm-accent);
+  --sm-agent-bubble: var(--sm-accent);
   --sm-agent-ink: #fff;
   --sm-agent-coat: var(--sm-accent);
+
+  /* needs-you halo (WS4 / overview.md §4) — a soft red ring around a mark whose
+     session is WAITING on you, not a badge. A low-alpha red, distinct from the
+     tone family: the halo is an ATTENTION cue on the identity mark, and the mark
+     is a non-semantic surface, so it carries the halo without the firewall
+     colliding (status words still own `--sm-tone-danger`). Lifted on dark. */
+  --sm-halo: rgba(197, 56, 79, 0.22);
 
   font-family: var(--sm-font-sans);
   color: var(--sm-text-primary);
@@ -208,6 +216,9 @@
   --sm-raised-fill: color-mix(in srgb, var(--sm-bg-elevated) 68%, transparent);
   --sm-title-fill: color-mix(in srgb, var(--sm-bg-elevated) 76%, transparent);
   --sm-glass-title: blur(28px) saturate(150%);
+
+  /* needs-you halo, lifted for the dark ground (overview.md §4). */
+  --sm-halo: rgba(255, 128, 150, 0.24);
 }
 
 /* ══ WS2 — SHELL & NAV CHROME (foundation for every route) ════════════════════
@@ -622,5 +633,96 @@
   }
   [data-grok] .grok-typing i:nth-child(3) {
     opacity: 0.7;
+  }
+}
+
+/* ══ WS4 — IDENTITY MARK, GROK EXPRESSION ═════════════════════════════════════
+   The character engine (`brand/marks/*`) already ships the substance the spec
+   demands and this workstream does NOT re-draw it: `hash(slug) → shape × hue ×
+   eye` (deterministic, rename-stable — `character.ts` keys every channel off the
+   immutable slug), FLAT body fill with WHITE eyes (`bodyColor` is a single flat
+   read, `EYE_INK = #fff`), the six expressions mapped from `last_status`
+   (`mark-status.ts`: starting/active→working, idle→idle, waiting→waiting,
+   stopped→stopped, error→failed), and the breathe/blink life (`ticker.ts` +
+   globals.css `sm-breathe`). All of that is correct in BOTH skins and must stay
+   byte-identical off grok — so everything below is scoped under `[data-grok]`
+   and does three things the default app deliberately does NOT:
+
+     1. NEEDS-YOU HALO. A session WAITING on you gets a soft red ring on its mark
+        (overview.md §4) — an attention cue, not a badge. Rendered as a stacked
+        `drop-shadow` on the SVG so it follows the actual silhouette (the 9 shapes
+        are arbitrary paths; a `box-shadow` ring would draw the mark's square box,
+        not its outline). The halo colour is `--sm-halo` (low-alpha red, lifted on
+        dark) — kept OFF the tone family on purpose: the mark is a non-semantic
+        surface, so it may carry attention without the status/identity firewall
+        colliding (the state WORD still owns `--sm-tone-danger`).
+
+     2. BREATHE ONLY WHILE WORKING. The default app breathes on every live state
+        (idle/working/waiting — `isLive`). Grok's roster is calmer: the mark
+        breathes only while it is actually working/thinking (overview.md §4 table;
+        there is no separate "thinking" status, so `working` is the live face).
+        Idle sits still and slightly dimmed (`saturate .72 / opacity .9` — the
+        spec's idle read); waiting does not breathe (it wears the halo instead).
+        The blink/saccade (JS, `ticker.ts`) is untouched — a still mark still has
+        life in its eyes, it just does not rise and fall unless it is working.
+
+     3. THE 0.6s IDENTITY SETTLE for the hue write. Switching the focused session
+        rewrites `--sm-agent-*` on the shell root (lib/grok-agent-hue.ts); the
+        side-pane wash that reads `--sm-agent-tint` cross-fades over .6s so a
+        switch FEELS like a place changing, not a list re-rendering (mechanics.md
+        §2.1). The mascot's own `fill` recolour is the WS3 `.grok-identity`
+        transition, applied by whichever persistent element (the header pill) is
+        re-seeded — a per-seed `<SessionMark>` remounts and so needs none here.
+
+   SPECIFICITY. globals.css `@import`s this file at its head, so its own
+   `.sm-mark …` rules sit LATER in source order; every rule here therefore leads
+   with `[data-grok]` (one extra attribute) to out-specify the base at equal
+   structure and win the override — verified against `.sm-mark[data-live='1'] svg`
+   (0,2,1) < `[data-grok] .sm-mark[data-live='1'] svg` (0,3,1). */
+
+/* Kill the base breathe for every live state under grok… */
+[data-grok] .sm-mark[data-live='1'] svg {
+  animation: none;
+}
+/* …then restore it for WORKING only, at Grok's 3.4s cadence (overview.md §4).
+   Reuses the existing `sm-breathe` keyframe — the refined translate/rotate
+   breathe the brand tuned to "read as breathing, not a wobbling icon", never a
+   scale pop. Higher specificity (0,4,1) than the kill above (0,3,1). */
+[data-grok] .sm-mark[data-state='working'][data-live='1'] svg {
+  animation: sm-breathe 3.4s ease-in-out infinite;
+}
+
+/* NEEDS-YOU HALO — the soft red ring, following the silhouette. Stacked so the
+   ring reads at roster (18–26px) and detail (42–48px) sizes without a blur bloom
+   swallowing the mark. `overflow:visible` on the svg (globals.css) lets it spill
+   past the box. */
+[data-grok] .sm-mark[data-state='waiting'] svg {
+  filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 4px var(--sm-halo));
+}
+
+/* IDLE — dimmed and desaturated, sitting quietly (overview.md §4 idle read). */
+[data-grok] .sm-mark[data-state='idle'] svg {
+  filter: saturate(0.72);
+  opacity: 0.9;
+}
+
+/* THE 0.6s SETTLE — the side-pane wash (the one surface that reads the focused
+   session's `--sm-agent-tint`) cross-fades when the hue write changes on a
+   session switch. Additive: WS2 owns the pane's `background`; this only adds the
+   transition, so it stays a clean revert. */
+[data-grok] [data-shell-pane] {
+  transition: background-color 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Reduced-motion twin (colocated): the working breathe stops, but the mark stays
+   exactly where it is (the eye geometry alone carries "working", so no
+   information is lost) and the settle collapses to instant. The halo and the
+   idle dim are static filters — nothing to disable. */
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] .sm-mark[data-state='working'][data-live='1'] svg {
+    animation: none;
+  }
+  [data-grok] [data-shell-pane] {
+    transition: none;
   }
 }

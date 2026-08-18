@@ -12,6 +12,7 @@ import {
 import { cn } from '@/lib/utils'
 import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
 import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { agentHueVarsFor } from '@/lib/grok-agent-hue'
 import { useUI } from '@/stores/ui-store'
 import {
   ShellOverlayProvider,
@@ -23,6 +24,7 @@ import {
 } from '@/components/view-transitions/morph'
 import { Logo } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { useTheme } from '@/components/theme-provider'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
 import { CommandPalette } from '@/components/command-palette/command-palette'
@@ -338,12 +340,36 @@ export function Layout() {
   // tier sit five layers under the surface that owns the roster, and the header
   // rollup needs the same answer the rows got.
   const attention = useAttentionProvider()
+  // WS4 — the per-agent hue write. The focused session's identity colour is
+  // written as the five `--sm-agent-*` custom properties on the shell root, so
+  // one property write re-skins the ~6 non-semantic surfaces that read the
+  // family (side-pane wash, mention chips, composer ring, thinking coat). Derived
+  // from the IMMUTABLE slug (`/focus/:name` is the slug) + the session's deduped
+  // roster pin (so the shell wears the same hue slot the on-screen mark does),
+  // theme-resolved here where `useTheme` is in scope. Only under grok, only on a
+  // focus route: off grok, or on the overview (no single focused session), the
+  // object is empty and the shell inherits grok-mode.css's neutral defaults —
+  // which keeps the firewall honest (two focused sessions differ ONLY on these
+  // accent surfaces; the neutral page/rail stays byte-identical).
+  const { resolvedTheme } = useTheme()
+  const focusName = isFocus
+    ? decodeURIComponent(pathname.slice('/focus/'.length).split('/')[0] || '')
+    : undefined
+  const agentHueStyle =
+    grok && focusName
+      ? agentHueVarsFor({ name: focusName }, resolvedTheme === 'dark', rosterMarks.pinFor(focusName))
+      : undefined
   return (
     <RosterMarksProvider value={rosterMarks}>
     <AttentionProvider value={attention}>
     <ShellOverlayProvider value={overlayHostValue}>
     <div
       className="flex h-full w-full"
+      // WS4 — the focused session's `--sm-agent-*` hue (empty off grok / off a
+      // focus route, so no inline properties are set and the shell inherits the
+      // neutral defaults). Custom-property values only — never a background or a
+      // status colour — so the firewall holds.
+      style={agentHueStyle}
       data-standalone={standalone ? '' : undefined}
       // B1 T3 — the painted substrate. One attribute gates the whole layer
       // (globals.css scopes every substrate rule under `[data-substrate]`), so
