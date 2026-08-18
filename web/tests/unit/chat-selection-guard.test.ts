@@ -22,7 +22,11 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 
-import { hasTextSelection, selectionInside } from '../../src/components/chat/selection'
+import {
+  hasTextSelection,
+  selectionInChatTrack,
+  selectionInside,
+} from '../../src/components/chat/selection'
 
 type FakeRange = { collapsed: boolean; commonAncestorContainer: object }
 
@@ -46,8 +50,18 @@ function track(...owned: object[]): Element {
   return { contains: (n: object) => owned.includes(n) } as unknown as Element
 }
 
+/** Install a `document.querySelectorAll('[data-chat-track]')` returning these
+ *  fake tracks — the one seam `selectionInChatTrack` touches beyond the range. */
+function withChatTracks(...tracks: Element[]): void {
+  ;(globalThis as unknown as { document: unknown }).document = {
+    querySelectorAll: (sel: string) =>
+      sel === '[data-chat-track]' ? (tracks as unknown as NodeListOf<Element>) : [],
+  }
+}
+
 afterEach(() => {
   delete (globalThis as unknown as { window?: unknown }).window
+  delete (globalThis as unknown as { document?: unknown }).document
 })
 
 describe('the selection guard', () => {
@@ -94,5 +108,52 @@ describe('the selection guard', () => {
     delete (globalThis as unknown as { window?: unknown }).window
     expect(hasTextSelection()).toBe(false)
     expect(selectionInside(track())).toBe(false)
+  })
+})
+
+describe('the temporal guard — selectionInChatTrack (the desktop half)', () => {
+  test('a selection inside a chat track freezes the elapsed clock', () => {
+    // The whole point: a held selection in the transcript stands the per-second
+    // tickers down, so the live band's clock stops swapping the node at the end
+    // of the selection (which is what collapses it on WebKit).
+    const textNode = {}
+    withSelection([{ collapsed: false, commonAncestorContainer: textNode }])
+    withChatTracks(track(textNode))
+    expect(selectionInChatTrack()).toBe(true)
+  })
+
+  test('no selection at all — the clock keeps ticking', () => {
+    withSelection(null)
+    withChatTracks(track())
+    expect(selectionInChatTrack()).toBe(false)
+  })
+
+  test('a caret (collapsed) is not a selection — the clock keeps ticking', () => {
+    const caret = {}
+    withSelection([{ collapsed: true, commonAncestorContainer: caret }])
+    withChatTracks(track(caret))
+    expect(selectionInChatTrack()).toBe(false)
+  })
+
+  test('a selection in the COMPOSER, not the track, does not freeze the clock', () => {
+    // Scoped to `[data-chat-track]` on purpose: selecting a draft, or a roster
+    // row, is not a reason to stop the turn clock.
+    const draftNode = {}
+    withSelection([{ collapsed: false, commonAncestorContainer: draftNode }])
+    withChatTracks(track(/* the track owns nothing the selection is in */))
+    expect(selectionInChatTrack()).toBe(false)
+  })
+
+  test('a desktop split — a selection in EITHER track freezes it', () => {
+    const inSecond = {}
+    withSelection([{ collapsed: false, commonAncestorContainer: inSecond }])
+    withChatTracks(track(/* first pane */), track(inSecond /* second pane */))
+    expect(selectionInChatTrack()).toBe(true)
+  })
+
+  test('no document (SSR) — it answers false, it does not throw', () => {
+    withSelection([{ collapsed: false, commonAncestorContainer: {} }])
+    delete (globalThis as unknown as { document?: unknown }).document
+    expect(selectionInChatTrack()).toBe(false)
   })
 })

@@ -57,3 +57,41 @@ export function selectionInside(root: Element | null | undefined): boolean {
   if (!root) return false
   return liveRanges().some((range) => root.contains(range.commonAncestorContainer))
 }
+
+/**
+ * Is the reader holding a selection inside ANY chat transcript track?
+ *
+ * The TEMPORAL half of the guard, and the desktop half. `selectionInside` stops
+ * the two SCROLL writers from ending a selection — the mechanism the iOS fix
+ * (150df7d) documented. But WebKit (iOS AND desktop Safari — same engine) loses
+ * a selection a SECOND way the scroll guard never touched: replacing the DOM
+ * node the selection is anchored in. The chat's live band re-renders once a
+ * second forever while a turn runs — the working row's elapsed clock ticks
+ * `5s → 6s`, the overlay receipts' running line reprints its clock — and each
+ * tick swaps the text node at the end of a selection that reaches into that
+ * band. Chromium re-clamps the range to the surviving text; WebKit collapses it
+ * outright, so the reader's highlight vanished "within a second" and copy-paste
+ * was impossible. (Confirmed in the offline Chromium rig as a truncation, which
+ * is the same node swap the owner's Safari turns into a full collapse.)
+ *
+ * So the per-second cosmetic tickers ask this before they re-render: while the
+ * reader holds a selection anywhere in a track, the elapsed clock STANDS DOWN —
+ * exactly the trade the scroll pin already makes (keep the selection, at the
+ * cost of a cosmetic clock frozen for the few seconds a copy takes). It resumes,
+ * reading the true elapsed off the server clock, the moment the selection clears.
+ *
+ * Scoped to `[data-chat-track]` (chat-surface.tsx's own attribute), NOT
+ * document-wide: a selection in the composer or the roster is not a reason to
+ * freeze the turn clock, and a desktop split with two tracks freezes only from a
+ * selection that is actually in a conversation.
+ */
+export function selectionInChatTrack(): boolean {
+  if (typeof document === 'undefined') return false
+  const ranges = liveRanges()
+  if (ranges.length === 0) return false
+  const tracks = document.querySelectorAll('[data-chat-track]')
+  for (const track of tracks) {
+    if (ranges.some((range) => track.contains(range.commonAncestorContainer))) return true
+  }
+  return false
+}
