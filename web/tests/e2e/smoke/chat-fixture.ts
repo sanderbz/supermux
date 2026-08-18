@@ -97,7 +97,7 @@ export const CHAT_BACKEND_ENV = {
 }
 
 /** zustand persist payload for the UI store with the chat renderer ON. */
-export const CHAT_FLAG_ON = JSON.stringify({ state: { chatRenderer: true }, version: 0 })
+export const CHAT_FLAG_ON = JSON.stringify({ state: { botMode: true }, version: 1 })
 
 /** `~/.claude/projects/<encoded cwd>/` — `resumable::project_dir_for`'s encoding
  *  (`/` and `.` both become `-`), against the CANONICAL path, because that is

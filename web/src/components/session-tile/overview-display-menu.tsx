@@ -69,7 +69,7 @@ export function OverviewDisplayMenu({
   // The whole block is hidden while the experiment is off, so the app never
   // shows a control that decides nothing (`chatRenderer` is the master gate;
   // an ineligible session ignores this value entirely — `resolveRenderer`).
-  const chatExperiment = useUI((s) => s.chatRenderer)
+  const chatExperiment = useUI((s) => s.botMode)
   const defaultRenderer = useUI((s) => s.defaultRenderer)
   const setDefaultRenderer = useUI((s) => s.setDefaultRenderer)
   // Mobile size only has two meaningful tiers (the grid is single-column, so

@@ -23,16 +23,21 @@ export function chatEligible(
   return s.provider === 'claude' && s.host_id == null && !isTeamLead
 }
 
-/** The full decision: settings toggle AND kill-switch AND eligibility.
- *  `killSwitch` is the raw localStorage value; exactly `'0'` forces OFF. */
+/** The full decision: the unified `botMode` toggle AND the master kill AND the
+ *  legacy renderer-scoped kill AND eligibility. `killMaster` is
+ *  `supermux:bot-mode` (kills BOTH halves of Bot mode); `killChat` is the
+ *  legacy `supermux:chat-renderer` (kills ONLY the renderer — the skin stays).
+ *  Each is the raw localStorage value; exactly `'0'` forces OFF. */
 export function chatRendererOn(
-  settingOn: boolean,
-  killSwitch: string | null,
+  botOn: boolean,
+  killMaster: string | null,
+  killChat: string | null,
   s: ChatEligibleSession | null,
   isTeamLead: boolean,
 ): boolean {
-  if (!settingOn) return false
-  if (killSwitch === '0') return false
+  if (!botOn) return false
+  if (killMaster === '0') return false // master Bot-mode kill
+  if (killChat === '0') return false // legacy renderer-only kill (skin stays)
   if (!s) return false
   return chatEligible(s, isTeamLead)
 }

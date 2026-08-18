@@ -82,23 +82,19 @@ interface UIStore {
    *  per-surface localStorage flag folds into this). Default `false`: stopped
    *  sessions are shown until the user opts to hide them. */
   hideStopped: boolean
-  /** Fase A1 chat renderer (Track A). When ON, eligible LOCAL Claude sessions
-   *  default to the read-only chat renderer at the desktop focus seam, with
-   *  the terminal one tap away. Kill-switch:
-   *  `localStorage['supermux:chat-renderer'] = '0'` force-disables regardless
-   *  of this toggle (checked in components/chat/flag.ts). Default OFF — the
-   *  default flip ships in fase A7, never here. */
-  chatRenderer: boolean
-  setChatRenderer: (v: boolean) => void
-  /** Grok mode (WS1) — the app-wide SKIN flag. When ON, the shell root carries
-   *  `data-grok` and the scoped token layer (styles/grok-mode.css) restyles the
-   *  whole app in Grok's visual language. Kill-switch:
-   *  `localStorage['supermux:grok-mode'] = '0'` force-disables regardless of
-   *  this toggle (checked in lib/grok-mode-flag.ts). Read ONCE at mount by the
-   *  layout — a skin flip is a reload-level change, not a live re-render.
-   *  Default OFF — the default flip ships in a later, separate PR, never here. */
-  grokMode: boolean
-  setGrokMode: (v: boolean) => void
+  /** Bot mode — the ONE unified flag (merges the former `chatRenderer` +
+   *  `grokMode`). When ON: (1) the shell root carries `data-grok` and the
+   *  scoped token layer (styles/grok-mode.css) restyles the whole app in Grok's
+   *  visual language, and (2) eligible LOCAL Claude sessions default to the
+   *  read-only chat renderer at the focus seam (terminal one tap away).
+   *  Kill-switches (checked in lib/bot-mode-flag.ts + components/chat/flag.ts):
+   *  the master `localStorage['supermux:bot-mode'] = '0'` force-disables BOTH;
+   *  the legacy scoped kills still work — `supermux:grok-mode='0'` kills only
+   *  the skin, `supermux:chat-renderer='0'` kills only the renderer. The skin
+   *  is read ONCE at mount (a skin flip is a reload-level change, not a live
+   *  re-render). Default OFF — the default flip ships in a later, separate PR. */
+  botMode: boolean
+  setBotMode: (v: boolean) => void
   /** Fase A5 — the GLOBAL default renderer for eligible sessions at `auto`.
    *  Only ever `chat` or `terminal`; the buck stops here (`auto` is the
    *  per-session fixpoint, not a default). Takes effect only once the
@@ -138,10 +134,8 @@ export const useUI = create<UIStore>()(
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
       hideStopped: false,
-      chatRenderer: false,
-      setChatRenderer: (chatRenderer) => set({ chatRenderer }),
-      grokMode: false,
-      setGrokMode: (grokMode) => set({ grokMode }),
+      botMode: false,
+      setBotMode: (botMode) => set({ botMode }),
       defaultRenderer: 'chat',
       rendererOverrides: {},
       setDefaultRenderer: (defaultRenderer) => set({ defaultRenderer }),
@@ -178,6 +172,21 @@ export const useUI = create<UIStore>()(
     }),
     {
       name: 'supermux-ui',
+      // Persist schema version. v1 folds the two former experiment flags
+      // (`chatRenderer` + `grokMode`) into ONE `botMode`. `migrate` runs BEFORE
+      // `onRehydrateStorage`, so the rehydrate hook below sees the migrated
+      // shape unaffected.
+      version: 1,
+      migrate: (persisted, from) => {
+        const p = (persisted ?? {}) as Record<string, unknown>
+        if (from < 1) {
+          // Owner-approved OR: bot mode is on if EITHER old flag was on.
+          p.botMode = !!(p.grokMode || p.chatRenderer)
+          delete p.grokMode
+          delete p.chatRenderer
+        }
+        return p as unknown as UIStore
+      },
       // One-time migration: the focus strip used to keep its OWN hide-stopped
       // flag in localStorage; it's now this shared value. Carry a pre-existing
       // preference over exactly once — at boot, before any surface can toggle it

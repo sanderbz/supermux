@@ -38,7 +38,7 @@ const hasClaudeCli = (() => {
 })()
 
 // zustand persist payload for the UI store with the A1 flag ON.
-const FLAG_ON = JSON.stringify({ state: { chatRenderer: true }, version: 0 })
+const FLAG_ON = JSON.stringify({ state: { botMode: true }, version: 1 })
 
 test.describe('chat renderer switch (fase A1)', () => {
   let backend: Backend
@@ -315,12 +315,12 @@ test.describe('chat renderer switch (fase A1)', () => {
       window.localStorage.setItem('supermux-ui', flag)
     }, JSON.stringify({
       state: {
-        chatRenderer: true,
+        botMode: true,
         // A pin left behind by a session that USED to be eligible, or written
         // by a peer device. It must not conjure a chat surface on a shell.
         rendererOverrides: { 'a5-stale': 'chat' },
       },
-      version: 0,
+      version: 1,
     }))
 
     const name = 'a5-stale'

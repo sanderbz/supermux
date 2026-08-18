@@ -92,7 +92,7 @@ const NO_AGENT = missingAgentCredentials()
 function enableChatRenderer() {
   localStorage.setItem(
     'supermux-ui',
-    JSON.stringify({ state: { chatRenderer: true }, version: 0 }),
+    JSON.stringify({ state: { botMode: true }, version: 1 }),
   )
 }
 

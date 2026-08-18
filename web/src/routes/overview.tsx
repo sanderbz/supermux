@@ -27,7 +27,8 @@ import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { useUI } from '@/stores/ui-store'
-import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
@@ -125,8 +126,9 @@ export function Overview() {
   // radical inbox roster INSTEAD of today's team-card/terminal-tile board. Off
   // grok this is `false` and the whole default overview below is untouched.
   const [grok] = React.useState(() =>
-    grokModeOn(
-      useUI.getState().grokMode,
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage !== 'undefined' ? localStorage.getItem(BOT_KILL_SWITCH_KEY) : null,
       typeof localStorage !== 'undefined' ? localStorage.getItem(GROK_KILL_SWITCH_KEY) : null,
     ),
   )

@@ -90,7 +90,8 @@ import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 import { useTheme } from '@/components/theme-provider'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useUI } from '@/stores/ui-store'
-import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 //
@@ -215,8 +216,11 @@ export function CommandPalette() {
   // below, so the picker's glass rules apply to the portalled box. Absent when
   // off, so the default palette's DOM is byte-identical.
   const [grok] = React.useState(() =>
-    grokModeOn(
-      useUI.getState().grokMode,
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(BOT_KILL_SWITCH_KEY),
       typeof localStorage === 'undefined'
         ? null
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),

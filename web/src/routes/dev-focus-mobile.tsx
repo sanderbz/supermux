@@ -70,8 +70,8 @@ export default function DevFocusMobile() {
   // reviewer who wants it off again drops the param and flips the Settings
   // toggle, which is the same switch).
   const [params] = useSearchParams()
-  if (params.get('chat') === '1' && !useUI.getState().chatRenderer) {
-    useUI.setState({ chatRenderer: true })
+  if (params.get('chat') === '1' && !useUI.getState().botMode) {
+    useUI.setState({ botMode: true })
   }
   return (
     <div className="h-dvh w-full">

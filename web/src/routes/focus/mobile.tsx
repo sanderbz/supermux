@@ -237,7 +237,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
     () => teams.some((t) => t.lead_supermux_session === name),
     [teams, name],
   )
-  const chatSetting = useUI((s) => s.chatRenderer)
+  const chatSetting = useUI((s) => s.botMode)
   const chatOn = useChatRenderer(row, isTeamLead)
   // The ONLY state is the user's manual tap, keyed by session name so it resets
   // on navigation and cannot be stomped by a late flag/eligibility resolve.
