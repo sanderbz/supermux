@@ -40,6 +40,10 @@ export function EmptyStatePlaceholder({
   const reduce = useReducedMotion()
   return (
     <motion.div
+      // WS9 (Grok mode) — inert hook. In the default app nothing targets it, so
+      // the empty state is byte-identical; under `[data-grok]` grok-mode.css
+      // repaints the icon plate + copy into Grok's calm hairline idiom.
+      data-empty-state=""
       initial={reduce ? false : { opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={reduce ? motionOff : springs.cardExpand}
@@ -48,7 +52,10 @@ export function EmptyStatePlaceholder({
         className,
       )}
     >
-      <div className="flex size-16 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-7">
+      <div
+        data-empty-icon=""
+        className="flex size-16 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-7"
+      >
         {icon}
       </div>
       <p className="max-w-xs text-sm text-muted-foreground">{message}</p>
