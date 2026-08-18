@@ -40,7 +40,7 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewSessionAction } from '@/stores/new-session-store'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
-import { SessionMark } from '@/brand/marks'
+import { SessionMark, characterFromSeed, grokBodyColor } from '@/brand/marks'
 import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
 import { displayLabel, type ApiSession } from '@/lib/api'
@@ -319,7 +319,21 @@ export function TeamRow({
       aria-label={`${team.team_name} — ${team.members.length} bots`}
     >
       <span className="gr-top">
-        <span className="gr-pile gr-mark" aria-hidden>
+        <span
+          className="gr-pile gr-mark"
+          aria-hidden
+          // Hue-coherent crew halo (jury R1, TEAM-CLUSTER): a soft glow ring behind
+          // the 1-over-2 stack, tinted with the PRIMARY member's own grok pigment
+          // (p0, the mark painting on top). The `::before` in grok-mode.css reads
+          // this var; when the pile is empty there is nothing to glow behind.
+          style={
+            members.length > 0
+              ? ({
+                  '--gr-pile-glow': grokBodyColor(characterFromSeed(members[0].name).hue),
+                } as React.CSSProperties)
+              : undefined
+          }
+        >
           {members.map((m, i) => (
             <SessionMark
               key={m.agent_id}

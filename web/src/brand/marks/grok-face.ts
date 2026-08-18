@@ -31,7 +31,7 @@
  *
  * PURE + DOM-free. Deterministic. Reached only from the grok render branch.
  */
-import { type Character, oklchHex } from './character'
+import { type Character, type EyeGeometry, type MarkState, oklchHex } from './character'
 
 /**
  * The Grok pigment ramp — brighter, cleaner OKLCh `[L, C]` per hue angle than the
@@ -60,6 +60,34 @@ export function grokBodyColor(hue: number): string {
 const GROK_FACE = { rx: 114, ry: 114, rz: 114, n: 2 } as const
 
 /**
+ * Grok-only eye emphasis (jury R1, EXPRESSION). The base `eyesFor` deltas are
+ * tuned for the shipped 40/28px ladder and get subtle at the 18px roster size —
+ * `working` (a narrow concentrating slit) and `done` (a content squint) were the
+ * two the jury could only *mostly* separate at 18px. Under the skin ONLY, we push
+ * those two deltas a touch further from the idle baseline so they survive small:
+ *
+ *   working  narrower + a hair taller → an unmistakable vertical slit, not a
+ *            slightly-smaller idle eye.
+ *   done     flatter + wider → a decisive content curve, well clear of both idle
+ *            (tall) and stopped (the 11-unit lid line).
+ *
+ * Pure and total; applied on TOP of a resolved `EyeGeometry`, so it composes with
+ * the per-seed asymmetry and never reorders a draw. The base app never calls it,
+ * so the shipped faces stay byte-identical. Applied in BOTH the still frame
+ * (`session-mark`) and the animation loop (`ticker`) so a blinking working face
+ * and its first painted frame agree.
+ */
+export function grokEmphasis(e: EyeGeometry, state: MarkState): EyeGeometry {
+  if (state === 'working') {
+    return { ...e, wL: e.wL * 0.88, wR: e.wR * 0.88, hL: e.hL * 1.08, hR: e.hR * 1.08 }
+  }
+  if (state === 'done') {
+    return { ...e, wL: e.wL * 1.08, wR: e.wR * 1.08, hL: e.hL * 0.82, hR: e.hR * 0.82 }
+  }
+  return e
+}
+
+/**
  * Return a grok-flavoured copy of `ch`: same identity (seed · silhouette · hue),
  * cleaner pigment, and eyes calmed to read as a confident, forward-facing,
  * matched pair. The blob outline is unaffected — `grokSilhouettePath` keys only
@@ -76,9 +104,12 @@ export function grokTune(ch: Character): Character {
     gaze: Math.round(ch.gaze * 0.3),
     eyes: {
       ...ch.eyes,
-      // Calm the idle tilt toward Grok's near-vertical capsules.
-      angleL: ch.eyes.angleL * 0.5,
-      angleR: ch.eyes.angleR * 0.5,
+      // Calm the idle tilt toward Grok's near-vertical capsules. Tuned DOWN from
+      // ×0.5 to ×0.42 (jury R1, EYES): the slanted idle pills were reading a hair
+      // like literal quotation marks; a gentler lean keeps the life without the
+      // punctuation. Still non-zero, so idle is never a dead, ruler-straight pair.
+      angleL: ch.eyes.angleL * 0.42,
+      angleR: ch.eyes.angleR * 0.42,
     },
     // Halve the per-eye asymmetry: a matched pair with a little life.
     asym: {

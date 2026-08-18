@@ -31,7 +31,7 @@ import {
   type MarkState,
 } from './character'
 import { eyePath, grokSilhouettePath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
-import { grokTune } from './grok-face'
+import { grokEmphasis, grokTune } from './grok-face'
 import { grokSkinActive } from './grok-skin'
 import { registerMark } from './ticker'
 import { useOnScreen } from './use-on-screen'
@@ -141,7 +141,10 @@ export function SessionMark({
 
   const { body, eyeL, eyeR } = useMemo(() => {
     const q = poseQuat(face)
-    const e = eyesFor(face, state)
+    // Under the skin, `working`/`done` get a slightly wider delta so they survive
+    // at the 18px roster size (jury R1, EXPRESSION); off it, the resolved geometry
+    // is untouched and the base faces stay byte-identical.
+    const e = grokFace ? grokEmphasis(eyesFor(face, state), state) : eyesFor(face, state)
     return {
       // Under the Grok skin the body is an organic blob; off it, the shipped
       // projected silhouette, byte-for-byte. The eyes wrap onto the face solid
@@ -158,7 +161,7 @@ export function SessionMark({
     const left = leftEye.current
     const right = rightEye.current
     if (!live || !left || !right) return
-    const stop = registerMark({ ch: face, state, left, right })
+    const stop = registerMark({ ch: face, state, left, right, grok: grokFace })
     return () => {
       stop()
       // Leave the face on the still frame: React will not rewrite `d` (the prop

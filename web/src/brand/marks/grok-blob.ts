@@ -62,36 +62,56 @@ interface Arche {
   jit: number
 }
 
-// Handy phases. A `+sin(θ)` bias (k=1, ph=−π/2) bulges the BOTTOM and narrows
-// the top → egg / pear / gumdrop. A `−cos(2θ)` term (k=2, ph=π) bulges top AND
-// bottom while pinching the sides → a soft vertical leaf / lozenge.
+// Handy phase. A `+sin(θ)` bias (k=1, ph=−π/2) bulges the BOTTOM and narrows
+// the top → egg / drop / gumdrop. k=1 is the ONLY family-wide personality lever
+// (plus one gentle k=4 squircle): it just DISPLACES the centre of mass, so the
+// outline stays convex for any amplitude — it can never grow a point the way the
+// old k=2/k=4-rotated/k=5 lobes did (those pinched the sides or the diagonals
+// into the gem/leaf/spike the jury rated 2/10). Variety now lives in the ASPECT
+// ratio + per-seed jitter, exactly like blobatar's own generator.
 const BOTTOM = -Math.PI / 2
 
 /**
- * One archetype per silhouette slot, indexed exactly like `SILHOUETTES`
- * (sphere · egg · capsule · blob · cube · pebble · cloud · wedge · rhombus).
- * ALL SMOOTH, ALL ROUNDED — the three that used to be gems (cube · wedge ·
- * rhombus) are now a chunky rounded square, a cute gumdrop, and a soft leaf.
+ * One archetype per silhouette slot, indexed exactly like `SILHOUETTES`. The
+ * SLOT NAMES stay (they are the identity channel `assignRoster` deduplicates and
+ * the base app's frozen tokens), but every SHAPE is now an organic convex
+ * super-ellipse — the round mascot family the jury asked for. The comment on each
+ * row is the shape it actually draws:
+ *
+ *   sphere→circle · egg→egg · capsule→pill · blob→blob · cube→squircle ·
+ *   pebble→pebble · cloud→cloud · wedge→drop · rhombus→bean
+ *
+ * NO gem, NO diamond, NO triangle, NO 4-fold pointed symmetry anywhere. The three
+ * that used to be angular (cube · wedge · rhombus) are a soft rounded squircle, a
+ * plump teardrop, and a lopsided bean — all convex, all round at 18px. Every
+ * shape's silhouette is carried by its aspect ratio and a whisper of k=1 lean,
+ * never by a sharp harmonic; `n` (vertex count) stays coprime-ish with every `k`
+ * so nothing aliases into a polygon.
  */
 const ARCHES: Readonly<Record<SilhouetteName, Arche>> = {
-  // pure round pebble — the calm baseline.
-  sphere: { n: 10, rx: 116, ry: 116, h: [], jit: 0.05 },
-  // upright egg: taller than wide, bottom a touch rounder than the top.
-  egg: { n: 12, rx: 104, ry: 121, h: [{ k: 1, amp: 0.05, ph: BOTTOM }], jit: 0.05 },
-  // tall soft pill — the spline of a narrow tall ellipse.
+  // circle — the pure round pebble, the calm baseline.
+  sphere: { n: 12, rx: 116, ry: 116, h: [], jit: 0.05 },
+  // egg — upright, taller than wide, bottom a touch rounder than the top.
+  egg: { n: 12, rx: 106, ry: 121, h: [{ k: 1, amp: 0.06, ph: BOTTOM }], jit: 0.05 },
+  // pill — a tall soft capsule (narrow tall ellipse, splined round).
   capsule: { n: 12, rx: 95, ry: 126, h: [], jit: 0.045 },
-  // wide organic lump — the archetypal "blob", carried mostly by jitter.
-  blob: { n: 11, rx: 122, ry: 106, h: [{ k: 2, amp: 0.06, ph: 0.6 }], jit: 0.1 },
-  // chunky rounded square — a whisper of 4 soft corners, never a diamond.
-  cube: { n: 14, rx: 115, ry: 112, h: [{ k: 4, amp: 0.05, ph: Math.PI / 4 }], jit: 0.05 },
-  // wide-flat lopsided pebble.
+  // blob — a wide organic lump, personality carried mostly by jitter + gentle lean.
+  blob: { n: 11, rx: 122, ry: 107, h: [{ k: 1, amp: 0.05, ph: 0.7 }], jit: 0.11 },
+  // squircle — a plump rounded square: a whisper of 4 CARDINAL bulges (ph 0, not
+  // π/4), so the flats face up/down/left/right and it reads as a soft square, the
+  // exact opposite of the old ph=π/4 diamond.
+  cube: { n: 16, rx: 114, ry: 112, h: [{ k: 4, amp: 0.038, ph: 0 }], jit: 0.05 },
+  // pebble — wide, flat, lopsided.
   pebble: { n: 12, rx: 124, ry: 100, h: [{ k: 1, amp: 0.06, ph: 0.4 }], jit: 0.09 },
-  // gently bumpy cloud — five soft lobes, sampled so they never sharpen.
-  cloud: { n: 14, rx: 116, ry: 104, h: [{ k: 5, amp: 0.06, ph: 0.2 }], jit: 0.07 },
-  // cute gumdrop / pear — heavier bottom, softly narrowed top.
-  wedge: { n: 12, rx: 110, ry: 114, h: [{ k: 1, amp: 0.13, ph: BOTTOM }], jit: 0.05 },
-  // soft vertical leaf / lozenge — rounded points top & bottom, gentle waist.
-  rhombus: { n: 12, rx: 100, ry: 119, h: [{ k: 2, amp: 0.1, ph: Math.PI }], jit: 0.04 },
+  // cloud — a soft, generously-jittered wide blob (the old spiky 5-lobe cloud is
+  // gone; a cloud reads as a round pillowy lump here, not a scalloped edge).
+  cloud: { n: 13, rx: 118, ry: 106, h: [{ k: 1, amp: 0.05, ph: 2.1 }], jit: 0.1 },
+  // drop — a plump teardrop / gumdrop: heavier bottom, softly domed top. Convex,
+  // never the pointed triangle the old amp-0.13 wedge produced.
+  wedge: { n: 12, rx: 108, ry: 116, h: [{ k: 1, amp: 0.085, ph: BOTTOM }], jit: 0.05 },
+  // bean — a lopsided round pebble leaning on one diagonal. NO waist pinch, so it
+  // can never read as the vertical leaf / diamond the old k=2 rhombus did.
+  rhombus: { n: 12, rx: 114, ry: 108, h: [{ k: 1, amp: 0.07, ph: 0.9 }], jit: 0.06 },
 }
 
 const TAU = Math.PI * 2

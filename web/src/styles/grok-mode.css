@@ -1517,6 +1517,28 @@
   height: 42px;
   flex: none;
   position: relative;
+  isolation: isolate;
+}
+/* Hue-coherent crew halo (jury R1, TEAM-CLUSTER): a soft glow ring behind the
+   1-over-2 stack in the primary member's OWN grok pigment (`--gr-pile-glow`, set
+   inline in TeamRow). Sits UNDER the three marks (negative z within the pile's
+   own stacking context, which the marks — z 1-3 — clear), so a team reads as one
+   glowing crew object, not three loose faces. Purely decorative; the team name
+   beside it is the label. Falls back to transparent when the var is unset. */
+[data-grok] .grok-roster .gr-pile::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--gr-pile-glow, transparent) 46%, transparent) 0%,
+    color-mix(in srgb, var(--gr-pile-glow, transparent) 20%, transparent) 55%,
+    transparent 78%
+  );
+  filter: blur(3px);
+  pointer-events: none;
 }
 [data-grok] .grok-roster .gr-pile .sm-mark {
   position: absolute;
