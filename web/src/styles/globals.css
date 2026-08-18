@@ -1321,3 +1321,35 @@
   user-select: text;
   -webkit-touch-callout: default;
 }
+
+/* ── The phone composer's contenteditable host ──────────────────────────────
+   `plain-editable.tsx` — the field is a `contenteditable` on the phone so iOS
+   stops drawing its prev/next/Done form-assistant bar above the keyboard (that
+   strip is rendered for form controls only). Two things the tag gave us for
+   free have to be said here instead:
+
+     · the PLACEHOLDER. An editable host is never `:empty` — every engine parks
+       a `<br>` in it — so the component states emptiness itself with
+       `data-empty` and the text rides on `data-placeholder`. `user-select:none`
+       + `pointer-events:none` keep it out of the caret's way.
+     · the CARET LINE. A textarea has an implicit minimum line box; a div with
+       no content would collapse to zero height and the pill would lose its
+       centre, so the host carries the same line-height either way. */
+.sm-plain-editable {
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.sm-plain-editable[data-empty]::before {
+  content: attr(data-placeholder);
+  color: var(--sm-ink-2);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  display: block;
+  /* Zero-height so the placeholder never adds to the measured `scrollHeight`
+     the auto-grow reads — an empty composer must be exactly one line tall. */
+  height: 0;
+}

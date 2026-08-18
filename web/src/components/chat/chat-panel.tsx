@@ -63,6 +63,7 @@ import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
 import { selectionInside } from './selection'
+import { useTapToDismissKeyboard } from './use-tap-to-dismiss'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
@@ -348,6 +349,16 @@ export default function ChatPanel({
   // So: never write while the reader holds a selection in the track, and never
   // write a value the scroller is already at (a redundant write is still a
   // scroll gesture as far as WebKit is concerned, and it is free to skip).
+  // TAP THE CONVERSATION TO PUT THE KEYBOARD AWAY (the WhatsApp gesture).
+  //
+  // The phone composer is a contenteditable so iOS stops drawing its
+  // prev/next/Done accessory bar (`plain-editable.tsx`); Done was the only
+  // NATIVE dismiss, so the gesture has to come back app-side. Coarse pointers
+  // only — a click that stole the caret out of the desktop composer would fight
+  // `arm-composer-focus.ts`, which exists to put it back.
+  const coarse = useMediaQuery('(pointer: coarse)')
+  useTapToDismissKeyboard(scrollRef, coarse)
+
   React.useEffect(() => {
     const el = scrollRef.current
     if (!el || !pinnedRef.current) return

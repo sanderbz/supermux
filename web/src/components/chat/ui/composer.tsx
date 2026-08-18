@@ -21,11 +21,38 @@
  * data plane. The `<textarea>` is real so `:focus-within` is real — the focus
  * ring is part of the spec and has to be verifiable on the bench.
  */
-import type { ComponentPropsWithRef, ReactNode } from 'react'
+import type { ComponentPropsWithoutRef, ReactNode, Ref } from 'react'
+import type * as React from 'react'
 
 import { cn } from '../../../lib/utils'
 
+import type { ComposerField } from '../composer-draft'
+import { PlainEditable } from '../plain-editable'
+
 import { MicIcon, PlusIcon } from './icons'
+
+/**
+ * The field's props, as a contract over BOTH hosts.
+ *
+ * Desktop keeps the `<textarea>`; the phone is a `contenteditable`
+ * (`plain-editable.tsx`) because iOS draws its prev/next/Done form-assistant
+ * bar above the keyboard for form controls and for nothing else. The three
+ * handlers are therefore stated in terms of what the composer actually reads
+ * off them — `target.value`, `currentTarget.selectionStart`, the key — instead
+ * of in terms of a tag, so one `field={{…}}` object drives either host and
+ * `use-composer.ts` never learns which one it got.
+ */
+export type ComposerFieldProps = Omit<
+  ComponentPropsWithoutRef<'textarea'>,
+  'className' | 'placeholder' | 'onChange' | 'onKeyDown' | 'onSelect'
+> & {
+  ref?: Ref<ComposerField | null>
+  onChange?: (e: { target: ComposerField }) => void
+  onKeyDown?: (e: React.KeyboardEvent<Element>) => void
+  onSelect?: (e: { currentTarget: ComposerField }) => void
+  /** `data-*` hooks the renderer's own tests reach for. */
+  [key: `data-${string}`]: string | undefined
+}
 
 export interface ComposerProps {
   /** `Message Release Train` — the session's display name is part of the copy. */
@@ -56,12 +83,14 @@ export interface ComposerProps {
    * is to make the focus ring real. `className` is not accepted; the pill's
    * typography is B0's, not the caller's.
    */
-  field?: Omit<ComponentPropsWithRef<'textarea'>, 'className' | 'placeholder'> & {
-    /** `data-*` hooks the renderer's own tests reach for. */
-    [key: `data-${string}`]: string | undefined
-  }
+  field?: ComposerFieldProps
   className?: string
 }
+
+/** The field's typography, shared by both hosts so the swap is invisible: the
+ *  pill's own metrics, and the 16px iOS no-zoom floor on the phone. */
+const FIELD =
+  'min-w-0 flex-1 bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none max-h-[120px]'
 
 export function Composer({
   placeholder,
@@ -73,6 +102,41 @@ export function Composer({
   className,
 }: ComposerProps) {
   const mobile = size === 'mobile'
+  // The ref is the ONE prop the two hosts cannot share verbatim: React types it
+  // by the tag it lands on. `HTMLTextAreaElement` satisfies `ComposerField`, so
+  // narrowing it for the textarea branch is sound — it really is a textarea.
+  const {
+    ref: fieldRef,
+    value,
+    onChange,
+    onKeyDown,
+    onSelect,
+    spellCheck,
+    enterKeyHint,
+    role,
+    // Pulled OUT of `rest` so it reaches BOTH hosts the same way. `field.readOnly`
+    // is how the live composer says "this session is blocked" (`composer.tsx`);
+    // the textarea used to pick it up off the `rest` spread, but the
+    // contenteditable maps editability to `contentEditable`, not to a `readonly`
+    // attribute — a `readonly` left on `rest` would be an inert no-op on the div
+    // and a blocked phone composer would stay typable. OR-ed with B0's own
+    // `readOnly` (the A3 read-only preview) so either source disables either host.
+    readOnly: fieldReadOnly,
+    ...rest
+  } = field ?? ({} as ComposerFieldProps)
+  const effectiveReadOnly = readOnly || fieldReadOnly
+  const fieldRest = { ...rest, value, onChange, onKeyDown, onSelect, spellCheck, enterKeyHint, role }
+  const fieldParts = {
+    ref: fieldRef,
+    value: typeof value === 'string' ? value : '',
+    onChange,
+    onKeyDown,
+    onSelect,
+    spellCheck: spellCheck ?? true,
+    enterKeyHint,
+    role,
+    rest: rest as Record<string, unknown>,
+  }
   return (
     <div
       className={cn(
@@ -90,21 +154,31 @@ export function Composer({
           <PlusIcon />
         </span>
       )}
-      <textarea
-        rows={1}
-        placeholder={placeholder}
-        aria-label={placeholder}
-        readOnly={readOnly}
-        {...field}
-        className={cn(
-          'min-w-0 flex-1 resize-none bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none',
-          'max-h-[120px] placeholder:text-ink-2',
-          // 16px is the iOS Safari floor: a focused field below it triggers an
-          // auto-zoom on tap. Keep the phone field at exactly 16 so the keyboard
-          // never zooms the viewport; desktop has no such rule and stays at 15.
-          mobile ? 'text-[16px]' : 'text-[15px]',
-        )}
-      />
+      {mobile ? (
+        // THE PHONE IS A CONTENTEDITABLE, and the reason is one sentence: iOS
+        // Safari draws the prev/next/Done form-assistant strip above the
+        // keyboard for `<input>`/`<textarea>` and for nothing else, so the only
+        // way to be rid of it — the way WhatsApp Web and Slack are rid of it —
+        // is for the message box not to be a form control. Everything the
+        // textarea did comes back through `plain-editable.tsx`; the typography
+        // below is byte-identical, 16px floor included.
+        <PlainEditable
+          {...fieldParts}
+          placeholder={placeholder}
+          readOnly={effectiveReadOnly}
+          className={cn(FIELD, 'overflow-y-auto whitespace-pre-wrap break-words', 'text-[16px]')}
+        />
+      ) : (
+        <textarea
+          rows={1}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          readOnly={effectiveReadOnly}
+          {...fieldRest}
+          ref={fieldRef as Ref<HTMLTextAreaElement>}
+          className={cn(FIELD, 'resize-none placeholder:text-ink-2', 'text-[15px]')}
+        />
+      )}
       {trailing ?? (
         <span
           aria-hidden

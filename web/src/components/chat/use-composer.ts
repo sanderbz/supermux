@@ -13,6 +13,7 @@ import type { SessionInput } from '../../lib/session-input'
 
 import {
   bindComposerField,
+  type ComposerField,
   getDraft,
   growTextarea,
   insertIntoComposer,
@@ -368,7 +369,7 @@ export interface ComposerPickerState {
 export interface ComposerHandle {
   draft: string
   setDraft: (value: string) => void
-  ref: React.RefObject<HTMLTextAreaElement | null>
+  ref: React.RefObject<ComposerField | null>
   /** A POST is in flight. The control disables so a slow pty cannot be
    *  double-fired; it is NOT a delivery claim (that is T4's watchdog). */
   sending: boolean
@@ -401,11 +402,11 @@ export interface ComposerHandle {
   handoffPending: { to: string; atMs: number } | null
   /** The `@`/`/` surface (fase A4 T9). */
   picker: ComposerPickerState
-  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  onChange: (e: { target: ComposerField }) => void
+  onKeyDown: (e: React.KeyboardEvent<Element>) => void
   /** Caret moves (arrow keys, clicks) — the trigger is read at the CARET, not
    *  at the end of the draft. */
-  onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) => void
+  onSelect: (e: { currentTarget: ComposerField }) => void
 }
 
 export function useComposer({
@@ -422,7 +423,7 @@ export function useComposer({
     React.useCallback(() => getDraft(name), [name]),
     React.useCallback(() => getDraft(name), [name]),
   )
-  const ref = React.useRef<HTMLTextAreaElement | null>(null)
+  const ref = React.useRef<ComposerField | null>(null)
   const [sending, setSending] = React.useState(false)
   const [notice, setNotice] = React.useState<ComposerNotice | null>(null)
   // The caret, mirrored into state because the TRIGGER is read at it. It starts
@@ -681,7 +682,7 @@ export function useComposer({
   }, [])
 
   const onChange = React.useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    (e: { target: ComposerField }) => {
       set(e.target.value)
       setCaret(e.target.selectionStart ?? e.target.value.length)
       growTextarea(e.target)
@@ -690,13 +691,13 @@ export function useComposer({
     [notice, set],
   )
 
-  const onSelect = React.useCallback((e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+  const onSelect = React.useCallback((e: { currentTarget: ComposerField }) => {
     const el = e.currentTarget
     setCaret(el.selectionStart ?? el.value.length)
   }, [])
 
   const onKeyDown = React.useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    (e: React.KeyboardEvent<Element>) => {
       const intent = composerKeyIntent(e, {
         draft: getDraft(name),
         active,

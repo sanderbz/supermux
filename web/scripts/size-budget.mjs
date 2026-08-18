@@ -315,7 +315,33 @@ const BUDGET_ENTRY_JS = 160 * KB
 // polish batch and B5's `/dev` benches made): weight on an on-demand chunk, the
 // hero path untouched. ceil(measured), the rule every fase since B3 has used; the
 // grok-mode.css half of WS5+WS6 lands in the CSS budget (25.94/30, 86%), not here.
-const BUDGET_APP_JS = 247 * KB
+// 249 as of iOS bug #2 (the phone composer stops being a form control): measured
+// 248.82 against 246.92 for the branch parent (150df7d, bug #1 + mobile bubbles)
+// — a +1.90 KB fase. iOS Safari draws its prev/next/Done accessory bar above the
+// keyboard for `<input>`/`<textarea>` and for nothing else, so the phone's
+// message box becomes a `contenteditable` host (`plain-editable.tsx`) and the
+// bar's only native dismiss — the Done button — comes back as a tap-the-
+// transcript gesture (`use-tap-to-dismiss.ts`). Where the bytes went:
+//   ~1.6 KB  `plain-editable.tsx` — NOT chrome: it is the DOM↔plain-text map
+//            that lets the rest of the composer keep reading `value`,
+//            `selectionStart/End` and `setSelectionRange` off the field exactly
+//            as it read them off the textarea (the `@`/`/` picker, the insert
+//            seam and auto-grow all depend on those four being exact), plus the
+//            plain-text paste guard and the trailing-scaffolding reader that
+//            keeps a contenteditable's bookkeeping `<br>`/`\n` out of the draft.
+//   ~0.3 KB  `use-tap-to-dismiss.ts` — the coarse-pointer tap gate (one finger,
+//            no drag, no selection, not on a control, something focused) and its
+//            pointerdown/up plumbing on the scroll track.
+// UNUSUALLY, ~1.44 KB of this lands on the ENTRY chunk (147.58 → 149.02 / 160,
+// 93%), not on a lazy one — because `ui/composer.tsx`'s `Composer` is statically
+// reachable from the entry chunk, so its mobile branch's import rides there too.
+// It is NOT code-split: the composer field is the always-present core input, and
+// hiding it behind `React.lazy`/Suspense to shave hero bytes would pop the field
+// in a frame late on every mobile chat mount — the ledger's lazy examples are
+// on-demand SHEETS and benches, never the field itself. The entry gate keeps
+// 11 KB of headroom, so the spend is honest here rather than hidden. ceil(measured);
+// the `.sm-plain-editable` CSS lands in the CSS budget (27.34/30, 91%), not here.
+const BUDGET_APP_JS = 249 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

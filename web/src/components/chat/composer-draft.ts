@@ -83,7 +83,25 @@ function persist(name: string, value: string): void {
  *  caret lives on the DOM node, so an insert that arrives while the composer is
  *  unmounted still lands — at the end of the draft, which is where it belongs
  *  when nobody is looking at a caret. */
-const fields = new Map<string, () => HTMLTextAreaElement | null>()
+/**
+ * WHAT A COMPOSER FIELD IS, as a contract rather than as a tag name.
+ *
+ * The desktop composer is a `<textarea>`; the PHONE composer is a
+ * `contenteditable` host (`plain-editable.tsx`), because iOS draws its
+ * prev/next/Done form-assistant bar above the keyboard for form controls and
+ * for nothing else. Both surfaces have to answer the same four questions —
+ * what is in you, where is the caret, put the caret here, and the ordinary
+ * `HTMLElement` verbs — so those four are the type, and `HTMLTextAreaElement`
+ * satisfies it structurally without a cast or a change at any call site.
+ */
+export interface ComposerField extends HTMLElement {
+  value: string
+  selectionStart: number | null
+  selectionEnd: number | null
+  setSelectionRange(start: number, end: number): void
+}
+
+const fields = new Map<string, () => ComposerField | null>()
 
 function emit(name: string): void {
   listeners.get(name)?.forEach((fn) => fn())
@@ -116,7 +134,7 @@ export function subscribeDraft(name: string, fn: () => void): () => void {
 /** Register the mounted field. Returns the unbind, for the effect's cleanup. */
 export function bindComposerField(
   name: string,
-  get: () => HTMLTextAreaElement | null,
+  get: () => ComposerField | null,
 ): () => void {
   fields.set(name, get)
   return () => {
@@ -124,7 +142,7 @@ export function bindComposerField(
   }
 }
 
-function fieldFor(name: string): HTMLTextAreaElement | null {
+function fieldFor(name: string): ComposerField | null {
   return fields.get(name)?.() ?? null
 }
 
@@ -236,7 +254,7 @@ export function composerSessionInput(
 /** Auto-grow: reset, then take the content height, capped. Reading
  *  `scrollHeight` after the reset is what makes the field SHRINK again when a
  *  line is deleted. */
-export function growTextarea(el: HTMLTextAreaElement | null): void {
+export function growTextarea(el: ComposerField | null): void {
   if (!el) return
   el.style.height = 'auto'
   el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`
