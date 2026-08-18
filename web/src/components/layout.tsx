@@ -394,6 +394,16 @@ export function Layout() {
       // <html>). Absent by default, so removing it is a byte-exact revert to
       // today's app with no rebuild — the same guarantee `data-substrate` gives.
       data-grok={grok ? '' : undefined}
+      // WS7 fix — the SHELL-ROOT hook. `data-grok` alone is NOT unique to this
+      // element: the ⌘K command palette is a Radix Dialog PORTALLED to <body>
+      // that stamps its OWN `data-grok` (command-palette.tsx) so the token/skin
+      // layer reaches it. The STRUCTURAL rules in grok-mode.css that assume "this
+      // element IS the full-window ground" (position:relative clobbering the
+      // portalled .fixed, and the `::before` glass substrate painting over the
+      // palette's list) must match the ground ONLY — so they are scoped
+      // `[data-grok][data-grok-root]`. This marks the one true ground. Byte-inert
+      // when grok is off (absent), so the default app is untouched.
+      data-grok-root={grok ? '' : undefined}
     >
       {/* THE SKIP LINK (fase A6 T7.6 — gap G10). Zero existed app-wide, so
           every route made a keyboard user tab through the whole side nav, the

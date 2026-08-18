@@ -259,8 +259,19 @@
 /* The window / ground. Opaque chrome desk behind the glass; an isolated stacking
    context so the substrate pseudo (z:0) sits cleanly behind the columns (z:1).
    NO backdrop-filter here (see above) — the shell root must remain a valid
-   viewport containing block for its fixed-position overlay children. */
-[data-grok] {
+   viewport containing block for its fixed-position overlay children.
+
+   SHELL-ROOT-SCOPED (`[data-grok][data-grok-root]`), NOT bare `[data-grok]`.
+   The ⌘K command palette (a Radix Dialog PORTALLED to <body>) also carries
+   `data-grok` so the token/skin layer reaches it — but it is NOT the ground.
+   A bare `[data-grok] { position: relative }` here clobbered Tailwind's `.fixed`
+   on that portalled box, dragging the palette to mid-viewport; and the `::before`
+   substrate below painted a full glass layer OVER the palette's own list. Both
+   rules assume "this element is the full-window ground", so both are pinned to
+   the one element that actually is — the shell root, which carries
+   `data-grok-root` (layout.tsx). Tokens (line 48) stay bare so the skin still
+   cascades to the dialog; only these structural/paint rules are ground-scoped. */
+[data-grok][data-grok-root] {
   position: relative;
   isolation: isolate;
   background: var(--sm-bg-chrome);
@@ -268,8 +279,12 @@
 
 /* The one substrate blur — a leaf pseudo, behind every column. `saturate(180%)`
    gives the tints life over supermux's flat ground (no wallpaper; tokens.md §13).
-   -webkit- BEFORE standard so LightningCSS emits BOTH (globals.css:578 lesson). */
-[data-grok]::before {
+   -webkit- BEFORE standard so LightningCSS emits BOTH (globals.css:578 lesson).
+   SHELL-ROOT-SCOPED (see the ground block above): the substrate glass is the
+   full-window ground layer, so it must paint ONLY on the shell root and never on
+   the portalled palette (whose own `data-grok` would otherwise get a glass sheet
+   over its list, dropping session-name contrast below AA). */
+[data-grok][data-grok-root]::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -282,14 +297,14 @@
 /* Reduce-Transparency / no-support fallback: opaque chrome, no blur — the same
    accessibility gate `.glass` uses (globals.css:591). */
 @media (prefers-reduced-transparency: reduce) {
-  [data-grok]::before {
+  [data-grok][data-grok-root]::before {
     background: var(--sm-bg-chrome);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  [data-grok]::before {
+  [data-grok][data-grok-root]::before {
     background: var(--sm-bg-chrome);
   }
 }
@@ -392,10 +407,10 @@
    Mobile stays full-bleed: the rail is `hidden` (`md:flex`), the tab bar owns the
    bottom, and a rounded/inset window on a phone would just waste the screen. */
 @media (min-width: 768px) {
-  [data-grok] {
+  [data-grok][data-grok-root] {
     padding: 10px;
   }
-  [data-grok]::before {
+  [data-grok][data-grok-root]::before {
     inset: 10px;
     border-radius: var(--sm-r-window);
     box-shadow: var(--sm-shadow-window);
@@ -442,11 +457,17 @@
 [data-grok] [data-shell-tabs] [data-nav-active] {
   background: var(--sm-accent);
 }
+/* AA fix (overview minor): the active label at `--sm-accent` measured 3.28:1
+   light. `--sm-accent-fill` is the darker link-fill blue (light #006ceb ≈ 4.58:1
+   on the tab-bar tint; dark #64b5ff is unchanged and already high-contrast on the
+   dark ground). Grok-scoped — the base tab bar is untouched. */
 [data-grok] [data-shell-tabs] a[aria-current='page'] {
-  color: var(--sm-accent);
+  color: var(--sm-accent-fill);
 }
+/* AA fix (overview minor): inactive at tertiary read 2.47:1; the sidebar's
+   secondary ramp clears 4.5:1 in both themes (≈4.67:1 light / high on dark). */
 [data-grok] [data-shell-tabs] a:not([aria-current='page']) {
-  color: var(--sm-sidebar-text-tertiary);
+  color: var(--sm-sidebar-text-secondary);
 }
 /* ══ GROK MODE — MOTION (WS3, the CSS half) ══════════════════════════════════
    The stylesheet counterpart of `lib/grok-motion.ts`. That file owns the
@@ -1010,7 +1031,11 @@
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--sm-text-tertiary);
+  /* AA fix (overview minor): the ACTIVE / DONE TODAY eyebrows were tertiary ink —
+     2.41:1 light / 3.31:1 dark, both fail 4.5. Secondary ink clears it in both
+     themes (4.63:1 on the rail ground / 6.74:1 dark). The `[data-need]` variant
+     below still overrides to the danger tone; the count (`.ct`) stays quiet. */
+  color: var(--sm-text-secondary);
 }
 [data-grok] .grok-roster .gr-grp[data-need] .lbl {
   color: var(--gr-need);
@@ -1434,7 +1459,11 @@
   place-items: center;
   text-align: center;
   padding: 40px;
-  color: var(--sm-text-tertiary);
+  /* AA fix (overview minor): tertiary read 2.69:1 light / 3.89:1 dark on the pane
+     ground, both fail 4.5. Secondary ink clears it in both themes (4.63:1 on the
+     light pane / 6.74:1 on dark) while staying visibly quieter than the primary
+     copy around it. Grok-scoped — the default app's empty pane is untouched. */
+  color: var(--sm-text-secondary);
   font-size: 13.5px;
 }
 
