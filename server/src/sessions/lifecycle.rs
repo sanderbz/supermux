@@ -571,6 +571,51 @@ fn should_escape_resume_picker(capture: &str, resume_intended: bool, already_esc
     !resume_intended && !already_escaped && at_resume_picker(capture)
 }
 
+/// What one poll tick of [`wait_for_agent_ready`] should DO for a given capture.
+/// Factored out pure so the ready-vs-boot-gate ordering — and, above all, the
+/// rule that a MODAL is never "ready" — is unit-tested without driving a real
+/// pty.
+#[derive(Debug, PartialEq, Eq)]
+enum ReadyTick {
+    /// The first-run trust dialog is up: Enter to accept, then keep polling.
+    AcceptTrust,
+    /// A stale resume picker on a FRESH start: escape it once, then keep polling.
+    EscapePicker,
+    /// The agent's OWN prompt is on screen with no boot modal over it — READY.
+    Ready,
+    /// Nothing actionable yet — keep polling. Critically this INCLUDES a resume
+    /// picker left open on an intended resume (`should_escape_resume_picker`
+    /// deliberately does not escape it): the `❯` cursor makes `agent_ui_visible`
+    /// true, but the agent is NOT at the wheel behind the modal, so it must not
+    /// count as ready. Reporting it ready is what let a stale `--resume` park at
+    /// the picker, be recorded as a successful heal, and have the next send typed
+    /// (with an Enter) straight into the picker and logged as delivered.
+    Wait,
+}
+
+/// Decide one tick. Order is trust → picker-escape → ready, matching the boot
+/// gates the launch has to clear; the ready arm keys on
+/// [`agent_at_the_wheel`] (NOT the bare `agent_ui_visible`) so neither the trust
+/// dialog nor the resume picker — both of which draw the `❯` glyph — is ever
+/// mistaken for a live prompt.
+fn classify_ready_tick(
+    capture: &str,
+    resume_intended: bool,
+    already_escaped: bool,
+    trusted: bool,
+) -> ReadyTick {
+    if !trusted && at_trust_dialog(capture) {
+        return ReadyTick::AcceptTrust;
+    }
+    if should_escape_resume_picker(capture, resume_intended, already_escaped) {
+        return ReadyTick::EscapePicker;
+    }
+    if agent_at_the_wheel(capture) {
+        return ReadyTick::Ready;
+    }
+    ReadyTick::Wait
+}
+
 /// Confirm the pane shell is live (and let it print a prompt).
 async fn settle_shell(rt: &dyn SessionRuntime) -> bool {
     for _ in 0..10 {
@@ -609,34 +654,34 @@ async fn wait_for_agent_ready(
             // Dismiss the first-run BOOT GATES *before* the ready-check. Both the
             // trust dialog and the resume picker draw a numbered menu whose cursor
             // is `❯` — the exact glyph `agent_ui_visible` keys on — so a ready-check
-            // first would declare the session "ready" with a modal still up. Two
-            // costs we actually hit in prod:
+            // keyed on that glyph alone would declare the session "ready" with a
+            // modal still up. Two costs we actually hit in prod:
             //   1. the steering deliver then sends the dispatched task INTO the modal
             //      (a bare Enter just picks "Yes, I trust" / a stale conversation),
             //      so the agent "never got the message"; and
             //   2. the status detector captures the `❯ 1.` menu, matches the WAITING
             //      bank, and flips the card to "needs your input" the instant it is
             //      claimed — before the agent has done anything.
-            // Order is trust → resume → ready, and we `continue` after handling a
-            // gate so we never fall through to the ready-check on the SAME capture
-            // that still shows the menu (the escape/accept has not rendered yet).
-            if !trusted && at_trust_dialog(&cap) {
-                // Default option is "1. Yes, I trust this folder"; a bare Enter
-                // accepts it (and persists the trust so it never reappears).
-                let _ = rt.send_key("Enter").await;
-                trusted = true;
-                continue;
-            }
-            if should_escape_resume_picker(&cap, resume_intended, escaped) {
-                let _ = rt.send_key("Escape").await;
-                let _ = rt.send_key("Escape").await;
-                let _ = rt.send_key("C-c").await;
-                let _ = db::sessions::clear_cc(&state.pool, name).await;
-                escaped = true;
-                continue;
-            }
-            if agent_ui_visible(&cap) {
-                return true;
+            // Order is trust → resume → ready (see [`classify_ready_tick`]); the
+            // ready arm keys on `agent_at_the_wheel`, so a picker left open on an
+            // INTENDED resume (which we deliberately do not escape) reads Wait, not
+            // Ready — a heal that only reaches the picker is a FAILED heal.
+            match classify_ready_tick(&cap, resume_intended, escaped, trusted) {
+                ReadyTick::AcceptTrust => {
+                    // Default option is "1. Yes, I trust this folder"; a bare Enter
+                    // accepts it (and persists the trust so it never reappears).
+                    let _ = rt.send_key("Enter").await;
+                    trusted = true;
+                }
+                ReadyTick::EscapePicker => {
+                    let _ = rt.send_key("Escape").await;
+                    let _ = rt.send_key("Escape").await;
+                    let _ = rt.send_key("C-c").await;
+                    let _ = db::sessions::clear_cc(&state.pool, name).await;
+                    escaped = true;
+                }
+                ReadyTick::Ready => return true,
+                ReadyTick::Wait => {}
             }
         }
     }
@@ -2219,6 +2264,60 @@ mod agent_ready_heuristics_tests {
         assert!(!should_escape_resume_picker(picker, false, true));
         // Normal agent UI is never mistaken for the picker.
         assert!(!should_escape_resume_picker("❯ Try \"fix tests\"", false, false));
+    }
+
+    /// REGRESSION (codex #1, CRITICAL). A resume picker left open on an INTENDED
+    /// resume must classify `Wait`, NEVER `Ready` — even though its `❯` cursor
+    /// makes `agent_ui_visible` true. Reporting it ready is what let a stale
+    /// `--resume` park at the picker, be recorded as a successful heal (clearing
+    /// `holder_died`), and have the next send typed + Enter'd straight INTO the
+    /// modal and logged as delivered.
+    #[test]
+    fn a_resume_picker_left_open_is_never_ready() {
+        let picker = "Resume a conversation\n❯ 1. Fix the parser  2h ago\n  2. Older chat";
+        // The exact honest-state hazard: intended resume, picker still up.
+        assert!(
+            agent_ui_visible(picker),
+            "precondition: the picker's ❯ cursor DOES trip the bare glyph check — \
+             which is why keying readiness on it was the bug",
+        );
+        assert_eq!(
+            classify_ready_tick(picker, /*resume_intended*/ true, /*escaped*/ false, /*trusted*/ false),
+            ReadyTick::Wait,
+            "a picker we deliberately do not escape must keep the ready-poll WAITING, \
+             so the heal times out to ready=false (a FAILED heal), not a false success",
+        );
+        // The trust dialog is the sibling boot modal: also `❯`, also not ready.
+        let trust = "Quick safety check: do you trust the files in this folder?\n❯ 1. Yes";
+        assert_eq!(
+            classify_ready_tick(trust, true, false, false),
+            ReadyTick::AcceptTrust,
+            "trust dialog is dismissed, not treated as ready",
+        );
+        // A real composer prompt (no modal) is the ONLY thing that reads Ready.
+        assert_eq!(
+            classify_ready_tick("❯ Try \"fix tests\"\n  ⏵⏵ bypass permissions on", true, false, false),
+            ReadyTick::Ready,
+            "the agent's own prompt, with no boot modal over it, is ready",
+        );
+    }
+
+    /// A FRESH (not resume-intended) stale picker is escaped ONCE, then — once the
+    /// escape has been issued (`escaped=true`) but the picker capture has not yet
+    /// re-rendered — must still `Wait`, not fall through to `Ready` on the same
+    /// menu still showing `❯`.
+    #[test]
+    fn a_fresh_stale_picker_escapes_then_waits_not_ready() {
+        let picker = "Select a session to resume\n❯ 1. old chat";
+        assert_eq!(
+            classify_ready_tick(picker, false, false, false),
+            ReadyTick::EscapePicker,
+        );
+        assert_eq!(
+            classify_ready_tick(picker, false, /*escaped*/ true, false),
+            ReadyTick::Wait,
+            "after the one-shot escape, the still-visible menu must not read Ready",
+        );
     }
 }
 
