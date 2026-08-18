@@ -71,6 +71,23 @@ describe('blockedState — the fact that outlives the turn', () => {
     }
   })
 
+  test('a newer TRANSIENT error does NOT clear an older durable wall (wave 6 #12)', () => {
+    // Newest-first: a transient 529/throttle landed AFTER the quota wall. It is
+    // not recovery — the bucket did not refill and the session did not sign back
+    // in, only one more attempt failed — so the wall still gates the composer.
+    // Before the fix this returned null and reopened the composer over a spent
+    // bucket.
+    const entries: ChatEntry[] = [
+      banner({ uuid: 't1', ts: 2_000, label: 'Server busy', blocking: undefined }),
+      banner(),
+    ]
+    expect(blockedState(entries)?.label).toBe('Session limit')
+  })
+
+  test('…but a lone transient error, with no wall behind it, gates nothing', () => {
+    expect(blockedState([banner({ label: 'Server busy', blocking: undefined })])).toBeNull()
+  })
+
   test('the composer note names the limit AND the clock', () => {
     expect(blockedComposerNote(blockedState([banner()])!)).toBe(
       'Session limit · resets 4:40am (Europe/Amsterdam)',

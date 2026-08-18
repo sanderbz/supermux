@@ -44,13 +44,22 @@ export interface BlockedState {
  */
 export function blockedState(entries: readonly ChatEntry[]): BlockedState | null {
   for (const e of entries) {
-    // The agent has spoken or run a tool since — it is working again.
+    // The agent has spoken or run a tool since — it is working again. This is
+    // the ONLY recovery evidence that clears a wall (see the file header): a
+    // newer prompt is somebody who has not noticed, and a newer failed attempt
+    // is not the agent proving it can work.
     if (e.kind === 'assistant' || e.kind === 'tool_use') return null
     if (e.kind !== 'blocked') continue
     // A transient failure (a 529 retry, a server-side throttle) is worth a card
     // in the transcript and is NOT worth blanking the composer for: it clears
-    // itself, usually within seconds.
-    if (!e.blocking) return null
+    // itself, usually within seconds. But it is ALSO not recovery — so it is
+    // SKIPPED, not returned on. Returning `null` here let a transient error that
+    // landed AFTER a quota/auth wall reopen the composer while the wall still
+    // applied (wave 6 #12): the newer line does not prove the bucket refilled or
+    // the session signed back in, only that one more attempt failed. Keep
+    // walking; if an older blocking wall is behind it, that wall is still the
+    // truth, and only a real recovery above clears it.
+    if (!e.blocking) continue
     return {
       uuid: e.uuid,
       label: e.label ?? 'Blocked',
