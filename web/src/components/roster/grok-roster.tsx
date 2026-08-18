@@ -38,7 +38,7 @@ import { useNewSessionAction } from '@/stores/new-session-store'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
 import { SessionMark } from '@/brand/marks'
-import { markStateFor } from '@/lib/mark-status'
+import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import type { Team } from '@/lib/api/teams'
@@ -224,7 +224,8 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
           name={session.name}
           status={session.status}
           size={42}
-          state={group === 'done' ? 'done' : markStateFor(session.status)}
+          state={markStateForSession(session, { done: group === 'done' })}
+          attention={attentionFor(session)}
           className="gr-mark"
         />
         <span className="col">
@@ -299,6 +300,9 @@ function TeamRow({ team, onOpen, index }: { team: Team; onOpen: (t: Team) => voi
               className={`p${i}`}
               ring="var(--gr-bg)"
               label={null}
+              // The pile shows the crew's live attention, not idle placeholders
+              // (audit #4): a member that needs you wears the red halo here too.
+              attention={m.status === 'needs_you' ? 'needs' : null}
             />
           ))}
         </span>

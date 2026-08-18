@@ -22,7 +22,7 @@
 import * as React from 'react'
 
 import { SessionMark } from '@/brand/marks'
-import type { MarkPin, MarkState } from '@/brand/marks'
+import type { MarkAttention, MarkPin, MarkState } from '@/brand/marks'
 import type { SessionStatus } from '@/lib/api/sessions'
 import { markStateFor } from '@/lib/mark-status'
 import { isRosterMarksEnabled } from '@/lib/roster-marks-flag'
@@ -37,6 +37,9 @@ export interface SessionFaceProps {
   /** Override the derived eye state (a bench, or a surface that knows better —
    *  e.g. a just-finished turn showing `done`). */
   state?: MarkState
+  /** The decoupled attention layer (`attentionFor`) — a pulsing/steady red halo,
+   *  consumed only under the Grok skin. `null` (default) draws no halo. */
+  attention?: MarkAttention
   /** 18 facepile · 24 picker · 28 strip/roster · 40 focus header / tile. */
   size?: number
   /** Explicit pin, for surfaces whose roster the provider does not own (team
@@ -61,6 +64,7 @@ export function SessionFace({
   name,
   status,
   state,
+  attention = null,
   size = 28,
   pin,
   animate = true,
@@ -82,6 +86,7 @@ export function SessionFace({
       pin={pin ?? rosterPin}
       size={size}
       state={state ?? markStateFor(status)}
+      attention={attention}
       animate={animate}
       label={label}
       className={className}
