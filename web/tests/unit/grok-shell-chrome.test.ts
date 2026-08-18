@@ -75,16 +75,21 @@ describe('grok mode — one substrate blur, on a leaf pseudo only', () => {
     expect(blurs.some((d) => d.text.includes('none') === false)).toBe(true)
   })
 
-  test('the SUBSTRATE blur (--sm-glass-substrate) sits only on `[data-grok]::before`', () => {
+  test('the SUBSTRATE blur (--sm-glass-substrate) sits only on `[data-grok][data-grok-root]::before`', () => {
     // The one heavy 80px substrate blur is the containing-block hazard: it must
     // live on the leaf pseudo (no element descendants → nobody's containing
-    // block) and nowhere else. The two a11y fallback blocks restate it with the
-    // SAME innermost selector, so one predicate covers all three. WS7's raised
-    // popover glass is a DIFFERENT, lighter tier (tokens.md §1.2) — not caught
-    // here; it is bounded by the two safety tests below instead.
+    // block) and nowhere else. It is SHELL-ROOT-SCOPED — `[data-grok][data-grok-
+    // root]::before`, not bare `[data-grok]::before` — so the blur paints only on
+    // the full-window ground and never on the portalled ⌘K palette (which carries
+    // its own `data-grok` but is not the root; commit 6383102). The two a11y
+    // fallback blocks restate it with the SAME innermost selector, so one
+    // predicate covers all three. WS7's raised popover glass is a DIFFERENT,
+    // lighter tier (tokens.md §1.2) — not caught here; it is bounded by the two
+    // safety tests below instead.
+    const SUBSTRATE_LEAF = '[data-grok][data-grok-root]::before'
     const offenders = blurs
       .filter((d) => d.text.includes('--sm-glass-substrate'))
-      .filter((d) => (d.path[d.path.length - 1] ?? '') !== '[data-grok]::before')
+      .filter((d) => (d.path[d.path.length - 1] ?? '') !== SUBSTRATE_LEAF)
       .map((d) => `${d.path.join(' > ')} { ${d.text} }`)
     expect(offenders).toEqual([])
   })

@@ -412,11 +412,22 @@ describe('toReceiptRows', () => {
 
   test('a failed call says so in the outcome — no red bubble, no lost line', () => {
     const rows = toReceiptRows([{ uuid: 'l1', label: 'cargo check', ok: false, result: 'E0432' }])
-    expect(rows[0]).toEqual({ tool: 'cargo check', outcome: 'failed · E0432' })
+    // `failed` is the honesty flag the grok receipt reads to swap ✓→✗ and tint
+    // the outcome; the outcome still carries the word, so the default renderer
+    // (which ignores the flag) is unchanged.
+    expect(rows[0]).toEqual({ tool: 'cargo check', outcome: 'failed · E0432', failed: true })
   })
 
   test('a failed call with nothing to say still says failed', () => {
     expect(toReceiptRows([{ uuid: 'l1', label: 'tests', ok: false }])[0].outcome).toBe('failed')
+  })
+
+  test('a DECLINE is not a FAILURE — it keeps the check (no `failed` flag)', () => {
+    // A denial is the user's own calm choice, reported with its own word
+    // ("declined · "), not a malfunction — so it must not read as a failed step.
+    const rows = toReceiptRows([{ uuid: 'l1', label: 'Bash', ok: false, denied: true, result: 'no' }])
+    expect(rows[0].failed).toBeUndefined()
+    expect(rows[0].outcome).toBe('declined · no')
   })
 
   test('a running line is never invented here — confirmed receipts are done', () => {

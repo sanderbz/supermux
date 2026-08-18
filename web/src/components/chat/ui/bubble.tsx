@@ -189,9 +189,16 @@ export function BubbleCode({ children, className }: { children: ReactNode; class
   )
 }
 
-/** A removed line inside `<BubbleCode>`. */
+/** A removed line inside `<BubbleCode>`. The `data-code-del` hook lets the grok
+ *  skin lift the deletion off tertiary ink (measured 2.99:1 on the code well —
+ *  below AA and below Grok's floor) onto an error-accent tint that clears 4.5:1;
+ *  the default renderer keeps the tertiary ink and gains only an inert attr. */
 export function CodeDel({ children }: { children: ReactNode }) {
-  return <span className="text-ink-3">{children}</span>
+  return (
+    <span className="text-ink-3" data-code-del>
+      {children}
+    </span>
+  )
 }
 
 /** An added line inside `<BubbleCode>`. */

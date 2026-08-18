@@ -2262,3 +2262,64 @@
 [data-grok] [data-vr='focus-strip'] > div:first-child {
   color: var(--sm-text-primary);
 }
+
+/* ══ WS11 — CHAT HONESTY: FAILED STEPS, DELETIONS, ERROR PILL ═════════════════
+   The chat jury found three measured defects on the error / patch surfaces, all
+   fixed here under [data-grok] (byte-exact revert when the attribute is absent;
+   the components ship only inert data-attributes / classes off grok).
+
+   1) FAILED TOOL STEP READS AS A PASS (the headline honesty defect). The receipt
+      checklist draws ✓ for every DONE line — including a FAILED one ("✓ cargo
+      check → failed · error[E0432]"), so a failure reads as a pass at a glance.
+      `toReceiptRows` now flags a genuine failure (`ok===false`, not a decline)
+      and the line carries `data-failed`; here the check SVG is hidden, a cross
+      takes its slot, the outcome is tinted the calm warning tone (plan doctrine:
+      failure is amber, never alarmist red), and the card gains a faint warning
+      left-border so the failure is legible without reading each value. */
+[data-grok] [data-testid='chat-receipt'][data-failed] .chat-receipt-glyph {
+  color: var(--sm-tone-warning);
+}
+[data-grok] [data-testid='chat-receipt'][data-failed] .chat-receipt-glyph > svg {
+  display: none;
+}
+[data-grok] [data-testid='chat-receipt'][data-failed] .chat-receipt-glyph::before {
+  content: '✕';
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 13px;
+}
+/* The failing outcome ("failed · error[E0432]") tinted to the warning tone —
+   full-strength amber clears 4.5:1 on the agent bubble in both themes (light
+   #8a5200 ≈ 5.8:1, dark #e8a33d ≈ 8.5:1), well above Grok's 3.92 floor. */
+[data-grok] [data-testid='chat-receipt'][data-failed] .chat-receipt-outcome {
+  color: var(--sm-tone-warning);
+}
+/* A faint warning left-border on the card carrying any failed line — so the
+   failure is legible from the card's edge, not only from a glyph. `:has()` keeps
+   the hook on the receipt line (no extra wrapper state). */
+[data-grok] .chat-receipt-group:has([data-testid='chat-receipt'][data-failed]) {
+  border-left: 2px solid color-mix(in srgb, var(--sm-tone-warning) 55%, transparent);
+}
+
+/* 2) DIFF DELETION UNDER-LEGIBLE. `<CodeDel>` renders the removed line in
+      tertiary ink — measured 2.99:1 on the code well, below AA and below Grok's
+      floor, so add/del separated by brightness alone. Give the deletion a muted
+      error-accent tint (the danger tone — the conventional "removed" colour),
+      which clears 4.5:1 in both themes (light #c0362c ≈ 5.2:1, dark #ff6b5e ≈
+      4.5:1). Additions keep their full-strength ink, untouched. */
+[data-grok] [data-code-del] {
+  color: var(--sm-tone-danger);
+}
+
+/* 3) HEADER STATUS PILL CONTRAST. The "⚠ Error" / "Blocked" / hot-usage chips in
+      the session header carry the app's `--status-error` orange on a
+      `bg-status-error/15` tint — measured 2.67:1, below AA / large-text / Grok's
+      floor (it survived on hue alone). Re-point them to the calm AA warning tone
+      (the plan's "never alarmist red"), which clears 4.5:1 in both themes. Scoped
+      to the header pill so the base app's status-error usages are untouched. */
+[data-grok] [data-testid='chat-header-pill'] .text-status-error {
+  color: var(--sm-tone-warning);
+}
+[data-grok] [data-testid='chat-header-pill'] .bg-status-error\/15 {
+  background-color: color-mix(in srgb, var(--sm-tone-warning) 16%, transparent);
+}

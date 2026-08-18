@@ -519,6 +519,15 @@ export function toReceiptRows(lines: readonly ReceiptLine[]): Receipt[] {
           : undefined
     const tool = clamp(stripEmojiPrefix(line.label), TOOL_MAX)
     const row: Receipt = { tool }
+    // HONESTY FLAG (grok skin). A genuine FAILURE — `ok === false` that is not a
+    // user DECLINE — carries a boolean the receipt line reads to swap its check
+    // glyph for a cross and tint the outcome, so a failed step cannot read as a
+    // pass at a glance (the jury's #1 honesty defect: "✓ cargo check → failed").
+    // A decline is the user's calm choice, not a malfunction, so it keeps the
+    // check (its "declined · " word already carries the distinction) — the same
+    // reasoning the outcome verb above encodes. Consumed ONLY under [data-grok];
+    // the default renderer ignores the flag and stays byte-identical.
+    if (line.ok === false && !line.denied) row.failed = true
     // Only when it says something DIFFERENT: a label with nothing to shorten
     // must not ship two copies of itself through every render (the transcript is
     // memoised on prop identity — see `transcript-item.tsx`).
