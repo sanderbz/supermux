@@ -1661,4 +1661,86 @@
   [data-grok][role='dialog'] {
     background: var(--sm-bg-elevated);
   }
+/* ══ WS8 — CHAT SURFACE TOKEN RE-POINT + PROVENANCE POLISH ════════════════════
+   The chat surface (fase A1, components/chat/*) is ALREADY Grok anatomy — user
+   bubble bright / agent wash quiet, the mascot IS the spinner (no working colour
+   chip), coloured-text provenance chips (no fill), the 2.4s receipt spinner,
+   system lines as a management log. Its job under Grok mode is a pure token
+   RE-POINT (GROK-MODE-SPEC §3.8 / WS8): it consumes supermux's B0 warm-paper
+   `--sm-*` ladder via Tailwind utilities (`text-ink`, `border-hairline`,
+   `bg-surface`, `bg-fill-soft`, `bg-code-bg`, `bg-paper-raised`, the shadow
+   vars). WS1 redefined only the bubbles + the accent, so those reskinned for
+   free but the surrounding ink / hairlines / fills / surfaces / shadows stayed
+   warm B0 — a half-reskinned surface. This block re-points the REST of the B0
+   ladder at Grok's greyscale glass tokens, entirely by cascade.
+
+   WHY THE CASCADE WINS (no per-component override — spec's WS8 accept). These B0
+   names are declared in globals.css on `:root` / `.dark` (the <html> element),
+   but `[data-grok]` sits on a shell <div> that is a DESCENDANT of <html>, so for
+   every chat element it is the CLOSER ancestor — its re-point overrides the
+   inherited :root value for the whole subtree (specificity/order never enter:
+   the two rules target different elements). This is the exact mechanism WS1's
+   bubble re-point already relies on. The Grok targets below are themselves
+   theme-swapped under `.dark [data-grok]` (the WS1 blocks), so `--sm-text-primary`
+   etc. resolve light↔dark per theme and the chat inherits the flip for free —
+   one bridge, both themes, zero `.dark`-specific rules needed here. */
+[data-grok] {
+  /* text ladder → Grok's alpha-on-ground ink (tokens.md §2) */
+  --sm-ink: var(--sm-text-primary);
+  --sm-ink-2: var(--sm-text-secondary);
+  --sm-ink-3: var(--sm-text-tertiary);
+
+  /* hairlines → the one 0.5px border token (tokens.md §4; a 1px line is a Grok
+     tell). `-soft` is the fainter half — used on the agent bubble's barely-there
+     edge and the inline code block. */
+  --sm-hairline: var(--sm-border);
+  --sm-hairline-soft: color-mix(in srgb, var(--sm-border) 55%, transparent);
+
+  /* pressed / hover washes + inline-code well → Grok's control washes (§1.1) */
+  --sm-fill-soft: var(--sm-bg-hover);
+  --sm-fill-soft-2: var(--sm-bg-active);
+  --sm-code-bg: var(--sm-bg-tertiary);
+
+  /* SURFACES. The doctrine: translucent tints over the ONE substrate blur, never
+     opaque panels (anti-pattern #1). The transcript ground (`bg-paper-raised` on
+     chat-surface.tsx) goes TRANSPARENT so the WS2 content-column `--sm-chat-fill`
+     (itself a tint over the substrate) reads through — one glass, not a second
+     panel stacked on it. `--sm-surface` (the composer, delegation pill, choice /
+     attention cards, header pill, login card) becomes the raised-glass title fill
+     (78% elevated). `--sm-paper` (the deepest page ground) → the opaque chrome. */
+  --sm-paper: var(--sm-bg-chrome);
+  --sm-paper-raised: transparent;
+  --sm-surface: var(--sm-title-fill);
+
+  /* SHADOWS. Grok floats only the window + true overlays; NO shadow on a bubble
+     or an inline card (anti-pattern #3) — they separate by tint + 0.5px hairline.
+     So the bubble + card shadows go to `none`; the one floating-list lift
+     (`--sm-popover-shadow`, worn by the composer and popovers) becomes Grok's
+     soft, large-offset popover shadow (§11). */
+  --sm-bubble-shadow: none;
+  --sm-card-shadow: none;
+  --sm-popover-shadow: var(--sm-shadow-popover);
+}
+
+/* The composer's own raised-glass blur is left to its component (`bg-surface` +
+   the `backdrop-blur` utility on `ui/composer.tsx`) — Grok explicitly sanctions
+   a raised blur on the composer / popovers (tokens.md §1.2). It is deliberately
+   NOT overridden here: `grok-shell-chrome.test.ts` guards a file-level invariant
+   that the ONLY backdrop-filter in grok-mode.css is the leaf substrate pseudo
+   (the containing-block guard for the shell's fixed overlay children), and a
+   composer blur declared in this file — even though the composer is no shell
+   column — would trip it. The composer's fill still reskins via `--sm-surface`
+   above; only its blur radius stays the component's. */
+
+/* ── The composer's one inverted control (mic / send disc) — Grok's emphasis
+   fill. `.sm-mic` defaults to a soft wash on light and a WARM near-white disc on
+   dark (globals.css). Grok's send is the inverted emphasis fill: near-black on
+   light, neutral near-white on dark — the same pairing as the user bubble
+   (`--sm-fill-emphasis` / `--sm-ink-on-emphasis`, tokens.md §7). Scoped through
+   `.sm-composer` (0,3,0) so it out-specifies the globals `.sm-mic` theme rules
+   (0,2,0), which are emitted after this file's @import; the emphasis tokens are
+   already theme-swapped, so one rule serves light + dark. */
+[data-grok] .sm-composer .sm-mic {
+  background: var(--sm-fill-emphasis);
+  color: var(--sm-ink-on-emphasis);
 }
