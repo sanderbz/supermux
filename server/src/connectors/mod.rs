@@ -19,6 +19,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod icloud;
 pub mod manifest;
 
 use axum::routing::{delete, get, post};

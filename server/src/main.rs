@@ -7,7 +7,8 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, bot_memory, config, db, external_edit, http, scheduler, sessions, state, teams,
+    agents, bot_memory, config, connectors, db, external_edit, http, scheduler, sessions, state,
+    teams,
 };
 
 #[tokio::main]
@@ -156,6 +157,10 @@ async fn main() -> anyhow::Result<()> {
     // agent's board-write surface is present with no manual step. Idempotent +
     // non-clobbering (preserves a co-located user command of the same name).
     agents::skills::seed_managed_commands().await;
+    // Seed the first agent-authored connector — iCloud Mail (spec §10): write its
+    // embedded stdio MCP server to the data dir and upsert its manifest so the
+    // store lists it as a grantable card. Idempotent + best-effort.
+    connectors::icloud::seed(&state).await;
     // Start the HostPool reaper. Sweeps every 60s,
     // tears down SSH ControlMasters that have been idle > 10min AND have no
     // live session row pointing at them. Cheap no-op while no remote hosts
