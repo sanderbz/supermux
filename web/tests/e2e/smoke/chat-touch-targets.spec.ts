@@ -106,17 +106,15 @@ test.describe('touch targets on the chat surface', () => {
       expect(span.y, `${id}: vertical own-hit span`).toBeGreaterThanOrEqual(FLOOR)
     }
 
-    // The composer's own controls. `chat-composer-at` and the send/hand-off
-    // button are always there; the schedule accessory depends on the route
-    // wiring one, so it is measured only when present.
-    const composerIds = ['chat-composer-at', 'chat-send']
+    // The composer's own controls. On the phone the leading control is now the
+    // single `+` add-menu opener (`chat-composer-add`) — mention/schedule moved
+    // INTO the menu — and the trailing send/hand-off button. Both are equal
+    // discs on one baseline, each a 44pt target.
+    const composerIds = ['chat-composer-add', 'chat-send']
     // A draft is what turns the trailing cell into the SEND button (empty box at
     // rest is the decorative mic, which is not a control).
     await page.getByTestId('chat-composer-field').fill('measure me')
     await expect(page.getByTestId('chat-send')).toBeVisible()
-    if (await page.getByTestId('chat-composer-schedule').count()) {
-      composerIds.push('chat-composer-schedule')
-    }
     for (const id of composerIds) {
       const span = await ownHitSpan(page, id)
       expect(span.x, `${id}: horizontal own-hit span`).toBeGreaterThanOrEqual(FLOOR)
