@@ -140,10 +140,15 @@ export default function ChatPanel({
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
-  const { entries, items, turnStart, showProvisional, overlay, tail, backlog } = useChatTurn(
-    name,
-    session,
-  )
+  const { entries, items, turnStart, endTurn, showProvisional, overlay, tail, backlog } =
+    useChatTurn(name, session)
+  // THE RECONCILED LIVE TURN. Everything that presents "a turn is running" — the
+  // working row, the provisional tail, the Stop control — reads this, not raw
+  // `status === 'active'`: the anchor is dropped the moment the turn ends (or the
+  // user Stops), so a status stuck at `active` after a cancel stops leaving the
+  // surface thinking with a dead Stop button. It is the same expression
+  // `live-layer.tsx` gates the working row on, hoisted so the composer shares it.
+  const turnLive = session?.status === 'active' && turnStart != null
 
   React.useEffect(() => exposeLatency(), [])
   // WHO OWNS THE OUTAGE STORY. While this panel is on screen the chat plane's
@@ -499,10 +504,18 @@ export default function ChatPanel({
     name,
     input: pending.input,
     peek,
-    active: session?.status === 'active',
+    // The RECONCILED live turn (not raw status): the trailing control is Stop and
+    // a bare Escape interrupts only while a turn is genuinely running. When the
+    // turn ends — or the user's Stop reconciles a stuck-`active` one — this drops
+    // to false, so the control returns to the mic and Escape stops meaning stop.
+    active: turnLive,
     dialogCard,
     formCard,
     handoff,
+    // The honest half of Stop: after a delivered interrupt, drop the client's
+    // live-turn anchor so a stuck-`active` "thinking" state clears instead of
+    // firing an Escape into a pty with nothing to interrupt (a silent no-op).
+    onInterrupt: endTurn,
   })
 
   // ── What the `@`/`/` popover offers (fase A4 T9) ───────────────────────────
@@ -767,7 +780,11 @@ export default function ChatPanel({
           label={session?.display_name?.trim() ? session.display_name : name}
           handle={composer}
           surface={phone ? 'phone' : 'desktop'}
-          active={session?.status === 'active'}
+          // The reconciled live turn (see `turnLive`): the Stop control shows
+          // while a turn is genuinely running, not merely while `status` reads
+          // `active` — so a stuck-`active` status after a cancel no longer strands
+          // a Stop button that fires into nothing.
+          active={turnLive}
           // NOTHING SENT INTO A BLOCKED SESSION ARRIVES. The composer says
           // which limit and when it lifts, rather than accepting a message
           // that Claude Code will never pick up (verify matrix:

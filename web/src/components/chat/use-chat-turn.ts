@@ -40,6 +40,37 @@ const SEND_ANCHOR_WINDOW_MS = 30_000
  *  latency (text-only p50 31s) so it never fires on a healthy turn. */
 const TURN_CONFIRM_TIMEOUT_MS = 120_000
 
+/**
+ * Should the live-turn anchor be torn down?
+ *
+ * A turn is over once the session has LEFT `active`. The live layer is kept a
+ * moment longer than the bare status flip so a genuine answer's confirming batch
+ * can REPLACE the provisional pty tail instead of blanking it — that is
+ * `confirmedCaughtUp`. It is torn down when any of these hold:
+ *   · the confirming batch for THIS turn has landed (`confirmedCaughtUp`), or
+ *   · the session reached a TERMINAL rest (`stopped`/`error`) — no batch is ever
+ *     coming, so waiting for one strands the live layer on `/peek` until the
+ *     ceiling; a cancelled turn that ends `stopped` used to sit "thinking" for a
+ *     full 120s for exactly this reason, or
+ *   · the bounded fallback ceiling elapsed (`turnStranded`) — the backstop for a
+ *     confirming batch that never lands (an interrupt, a compact).
+ *
+ * While the session is still `active` this NEVER fires: a live turn is not over
+ * just because time passed. The one thing that can end a still-`active` turn is
+ * the user's Stop, which reconciles imperatively (`endTurn`) rather than here.
+ */
+export function shouldEndTurn(a: {
+  active: boolean
+  turnStart: number | null
+  confirmedCaughtUp: boolean
+  turnStranded: boolean
+  terminalRest: boolean
+}): boolean {
+  if (a.turnStart == null) return false
+  if (a.active) return false
+  return a.confirmedCaughtUp || a.terminalRest || a.turnStranded
+}
+
 export interface ChatTurn {
   /** Newest-first wire entries (memoised identity). */
   entries: ChatEntry[]
@@ -49,6 +80,11 @@ export interface ChatTurn {
   turnStart: number | null
   /** The live layer is mounted (turn running OR awaiting its confirmation). */
   liveLayerUp: boolean
+  /** Reconcile the live turn to idle NOW — the honest half of Stop. Drops the
+   *  client's turn anchor so the working row, the provisional tail and the Stop
+   *  control all clear even when the server's `status` is lagging at `active`
+   *  (a stuck last-capture, a cancel not yet re-read). */
+  endTurn: () => void
   /** The transcript is far enough behind to show the provisional pty tail. */
   showProvisional: boolean
   /** Hook-driven receipt overlay lines for this turn. */
@@ -114,12 +150,28 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   const confirmedCaughtUp = turnStart != null && lastAgentMs >= turnStart
   const turnStranded =
     turnStart != null && serverNowMs() - turnStart > TURN_CONFIRM_TIMEOUT_MS
+  // A TERMINAL rest can never produce a confirming batch, so the caught-up gate
+  // would never satisfy and the live layer would strand until the 120s ceiling.
+  const terminalRest = session?.status === 'stopped' || session?.status === 'error'
+  const endsTurn = shouldEndTurn({ active, turnStart, confirmedCaughtUp, turnStranded, terminalRest })
   React.useEffect(() => {
-    // Turn teardown on the (status flip + confirmed batch) edge — both are
-    // external events; the guard makes it fire at most once per turn.
+    // Turn teardown on the (status flip + confirmed batch / terminal rest) edge —
+    // all external events; the guard makes it fire at most once per turn.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!active && (confirmedCaughtUp || turnStranded)) setTurnStart(null)
-  }, [active, confirmedCaughtUp, turnStranded])
+    if (endsTurn) setTurnStart(null)
+  }, [endsTurn])
+
+  // THE STOP RECONCILE — the honest half of the interrupt. When the user presses
+  // Stop the turn is over from their side, but the server's `status` can lag at
+  // `active` (a stuck last-capture, a cancel the supervisor has not re-read), and
+  // while it does every live-turn signal reads `active` and the surface stays
+  // "thinking" over a Stop that fires an Escape into a pty with nothing to
+  // interrupt — a silent no-op. `endTurn` drops the anchor at once so the working
+  // row, the provisional tail and the Stop control all clear. It cannot re-arm
+  // from the same stale `active`: the anchor SET effect above is gated on an
+  // `active` EDGE (idle→active), so a genuinely new turn re-anchors while a
+  // stuck-`active` one stays cleared.
+  const endTurn = React.useCallback(() => setTurnStart(null), [])
 
   // 1s live-layer ticker: a prose-only turn produces NO deltas and NO
   // refetches, so every time-gated piece below (showProvisional, elapsed,
@@ -142,5 +194,5 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
 
-  return { entries, items, turnStart, liveLayerUp, showProvisional, overlay, tail, backlog }
+  return { entries, items, turnStart, liveLayerUp, endTurn, showProvisional, overlay, tail, backlog }
 }

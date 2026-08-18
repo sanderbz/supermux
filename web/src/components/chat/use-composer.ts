@@ -256,6 +256,20 @@ export function stopGate(lens: PeekLens | null): SendGate {
 }
 
 /**
+ * Should a Stop reconcile the client's live turn to idle?
+ *
+ * `delivered` is whether `sendKey('Escape')` resolved (the interrupt reached the
+ * session) or threw (it did not). A delivered interrupt reconciles — either it
+ * ended a running turn, or there was nothing to end and the stale "thinking" must
+ * clear; a THROWN one does not, because that is the genuine "the turn is still
+ * running" case the `stop-failed` notice is for. One line, pulled out so the
+ * decision is asserted without driving an async hook through a live DOM.
+ */
+export function stopReconcile(delivered: boolean): boolean {
+  return delivered
+}
+
+/**
  * What stays in the box after a send of `raw`.
  *
  * Subtraction, not assignment: a peek plus a POST is two round-trips and people
@@ -308,9 +322,20 @@ export interface UseComposerOptions {
   /** The shared peek lens (T2). Omitted on a bench/test render — then the
    *  pre-send verification is skipped exactly as it is on a peek failure. */
   peek?: { refresh: () => Promise<PeekLens | null> }
-  /** Session status is `active` — a turn is running, so the trailing control is
-   *  Stop and a bare Escape interrupts. */
+  /** A live turn is running (the reconciled `status === 'active' && turnStart`,
+   *  NOT raw status) — so the trailing control is Stop and a bare Escape
+   *  interrupts. Reconciled so a session whose status is stuck at `active` after
+   *  its turn ended does not keep offering a Stop that fires into nothing. */
   active: boolean
+  /**
+   * Reconcile the local live turn to idle — the honest half of Stop. Called
+   * AFTER a delivered interrupt: if the turn was genuinely running the Escape
+   * ended it and the client agrees; if it was already over (a stuck-`active`
+   * status), this is what makes Stop visibly DO something instead of firing an
+   * Escape into a pty with nothing to interrupt. NOT called when the interrupt
+   * throws — that is the real "still running" case the `stop-failed` notice owns.
+   */
+  onInterrupt?: () => void
   /** The session's hook-driven `permission_request` is live, i.e. a choice card
    *  is on screen above this composer. Second source for the pre-send gate —
    *  see `sendGate`. */
@@ -417,6 +442,7 @@ export function useComposer({
   dialogCard = false,
   formCard = false,
   handoff,
+  onInterrupt,
 }: UseComposerOptions): ComposerHandle {
   const draft = React.useSyncExternalStore(
     React.useCallback((fn) => subscribeDraft(name, fn), [name]),
@@ -623,8 +649,16 @@ export function useComposer({
       // agent kept going" is the one failure this surface must never absorb into
       // a console warning — and on the REST plane a 404/409 (session gone,
       // restarted under the same name) is exactly how it arrives.
+      //
+      // A DELIVERED interrupt reconciles the local live turn to idle
+      // (`onInterrupt`). Two cases, one honest outcome: a genuinely-running turn
+      // is interrupted and the client agrees it is over; an already-cancelled
+      // turn whose status is stuck at `active` gets its stale "thinking" cleared,
+      // so Stop is never a silent no-op. Only a THROWN send is left "still
+      // running" — that is what `stop-failed` means, and it must not reconcile.
       try {
         await input.sendKey('Escape')
+        if (stopReconcile(true)) onInterrupt?.()
       } catch (err) {
         setNotice({
           kind: 'stop-failed',
@@ -632,7 +666,7 @@ export function useComposer({
         })
       }
     })()
-  }, [input, peek])
+  }, [input, onInterrupt, peek])
 
   const insert = React.useCallback(
     (text: string) => {

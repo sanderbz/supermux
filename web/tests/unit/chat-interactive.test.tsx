@@ -454,6 +454,18 @@ describe('the composer, live', () => {
     expect(html).not.toContain('data-testid="chat-send"')
   })
 
+  test('the Stop control follows the RECONCILED live turn, not raw status', () => {
+    // The stop-state honesty fix: `chat-panel` feeds `active` the reconciled
+    // `status === 'active' && turnStart != null`, and the user's Stop drops the
+    // anchor (`endTurn`). So a session whose status is stuck at `active` after a
+    // cancel presents NO Stop button — the control cannot be a no-op that fires
+    // an Escape into a pty with nothing left to interrupt. Turn ended → the mic
+    // is back, not a dead square.
+    const ended = composer({ draft: '' }, false)
+    expect(ended).not.toContain('data-testid="chat-stop"')
+    expect(ended).not.toContain('data-testid="chat-send"')
+  })
+
   test('a draft during a turn shows SEND, not Stop — the button does what the box says', () => {
     // Typing a follow-up mid-turn is a first-class flow (Claude Code queues it).
     // With Stop as the only trailing control, the one thing a pointer user could
