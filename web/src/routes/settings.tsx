@@ -19,6 +19,7 @@ import {
   PlayCircle,
   RefreshCw,
   SlidersHorizontal,
+  Store as StoreIcon,
 } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
@@ -38,6 +39,7 @@ import {
   type OverviewPreview,
 } from '@/stores/ui-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
+import { useConnectors } from '@/stores/connectors-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import { pushApi, type NotifCategory, type PushAttempt, type PushPrefs } from '@/lib/api'
 import { usePush } from '@/hooks/use-push'
@@ -484,6 +486,40 @@ function ClaudeToolsSection() {
             <motion.button whileTap={{ scale: 0.96 }} transition={springs.buttonPress}>
               <SlidersHorizontal />
               Manage
+            </motion.button>
+          </Button>
+        }
+      />
+    </Section>
+  )
+}
+
+function ConnectorsSection() {
+  const navigate = useNavigate()
+  const { data: connectors } = useConnectors()
+  const installed = (connectors ?? []).filter((c) => c.source === 'local').length
+  return (
+    <Section
+      title="Connectors"
+      footnote="Secure, per-bot integrations. Keys are sealed in the vault and never shown to your bots — one bot, or all agents, your choice."
+    >
+      <Row
+        label="Connector store"
+        hint={
+          installed > 0
+            ? `${installed} installed · browse the catalog and connect more.`
+            : 'Browse the catalog and give your bots their first connector.'
+        }
+        control={
+          <Button
+            asChild
+            variant="outline"
+            onClick={() => navigate('/store')}
+            className="h-11 gap-1.5"
+          >
+            <motion.button whileTap={{ scale: 0.96 }} transition={springs.buttonPress}>
+              <StoreIcon />
+              Open store
             </motion.button>
           </Button>
         }
@@ -1050,6 +1086,8 @@ export function Settings() {
           <SchedulesSection />
 
           <ClaudeToolsSection />
+
+          <ConnectorsSection />
 
           <OnboardingSection />
 
