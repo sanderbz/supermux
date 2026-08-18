@@ -209,3 +209,223 @@
   --sm-title-fill: color-mix(in srgb, var(--sm-bg-elevated) 76%, transparent);
   --sm-glass-title: blur(28px) saturate(150%);
 }
+
+/* ══ WS2 — SHELL & NAV CHROME (foundation for every route) ════════════════════
+   Restyles the app shell into Grok's glass system, ENTIRELY scoped under
+   `[data-grok]`. The default (non-grok) shell keeps its exact pre-existing look —
+   every rule below is inert until the shell root carries `data-grok`, so removing
+   the attribute (or the `@import` in globals.css) is a byte-exact revert.
+
+   Anatomy it targets (all already in components/layout.tsx):
+     [data-grok]            → the shell root <div> (the window / ground)
+     [data-shell-rail]      → desktop 64px icon nav (<SideNav>)
+     [data-shell-main]      → the content column wrapper (rail's sibling; WS2 hook)
+     [data-shell-content]   → <main> (the route surface / "chat" column)
+     [data-shell-tabs]      → mobile bottom tab bar (<BottomNav>)
+     [data-shell-pane]      → side-panes raised by <ShellOverlay variant="pane">
+     [data-nav-active]      → the active-item pill/indicator (rail + tabs)
+
+   THE ONE SUBSTRATE BLUR — and why it is NOT on a shell column. Grok's shell
+   blurs once (blur(80px)); its columns are translucent tints on top and NEVER
+   re-blur (tokens.md §0/§15 anti-pattern #4). But `backdrop-filter` on a shell
+   COLUMN makes that column the containing block for every `position:fixed`
+   descendant — the tour overlay, the command palette, floating tips, the
+   connection overlay are all fixed children of the shell root — whose viewport
+   math would silently break. globals.css:1072 encodes exactly this lesson for
+   `[data-substrate]` ("the substrate is PAINT, NEVER BLUR"). So the single blur
+   lives on a LEAF `::before` pseudo (it has no fixed descendants → containing-
+   block-safe), and the shell root itself gets NO filter and so stays a normal
+   containing block for its fixed overlays. One blur, zero hazard. */
+
+/* The window / ground. Opaque chrome desk behind the glass; an isolated stacking
+   context so the substrate pseudo (z:0) sits cleanly behind the columns (z:1).
+   NO backdrop-filter here (see above) — the shell root must remain a valid
+   viewport containing block for its fixed-position overlay children. */
+[data-grok] {
+  position: relative;
+  isolation: isolate;
+  background: var(--sm-bg-chrome);
+}
+
+/* The one substrate blur — a leaf pseudo, behind every column. `saturate(180%)`
+   gives the tints life over supermux's flat ground (no wallpaper; tokens.md §13).
+   -webkit- BEFORE standard so LightningCSS emits BOTH (globals.css:578 lesson). */
+[data-grok]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--sm-substrate);
+  -webkit-backdrop-filter: var(--sm-glass-substrate);
+  backdrop-filter: var(--sm-glass-substrate);
+}
+/* Reduce-Transparency / no-support fallback: opaque chrome, no blur — the same
+   accessibility gate `.glass` uses (globals.css:591). */
+@media (prefers-reduced-transparency: reduce) {
+  [data-grok]::before {
+    background: var(--sm-bg-chrome);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  [data-grok]::before {
+    background: var(--sm-bg-chrome);
+  }
+}
+
+/* Columns ride ABOVE the substrate pseudo. Only the two shell-root children that
+   are the actual columns are lifted (rail + content-column wrapper); the mobile
+   tab bar lives inside the wrapper. Overlays (palette, archived sheet) are later
+   siblings / higher-z fixed and paint above regardless. */
+[data-grok] [data-shell-rail],
+[data-grok] [data-shell-main] {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── The nav rail (desktop) — a tinted glass column, hairline seam ──────────────
+   `bg-card` + `border-r border-border` are the default classes on <SideNav>;
+   under grok we neutralise the 1px border (a 1px line is a Grok tell — tokens.md
+   §4/§15 #2) and repaint onto the translucent sidebar tint so the substrate blur
+   reads through it. The right-edge seam becomes a 0.5px `::after` strip. */
+[data-grok] [data-shell-rail] {
+  background: var(--sm-sidebar-tint);
+  border-right-width: 0;
+  color: var(--sm-sidebar-text-tertiary);
+}
+[data-grok] [data-shell-rail]::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 0.5px;
+  background: var(--sm-sidebar-separator);
+  pointer-events: none;
+}
+/* Align the rail's first row (logo slot, default h-16=64px) to the shared 44px
+   toolbar token so the rail header and a route's 44px header sit on one line
+   (tokens.md §10 — `--sm-toolbar-h` is shared by both columns). */
+[data-grok] [data-shell-rail] > div:first-child {
+  height: var(--sm-toolbar-h);
+}
+
+/* ── Content column — the "chat" tint ─────────────────────────────────────────
+   The route surface region. Translucent chat-fill so the substrate shows
+   through; routes paint their own surfaces on top (restyled by WS5/WS8). */
+[data-grok] [data-shell-content] {
+  background: var(--sm-chat-fill);
+}
+
+/* ── Mobile bottom tab bar — same tint, hairline on its TOP edge ───────────────
+   Mirrors the rail: kill the 1px `border-t`, repaint onto the sidebar tint, draw
+   a 0.5px top `::after`. `pb-safe` (already on the element) keeps the safe-area
+   floor under the home indicator. */
+[data-grok] [data-shell-tabs] {
+  position: relative;
+  z-index: 1;
+  background: var(--sm-sidebar-tint);
+  border-top-width: 0;
+  color: var(--sm-sidebar-text-tertiary);
+}
+[data-grok] [data-shell-tabs]::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 0.5px;
+  background: var(--sm-sidebar-separator);
+  pointer-events: none;
+}
+
+/* ── Side-panes — 6% agent wash + left hairline ───────────────────────────────
+   Panes raised by <ShellOverlay variant="pane"> carry `data-shell-pane`. The
+   per-agent tint is written on the shell root at runtime (WS4/WS5); until then it
+   falls back to the accent (grok-mode.css root). A pane owns its own positioning
+   (it is `absolute inset-y-0 right-0`), so we don't set `position` here — we only
+   need it to already BE positioned for the `::after` to anchor (globals.css:1118
+   lesson). */
+[data-grok] [data-shell-pane] {
+  background: color-mix(in srgb, var(--sm-agent-tint) 6%, var(--sm-bg-elevated));
+}
+[data-grok] [data-shell-pane]::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0.5px;
+  background: var(--sm-sidebar-separator);
+  pointer-events: none;
+}
+
+/* ── The desktop floating window (≥md) ────────────────────────────────────────
+   Grok floats its app as one rounded glass window on a neutral desk (reference
+   dark-hero-04 / crop-hero-app). supermux is full-bleed, so we inset the columns
+   with a chrome gutter (padding on the root) and let the substrate pseudo become
+   the floating card: rounded `--sm-r-window`, carrying `--sm-shadow-window` — the
+   ONLY card-level shadow in the app (tokens.md §11; jury row "window shadow
+   only"). The rail rounds its outer-left corners, the content column its outer-
+   right, so the two tinted columns read as one window with a 0.5px seam between.
+
+   `overflow:hidden` on the columns clips their in-flow/absolute content to the
+   rounded window but does NOT clip `position:fixed` descendants (no transform/
+   filter/backdrop-filter here → the columns are not fixed-containing-blocks), so
+   the fixed overlays still escape to the viewport unharmed.
+
+   Mobile stays full-bleed: the rail is `hidden` (`md:flex`), the tab bar owns the
+   bottom, and a rounded/inset window on a phone would just waste the screen. */
+@media (min-width: 768px) {
+  [data-grok] {
+    padding: 10px;
+  }
+  [data-grok]::before {
+    inset: 10px;
+    border-radius: var(--sm-r-window);
+    box-shadow: var(--sm-shadow-window);
+  }
+  [data-grok] [data-shell-rail] {
+    border-radius: var(--sm-r-window) 0 0 var(--sm-r-window);
+    overflow: hidden;
+  }
+  [data-grok] [data-shell-main] {
+    border-radius: 0 var(--sm-r-window) var(--sm-r-window) 0;
+    overflow: hidden;
+  }
+}
+
+/* ── The icon nav rail's active affordance (rail) ─────────────────────────────
+   Default: a saturated `bg-primary` plate + white icon (`text-primary-foreground`).
+   Grok's restraint forbids a saturated fill for a chrome-selected state — the
+   accent is links/focus/info only, and even those as surface go through a ~12%
+   mix (tokens.md §3, §15 #6). So the active pill becomes a SOFT accent wash on a
+   10px plate (stepped down from the icon's own 12px radius — nested radii step
+   down, §8) and the active icon takes the accent as TEXT. */
+[data-grok] [data-shell-rail] [data-nav-active] {
+  background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+  border-radius: var(--sm-r-md);
+}
+[data-grok] [data-shell-rail] a[aria-current='page'] {
+  color: var(--sm-accent);
+}
+/* Rest + hover ink use the sidebar's own warmer ramp (tokens.md §2). Both halves
+   are needed because these unlayered rules out-specify Tailwind's `hover:` layer,
+   so the hover state must be restated or it would never change. */
+[data-grok] [data-shell-rail] a:not([aria-current='page']) {
+  color: var(--sm-sidebar-text-tertiary);
+}
+[data-grok] [data-shell-rail] a:not([aria-current='page']):hover {
+  color: var(--sm-sidebar-text-primary);
+}
+
+/* ── The mobile tab bar's active affordance (tabs) ────────────────────────────
+   The active indicator is a 1px×32px bar, not a full plate — too thin for a 12%
+   wash to register, and an active INDICATOR (like a focus ring) is one of the
+   sanctioned accent uses. Keep it accent at full strength; the label goes accent
+   too, replacing the default `text-primary`. */
+[data-grok] [data-shell-tabs] [data-nav-active] {
+  background: var(--sm-accent);
+}
+[data-grok] [data-shell-tabs] a[aria-current='page'] {
+  color: var(--sm-accent);
+}
+[data-grok] [data-shell-tabs] a:not([aria-current='page']) {
+  color: var(--sm-sidebar-text-tertiary);
+}

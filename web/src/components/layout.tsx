@@ -350,7 +350,18 @@ export function Layout() {
       // `localStorage['supermux:shell-substrate'] = '0'` + reload is a complete
       // revert to the pre-B1 appearance with no redeploy. Read once, at mount:
       // the flag is a kill switch, not a preference, and must not re-render.
-      data-substrate={substrate ? '' : undefined}
+      //
+      // WS2 — grok mode is a FULL shell skin that SUPERSEDES the substrate paint,
+      // so the two are mutually exclusive: when grok is on we drop `data-substrate`
+      // entirely. Both skins scope their column rules at the same specificity
+      // (`[data-attr] [data-shell-*]`), and the substrate block sits LATER in
+      // globals.css than the `@import "./grok-mode.css"`, so with both attributes
+      // present the substrate paper would win every shared property (rail/content
+      // background, border-width, the hairline `::after`) and the grok tints would
+      // never show. Dropping it here (rather than fighting the cascade with
+      // inflated selectors) keeps each skin's rules clean and keeps "grok off" a
+      // byte-exact today (substrate stays on exactly as before).
+      data-substrate={substrate && !grok ? '' : undefined}
       // WS1 — the Grok-mode skin gate. One attribute keys the entire scoped
       // token layer (styles/grok-mode.css, every rule under `[data-grok]`); the
       // dark half swaps via `.dark [data-grok]` (theme is a `.dark` class on
@@ -371,7 +382,12 @@ export function Layout() {
         Skip to content
       </a>
       <SideNav />
-      <div className="flex h-full min-w-0 flex-1 flex-col">
+      {/* `data-shell-main` — the content-column wrapper, the rail's sibling. A
+          WS2 (Grok-mode) hook, mirroring the `data-shell-*` convention: under
+          `[data-grok]` it is lifted above the substrate pseudo (z:1) and rounds
+          its outer-right corners into the desktop floating window. Inert with no
+          styling attached in the default app — layout-neutral. */}
+      <div data-shell-main="" className="flex h-full min-w-0 flex-1 flex-col">
         {!isFocus && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
         {/* The content column. `data-shell-content` raises it one step off the
