@@ -98,7 +98,7 @@ export function attentionDotSeat(
 /**
  * Facepile geometry.
  *
- * `cluster` is the mockup's crew mark: a 40px box holding three 18px members in
+ * `cluster` is the mockup's crew mark: a 40px box holding three 20px members in
  * a 1-over-2 arrangement, each stroked with a page-coloured keyline — it stands
  * in for a single mark in a roster row, so it must occupy exactly one mark's
  * footprint. `row.overlap` is §11.9's −24% margin, used when a pile is inline in
@@ -107,12 +107,18 @@ export function attentionDotSeat(
 export const FACEPILE = {
   cluster: {
     box: 40,
-    size: MARK_SIZE.facepile,
+    // 20px members (bumped from the facepile's 18px): the crew badge stands in for
+    // a 40px roster mark, so its members were reading small and the boxy/green one
+    // got lost at phone density (jury R3 #5). 20px in the same 40px box packs the
+    // 1-over-2 stack tighter with a fuller footprint — still one mark's box, still
+    // keyline-separated — so each face (and its red `needs` halo) is legible on a
+    // phone. Offsets re-seated to keep all three inside the box at the new size.
+    size: 20,
     /** [left, top] in box px, in z order 1 / 2 / 3 (the top member paints last). */
     offsets: [
-      [11, 0],
-      [0, 15],
-      [22, 15],
+      [10, 0],
+      [0, 16],
+      [20, 16],
     ],
   },
   row: { overlap: -0.24 },

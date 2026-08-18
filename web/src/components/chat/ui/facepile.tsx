@@ -3,7 +3,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Two forms, one component:
  *
- *   cluster  the approved boards' crew mark: three 18px members in a 1-over-2
+ *   cluster  the approved boards' crew mark: three 20px members in a 1-over-2
  *            arrangement inside a 40px box, each stroked with a page-coloured
  *            keyline. It stands in for a single mark in a roster row, so it must
  *            occupy exactly one mark's footprint — a team is a colleague too.
@@ -49,7 +49,7 @@ export interface FacepileProps {
   members: readonly FacepileMember[]
   /** `cluster` (a mark-sized crew badge) or `row` (an inline pile). */
   variant?: 'cluster' | 'row'
-  /** Member size. The cluster is fixed at 18px by its geometry. */
+  /** Member size. The cluster is fixed at 20px by its geometry. */
   size?: number
   /**
    * Keyline colour — the surface the pile sits on (`PAPER[theme].paper`).
