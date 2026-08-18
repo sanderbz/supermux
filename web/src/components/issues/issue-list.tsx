@@ -137,7 +137,7 @@ function IssueRow({
         {/* The two flags `auto_actions.rs` writes when a session goes idle or
             starts waiting — the reverse edge that made the board worth keeping. */}
         {issue.awaiting_input && (
-          <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
+          <span className="shrink-0 rounded-full bg-status-waiting-ink px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
             Needs input
           </span>
         )}

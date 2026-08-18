@@ -193,7 +193,7 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
           so a healthy roster is unchanged. */}
       <UsageChip rateLimits={session.rate_limits ?? undefined} />
       {session.status === 'waiting' && (
-        <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
+        <span className="shrink-0 rounded-full bg-status-waiting-ink px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
           {MISC.needsInputPill}
         </span>
       )}

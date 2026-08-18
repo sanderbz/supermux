@@ -221,7 +221,7 @@ function TeammateStripRow({
       </span>
       <span className="relative z-20 flex shrink-0 items-center gap-1">
         {needsYou ? (
-          <span className="rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
+          <span className="rounded-full bg-status-waiting-ink px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
             needs you
           </span>
         ) : (
