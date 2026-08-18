@@ -341,7 +341,13 @@ const BUDGET_ENTRY_JS = 160 * KB
 // on-demand SHEETS and benches, never the field itself. The entry gate keeps
 // 11 KB of headroom, so the spend is honest here rather than hidden. ceil(measured);
 // the `.sm-plain-editable` CSS lands in the CSS budget (27.34/30, 91%), not here.
-const BUDGET_APP_JS = 249 * KB
+// 250 as of the feat/bot-concept merge (bot concept server+web landing on the same
+// branch as iOS bug #2): measured 249.09 against the 249 iOS ceiling — a +0.07 KB
+// sliver, all of it the ASK-1 roster create-verb (the "+ New bot" pill + palette
+// action + botMode flag read) that folds onto the lazy grok-roster chunk plus a
+// rounding crumb on entry (entry still 149.15/160, 93%). Both fases' weight is now
+// remeasured together on one branch; ceil(measured) = 250. No new hero-path cost.
+const BUDGET_APP_JS = 250 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
