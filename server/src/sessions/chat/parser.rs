@@ -734,6 +734,36 @@ fn agent_error_body(
 fn oversize_entry(line: &str, offset: u64) -> ChatEntry {
     let ty = scan_top_level_type(line).unwrap_or("");
     let uuid = scan_field(line, "uuid").unwrap_or_else(|| format!("@{offset}"));
+
+    // A blocked/failed assistant record must stay blocked even when oversized.
+    // The reduction below would otherwise collapse an `isApiErrorMessage` /
+    // `error:"rate_limit"` banner (whose `errorDetails` or text pushed it over
+    // the cap) into an ordinary `Kind::Assistant` with a null body — losing the
+    // class, the `blocked` bit and the reset clause, so a quota-blocked session
+    // renders healthy. Classify from the raw bytes FIRST and carry those bits
+    // across the size-truncation reduction (fetch-full still streams the rest).
+    if ty == "assistant" {
+        if let Some(info) = agent_error::from_oversize_line(line) {
+            let text = scan_field(line, "text").unwrap_or_default();
+            return ChatEntry {
+                uuid,
+                kind: Kind::AgentError,
+                ts_ms: parse_ts_ms(scan_field(line, "timestamp").as_deref()),
+                offset,
+                session_id: scan_field(line, "session_id").or_else(|| scan_field(line, "sessionId")),
+                tool_use_id: None,
+                label: Some(info.class.clone()),
+                // A banner is never a success — same as the parsed path.
+                ok: Some(false),
+                is_sidechain: line.contains("\"isSidechain\":true"),
+                agent_id: scan_field(line, "agentId"),
+                is_meta: line.contains("\"isMeta\":true"),
+                oversize: true,
+                body: oversize_agent_error_body(&text, &info),
+            };
+        }
+    }
+
     ChatEntry {
         uuid,
         kind: kind_for_top_level(ty),
@@ -753,6 +783,29 @@ fn oversize_entry(line: &str, offset: u64) -> ChatEntry {
         oversize: true,
         body: Value::Null,
     }
+}
+
+/// The blocking bits an oversized failure banner must carry across the
+/// size-truncation reduction. Deliberately small — the full line is still
+/// streamable via fetch-full — but it names the class, the reset clause and,
+/// above all, the `blocked` bit the composer/attention gate reads. Mirrors
+/// [`agent_error_body`] for the parsed path.
+fn oversize_agent_error_body(text: &str, info: &agent_error::AgentErrorInfo) -> Value {
+    let mut body = serde_json::json!({
+        "text": text,
+        "class": info.class,
+        "blocked": info.blocking,
+    });
+    if let Some(l) = &info.limit {
+        body["limit"] = Value::String(l.clone());
+    }
+    if let Some(l) = &info.label {
+        body["limit_label"] = Value::String(l.clone());
+    }
+    if let Some(r) = &info.resets_at {
+        body["resets_at"] = Value::String(r.clone());
+    }
+    body
 }
 
 fn kind_for_top_level(ty: &str) -> Kind {
@@ -1064,6 +1117,59 @@ mod tests {
             }
             other => panic!("oversize line must still produce a placeholder entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_oversized_assistant_failure_stays_blocked_not_healthy_prose() {
+        // #7 (HIGH): an `isApiErrorMessage` / `error:"rate_limit"` banner whose
+        // `errorDetails` pushes the line over MAX_LINE_BYTES used to collapse to
+        // an ordinary `Kind::Assistant` with a null body — byte-identical to
+        // prose — so a quota-blocked session rendered healthy. The blocked bits
+        // must survive the size-truncation reduction.
+        let banner = "You've hit your session limit · resets 4:40am (Europe/Amsterdam)";
+        let huge = format!(
+            r#"{{"type":"assistant","uuid":"blk","timestamp":"2026-01-01T00:00:00Z","error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"message":{{"role":"assistant","content":[{{"type":"text","text":"{banner}"}}]}},"errorDetails":"{}"}}"#,
+            "x".repeat(MAX_LINE_BYTES)
+        );
+        assert!(huge.len() > MAX_LINE_BYTES, "line must actually be oversized");
+        let ParsedLine::Entry(e) = parse_line(&huge, 0) else {
+            panic!("oversize line must still produce a placeholder entry")
+        };
+        assert_eq!(e.len(), 1);
+        let e = &e[0];
+        assert!(e.oversize, "still oversized — fetch-full streams the full line");
+        assert_eq!(e.kind, Kind::AgentError, "must NOT degrade to Kind::Assistant");
+        assert_eq!(e.ok, Some(false), "a banner is never a success");
+        assert_eq!(e.uuid, "blk", "the real uuid must survive for fetch-full");
+        assert_eq!(
+            e.body.get("blocked").and_then(Value::as_bool),
+            Some(true),
+            "the composer/attention gate reads body.blocked"
+        );
+        assert_eq!(e.body.get("class").and_then(Value::as_str), Some("limit"));
+        assert_eq!(e.body.get("limit").and_then(Value::as_str), Some("session_5h"));
+        assert_eq!(
+            e.body.get("resets_at").and_then(Value::as_str),
+            Some("4:40am (Europe/Amsterdam)"),
+            "the reset clause is the whole 'when can I work again' answer"
+        );
+    }
+
+    #[test]
+    fn an_oversized_ordinary_assistant_line_is_not_falsely_blocked() {
+        // The failure fast-path must NOT fire on prose: no error discriminators,
+        // so it stays the coarse placeholder with a null body.
+        let huge = format!(
+            r#"{{"type":"assistant","uuid":"ok","timestamp":"2026-01-01T00:00:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"here is a very long answer {}"}}]}}}}"#,
+            "x".repeat(MAX_LINE_BYTES)
+        );
+        let ParsedLine::Entry(e) = parse_line(&huge, 0) else {
+            panic!("oversize line must still produce a placeholder entry")
+        };
+        assert_eq!(e[0].kind, Kind::Assistant);
+        assert!(e[0].oversize);
+        assert!(e[0].body.is_null(), "ordinary prose keeps a null oversize body");
+        assert_eq!(e[0].ok, None);
     }
 
     #[test]

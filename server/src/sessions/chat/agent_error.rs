@@ -201,6 +201,53 @@ pub fn from_line(obj: &serde_json::Map<String, Value>, text: &str) -> Option<Age
     Some(classify(text, class, status))
 }
 
+/// Classify a failure banner off a line too big to parse (over `MAX_LINE_BYTES`),
+/// from its RAW bytes. Same discriminators as [`from_line`], read by substring
+/// scan instead of a JSON walk: a 950 KB line is deliberately never handed to
+/// serde, so an oversized failure would otherwise reach the wire as a coarse
+/// `Kind::Assistant` with a null body — byte-identical to prose — and a
+/// quota-blocked session would look healthy (verify matrix, `limit.hit.oversize`).
+///
+/// `None` for a line that carries none of the failure discriminators, so an
+/// ordinary oversized assistant/user line keeps its existing placeholder.
+pub fn from_oversize_line(line: &str) -> Option<AgentErrorInfo> {
+    let flagged = line.contains("\"isApiErrorMessage\":true")
+        || line.contains("\"is_api_error_message\":true");
+    let class = scan_string(line, "error");
+    let status = scan_i64(line, "apiErrorStatus").or_else(|| scan_i64(line, "api_error_status"));
+    if !flagged && class.is_none() && status.is_none() {
+        return None;
+    }
+    // The banner text (`message.content[0].text`) holds the bucket + reset copy;
+    // a bounded scan is enough — the banner is short even when `errorDetails`
+    // is what pushed the line over the cap.
+    let text = scan_string(line, "text").unwrap_or_default();
+    Some(classify(&text, class.as_deref(), status))
+}
+
+/// Read a bounded `"<key>":"<value>"` string out of raw bytes (first hit). The
+/// value is capped in CHARS, not bytes, so a multi-byte value can never be
+/// clipped mid-codepoint (the line may be 1 MB and is never fully parsed).
+fn scan_string(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let i = line.find(&needle)? + needle.len();
+    let rest = &line[i..];
+    let end = rest.find('"')?;
+    let val: String = rest[..end].chars().take(512).collect();
+    (!val.is_empty()).then_some(val)
+}
+
+/// Read a bounded `"<key>":<number>` integer out of raw bytes (first hit).
+fn scan_i64(line: &str, key: &str) -> Option<i64> {
+    let needle = format!("\"{key}\":");
+    let i = line.find(&needle)? + needle.len();
+    let rest = line[i..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 /// `"… · resets 4:40am (Europe/Amsterdam)"` → `Some("4:40am (Europe/Amsterdam)")`.
 fn reset_clause(text: &str) -> Option<String> {
     let at = text.find(RESETS)? + RESETS.len();
@@ -356,6 +403,39 @@ mod tests {
         let got = from_line(&flagged, "You've hit your weekly limit · resets 2pm (Europe/Amsterdam)")
             .expect("a flagged line is a banner");
         assert_eq!(got.limit.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn from_oversize_line_recovers_the_block_from_raw_bytes() {
+        // #7 (HIGH): the same banner reduced by size-truncation. from_oversize_line
+        // reads the discriminators + banner text out of raw bytes (no serde), so
+        // an oversized failure keeps its class/bucket/reset instead of degrading
+        // to prose.
+        let banner = "You've hit your session limit \u{00b7} resets 4:40am (Europe/Amsterdam)";
+        let line = format!(
+            r#"{{"type":"assistant","error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"message":{{"content":[{{"type":"text","text":"{banner}"}}]}},"errorDetails":"{}"}}"#,
+            "x".repeat(4096)
+        );
+        let got = from_oversize_line(&line).expect("a flagged oversized line is a banner");
+        assert_eq!(got.class, CLASS_LIMIT);
+        assert!(got.blocking);
+        assert_eq!(got.limit.as_deref(), Some("session_5h"));
+        assert_eq!(got.resets_at.as_deref(), Some("4:40am (Europe/Amsterdam)"));
+
+        // A throttle wearing the same 429/rate_limit clothes must NOT be blocking.
+        let throttle = r#"{"type":"assistant","error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"message":{"content":[{"type":"text","text":"API Error: temporarily limiting requests (not your usage limit)"}]}}"#;
+        assert!(!from_oversize_line(throttle).unwrap().blocking);
+
+        // No discriminators → not a banner, so ordinary oversized prose is left alone.
+        let prose = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"here is a long answer"}]}}"#;
+        assert!(from_oversize_line(prose).is_none());
+
+        // A rate_limit whose banner text is beyond the 512-char scan window is
+        // still blocking from the class alone.
+        let no_text = r#"{"type":"assistant","error":"rate_limit","isApiErrorMessage":true}"#;
+        let got = from_oversize_line(no_text).expect("flagged");
+        assert_eq!(got.class, CLASS_LIMIT);
+        assert!(got.blocking);
     }
 
     #[test]
