@@ -51,11 +51,25 @@ export function ComposerFrame({
   stat,
   className,
   children,
+  drop,
+  dropActive,
 }: {
   surface?: 'desktop' | 'phone'
   stat?: React.ReactNode
   className?: string
   children: React.ReactNode
+  /**
+   * Drag-drop handlers for the composer's own wrapper (the `group relative`
+   * div) — the composer upgrade drops files onto the whole bar. Optional: absent
+   * ⇒ no listeners, byte-identical to today.
+   */
+  drop?: {
+    onDragOver: React.DragEventHandler
+    onDragLeave: React.DragEventHandler
+    onDrop: React.DragEventHandler
+  }
+  /** A drag is currently over the frame — draw the accent drop ring. */
+  dropActive?: boolean
 }) {
   const phone = surface === 'phone'
   return (
@@ -72,7 +86,17 @@ export function ComposerFrame({
         className,
       )}
     >
-      <div className={cn('group relative mx-auto w-full', !phone && 'max-w-[744px]')}>
+      <div
+        {...drop}
+        className={cn(
+          'group relative mx-auto w-full',
+          !phone && 'max-w-[744px]',
+          // The drop ring: an accent halo over the whole composer while a file
+          // drag hovers it. `rounded-[26px]` matches the grown pill's corner.
+          dropActive &&
+            'rounded-[26px] ring-2 ring-[color-mix(in_oklab,var(--sm-accent)_55%,transparent)]',
+        )}
+      >
         {stat && (
           <p className="pointer-events-none absolute inset-x-0 -top-[42px] text-center text-[11.5px] tabular-nums text-ink-3">
             {stat}

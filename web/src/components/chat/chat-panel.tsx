@@ -53,6 +53,8 @@ import {
   type ScrollMark,
 } from './backlog'
 import { ChatComposer, type ChatComposerActions } from './composer'
+import { attachmentSentence } from './composer-insert'
+import { useStagedAttachments } from '../focus-mode/use-staged-attachments'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
@@ -500,10 +502,22 @@ export default function ChatPanel({
     }),
     [mentions, name, names],
   )
+  // The staged attachment plane — owned HERE, next to `useComposer`, so its
+  // outgoing prefix and reset fold into the SAME gated submit the peek/slash/
+  // hand-off gates guard (never around them). Handed to `<ChatComposer>` for the
+  // chip row, the `+` Attach group, the desktop disc, and paste / drag-drop.
+  const staged = useStagedAttachments()
   const composer = useComposer({
     name,
     input: pending.input,
     peek,
+    // Fold the quoted upload paths in at submit time (image-alone is valid), and
+    // clear the chips only once the POST resolves.
+    getOutgoingPrefix: React.useCallback(
+      () => attachmentSentence(staged.readyPaths()),
+      [staged],
+    ),
+    onSent: staged.reset,
     // The RECONCILED live turn (not raw status): the trailing control is Stop and
     // a bare Escape interrupts only while a turn is genuinely running. When the
     // turn ends — or the user's Stop reconciles a stuck-`active` one — this drops
@@ -818,6 +832,7 @@ export default function ChatPanel({
           pickerData={pickerData}
           onSchedule={scheduleDraft}
           actions={actions}
+          attachments={staged}
           // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
           //
           // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`

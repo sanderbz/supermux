@@ -28,8 +28,11 @@ import * as React from 'react'
 import {
   ArrowLeftRight,
   AtSign,
+  Camera,
   Clock,
   Command,
+  FolderOpen,
+  Image as ImageIcon,
   Scissors,
   Slash,
   type LucideIcon,
@@ -54,6 +57,13 @@ export interface ChatActionsSheetProps {
   onSwitchSession: () => void
   /** Open the global command palette (⌘K) — search / jump / new session. */
   onCommandPalette: () => void
+  /**
+   * Stage picked files as attachments (composer upgrade). Present ⇒ the sheet
+   * grows an ATTACH group at the top — Camera / Photo library / Files — each row
+   * owning its own hidden native picker (`capture`/`multiple`). Omitted ⇒ no
+   * attach group, so an unwired caller renders exactly as before.
+   */
+  onFiles?: (files: File[]) => void
 }
 
 export function ChatActionsSheet({
@@ -65,7 +75,12 @@ export function ChatActionsSheet({
   onSnippets,
   onSwitchSession,
   onCommandPalette,
+  onFiles,
 }: ChatActionsSheetProps) {
+  const cameraRef = React.useRef<HTMLInputElement | null>(null)
+  const photosRef = React.useRef<HTMLInputElement | null>(null)
+  const filesRef = React.useRef<HTMLInputElement | null>(null)
+
   // Run an action and dismiss — the sheet is a launcher, not a home.
   // Mention/command stage a trigger and reopen the picker on the composer the
   // close reveals.
@@ -77,9 +92,54 @@ export function ChatActionsSheet({
     [onOpenChange],
   )
 
+  // A native picker fired: hand the files up to stage them as chips, then close.
+  const onPicked = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = Array.from(e.target.files ?? [])
+      // Reset so re-picking the SAME file still fires `change`.
+      e.target.value = ''
+      if (picked.length && onFiles) {
+        onFiles(picked)
+        onOpenChange(false)
+      }
+    },
+    [onFiles, onOpenChange],
+  )
+
   return (
     <MobileActionSheet open={open} onOpenChange={onOpenChange} title="Add to your message">
       <div className="flex flex-col px-2 pb-2 pt-1">
+        {/* ATTACH — the top group, adaptive to the platform's native pickers.
+            Folded IN (rather than a second "Attach…" sheet) so the `+` opens one
+            menu with everything: one tap, one list. Labelled so the pickers
+            don't read as part of the compose group below them; the compose group
+            keeps the sheet's own "Add to your message" title. */}
+        {onFiles && (
+          <>
+            <p className="px-3 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
+              Attach
+            </p>
+            <ActionRow
+              icon={Camera}
+              label="Camera"
+              onTap={() => cameraRef.current?.click()}
+            />
+            <ActionRow
+              icon={ImageIcon}
+              label="Photo library"
+              onTap={() => photosRef.current?.click()}
+            />
+            <ActionRow
+              icon={FolderOpen}
+              label="Files"
+              onTap={() => filesRef.current?.click()}
+            />
+            <div className="my-1.5 h-px bg-border/60" />
+            <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
+              Add to your message
+            </p>
+          </>
+        )}
         <ActionRow icon={AtSign} label="Mention a file or session" onTap={() => run(onMention)} />
         <ActionRow icon={Slash} label="Slash command" onTap={() => run(onSlash)} />
         {onSnippets && (
@@ -103,6 +163,38 @@ export function ChatActionsSheet({
         />
         <ActionRow icon={Command} label="Command palette" onTap={() => run(onCommandPalette)} />
       </div>
+
+      {/* Hidden native pickers — one per option (distinct accept/capture), so the
+          phone opens the camera, the photo library or the file browser directly.
+          Only mounted when attach is wired. */}
+      {onFiles && (
+        <>
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={onPicked}
+          />
+          <input
+            ref={photosRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={onPicked}
+          />
+          <input
+            ref={filesRef}
+            type="file"
+            accept="*/*"
+            multiple
+            className="hidden"
+            onChange={onPicked}
+          />
+        </>
+      )}
     </MobileActionSheet>
   )
 }

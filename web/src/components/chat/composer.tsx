@@ -43,6 +43,8 @@ import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { AtIcon, ClockIcon, Composer, MicIcon, PlusIcon } from './ui'
 import ChatActionsSheet from './chat-actions-sheet'
+import { AttachmentChips } from './attachment-chips'
+import type { UseStagedAttachmentsResult } from '../focus-mode/use-staged-attachments'
 
 /** The invisible 44pt touch target every disc on the bar grows on a coarse
  *  pointer: an `::after` inset so pointer-events ride the pseudo-element and a
@@ -51,6 +53,10 @@ import ChatActionsSheet from './chat-actions-sheet'
  *  the rest-state mic — so the recipe is stated once, not copied three ways. */
 const COARSE_TARGET =
   '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1 [@media(pointer:coarse)]:after:content-[""]'
+
+/** A stable empty chip list, so an unwired composer never re-renders on a new
+ *  array identity (and reads byte-identically to today). */
+const EMPTY_ATTACHMENTS: readonly never[] = []
 
 /** The `@`/`/` popover (fase A4 T9), lazily — it is reached only when somebody
  *  types a trigger, so its list, its filter and its two queries stay out of the
@@ -144,6 +150,18 @@ export interface ChatComposerProps {
    */
   actions?: ChatComposerActions
   /**
+   * The staged attachment plane (composer upgrade). Owned by the composition
+   * root next to `useComposer` (so the outgoing prefix / reset can be wired into
+   * the SAME gated submit), and handed down here to render: the chip row above
+   * the pill, the `+` add-menu's Attach group, the desktop attach disc, and
+   * paste / drag-drop — all feed `attachments.handleFiles`. `readyPaths()`
+   * becomes the `getOutgoingPrefix` the submit folds in.
+   *
+   * Optional: omitted (the bench, the read-only shell, any surface that does not
+   * wire uploads) ⇒ no chips, no attach affordances, byte-identical to today.
+   */
+  attachments?: UseStagedAttachmentsResult
+  /**
    * This session cannot work — a quota bucket, an auth death (`blocked.ts`).
    * The string is the REASON, already naming the limit and, where there is one,
    * when it lifts.
@@ -170,6 +188,7 @@ export function ChatComposer({
   pickerData,
   onSchedule,
   actions,
+  attachments,
   blocked,
   className,
 }: ChatComposerProps) {
@@ -263,10 +282,98 @@ export function ChatComposer({
       dictation.start()
     }
   }, [dictation, flushDictation])
+  // ── ATTACHMENTS (composer upgrade) ─────────────────────────────────────────
+  // Everything below no-ops when `attachments` is absent, so a composer that
+  // does not wire uploads renders exactly as before.
+  const stagedFiles = attachments?.attachments ?? EMPTY_ATTACHMENTS
+  const handleFiles = attachments?.handleFiles
+  const hasReady = (attachments?.readyPaths().length ?? 0) > 0
+  const uploading = attachments?.uploading ?? false
+
+  // The desktop attach disc's OS file dialog (one hidden `<input multiple>`).
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+  const onDesktopPick = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = Array.from(e.target.files ?? [])
+      e.target.value = '' // re-pick the same file still fires `change`
+      if (picked.length) handleFiles?.(picked)
+    },
+    [handleFiles],
+  )
+
+  // PASTE — Cmd/Ctrl+V an image blob becomes a chip (desktop-critical). Scans
+  // the clipboard for `kind: 'file'` images; only then `preventDefault` so text
+  // and rich-content paste are untouched. On the phone the contenteditable owns
+  // its own plain-text paste guard, so this never fires there.
+  const onPaste = React.useCallback(
+    (e: React.ClipboardEvent<Element>) => {
+      if (!handleFiles) return
+      const files: File[] = []
+      for (const item of Array.from(e.clipboardData?.items ?? [])) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const f = item.getAsFile()
+          if (f) files.push(f)
+        }
+      }
+      if (files.length) {
+        e.preventDefault()
+        handleFiles(files)
+      }
+    },
+    [handleFiles],
+  )
+
+  // DRAG-DROP — files dropped anywhere on the composer frame become chips, with
+  // an accent ring while a drag is over it. Desktop in practice; inert on touch.
+  const [dropActive, setDropActive] = React.useState(false)
+  const dropHandlers = React.useMemo(() => {
+    if (!handleFiles) return undefined
+    return {
+      onDragOver: (e: React.DragEvent) => {
+        if (!Array.from(e.dataTransfer.types).includes('Files')) return
+        e.preventDefault()
+        setDropActive(true)
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        // Only the leave that exits the frame itself, not a child boundary.
+        if (e.currentTarget === e.target) setDropActive(false)
+      },
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault()
+        setDropActive(false)
+        const files = Array.from(e.dataTransfer.files)
+        if (files.length) handleFiles(files)
+      },
+    }
+  }, [handleFiles])
+
+  // MULTI-LINE / CHIPS → soften the pill's radius (the shell reads `grown`).
+  // Measured off the real field height so a SOFT-WRAPPED long line counts too,
+  // not just an explicit newline; the threshold is one line's worth of the
+  // field's own box (per surface). Re-read on every draft change — the same
+  // signal `growTextarea` runs on.
+  const [multiline, setMultiline] = React.useState(false)
+  const fieldRef = handle.ref
+  React.useEffect(() => {
+    const el = fieldRef.current
+    setMultiline(!!el && el.scrollHeight > (phone ? 44 : 40))
+  }, [handle.draft, fieldRef, phone])
+  const grown = multiline || stagedFiles.length > 0
+
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
-  const canSend = handle.draft.trim().length > 0 && !blocked
+  //
+  // An IMAGE ALONE is a valid message (`hasReady`), and Send WAITS for uploads
+  // (`!uploading`): while bytes are in flight the disc shows disabled, the same
+  // honest "asked, not yet answered" `handle.sending` already uses.
+  const canSend = (handle.draft.trim().length > 0 || hasReady) && !uploading && !blocked
+  // The Send disc is SHOWN (not swapped for the mic) whenever there is anything
+  // to send — including while an upload is still settling — so it can present as
+  // disabled rather than vanishing. `canSend` is the enabled gate; this is the
+  // visibility gate.
+  const showSend =
+    (handle.draft.trim().length > 0 || stagedFiles.length > 0) && !blocked
   // WHICH ROW THE POPOVER IS ON (A4 review). The list lives in the picker, but
   // the only element that ever has focus is the textarea — so the textarea is
   // what has to carry `aria-activedescendant`, and the highlight travels up
@@ -295,7 +402,13 @@ export function ChatComposer({
   }
 
   return (
-    <ComposerFrame surface={surface} stat={stat} className={className}>
+    <ComposerFrame
+      surface={surface}
+      stat={stat}
+      className={className}
+      drop={dropHandlers}
+      dropActive={dropActive}
+    >
       {blocked && (
         <p
           role="status"
@@ -325,9 +438,17 @@ export function ChatComposer({
             <EntityPicker {...pickerProps} />
           </React.Suspense>
         ))}
+      {/* THE CHIP ROW — above the pill, in the same above-pill stack as the
+          banner and the `@`/`/` picker, so it reads as part of the one composer
+          unit and the rounded pill never clips a thumbnail. Renders nothing when
+          empty. */}
+      {attachments && (
+        <AttachmentChips attachments={attachments.attachments} onDismiss={attachments.dismiss} />
+      )}
       <Composer
         size={phone ? 'mobile' : 'desktop'}
         placeholder={`Message ${label}`}
+        grown={grown}
         leading={
           // ONE CLEAN LEADING CONTROL, TWO SHAPES.
           //
@@ -365,6 +486,30 @@ export function ChatComposer({
             </LeadingButton>
           ) : (
             <div className="flex flex-none items-center gap-2">
+              {/* DESKTOP ATTACH — a direct disc, not a menu: there is one OS
+                  file dialog and no `+` sheet on desktop, so a button is fewer
+                  clicks than inventing one. Paste + drag-drop are the power
+                  paths; this is the discoverable fallback. Only when uploads are
+                  wired. */}
+              {attachments && (
+                <>
+                  <LeadingButton
+                    testId="chat-composer-attach"
+                    label="Attach a file"
+                    phone={phone}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <PaperclipIcon />
+                  </LeadingButton>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={onDesktopPick}
+                  />
+                </>
+              )}
               <LeadingButton
                 testId="chat-composer-at"
                 label="Mention a file or a session"
@@ -402,6 +547,11 @@ export function ChatComposer({
           onChange: handle.onChange,
           onKeyDown: handle.onKeyDown,
           onSelect: handle.onSelect,
+          // Paste an image → a chip. Only wired when uploads are (so an unwired
+          // composer carries no extra handler); the desktop textarea reads it
+          // off `rest`, and the phone contenteditable keeps its own plain-text
+          // paste guard, so this is a desktop path in practice.
+          onPaste: attachments ? onPaste : undefined,
           // The composer is a message box, not a code editor: the browser's own
           // spellcheck is the right default, and autocapitalise/autocorrect are
           // what a phone keyboard expects from one.
@@ -427,7 +577,7 @@ export function ChatComposer({
           <div className="grid size-10 place-items-center">
             <AnimatePresence initial={false}>
               <motion.div
-                key={canSend ? 'send' : active ? 'stop' : 'idle'}
+                key={showSend ? 'send' : active ? 'stop' : 'idle'}
                 style={{ gridArea: '1 / 1' }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -445,7 +595,7 @@ export function ChatComposer({
                     empty box during a turn → Stop; at rest → the boards' mic.
                     Stop with a draft up is still one Escape away (the key
                     contract) and the dock keeps its own Stop. */}
-                {canSend ? (
+                {showSend ? (
                   <TrailingButton
                     // THE CONTROL SAYS WHERE THE WORDS ARE GOING (fase B4
                     // T4.4). While the draft reads as a hand-off, Enter goes to
@@ -454,14 +604,20 @@ export function ChatComposer({
                     // element, same cell, no swap: only the sentence differs.
                     testId="chat-send"
                     label={
-                      handle.handoff
-                        ? `Hand to ${handle.handoff.label}`
-                        : `Send to ${label}`
+                      uploading
+                        ? 'Waiting for uploads…'
+                        : handle.handoff
+                          ? `Hand to ${handle.handoff.label}`
+                          : `Send to ${label}`
                     }
                     data-handoff={handle.handoff ? handle.handoff.to : undefined}
                     phone={phone}
                     onClick={handle.submit}
-                    disabled={handle.sending}
+                    // Disabled while a POST is in flight, while an upload is
+                    // still settling, or when there is nothing actually sendable
+                    // (only errored chips + an empty box) — `!canSend` folds all
+                    // three: the disc stays visible, present but not yet armed.
+                    disabled={handle.sending || !canSend}
                   >
                     {/* THE GLYPH CHANGES TOO, not just the label (fase B4
                         T4.4). An `aria-label` alone is not "visible before the
@@ -549,6 +705,9 @@ export function ChatComposer({
           onSnippets={actions.onSnippets}
           onSwitchSession={actions.onSwitchSession}
           onCommandPalette={actions.onCommandPalette}
+          // The Attach group at the top of the `+` sheet — Camera / Photo
+          // library / Files — feeds the same staged plane the chips render.
+          onFiles={handleFiles}
         />
       )}
     </ComposerFrame>
@@ -859,6 +1018,23 @@ function SendIcon() {
     <svg width="17" height="17" viewBox="0 0 18 18" fill="none" aria-hidden>
       <path
         d="M9 14.6V3.6M4.4 8.2L9 3.6l4.6 4.6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Attach — a paperclip. The one place a paperclip is the honest glyph: a
+ *  direct desktop file-picker button (the mobile add-menu rule is paperclip-
+ *  free, but there attach is a labelled ROW, not an icon). */
+function PaperclipIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M14.4 8.1l-5 5a2.7 2.7 0 01-3.8-3.8l5-5a1.6 1.6 0 012.3 2.3l-5 5a.55.55 0 01-.8-.8l4.6-4.6"
         stroke="currentColor"
         strokeWidth="1.5"
         strokeLinecap="round"
