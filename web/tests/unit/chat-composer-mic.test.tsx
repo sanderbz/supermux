@@ -1,15 +1,20 @@
 /**
- * The composer mic is gated on Web Speech (mobile polish #3).
+ * The composer's rest-state mic IS dictation (iOS included).
  * ─────────────────────────────────────────────────────────────────────────────
- * The trailing mic reads as a dictation control, and dictation is the Web Speech
- * API — which iOS Safari and every iOS WKWebView expose under neither name. A mic
- * drawn there is a dead glyph the instant a thumb lands on it. The composer now
- * feature-detects (`speech.ts`) and draws the mic only where recognition exists.
+ * The trailing mic is a real dictation control, not decoration: at rest it is a
+ * button that toggles Web Speech (`useDictation`) and inserts the transcript into
+ * the draft. Web Speech DOES exist on iOS Safari / WKWebView under the `webkit`
+ * prefix — dictation works on the iPhone — so the mic is SHOWN there, and hidden
+ * only where the browser exposes no recognition constructor at all (and in SSR,
+ * where there is no window).
  *
- * Both halves are asserted: the pure predicate, and the composer render that
- * consumes it — the iPhone case (no `window` recognition ctor → no mic) is the
- * default SSR environment here, which is exactly the environment the product's
- * iOS users are in.
+ * What is asserted here, and what is not: this repo has no jsdom, so a real tap —
+ * `aria-pressed` flipping to true, the recording wash, `handle.insert` firing on a
+ * final Web Speech result — is Playwright's job (the same split the picker's
+ * keyboard tests call out: behaviour that needs real events lives in e2e). What a
+ * unit test CAN pin is the pure predicate and the SSR structure: with a
+ * recognition ctor present the rest cell is a real, labelled, toggle-wired button
+ * (`aria-pressed="false"`, not an `aria-hidden` glyph); with none it is absent.
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import * as React from 'react'
@@ -54,7 +59,8 @@ const composer = () =>
     <ChatComposer name="release-train" label="Release Train" handle={handle()} surface="phone" />,
   )
 
-/** Stub a browser `window` that DOES expose recognition, with the matchMedia
+/** Stub a browser `window` that DOES expose recognition under the `webkit`
+ *  prefix — i.e. exactly what iOS Safari / WKWebView expose — with the matchMedia
  *  framer-motion's `useReducedMotion` reads at render. */
 function withSpeechWindow(run: () => void): void {
   const g = globalThis as { window?: unknown }
@@ -91,7 +97,7 @@ describe('speechRecognitionSupported', () => {
     expect(speechRecognitionSupported()).toBe(false)
   })
 
-  test('true when the recognition constructor is exposed', () => {
+  test('true with the webkit-prefixed ctor — i.e. iOS Safari / WKWebView', () => {
     withSpeechWindow(() => {
       expect(speechRecognitionSupported()).toBe(true)
     })
@@ -99,16 +105,33 @@ describe('speechRecognitionSupported', () => {
 })
 
 describe('the composer mic gate', () => {
-  test('no Web Speech (the iPhone case) → no mic glyph at rest', () => {
+  test('no recognition ctor (SSR / a browser without Web Speech) → no mic at rest', () => {
     const html = composer()
-    // The idle trailing cell is empty — no mic path, no dead control.
+    // The idle trailing cell is empty — no mic disc, no dead control. This is the
+    // genuinely-unsupported case, NOT the iPhone (iOS has webkitSpeechRecognition).
     expect(html).not.toContain('sm-mic')
+    expect(html).not.toContain('data-testid="chat-mic"')
   })
 
-  test('with Web Speech → the mic keeps its cell at rest', () => {
+  test('iOS (webkitSpeechRecognition present) → the mic is SHOWN at rest', () => {
     withSpeechWindow(() => {
       const html = composer()
+      expect(html).toContain('data-testid="chat-mic"')
+      // The boards' inverted disc keeps its cell.
       expect(html).toContain('sm-mic')
+    })
+  })
+
+  test('the shown mic is a REAL dictation toggle, not decoration', () => {
+    withSpeechWindow(() => {
+      const html = composer()
+      // A real, labelled button — not the old `aria-hidden` glyph.
+      expect(html).toContain('<button')
+      expect(html).toContain('data-testid="chat-mic"')
+      expect(html).toContain('aria-label="Dictate"')
+      // Wired to the listening state: a toggle sits at `aria-pressed="false"` when
+      // it is off. (The true/tint side of the toggle needs a real tap — e2e.)
+      expect(html).toContain('aria-pressed="false"')
     })
   })
 })

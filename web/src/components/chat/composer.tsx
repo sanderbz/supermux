@@ -34,10 +34,11 @@ import { motionOff, springs, tweens } from '../../lib/springs'
 import { SessionMark } from '../../brand/marks'
 import { cn } from '../../lib/utils'
 
+import { useDictation } from '../focus-mode/use-dictation'
+
 import { ComposerFrame } from './composer-shell'
 import type { EntityPickerProps } from './entity-picker'
 import { pickerOptionId, PICKER_LISTBOX_ID, type EntityPickerData } from './slash'
-import { speechRecognitionSupported } from './speech'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { Composer, MicIcon, PlusIcon } from './ui'
@@ -135,11 +136,62 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
-  // The rest-state mic is a dictation affordance, and dictation is the Web Speech
-  // API — which iOS Safari / WKWebView do not expose. Read once (the constructor
-  // does not appear after load) so an iPhone never shows a mic that is dead the
-  // moment it is tapped. See `speech.ts`.
-  const micSupported = React.useMemo(() => speechRecognitionSupported(), [])
+  // ── the rest-state mic IS dictation ─────────────────────────────────────────
+  // Not decoration: at rest the trailing cell is a real mic that toggles Web
+  // Speech through `useDictation` — the SAME hook the dock's mic uses, which
+  // DOES exist on iOS Safari / WKWebView (`webkitSpeechRecognition`). So the mic
+  // is shown on the iPhone, where dictation works, and hidden only where the
+  // browser exposes no recognition at all (`dictation.supported`).
+  //
+  // Transcribed text lands in the DRAFT through the composer's own insert seam
+  // (`handle.insert` → `insertIntoComposer`), so a dictated sentence reads
+  // exactly like a typed one and is one Enter from the gated send path.
+  //
+  // onFinal-FIRST FLUSH (iOS discipline, mirrored from the dock). Web Speech's
+  // `onend` fires unreliably on iOS / WKWebView, so FINAL segments are inserted
+  // the instant they commit (`onFinal`); the cumulative interim is buffered only
+  // as a safety tail, flushed on the stop tap. A `sentLen` cursor dedupes the
+  // two paths so a segment can never land twice.
+  const pendingTranscriptRef = React.useRef('')
+  const sentLenRef = React.useRef(0)
+  const insert = handle.insert
+  const dictation = useDictation({
+    // Cumulative interim — buffered for the safety-tail flush; never inserted here.
+    onTranscript: React.useCallback((text: string) => {
+      pendingTranscriptRef.current = text
+    }, []),
+    // Final segment — insert immediately (does not wait for the unreliable onend).
+    onFinal: React.useCallback(
+      (segment: string) => {
+        const seg = segment.trim()
+        if (!seg) return
+        insert(seg + ' ')
+        // Web Speech's cumulative transcript joins finals with spaces; advance the
+        // dedupe cursor past what we just inserted so the tail flush won't re-add it.
+        sentLenRef.current = pendingTranscriptRef.current.length
+      },
+      [insert],
+    ),
+  })
+  // Flush only the UNSENT tail — text the user spoke that never finalized before
+  // they stopped. Clears state BEFORE inserting so it can never double-insert.
+  const flushDictation = React.useCallback(() => {
+    const tail = pendingTranscriptRef.current.slice(sentLenRef.current).trim()
+    pendingTranscriptRef.current = ''
+    sentLenRef.current = 0
+    if (tail) insert(tail + ' ')
+  }, [insert])
+  // Mic tap: STOPPING flushes the unsent tail inside the user gesture (WS still
+  // open) THEN stops — independent of whether `onend` ever arrives. STARTING just
+  // starts; final segments stream in via `onFinal` while listening.
+  const onMicTap = React.useCallback(() => {
+    if (dictation.listening) {
+      flushDictation()
+      dictation.stop()
+    } else {
+      dictation.start()
+    }
+  }, [dictation, flushDictation])
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
@@ -377,27 +429,42 @@ export function ChatComposer({
                   >
                     <StopIcon />
                   </TrailingButton>
-                ) : micSupported ? (
-                  /* At rest the boards' mic keeps its cell. It is decoration
-                     until dictation lands — so it is `aria-hidden` and not a
-                     button, exactly as B0 draws it.
+                ) : dictation.supported ? (
+                  /* AT REST THE MIC IS DICTATION — a real button, not decoration.
+                     Tapping it toggles Web Speech; transcribed text lands in the
+                     draft via `handle.insert`. It exists on iOS too
+                     (`webkitSpeechRecognition`), so it is NOT hidden there.
 
-                     GATED ON WEB SPEECH (mobile polish #3). The mic reads as a
-                     dictation control, and dictation is the Web Speech API that
-                     iOS Safari / WKWebView do not expose — so on an iPhone it
-                     was a dead glyph. Absent support, the cell is empty rather
-                     than promising a capability the browser cannot deliver. */
-                  <span
-                    aria-hidden
+                     While listening it shows a recording state: `aria-pressed`
+                     and the brand-amber wash in place of the `.sm-mic` disc, so
+                     the user can see dictation is live before they speak. */
+                  <motion.button
+                    type="button"
+                    data-testid="chat-mic"
+                    aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                    aria-pressed={dictation.listening}
+                    title={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                    onClick={onMicTap}
+                    whileTap={{ scale: 0.94 }}
+                    transition={springs.buttonPress}
                     className={cn(
-                      'sm-mic grid place-items-center rounded-full',
+                      'relative grid place-items-center rounded-full',
                       phone ? 'size-9' : 'size-10',
+                      // Recording → brand wash; at rest → the boards' inverted disc.
+                      // Swapped (not layered) so there is no `.sm-mic`-vs-utility
+                      // specificity fight over the background.
+                      dictation.listening ? 'bg-brand/20 text-brand' : 'sm-mic',
+                      // The invisible 44pt target on a coarse pointer — same
+                      // `::after` inset the Send/Stop control uses, so the disc is
+                      // unchanged but a thumb landing 4px wide still presses it.
+                      '[@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1',
+                      '[@media(pointer:coarse)]:after:content-[""]',
                     )}
                   >
                     <MicIcon />
-                  </span>
+                  </motion.button>
                 ) : (
-                  /* No Web Speech here — draw nothing rather than a dead mic. The
+                  /* No Web Speech at all — draw nothing rather than a dead mic. The
                      cell keeps its footprint so the field width does not jump
                      between the idle and the armed states. */
                   <span aria-hidden className={phone ? 'size-9' : 'size-10'} />

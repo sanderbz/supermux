@@ -119,7 +119,6 @@ import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { KeyBar, useKeyBar } from '@/components/focus-mode/key-bar'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
-import { useDictation } from '@/components/focus-mode/use-dictation'
 import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
@@ -504,40 +503,10 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // the composer. The sheet is owned HERE because the route holds the picker, the
   // snippet drawer and the write plane the mic streams into.
   const [chatActionsOpen, setChatActionsOpen] = React.useState(false)
-  // Chat dictation streams into the composer DRAFT (`input.insert` stages under
-  // chat), never straight at a `❯`. Same onFinal-first flush discipline the dock
-  // uses — iOS fires Web Speech's `onend` unreliably, so final segments land
-  // immediately and the unsent interim tail is flushed on the stop tap.
-  const dictePendingRef = React.useRef('')
-  const dicteSentRef = React.useRef(0)
-  const chatDictation = useDictation({
-    onTranscript: React.useCallback((t: string) => {
-      dictePendingRef.current = t
-    }, []),
-    onFinal: React.useCallback(
-      (segment: string) => {
-        const seg = segment.trim()
-        if (!seg) return
-        void input.insert(seg + ' ')
-        dicteSentRef.current = dictePendingRef.current.length
-      },
-      [input],
-    ),
-  })
-  const flushDictation = React.useCallback(() => {
-    const tail = dictePendingRef.current.slice(dicteSentRef.current).trim()
-    dictePendingRef.current = ''
-    dicteSentRef.current = 0
-    if (tail) void input.insert(tail + ' ')
-  }, [input])
-  const toggleDictation = React.useCallback(() => {
-    if (chatDictation.listening) {
-      flushDictation()
-      chatDictation.stop()
-    } else {
-      chatDictation.start()
-    }
-  }, [chatDictation, flushDictation])
+  // Dictation is NOT owned here any more: the chat composer's own rest-state mic
+  // is the single dictation control (it drives `useDictation` and inserts into
+  // the draft directly), so the folded-actions sheet no longer carries a Dictate
+  // row and the route no longer wires a second recognition session.
   // The on-demand native EDITOR sheet (feat-edit-in-native-editor). The dock's
   // bottom-left Edit field is its trigger: tapping it sends Ctrl+G to the pty,
   // Claude lifts its current `❯` input into the supermux bridge, and the sheet
@@ -978,11 +947,6 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
         onSwitchSession={() => setPickerOpen(true)}
         onCommandPalette={triggerCommandPalette}
         onSnippets={() => setSnippetsOpen(true)}
-        dictation={{
-          supported: chatDictation.supported,
-          listening: chatDictation.listening,
-          toggle: toggleDictation,
-        }}
       />
 
       {/* The on-demand native EDITOR sheet (feat-edit-in-native-editor) — morphs

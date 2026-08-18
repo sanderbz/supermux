@@ -45,6 +45,10 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike
 
 function getRecognitionCtor(): SpeechRecognitionCtor | null {
+  // Window-guarded so the hook is safe under SSR / `bun test`, where `window`
+  // may be absent — a bare `window` reference would throw a ReferenceError.
+  // (The chat composer calls this hook and is server-rendered in tests.)
+  if (typeof window === 'undefined') return null
   const w = window as unknown as {
     SpeechRecognition?: SpeechRecognitionCtor
     webkitSpeechRecognition?: SpeechRecognitionCtor

@@ -15,7 +15,7 @@
  * user is looking at a beat later.
  */
 import * as React from 'react'
-import { ArrowLeftRight, Command, Mic, Plus } from 'lucide-react'
+import { ArrowLeftRight, Command, Plus } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
@@ -30,12 +30,6 @@ export interface ChatActionsSheetProps {
   onCommandPalette: () => void
   /** Open the snippets drawer; omitted → the row is not drawn. */
   onSnippets?: () => void
-  /**
-   * Dictation, when the browser has Web Speech. `toggle` starts/stops; the
-   * transcript streams into the composer draft. Absent `supported` → no mic row
-   * (iOS Safari / WKWebView), matching the composer's own mic gate.
-   */
-  dictation?: { supported: boolean; listening: boolean; toggle: () => void }
 }
 
 export function ChatActionsSheet({
@@ -44,11 +38,10 @@ export function ChatActionsSheet({
   onSwitchSession,
   onCommandPalette,
   onSnippets,
-  dictation,
 }: ChatActionsSheetProps) {
   // Run an action and dismiss — the sheet is a launcher, not a home. Dictation
-  // is the same: toggling it on then closing puts the live transcript into the
-  // composer the user can now see.
+  // is NOT here: it is the composer's own rest-state mic (a single dictation
+  // control), so this sheet holds only the actions with no home of their own.
   const run = React.useCallback(
     (fn: () => void) => {
       fn()
@@ -67,14 +60,6 @@ export function ChatActionsSheet({
         />
         <ActionRow icon={Command} label="Command palette" onTap={() => run(onCommandPalette)} />
         {onSnippets && <ActionRow icon={Plus} label="Snippets" onTap={() => run(onSnippets)} />}
-        {dictation?.supported && (
-          <ActionRow
-            icon={Mic}
-            label={dictation.listening ? 'Stop dictation' : 'Dictate'}
-            active={dictation.listening}
-            onTap={() => run(dictation.toggle)}
-          />
-        )}
       </div>
     </MobileActionSheet>
   )
