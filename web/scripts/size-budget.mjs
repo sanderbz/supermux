@@ -359,7 +359,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // 93%, a rounding crumb off the prior 149.15). A genuine additive feature, not a
 // regression to trim: ceil(measured) = 255. The .gr-botpane CSS (~0.15 KB) lands
 // in the CSS budget (27.76/30, 93%), not here.
-const BUDGET_APP_JS = 255 * KB
+// 257 as of the feat/grok-mode EXPRESSIVE FACES wave: the mark engine gained a
+// Grok-skin blob silhouette (adapted blobatar recipe, `grok-blob.ts`), three new
+// face states (thinking/streaming/connecting) + their eye geometries, the
+// decoupled `attentionFor` layer and `markStateForSession` in `mark-status.ts`.
+// Measured 255.28; +0.97 KB over the 254.31 bot-panel baseline, effectively ALL
+// of it on the LAZY `marks` chunk (5.04 -> 5.12) and the roster/chat panels that
+// read the new status mapping — the hero ENTRY path is untouched (149.68/160,
+// 94%, a rounding crumb): the blob math is only reached through `geometry.ts` ->
+// `session-mark.tsx` (the marks chunk), never through the entry-reachable
+// `grok-agent-hue.ts`. A genuine additive feature (the faces now encode status
+// pre-attentively like Grok Bot), not a regression to trim: ceil(measured) + a
+// thin margin = 257. Every byte of expression/motion is CSS under `[data-grok]`
+// (28.47/30 CSS, 95%) and byte-inert off the skin. The next thing through here
+// should measure first — 1.7 KB of headroom is intentional.
+const BUDGET_APP_JS = 257 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
