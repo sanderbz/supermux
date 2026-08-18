@@ -2005,6 +2005,28 @@
   color: var(--sm-ink-on-emphasis);
 }
 
+/* PHONE TOUCH TARGET (jury focus/shell call-out D): the composer's mic/send disc
+   is 36px (`size-9`) on the phone — below the 44pt HIG floor, and it is the
+   composer's ONE action. Lift the TARGET to 44×44 on a coarse pointer with a
+   centred `::after` expander (the same pattern the renderer switch uses), so the
+   visual disc and the composer's layout are unchanged — only the hit box grows,
+   spilling into the composer's own padding. Grok- and touch-scoped; the desktop
+   disc (40px) and the base app are untouched. */
+@media (pointer: coarse) {
+  [data-grok] .sm-composer .sm-mic {
+    position: relative;
+  }
+  [data-grok] .sm-composer .sm-mic::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
 /* ══ WS9 — EMPTY / LOADING / ERROR / ATTENTION SURFACES ═══════════════════════
    The states of the app: nothing yet, loading, something went wrong, something
    wants you. ENTIRELY scoped under `[data-grok]`; every surface below already
