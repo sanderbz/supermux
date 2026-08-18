@@ -87,7 +87,9 @@
   /* semantic tones — consumed ONLY as color-mix(...14%) fill + full-strength text (§5) */
   --sm-tone-accent: #0a84ff;
   --sm-tone-success: #1f8a65;
-  --sm-tone-warning: #b26a00;
+  /* AA fix: #b26a00 was 3.85:1 on the #f4f4f2 pane (fails 4.5). Darkened to
+     #8a5200 → 5.80:1. Dark-theme amber (#e8a33d, 8.54:1) is left untouched. */
+  --sm-tone-warning: #8a5200;
   --sm-tone-danger: #c0362c;
 
   /* fills & bubbles (§7) */
@@ -758,8 +760,10 @@
      (~2.2:1 light / ~2.8:1 dark) and the provider/ctx tag line even fainter
      (~1.6:1 light). Grok uses ONE AA-compliant sub-grey, not two faint ones. This
      is that grey: an opaque tone that clears 4.5:1 on the rail ground in both
-     themes (light #6b7280 ≈ 4.6:1 on #f4f4f2; dark override ≈ 6:1 on #141414). */
-  --gr-meta: #6b7280;
+     themes. Light #6b7280 actually measured 4.39:1 on #f4f4f2 (right on the AA
+     line); nudged to #5f6773 → 5.19:1 for margin. Dark override (#9a9a9a ≈
+     6.55:1 on #141414) already clears and is left as-is. */
+  --gr-meta: #5f6773;
   /* state words (the firewall's status half — never the agent hue) */
   --gr-work: var(--sm-tone-warning);
   --gr-need: var(--sm-tone-danger);
@@ -821,7 +825,10 @@
 }
 [data-grok] .grok-roster .gr-count {
   font-size: 13px;
-  color: var(--sm-text-tertiary);
+  /* AA fix: the '… bots' subtitle was tertiary ink — 2.41:1 light / 3.35:1 dark,
+     both fail 4.5. Secondary ink clears it in both themes (4.63:1 on #f4f4f2 /
+     6.74:1 on #141414). The bold count inside (`.gr-count b`) keeps its own hue. */
+  color: var(--sm-text-secondary);
   font-weight: 500;
 }
 [data-grok] .grok-roster .gr-count b {
@@ -1628,6 +1635,21 @@
   -webkit-backdrop-filter: var(--sm-glass-raised);
   backdrop-filter: var(--sm-glass-raised);
   box-shadow: var(--sm-shadow-popover);
+}
+/* GRID-BLOWOUT FIX (measured, settled-DOM regression on ⌘K).
+   The Dialog Content is `display:grid`; a grid item defaults to `min-width:auto`,
+   so it refuses to shrink below its CONTENT's min-content width. The palette's
+   results carry long unbroken session names / command summaries, whose min-content
+   (~967px) blew the single-column item WIDER than the 576px (`max-w-xl`) dialog
+   track — the item overflowed BOTH sides and was chopped by the palette's
+   `overflow-hidden`, clipping the 'SESSIONS' group heading on the LEFT (it renders
+   as 'IONS'/'SIONS') and eating the row text on both edges. Constrain the grid
+   items to `min-width:0` so they honour the 576px track and the row spans'
+   `text-overflow:ellipsis` does the truncation instead. Scoped under grok only —
+   the base app (data-grok absent) shares this bug but is out of scope here and
+   must stay visually identical. */
+[data-grok][role='dialog'] > * {
+  min-width: 0;
 }
 /* The palette's search-input seam → a 0.5px hairline (it draws `border-b
    border-border`). Hooked by the `data-grok-search` marker the palette adds only
