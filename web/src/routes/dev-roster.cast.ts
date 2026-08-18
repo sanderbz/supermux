@@ -181,6 +181,7 @@ export const BENCH_SECTIONS = [
   'pinned-hairline',
   'tiles',
   'rollup',
+  'grok-team-rows',
   'issues',
 ] as const
 export type BenchSection = (typeof BENCH_SECTIONS)[number]

@@ -44,7 +44,7 @@ import { SessionMark } from '@/brand/marks'
 import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
 import { displayLabel, type ApiSession } from '@/lib/api'
-import type { Team } from '@/lib/api/teams'
+import { needsYouCount, taskProgress, type Team } from '@/lib/api/teams'
 
 // The per-bot settings page. Lazy — it only mounts once a bot is selected (a
 // detail pane on desktop), so its section bodies (issues, schedules, git,
@@ -291,9 +291,21 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
 
 /* ── team facepile row (a team is just another row — 3 member marks) ─────────── */
 
-function TeamRow({ team, onOpen, index }: { team: Team; onOpen: (t: Team) => void; index: number }) {
+export function TeamRow({
+  team,
+  onOpen,
+  index,
+}: {
+  team: Team
+  onOpen: (t: Team) => void
+  index: number
+}) {
   const members = team.members.slice(0, 3)
-  const needs = team.members.filter((m) => m.status === 'needs_you').length
+  // Reuse the two team roll-up helpers rather than re-deriving them here, for
+  // parity with the bot row's L2 state-word + L3 muted glance (teams.ts owns the
+  // definitions; the team card reads the same two).
+  const needs = needsYouCount(team)
+  const progress = taskProgress(team)
   const last =
     team.members.find((m) => m.status === 'needs_you')?.name ??
     team.members[0]?.name ??
@@ -330,10 +342,17 @@ function TeamRow({ team, onOpen, index }: { team: Team; onOpen: (t: Team) => voi
           <span className="l2">
             <span className="pv">
               <span className={`st ${needs > 0 ? 'st-need' : 'st-work'}`}>
-                {needs > 0 ? 'needs you' : 'active'}
+                {needs > 0 ? `${needs} need you` : 'active'}
               </span>
               {last ? <> · {last}</> : null}
             </span>
+            {/* Tasks done/total on the right, where a bot row shows its token
+                cost — the team's own glanceable metric (`taskProgress`). */}
+            {progress.total > 0 && (
+              <span className="cost">
+                {progress.done}/{progress.total} tasks
+              </span>
+            )}
           </span>
           <span className="l3">
             <span className="prov">

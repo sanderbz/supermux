@@ -65,6 +65,8 @@ import {
   RecoveryLadder,
 } from '@/components/recovery/recovery-ladder'
 import { BotPanel } from '@/components/roster/bot-panel'
+import { TeamRow } from '@/components/roster/grok-roster'
+import { MOCK_TEAMS } from './dev-teams.fixture'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import type { ApiSession } from '@/lib/api'
 
@@ -173,6 +175,34 @@ function BotPanelBench({ theme }: { theme: BenchTheme }) {
         ))}
       </div>
     </QueryClientProvider>
+  )
+}
+
+/* ── the grok team-row bench (team polish) ───────────────────────────────────
+   The grok roster renders a TEAM as its own face-led row (a 3-member cluster +
+   an enriched L2/L3 glance: `needsYouCount` state word + `taskProgress`). It only
+   ever appears inside the live overview, so it was unreviewable offline. Seed it
+   from the SAME `MOCK_TEAMS` `/dev/teams` uses (needs_you / working / idle /
+   offline members, a full task ledger, a 0-task solo, an unmapped lead) inside
+   the `[data-grok] .grok-roster` skin context its CSS keys off. Still frame,
+   onOpen is a no-op — this is a design bench, not a router. */
+function TeamRowBench() {
+  let i = 0
+  return (
+    <div data-grok data-vr="grok-team-rows">
+      <div className="grok-roster">
+        <div className="gr-list" data-density="comfortable">
+          <div className="gr-grp">
+            <span className="lbl">Teams</span>
+            <span className="ct">{MOCK_TEAMS.length}</span>
+            <span className="ln" />
+          </div>
+          {MOCK_TEAMS.map((t) => (
+            <TeamRow key={t.team_name} team={t} onOpen={() => {}} index={i++} />
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -491,6 +521,14 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
               </div>
             ))}
           </div>
+        </Section>
+
+        <Section
+          id="grok-team-rows"
+          title="The grok team row"
+          note="A team is a colleague too: the grok roster renders it as a face-led row with a 3-member cluster and an enriched glance — the L2 state word counts needs-you members (needsYouCount) and the right rail shows the task ledger (taskProgress), for parity with a bot row's cost. Seeded from the same MOCK_TEAMS as /dev/teams: a full 5-teammate team with a task ledger, a 0-teammate solo, and an unmapped lead."
+        >
+          <TeamRowBench />
         </Section>
 
         <Section
