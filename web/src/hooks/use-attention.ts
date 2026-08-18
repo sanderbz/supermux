@@ -121,10 +121,23 @@ export function rosterSignature(names: readonly string[]): string {
  *
  * Returns `null` when nothing was dropped — a steady-state roster must not
  * rewrite storage on every render.
+ *
+ * `loaded` disambiguates the EMPTY signature, which used to be conflated: an
+ * empty roster is either "the query has not resolved yet" (must NOT prune, or
+ * boot would wipe every cursor before the first list arrives) or "the last
+ * session was deleted" (MUST prune, or a lifetime of dead cursors accumulates
+ * and a reused name inherits the old one). Only the caller knows which, so it
+ * passes `loaded`: prune against the empty set only once the roster is real.
  */
-export function pruneSeen(stored: SeenMap, signature: string): SeenMap | null {
-  if (!signature) return null // no roster yet — never prune against an empty list
-  const live = new Set(signature.split(ROSTER_SEP))
+export function pruneSeen(
+  stored: SeenMap,
+  signature: string,
+  loaded = false,
+): SeenMap | null {
+  // No roster yet (not loaded) — never prune blind. A genuinely-empty but
+  // LOADED roster (last session deleted) falls through and prunes everything.
+  if (!signature && !loaded) return null
+  const live = signature ? new Set(signature.split(ROSTER_SEP)) : new Set<string>()
   const kept: SeenMap = {}
   let dropped = 0
   for (const [name, cursor] of Object.entries(stored)) {
@@ -159,7 +172,10 @@ const NOOP: Attention = { tier: 'quiet', dot: false, dotKind: null, count: null,
  * duplicate the SSE handlers (see `use-roster-marks.ts`) or invent a second
  * source of truth.
  */
-export function useAttention(sessions: readonly AttentionSession[]): AttentionApi {
+export function useAttention(
+  sessions: readonly AttentionSession[],
+  loaded = false,
+): AttentionApi {
   // The flag is a kill switch, not a preference: read once, no re-render.
   const [enabled] = React.useState(isAttentionEnabled)
   const [seen, setSeen] = React.useState<SeenMap>(() => readSeen())
@@ -172,14 +188,25 @@ export function useAttention(sessions: readonly AttentionSession[]): AttentionAp
     [sessions],
   )
   React.useEffect(() => {
-    // STORAGE-ONLY prune. Deliberately not `setSeen`: a stale cursor cannot
-    // affect the UI (there is no row to render it on), so the only thing worth
-    // fixing is the key growing forever — and calling setState from an effect
-    // here would cascade a re-render through every row of the roster on every
-    // session delete.
-    const kept = pruneSeen(readSeen(), names)
-    if (kept) writeSeen(kept)
-  }, [names])
+    // Prune BOTH storage AND the in-memory map. The earlier version wrote only
+    // storage on the theory that a stale cursor "cannot affect the UI, there is
+    // no row to render it on" — but names are REUSABLE, so a delete+recreate of
+    // the same name in one app lifetime would let the recreated session inherit
+    // the old in-memory cursor (and its `unread` flag), suppressing or
+    // fabricating unread state. Dropping the cursor from memory too is the fix.
+    // `loaded` lets a genuinely-empty roster (last session deleted) prune,
+    // which the old empty-signature short-circuit could never do. A prune fires
+    // only on an actual delete, so the single re-render it costs is rare and
+    // correct — not the per-render cascade the old comment feared.
+    const kept = pruneSeen(readSeen(), names, loaded)
+    if (kept) {
+      writeSeen(kept)
+      // A delete (rare) MUST evict the cursor from memory too, or a reused name
+      // inherits it — see the block comment above. Not a per-render cascade.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSeen(kept)
+    }
+  }, [names, loaded])
 
   const markRead = React.useCallback((s: AttentionSession) => {
     const cursor = cursorFor(s)
@@ -274,7 +301,12 @@ export function useAttentionProvider(): AttentionApi {
     enabled: false,
   })
   const sessions = React.useMemo<AttentionSession[]>(() => data ?? [], [data])
-  return useAttention(sessions)
+  // `data !== undefined` is the roster's "loaded" signal: React Query holds
+  // `undefined` until the first list resolves and keeps the previous array
+  // across a refetch, so an EMPTY `data` means "the last session is gone", not
+  // "still loading" — which is exactly what lets `pruneSeen` clear the final
+  // cursors instead of leaving them forever.
+  return useAttention(sessions, data !== undefined)
 }
 
 
@@ -321,7 +353,11 @@ export function useSessionAttention(s: AttentionSession | null | undefined): Att
   const [enabled] = React.useState(isAttentionEnabled)
   return React.useMemo(() => {
     if (!s || !enabled) return NOOP
-    return attentionFor(s, readSeen()[s.name])
+    // Merge the server cursor, exactly like the provider path (`cursors`). A
+    // single-row surface that read ONLY localStorage would show a session
+    // marked read on another device as still unread — the cross-device cursor
+    // rides the row `s` already carries, so this costs no request.
+    return attentionFor(s, mergeCursors(readSeen()[s.name], serverCursor(s)))
   }, [s, enabled])
 }
 
@@ -335,5 +371,7 @@ export function recordSeen(s: AttentionSession): void {
 /** Non-hook read, for the same reason. */
 export function tierOf(s: AttentionSession): ReturnType<typeof tierFor> {
   if (!isAttentionEnabled()) return 'quiet'
-  return tierFor(s, readSeen()[s.name])
+  // Same server-cursor merge as `useSessionAttention` — a read on another
+  // device must not read as unread here.
+  return tierFor(s, mergeCursors(readSeen()[s.name], serverCursor(s)))
 }

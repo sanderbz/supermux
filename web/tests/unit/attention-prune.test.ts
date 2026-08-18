@@ -48,8 +48,25 @@ describe('the prune keeps the cursors of live sessions', () => {
     expect(pruneSeen({}, rosterSignature(['a']))).toBeNull()
   })
 
-  test('an empty roster prunes nothing — it is "not loaded yet", not "all gone"', () => {
+  test('an empty roster prunes nothing WHEN NOT LOADED — "not loaded yet", not "all gone"', () => {
+    // Default (`loaded = false`): boot must never wipe cursors before the first
+    // list resolves.
     expect(pruneSeen(seeded, rosterSignature([]))).toBeNull()
+    expect(pruneSeen(seeded, rosterSignature([]), false)).toBeNull()
+  })
+
+  test('an empty roster that IS loaded prunes everything (w6 #13 — the last delete)', () => {
+    // Deleting the final session leaves `sessions: []` with the query resolved.
+    // Before the fix the empty-signature short-circuit meant those cursors were
+    // NEVER pruned — a lifetime of dead cursors, and a reused name inheriting an
+    // old one. With `loaded`, the empty roster is real and prunes to `{}`.
+    const kept = pruneSeen(seeded, rosterSignature([]), true)
+    expect(kept).not.toBeNull()
+    expect(kept).toEqual({})
+  })
+
+  test('a loaded empty roster with nothing stored is still a no-op', () => {
+    expect(pruneSeen({}, rosterSignature([]), true)).toBeNull()
   })
 
   test('order does not matter — the signature is sorted', () => {
