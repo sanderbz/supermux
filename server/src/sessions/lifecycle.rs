@@ -293,9 +293,58 @@ fn role_system_prompt(s: &Session) -> Option<String> {
         // A clearly delimited section so the agent can tell its standing role
         // from the mutable notes it keeps.
         out.push_str("Notes you keep:\n");
-        out.push_str(notes);
+        out.push_str(&cap_core_notes(notes));
     }
     Some(out)
+}
+
+/// Hard cap on the always-loaded CORE (the bot's `memory` index). Line and char
+/// budgets sized to the design's ~1500-token / ~40-line target (~4 chars/token).
+const CORE_MAX_LINES: usize = 40;
+const CORE_MAX_CHARS: usize = 6_000;
+
+/// Cap the CORE notes to the bounded index the design mandates. The CORE is the
+/// token tax paid on EVERY turn, so it must never grow unbounded (audit gap 4):
+/// the archival tier — recalled on demand by the bot-memory hook — is where the
+/// long tail lives. Truncates on whichever budget bites first (lines or chars)
+/// and appends a one-line pointer telling the agent the rest is recallable, so a
+/// clipped index reads as deliberate, not broken.
+///
+/// This is the SERVER-SIDE half of the cap; the bot-panel editor mirrors it so a
+/// human sees the same limit while editing (noted for the UI phase — the editor
+/// cap is additive and does not exist yet).
+fn cap_core_notes(notes: &str) -> String {
+    let notes = notes.trim_end();
+    let total_lines = notes.lines().count();
+    let within_lines = total_lines <= CORE_MAX_LINES;
+    let within_chars = notes.chars().count() <= CORE_MAX_CHARS;
+    if within_lines && within_chars {
+        return notes.to_string();
+    }
+
+    // Keep whole lines up to BOTH budgets.
+    let mut kept = String::new();
+    let mut kept_lines = 0usize;
+    for line in notes.lines() {
+        if kept_lines >= CORE_MAX_LINES {
+            break;
+        }
+        // +1 for the newline we will add (except before the first line).
+        let projected = kept.chars().count() + line.chars().count() + 1;
+        if kept_lines > 0 && projected > CORE_MAX_CHARS {
+            break;
+        }
+        if kept_lines > 0 {
+            kept.push('\n');
+        }
+        kept.push_str(line);
+        kept_lines += 1;
+    }
+    let dropped = total_lines.saturating_sub(kept_lines);
+    if dropped > 0 {
+        kept.push_str(&format!("\n…({dropped} more in archival)"));
+    }
+    kept
 }
 
 /// Write the composed role/notes block to a per-session instructions file the
@@ -683,9 +732,17 @@ fn build_launch_command(
     // ignore it). Single-quoted so a data-dir path with spaces never word-splits.
     let bridge = config.data_dir.join("bin/supermux-edit");
     let bridge = bridge.display();
+    // Put `<data_dir>/bin` on PATH (AFTER the profile sources so it wins) so the
+    // bot-memory write CLI resolves as a bare `supermux-memory` — the name the
+    // per-session `allowedTools` grant (`Bash(supermux-memory *)`) auto-approves.
+    // Harmless for non-bot panes (an extra dir on PATH); the CLI errors cleanly if
+    // BOT_MEMORY_* is unset.
+    let bin_dir = config.data_dir.join("bin");
+    let bin_dir = bin_dir.display();
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
-         source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; {agent}"
+         source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
+         export PATH='{bin_dir}':\"$PATH\"; {agent}"
     );
     (command, resume_intended)
 }
@@ -3041,6 +3098,7 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session, &[]);
@@ -3105,6 +3163,7 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -3172,6 +3231,7 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
         let (command, _resume) = build_launch_command(&config, &session, &[]);
@@ -3300,6 +3360,40 @@ mod build_env_tests {
         assert!(status.success(), "composed launch must parse as shell: {command}");
     }
 
+    /// The CORE (always-loaded) notes index is HARD-CAPPED (audit gap 4): a bot
+    /// whose `memory` grows past the line budget gets a truncated index plus a
+    /// "…(N more in archival)" pointer, never the unbounded blob.
+    #[test]
+    fn core_notes_are_capped_with_archival_pointer() {
+        // 100 one-line notes — well over CORE_MAX_LINES (40).
+        let notes: String = (0..100).map(|i| format!("- note line {i}\n")).collect();
+        let capped = cap_core_notes(&notes);
+        let lines: Vec<&str> = capped.lines().collect();
+        // 40 kept lines + the pointer line.
+        assert_eq!(lines.len(), CORE_MAX_LINES + 1, "capped to the line budget + pointer");
+        assert!(lines[0].contains("note line 0"), "keeps the head");
+        assert!(!capped.contains("note line 99"), "drops the tail");
+        assert_eq!(lines.last().copied(), Some("…(60 more in archival)"), "pointer names the drop count");
+
+        // A short index passes through untouched.
+        let short = "- one\n- two\n- three";
+        assert_eq!(cap_core_notes(short), short, "under budget = verbatim");
+    }
+
+    /// The cap also injects the pointer through the full `role_system_prompt`
+    /// composition (role + capped notes), not just the helper in isolation.
+    #[test]
+    fn role_system_prompt_caps_the_notes_section() {
+        let mut s = claude_session("bot", "");
+        s.desc = "Standing instructions: be terse.".into();
+        s.memory = (0..80).map(|i| format!("- fact {i}\n")).collect();
+        let sys = role_system_prompt(&s).expect("role+notes present");
+        assert!(sys.starts_with("Standing instructions: be terse."), "role first");
+        assert!(sys.contains("Notes you keep:"), "notes delimiter kept");
+        assert!(sys.contains("more in archival)"), "cap pointer injected");
+        assert!(!sys.contains("fact 79"), "tail dropped");
+    }
+
     /// With NO connector flags (empty slice), the launch line is byte-identical to
     /// the pre-connector fleet — the composition adds nothing.
     #[test]
@@ -3354,6 +3448,7 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         }
     }
 

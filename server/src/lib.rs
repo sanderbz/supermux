@@ -8,6 +8,7 @@ pub mod agents;
 pub mod audit;
 pub mod auth;
 pub mod board;
+pub mod bot_memory;
 pub mod claude_config;
 pub mod claude_tools;
 pub mod config;

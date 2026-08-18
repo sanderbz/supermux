@@ -7,7 +7,7 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, config, db, external_edit, http, scheduler, sessions, state, teams,
+    agents, bot_memory, config, db, external_edit, http, scheduler, sessions, state, teams,
 };
 
 #[tokio::main]
@@ -20,6 +20,29 @@ async fn main() -> anyhow::Result<()> {
     // exits cleanly. The temp-file path is the last argv after `__edit`.
     if std::env::args().nth(1).as_deref() == Some("__edit") {
         return external_edit::run_bridge(std::env::args().nth(2)).await;
+    }
+
+    // BOT MEMORY hooks/CLI. The recall hook (`UserPromptSubmit`/`SessionStart`)
+    // and the `supermux-memory` write CLI both `exec` THIS binary with a hidden
+    // subcommand (version-matched, no separate artifact), same as `__edit`.
+    // Dispatched here so the hook process stays lean — no DB, no listener — and
+    // resolves its store purely from `BOT_MEMORY_*` env. The recall path is
+    // best-effort: it prints nothing and exits 0 on any failure so a broken
+    // store can never wedge the user's prompt.
+    match std::env::args().nth(1).as_deref() {
+        Some("__memory-recall") => {
+            let _ = bot_memory::run::run_recall_hook();
+            return Ok(());
+        }
+        Some("__memory-save") => {
+            let argv: Vec<String> = std::env::args().skip(2).collect();
+            if let Err(e) = bot_memory::run::run_save_cli(&argv) {
+                eprintln!("supermux-memory: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
     // NATIVE (tmux-less) session runtime: the pty holder. The daemon spawns
@@ -62,6 +85,12 @@ async fn main() -> anyhow::Result<()> {
     // `sessions::lifecycle` exports into each pane. Idempotent; a failure here only
     // disables the edit-in-native-editor affordance (logged), never the server.
     external_edit::install_bridge_script(&config.data_dir);
+
+    // Install the bot-memory recall hook + `supermux-memory` write CLI wrappers
+    // (`<data_dir>/bin/{bot-memory-recall,supermux-memory}`) that the per-session
+    // config-dir seam wires into a bot's `settings.json`/env. Idempotent; a
+    // failure only degrades memory recall/save (logged), never the server.
+    bot_memory::install_scripts(&config.data_dir);
 
     // Session survival across restarts/deploys. tmux keeps its control
     // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening

@@ -139,10 +139,65 @@ impl SessionConfig {
     }
 
     // ── memory-phase seam ─────────────────────────────────────────────────────
-    // The memory phase adds `pub fn apply_memory(&mut self, ...)` HERE: it sets
-    // `self.active = true`, merges a `hooks` object into `self.settings`, and adds
-    // its own env vars via `self.env`. It reuses this exact `config_dir` +
-    // `finish` writer — do NOT create a second per-session config dir.
+    /// Wire this session's BOT MEMORY into the SAME per-session config dir the
+    /// connector tier uses (design §3). This is ONE more entry in the union — it
+    /// does NOT create a second config dir, does NOT touch the connector
+    /// `--mcp-config`/`--strict-mcp-config` flags, and does NOT touch the
+    /// role/notes `--append-system-prompt` block. All three compose:
+    ///
+    ///   * merges a `hooks` object into `settings` firing the recall hook on
+    ///     `UserPromptSubmit` (per-turn) and `SessionStart` (baseline prime) — so
+    ///     recall is injected, never dependent on the agent remembering to look;
+    ///   * APPENDS `Bash(supermux-memory *)` to `permissions.allow` (merging with
+    ///     any connector allowlist already there, never clobbering it) so the bot
+    ///     may write its own archival notes;
+    ///   * exports `BOT_MEMORY_NAME` / `BOT_MEMORY_ROLE` / `BOT_MEMORY_DIR` so the
+    ///     hook + CLI resolve this bot's private + role tiers.
+    pub fn apply_memory(&mut self, params: crate::bot_memory::MemoryParams) {
+        self.active = true;
+
+        // hooks: fire the recall wrapper on both context-injecting events.
+        let hook_cmd = params.hook_bin.to_string_lossy().into_owned();
+        let group = json!([{ "hooks": [ { "type": "command", "command": hook_cmd } ] }]);
+        let hooks = self
+            .settings
+            .entry("hooks".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(obj) = hooks.as_object_mut() {
+            obj.insert("UserPromptSubmit".to_string(), group.clone());
+            obj.insert("SessionStart".to_string(), group);
+        }
+
+        // permissions.allow: MERGE the write-CLI grant with whatever the connector
+        // tier already put there (do not replace the array).
+        let perms = self
+            .settings
+            .entry("permissions".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(obj) = perms.as_object_mut() {
+            let allow = obj
+                .entry("allow".to_string())
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if let Some(arr) = allow.as_array_mut() {
+                let entry = Value::String("Bash(supermux-memory *)".to_string());
+                if !arr.contains(&entry) {
+                    arr.push(entry);
+                }
+            }
+        }
+
+        // env: the hook + CLI read these to resolve the store + identity.
+        self.env.insert(
+            "BOT_MEMORY_NAME".to_string(),
+            params.session_name.clone(),
+        );
+        self.env
+            .insert("BOT_MEMORY_ROLE".to_string(), params.role_key.clone());
+        self.env.insert(
+            "BOT_MEMORY_DIR".to_string(),
+            params.memory_dir.to_string_lossy().into_owned(),
+        );
+    }
 
     /// Materialize the config: if any tier contributed, create the private dir,
     /// atomically write its `settings.json`, and return the launch inputs
@@ -176,52 +231,70 @@ pub struct FinishedConfig {
     pub launch_flags: Vec<String>,
 }
 
-/// Resolve one session's connector grants into a [`FinishedConfig`] (or `None`
-/// when it has no enabled grants). This is the DB+vault-backed entry point the
-/// launch path calls; it reads the enabled grants (own + all-agents), looks up
-/// each connector's emit block, decrypts any granted secret, then drives the
-/// [`SessionConfig`] builder.
+/// Resolve one session's private launch config — connector grants AND bot memory —
+/// into a [`FinishedConfig`], or `None` when the session has NEITHER (then the
+/// launch is byte-identical to the pre-connector/pre-memory fleet). This is the
+/// DB+vault-backed entry point the launch path calls; it reads the enabled grants
+/// (own + all-agents), looks up each connector's emit block, decrypts any granted
+/// secret, then — for a session that is a "bot" — wires in the recall hook + write
+/// CLI grant + `BOT_MEMORY_*` env, all through the ONE [`SessionConfig`] builder
+/// and its single `finish` writer.
 ///
 /// Best-effort per grant: a grant whose connector row is gone, or whose secret
 /// fails to decrypt, is SKIPPED with a warning rather than failing the whole
 /// launch — a broken connector must not brick a session's start.
 pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<FinishedConfig>> {
-    let grants = connectors::grants_for_session(&state.pool, session_name).await?;
-    if grants.is_empty() {
-        return Ok(None);
-    }
-
-    // Open the vault once (only if some grant carries a secret_ref).
-    let needs_vault = grants.iter().any(|g| g.secret_ref.is_some());
-    let vault = if needs_vault {
-        match Vault::open(&state.config.data_dir) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!(error = %e, "connector launch: vault unavailable; connectors with secrets will be skipped");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let mut resolved: Vec<ResolvedGrant> = Vec::new();
-    for g in &grants {
-        let Some(connector) = connectors::get(&state.pool, &g.connector_id).await? else {
-            tracing::warn!(connector = %g.connector_id, "connector launch: grant references a missing connector; skipping");
-            continue;
-        };
-        let emit: Value = serde_json::from_str(&connector.emit_json).unwrap_or_else(|_| json!({}));
-        let secrets = resolve_secret(state, vault.as_ref(), g).await;
-        resolved.push(ResolvedGrant {
-            connector_id: g.connector_id.clone(),
-            emit,
-            secrets,
-        });
-    }
-
     let mut cfg = SessionConfig::new(&state.config.data_dir, session_name);
-    cfg.apply_connectors(&resolved);
+
+    // ── connector tier ─────────────────────────────────────────────────────────
+    let grants = connectors::grants_for_session(&state.pool, session_name).await?;
+    if !grants.is_empty() {
+        // Open the vault once (only if some grant carries a secret_ref).
+        let needs_vault = grants.iter().any(|g| g.secret_ref.is_some());
+        let vault = if needs_vault {
+            match Vault::open(&state.config.data_dir) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(error = %e, "connector launch: vault unavailable; connectors with secrets will be skipped");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut resolved: Vec<ResolvedGrant> = Vec::new();
+        for g in &grants {
+            let Some(connector) = connectors::get(&state.pool, &g.connector_id).await? else {
+                tracing::warn!(connector = %g.connector_id, "connector launch: grant references a missing connector; skipping");
+                continue;
+            };
+            let emit: Value =
+                serde_json::from_str(&connector.emit_json).unwrap_or_else(|_| json!({}));
+            let secrets = resolve_secret(state, vault.as_ref(), g).await;
+            resolved.push(ResolvedGrant {
+                connector_id: g.connector_id.clone(),
+                emit,
+                secrets,
+            });
+        }
+        cfg.apply_connectors(&resolved);
+    }
+
+    // ── memory tier ─────────────────────────────────────────────────────────────
+    // The bot-memory recall hook + write-CLI grant + BOT_MEMORY_* env, merged into
+    // the SAME config dir. Gated on `session_has_memory` so a plain (non-bot) pane
+    // stays byte-identical (no hook, no private dir); a bot activates the dir even
+    // with zero connector grants. Best-effort: a missing session row just skips it.
+    if let Some(session) = crate::db::sessions::get(&state.pool, session_name).await? {
+        if crate::bot_memory::session_has_memory(&session, &state.config.data_dir) {
+            cfg.apply_memory(crate::bot_memory::memory_params(
+                &session,
+                &state.config.data_dir,
+            ));
+        }
+    }
+
     cfg.finish().await
 }
 
@@ -339,6 +412,75 @@ mod tests {
         assert!(jb.contains("github") && !jb.contains("icloud-mail"));
         // Distinct CLAUDE_CONFIG_DIRs too.
         assert_ne!(fa.env.get("CLAUDE_CONFIG_DIR"), fb.env.get("CLAUDE_CONFIG_DIR"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn mem_params(dir: &Path, name: &str, role: &str) -> crate::bot_memory::MemoryParams {
+        crate::bot_memory::MemoryParams {
+            session_name: name.to_string(),
+            role_key: role.to_string(),
+            memory_dir: dir.join("bot-memory"),
+            hook_bin: dir.join("bin/bot-memory-recall"),
+        }
+    }
+
+    /// THE COEXISTENCE INVARIANT (design §3): connectors + bot memory land in ONE
+    /// settings.json / one env / one config dir without either clobbering the
+    /// other. The connector allowlist and the memory write-CLI grant MERGE into a
+    /// single `permissions.allow`; the recall hooks and the connector kill switch
+    /// both survive; the mcp-config flag pair and the BOT_MEMORY_* env coexist.
+    /// (The role/notes `--append-system-prompt` block is the THIRD injection — it
+    /// rides its own launch flag pair in `build_launch_command`, proven disjoint
+    /// there; here we pin the two that share this file.)
+    #[tokio::test]
+    async fn connectors_and_memory_coexist_in_one_config() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "alpha");
+        cfg.apply_connectors(&[resolved("github", Some(("GH_TOKEN", "sekret")))]);
+        cfg.apply_memory(mem_params(&dir, "alpha", "reviewer"));
+        let fin = cfg.finish().await.unwrap().expect("active");
+
+        // Both flag pairs / env slots coexist, disjoint.
+        assert!(fin.launch_flags.iter().any(|w| w == "--mcp-config"));
+        assert_eq!(fin.env.get("GH_TOKEN").map(String::as_str), Some("sekret"));
+        assert_eq!(fin.env.get("BOT_MEMORY_NAME").map(String::as_str), Some("alpha"));
+        assert_eq!(fin.env.get("BOT_MEMORY_ROLE").map(String::as_str), Some("reviewer"));
+        assert!(fin.env.contains_key("BOT_MEMORY_DIR"));
+        assert!(fin.env.contains_key("CLAUDE_CONFIG_DIR"));
+
+        let text =
+            std::fs::read_to_string(dir.join("session-config").join("alpha").join("settings.json"))
+                .unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        // permissions.allow carries BOTH the connector tool + the write-CLI grant.
+        let allow = v["permissions"]["allow"].as_array().unwrap();
+        assert!(allow.contains(&json!("mcp__github__*")), "connector allow kept: {allow:?}");
+        assert!(allow.contains(&json!("Bash(supermux-memory *)")), "memory grant merged: {allow:?}");
+        // Connector kill switch survives the memory merge.
+        assert_eq!(v["disableClaudeAiConnectors"], json!(true));
+        // Recall hooks fire on both context-injecting events.
+        assert!(v["hooks"]["UserPromptSubmit"].is_array());
+        assert!(v["hooks"]["SessionStart"].is_array());
+        assert_eq!(
+            v["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+            json!(dir.join("bin/bot-memory-recall").to_string_lossy().into_owned())
+        );
+        assert!(!text.contains("sekret"), "secret never on disk");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A memory-only bot (no connector grants) still activates the private dir +
+    /// hook — a bot's self-writes must be recallable next turn even with zero
+    /// connectors.
+    #[tokio::test]
+    async fn memory_only_activates_without_connectors() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "solo");
+        cfg.apply_memory(mem_params(&dir, "solo", ""));
+        let fin = cfg.finish().await.unwrap().expect("memory alone activates");
+        assert!(fin.env.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(!fin.launch_flags.iter().any(|w| w == "--mcp-config"), "no connector flags");
+        assert_eq!(fin.env.get("BOT_MEMORY_ROLE").map(String::as_str), Some(""));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
