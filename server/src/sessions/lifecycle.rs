@@ -533,6 +533,38 @@ pub(super) fn agent_at_the_wheel(capture: &str) -> bool {
     agent_ui_visible(capture) && !at_resume_picker(capture) && !at_trust_dialog(capture)
 }
 
+/// AGENT-LEVEL evidence that the pty is BUSY — the agent has the turn and is
+/// mid-work. Claude pins `esc to interrupt` the whole time a turn runs (the
+/// modern line is `✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)`), and
+/// Codex's working footer (`◦ Working (Ns • esc to interrupt)`) does too — see
+/// `status::CLAUDE_ACTIVE` / `CODEX_ACTIVE`. A send while busy is a legitimate
+/// QUEUE, so the send guard must treat this as typeable even when the composer
+/// glyph has scrolled out of a short capture.
+fn agent_busy(capture: &str) -> bool {
+    capture.to_lowercase().contains("esc to interrupt")
+}
+
+/// May [`send_harness_text`] type `text`+Enter into the pty showing this CURRENT
+/// capture? The SEND-path twin of [`classify_ready_tick`]'s ready arm.
+///
+/// [`wake_for_send`] already refuses a FIRST send whose wake lands on a boot
+/// modal (`start().ready == false`), but an ALREADY-AWAKE retry (`woke == false`)
+/// skips the wake entirely — so without this a retry types straight into a
+/// resume picker / trust dialog left open on the pty, records `last_send`, and
+/// reports a message the modal swallowed as delivered (codex #1, wave-7). The
+/// gate is on the CURRENT screen, not on whether we just woke.
+///
+/// Two screens legitimately receive a send:
+///   * the agent is at the wheel — its own prompt with no boot modal over it
+///     ([`agent_at_the_wheel`], which itself excludes the picker + trust dialog,
+///     and still ADMITS a permission menu so answering one is unchanged); or
+///   * the agent is mid-turn/busy ([`agent_busy`]), where a send is a queue.
+/// Everything else — the resume picker, the trust dialog, a bare shell the agent
+/// exited to — must NOT be typed into.
+fn pty_ready_for_send(capture: &str) -> bool {
+    agent_at_the_wheel(capture) || agent_busy(capture)
+}
+
 /// Heuristic: are we stuck in Claude's `--resume` session picker?
 fn at_resume_picker(capture: &str) -> bool {
     let c = capture.to_lowercase();
@@ -1546,6 +1578,41 @@ pub async fn send_harness_text(
     // very first message into nothing. When we did not wake, the pre-resolved
     // handle is still valid; reuse it.
     let rt = write_runtime(state, name, rt, woke).await?;
+
+    // SEND-PATH MODAL GUARD (codex #1, wave-7). `wake_for_send` above refuses a
+    // FIRST send whose wake lands on a boot modal, but an ALREADY-AWAKE retry
+    // (`woke == false`) never entered that branch — so a retry issued while the
+    // session is parked at the resume picker / trust dialog (a live program, so
+    // still `alive`) would type `text`+Enter straight into the modal, record
+    // `last_send`, and report the swallowed message as delivered. Gate the SEND
+    // itself on the CURRENT screen. Refuse BEFORE the first keystroke so nothing
+    // is typed and `last_send` is never written — `/send` and `/paste` answer
+    // 409, `agents::delegate` never reaches `record_delegation` (no delivered
+    // edge), and the chat composer settles on the sentence instead of promising
+    // an arrival. Skipped when we just woke: `wake_for_send`'s `start().ready`
+    // already polled the agent onto the wheel, and re-capturing a freshly-booted
+    // pane risks a transient-repaint FALSE refusal of a message we did deliver.
+    if !woke {
+        match rt.capture_plain(status::CAPTURE_LINES).await {
+            Ok(raw) => {
+                if !pty_ready_for_send(&status::prepare_capture(&raw)) {
+                    return Err(AppError::Conflict(format!(
+                        "session '{name}' is parked at a prompt that is not the agent's — the \
+                         message was NOT delivered. Open the terminal: it is likely sitting on a \
+                         resume picker or a folder-trust dialog. Dismiss it (or Reset the session), \
+                         then resend.",
+                    )));
+                }
+            }
+            // A capture failure is ambiguous. Do NOT convert a would-be delivery
+            // into a false-undelivered on a transient probe glitch — proceed as
+            // before (the clean-capture picker case, the actual bug, is closed).
+            Err(e) => {
+                tracing::debug!(session = %name, error = %e, "send guard: capture failed; proceeding");
+            }
+        }
+    }
+
     rt.send_text(text).await?;
     // Backend-declared gap between the text and its submit (see `submit_gap`).
     submit_gap(rt.as_ref()).await;
@@ -2418,6 +2485,51 @@ mod agent_ready_heuristics_tests {
             classify_ready_tick(picker, false, /*escaped*/ true, false),
             ReadyTick::Wait,
             "after the one-shot escape, the still-visible menu must not read Ready",
+        );
+    }
+
+    /// The SEND-path guard (codex #1, wave-7): decide, from the CURRENT capture
+    /// alone, whether `send_harness_text` may type into the pty. The picker and
+    /// trust dialog — the exact screens an already-awake retry used to be typed
+    /// into — must refuse; a live composer, a permission menu, and a busy turn
+    /// must all still be typeable.
+    #[test]
+    fn pty_ready_for_send_refuses_boot_modals_but_admits_prompt_and_busy() {
+        // REFUSE — the two boot modals that draw `❯` without an agent behind them.
+        let picker = "Resume a conversation\n❯ 1. Fix the parser  2h ago\n  2. Older chat";
+        assert!(
+            !pty_ready_for_send(picker),
+            "a retry while parked at the resume picker must NOT be typed (it would be \
+             swallowed by the modal and falsely reported delivered)",
+        );
+        let trust = "Quick safety check: do you trust the files in this folder?\n❯ 1. Yes";
+        assert!(
+            !pty_ready_for_send(trust),
+            "the folder-trust dialog is the sibling boot modal — also not typeable",
+        );
+        // REFUSE — a bare shell the agent exited to (no ❯/❱, no busy footer).
+        assert!(
+            !pty_ready_for_send("user@host project % \n"),
+            "a bare shell the agent exited to would eat the message — refuse",
+        );
+
+        // ADMIT — the agent's own composer prompt with no boot modal over it.
+        assert!(
+            pty_ready_for_send("❯ Try \"fix tests\"\n  ? for shortcuts"),
+            "the agent's own idle prompt is the send target",
+        );
+        // ADMIT — a permission menu IS the agent waiting on the user; answering it
+        // (typing a choice) must stay unchanged, so this is deliberately typeable.
+        assert!(
+            pty_ready_for_send("Do you want to proceed?\n❯ 1. Yes\n  2. No"),
+            "a permission menu is the agent at the wheel — still typeable (unchanged)",
+        );
+        // ADMIT — a busy turn: the send is a legitimate QUEUE, and the composer
+        // glyph may have scrolled out of a short capture, so `esc to interrupt`
+        // carries the decision.
+        assert!(
+            pty_ready_for_send("✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)"),
+            "a send while the agent is mid-turn is a queue, not a swallow",
         );
     }
 }
@@ -3303,6 +3415,179 @@ mod write_runtime_tests {
         assert!(
             Arc::ptr_eq(&pre_wake, &no_wake),
             "with no wake there was no migration; reuse the handle we already had",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── send-path modal guard (codex #1, wave-7) ──────────────────────────────
+    //
+    // A minimal `SessionRuntime` double: always `alive` (so `send_harness_text`
+    // takes the `woke == false` retry path, never `wake_for_send`), returns a
+    // canned `capture_plain`, and COUNTS every `send_text` / `send_key` so a
+    // test can prove nothing was typed. Injected straight into the runtime cache
+    // (`state.session_runtimes`) so `runtime_for` hands it back.
+
+    use crate::sessions::runtime::HistoryWindow;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct StubRuntime {
+        capture: String,
+        text_calls: AtomicUsize,
+        key_calls: AtomicUsize,
+    }
+
+    impl StubRuntime {
+        fn parked_at(capture: &str) -> Arc<Self> {
+            Arc::new(Self {
+                capture: capture.to_string(),
+                text_calls: AtomicUsize::new(0),
+                key_calls: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl SessionRuntime for StubRuntime {
+        async fn spawn(&self, _d: &Path, _e: &HashMap<String, String>, _s: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn alive(&self) -> bool {
+            true // ← never wake; force the already-awake retry path
+        }
+        async fn kill(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn send_text(&self, _t: &str) -> anyhow::Result<()> {
+            self.text_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
+            self.key_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn capture_plain(&self, _lines: usize) -> anyhow::Result<String> {
+            Ok(self.capture.clone())
+        }
+        async fn capture_ansi(&self, _lines: usize) -> anyhow::Result<String> {
+            Ok(self.capture.clone())
+        }
+        async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
+            Ok(self.capture.clone())
+        }
+        async fn capture_full(&self) -> anyhow::Result<String> {
+            Ok(self.capture.clone())
+        }
+        async fn seed(&self) -> anyhow::Result<String> {
+            Ok(self.capture.clone())
+        }
+        async fn history_window(&self, end_offset: i64, _count: u32) -> anyhow::Result<HistoryWindow> {
+            Ok(HistoryWindow {
+                rows: vec![],
+                history_size: 0,
+                start_offset: end_offset,
+                end_offset,
+                hit_top: true,
+                cols: 80,
+                at_limit: false,
+            })
+        }
+        async fn history_meta(&self) -> (u32, u16) {
+            (0, 80)
+        }
+        async fn pane_pid(&self) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+        async fn dead(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// THE CODEX #1 REGRESSION. A session parked at the resume picker, already
+    /// awake (so `send_harness_text` skips `wake_for_send`): a retry `/send` must
+    /// answer UNDELIVERED, must NOT type into the picker, and must NOT record
+    /// `last_send`. Before the send-path guard the retry took `woke == false`,
+    /// typed text+Enter into the modal, and wrote `last_send` — a swallowed
+    /// message reported as delivered.
+    #[tokio::test]
+    async fn a_retry_send_parked_at_the_picker_is_undelivered_and_types_nothing() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "parked", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let picker = "Resume a conversation\n❯ 1. Fix the parser  2h ago\n  2. Older chat";
+        let rt = StubRuntime::parked_at(picker);
+        state
+            .session_runtimes
+            .insert("parked".to_string(), rt.clone());
+
+        let res = send_harness_text(&state, "parked", "retry after the first refusal", None).await;
+
+        assert!(
+            matches!(res, Err(AppError::Conflict(_))),
+            "a retry while parked at the picker must report UNDELIVERED (409), \
+             got {res:?}",
+        );
+        assert_eq!(
+            rt.text_calls.load(Ordering::SeqCst),
+            0,
+            "the retry must NOT be typed into the picker",
+        );
+        assert_eq!(
+            rt.key_calls.load(Ordering::SeqCst),
+            0,
+            "no Enter either — nothing is submitted into the modal",
+        );
+        let s = db::sessions::get(&state.pool, "parked").await.unwrap().unwrap();
+        assert!(
+            s.last_send_text.is_empty(),
+            "a swallowed message must never be recorded as a send (last_send stays empty), \
+             got {:?}",
+            s.last_send_text,
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The guard is SCREEN-CONDITIONAL, not a blanket block: the SAME already-awake
+    /// path with the agent's own composer prompt on screen delivers normally —
+    /// text is typed, Enter submitted, and `last_send` recorded. Proves the fix
+    /// does not turn ready-state sends into false-undelivered.
+    #[tokio::test]
+    async fn a_send_to_a_ready_composer_still_delivers() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "ready", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let composer = "❯ Try \"fix tests\"\n  ? for shortcuts";
+        let rt = StubRuntime::parked_at(composer);
+        state
+            .session_runtimes
+            .insert("ready".to_string(), rt.clone());
+
+        send_harness_text(&state, "ready", "a real message", None)
+            .await
+            .expect("a ready composer must accept the send");
+
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the text is typed");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "and submitted with Enter");
+        let s = db::sessions::get(&state.pool, "ready").await.unwrap().unwrap();
+        assert_eq!(
+            s.last_send_text, "a real message",
+            "a genuine delivery records last_send",
         );
 
         state.pool.close().await;
