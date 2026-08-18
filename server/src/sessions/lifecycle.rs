@@ -561,8 +561,49 @@ fn agent_busy(capture: &str) -> bool {
 ///   * the agent is mid-turn/busy ([`agent_busy`]), where a send is a queue.
 /// Everything else — the resume picker, the trust dialog, a bare shell the agent
 /// exited to — must NOT be typed into.
+///
+/// CURRENT-SCREEN scoping (wave-8, codex pass 3). The readiness/busy glyphs
+/// (`❯`, `esc to interrupt`) must be read off the CURRENT screen, NOT the whole
+/// `capture_plain(30)` blob — that blob is scrollback + viewport, so a screen
+/// that ENDS at a bare shell but still has an OLDER `❯` / `esc to interrupt`
+/// line scrolled up in it would otherwise satisfy the guard and the retry would
+/// be typed into the bare shell. So:
+///   * the two full-screen BOOT MODALS are rejected over the whole capture —
+///     their `❯` is a selection cursor and their identifying TITLE sits at the
+///     TOP of the screen, so a bottom-only look would miss the title and wrongly
+///     admit the cursor; while
+///   * the live-composer / busy-footer glyphs are searched ONLY in the
+///     bottom-anchored [`current_screen_tail`] — an agent glyph higher than that
+///     is stale scrollback, not the screen we are about to type into.
 fn pty_ready_for_send(capture: &str) -> bool {
-    agent_at_the_wheel(capture) || agent_busy(capture)
+    if at_resume_picker(capture) || at_trust_dialog(capture) {
+        return false;
+    }
+    let screen = current_screen_tail(capture);
+    agent_ui_visible(&screen) || agent_busy(&screen)
+}
+
+/// How many bottom rows of a capture count as the CURRENT interactive screen for
+/// the send guard. The composer box, a permission menu, and the busy footer all
+/// live in the last handful of rows of a live agent screen; a genuine agent
+/// glyph never sits higher than this above the bottom of the current screen. Set
+/// well below `status::CAPTURE_LINES` (30) so an old prompt that has scrolled up
+/// into the capture can no longer satisfy the guard, yet high enough to clear a
+/// permission menu's option list plus its footer.
+const SEND_SCREEN_TAIL_LINES: usize = 10;
+
+/// The bottom-anchored slice of `capture` that is the CURRENT interactive region
+/// — trailing blank rows dropped (matching [`status::prepare_capture`]), then the
+/// last [`SEND_SCREEN_TAIL_LINES`] rows kept. Physical rows, not "non-blank"
+/// rows: an interior blank band between a bare shell prompt and older agent
+/// output is exactly the buffer that should push that stale output out of range.
+fn current_screen_tail(capture: &str) -> String {
+    let mut lines: Vec<&str> = capture.lines().collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(SEND_SCREEN_TAIL_LINES);
+    lines[start..].join("\n")
 }
 
 /// Heuristic: are we stuck in Claude's `--resume` session picker?
@@ -1592,7 +1633,34 @@ pub async fn send_harness_text(
     // an arrival. Skipped when we just woke: `wake_for_send`'s `start().ready`
     // already polled the agent onto the wheel, and re-capturing a freshly-booted
     // pane risks a transient-repaint FALSE refusal of a message we did deliver.
-    if !woke {
+    // PROVIDER SCOPE. The guard exists to stop a message being typed into a bare
+    // shell an AGENT exited to (or a boot modal). A `shell`-provider session's
+    // screen IS a bare shell and every send legitimately targets it — guarding it
+    // would refuse `echo hi` into a plain terminal. So the whole guard is
+    // agent-only: a shell session is always typeable. (This also closes a
+    // pre-existing wave-7 gap where the guard refused shell-provider sends
+    // whenever the current screen was — correctly — a bare prompt.) On an
+    // unreadable row we default to guarding (agent-shaped, fail safe); the row
+    // exists here (`exists_active` passed above), so that branch is unreachable.
+    let is_agent = db::sessions::get(&state.pool, name)
+        .await?
+        .map(|s| s.provider != "shell")
+        .unwrap_or(true);
+    if !woke && is_agent {
+        // NATIVE AUTHORITATIVE refuse. `tpgid == pid` proves the pty is at a BARE
+        // SHELL (the login shell is the foreground process group — no agent is
+        // running), which is precisely the screen the text guard can be fooled
+        // about by stale scrollback. This is a fact from `/proc`, not a heuristic,
+        // so it decides outright when available; tmux returns `None` and falls
+        // through to the capture-scoped text guard below. A busy turn / permission
+        // menu / live composer all have the agent as the foreground program
+        // (`Some(false)`), so none of them are caught here.
+        if rt.shell_is_foreground().await == Some(true) {
+            return Err(AppError::Conflict(format!(
+                "session '{name}' is sitting at a bare shell — the agent is not running, so the \
+                 message was NOT delivered. Start (or Reset) the session, then resend.",
+            )));
+        }
         match rt.capture_plain(status::CAPTURE_LINES).await {
             Ok(raw) => {
                 if !pty_ready_for_send(&status::prepare_capture(&raw)) {
@@ -1604,11 +1672,17 @@ pub async fn send_harness_text(
                     )));
                 }
             }
-            // A capture failure is ambiguous. Do NOT convert a would-be delivery
-            // into a false-undelivered on a transient probe glitch — proceed as
-            // before (the clean-capture picker case, the actual bug, is closed).
+            // FAIL CLOSED. A send guard that cannot read the current screen must
+            // NOT type: an undelivered 409 the caller can retry is recoverable, a
+            // message typed blindly into whatever is on the pty (a bare shell, a
+            // modal) and then reported as delivered is not. So a capture failure
+            // refuses rather than falling through to the keystrokes.
             Err(e) => {
-                tracing::debug!(session = %name, error = %e, "send guard: capture failed; proceeding");
+                tracing::warn!(session = %name, error = %e, "send guard: capture failed; refusing (fail closed)");
+                return Err(AppError::Conflict(format!(
+                    "session '{name}' could not be read to confirm it is ready — the message was \
+                     NOT delivered. Open the terminal to check its state, then resend.",
+                )));
             }
         }
     }
@@ -2532,6 +2606,47 @@ mod agent_ready_heuristics_tests {
             "a send while the agent is mid-turn is a queue, not a swallow",
         );
     }
+
+    /// CURRENT-SCREEN scoping (wave-8, codex pass 3). A capture whose VIEWPORT is
+    /// a bare shell the agent exited to, but whose SCROLLBACK still carries an
+    /// OLDER `❯` composer AND an OLDER `esc to interrupt` footer, must REFUSE — the
+    /// stale glyphs are not the screen we are about to type into. Before the fix
+    /// `pty_ready_for_send` searched the whole capture and admitted this, so the
+    /// retry was typed into the bare shell.
+    #[test]
+    fn pty_ready_for_send_ignores_stale_scrollback_above_a_bare_shell() {
+        let mut screen = String::new();
+        // Scrollback: the agent's last render before it exited — both glyphs.
+        screen.push_str("✻ Thinking… (esc to interrupt · 8s · ↑ 1.2k tokens)\n");
+        screen.push_str("❯ the previous composer line\n");
+        screen.push_str("  ? for shortcuts\n");
+        // A band of the agent's final output / blanks, pushing the glyphs well
+        // above the current screen tail.
+        for i in 0..14 {
+            screen.push_str(&format!("  done step {i}\n"));
+        }
+        // Viewport bottom: a bare shell prompt, the agent gone.
+        screen.push_str("user@host project % \n");
+
+        assert!(
+            !pty_ready_for_send(&screen),
+            "an OLD ❯/esc-to-interrupt scrolled up above a bare shell must NOT satisfy the \
+             send guard — the current screen is a bare shell that would eat the message",
+        );
+
+        // CONTROL: the SAME kind of history, but the current screen tail IS a live
+        // composer — still delivers. Proves the scoping refuses on the bottom, not
+        // on the mere presence of history.
+        let mut live = String::new();
+        for i in 0..14 {
+            live.push_str(&format!("  done step {i}\n"));
+        }
+        live.push_str("❯ Try \"fix tests\"\n  ? for shortcuts\n");
+        assert!(
+            pty_ready_for_send(&live),
+            "a live composer at the bottom of the current screen still delivers",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3437,6 +3552,12 @@ mod write_runtime_tests {
 
     struct StubRuntime {
         capture: String,
+        /// When true, `capture_plain` returns an Err — the send-guard fail-closed
+        /// path (wave-8).
+        capture_err: bool,
+        /// What `shell_is_foreground` reports. `None` = "can't tell" (the tmux
+        /// default, which forces the text guard); `Some(true)` = a bare shell.
+        shell_fg: Option<bool>,
         text_calls: AtomicUsize,
         key_calls: AtomicUsize,
     }
@@ -3445,6 +3566,31 @@ mod write_runtime_tests {
         fn parked_at(capture: &str) -> Arc<Self> {
             Arc::new(Self {
                 capture: capture.to_string(),
+                capture_err: false,
+                shell_fg: None,
+                text_calls: AtomicUsize::new(0),
+                key_calls: AtomicUsize::new(0),
+            })
+        }
+        /// A runtime whose `capture_plain` always fails — exercises the send
+        /// guard's fail-closed arm.
+        fn capture_fails() -> Arc<Self> {
+            Arc::new(Self {
+                capture: String::new(),
+                capture_err: true,
+                shell_fg: None,
+                text_calls: AtomicUsize::new(0),
+                key_calls: AtomicUsize::new(0),
+            })
+        }
+        /// A native-shaped runtime that reports it is sitting at a BARE SHELL
+        /// (`tpgid == pid`) even though the (stale) capture still shows agent
+        /// glyphs — exercises the native-authoritative refuse.
+        fn bare_shell_with_stale_capture(capture: &str) -> Arc<Self> {
+            Arc::new(Self {
+                capture: capture.to_string(),
+                capture_err: false,
+                shell_fg: Some(true),
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
             })
@@ -3477,6 +3623,9 @@ mod write_runtime_tests {
             Ok(())
         }
         async fn capture_plain(&self, _lines: usize) -> anyhow::Result<String> {
+            if self.capture_err {
+                anyhow::bail!("stub: capture unavailable");
+            }
             Ok(self.capture.clone())
         }
         async fn capture_ansi(&self, _lines: usize) -> anyhow::Result<String> {
@@ -3510,6 +3659,9 @@ mod write_runtime_tests {
         }
         async fn dead(&self) -> anyhow::Result<bool> {
             Ok(false)
+        }
+        async fn shell_is_foreground(&self) -> Option<bool> {
+            self.shell_fg
         }
     }
 
@@ -3589,6 +3741,128 @@ mod write_runtime_tests {
             s.last_send_text, "a real message",
             "a genuine delivery records last_send",
         );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// WAVE-8 codex pass 3, edge (a): the CURRENT screen is a bare shell the agent
+    /// exited to, but the capture still carries an OLDER `❯`/`esc to interrupt` up
+    /// in its scrollback. An already-awake `/send` must answer UNDELIVERED, type
+    /// nothing, and never record `last_send`. `shell_is_foreground` is `None` here
+    /// (the tmux default), so this exercises the capture-SCOPED text guard — the
+    /// exact fix — not the native shortcut. Before the fix the whole-capture search
+    /// found the stale glyphs and typed into the bare shell.
+    #[tokio::test]
+    async fn a_retry_send_with_stale_scrollback_over_a_bare_shell_is_undelivered() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "stale", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let mut screen = String::new();
+        screen.push_str("✻ Thinking… (esc to interrupt · 8s · ↑ 1.2k tokens)\n");
+        screen.push_str("❯ the previous composer line\n");
+        screen.push_str("  ? for shortcuts\n");
+        for i in 0..14 {
+            screen.push_str(&format!("  done step {i}\n"));
+        }
+        screen.push_str("user@host project % \n");
+
+        let rt = StubRuntime::parked_at(&screen);
+        state.session_runtimes.insert("stale".to_string(), rt.clone());
+
+        let res = send_harness_text(&state, "stale", "retry into a bare shell", None).await;
+        assert!(
+            matches!(res, Err(AppError::Conflict(_))),
+            "a retry whose CURRENT screen is a bare shell (stale agent glyphs only in \
+             scrollback) must report UNDELIVERED, got {res:?}",
+        );
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0, "nothing is typed into the bare shell");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0, "and no Enter is submitted");
+        let s = db::sessions::get(&state.pool, "stale").await.unwrap().unwrap();
+        assert!(s.last_send_text.is_empty(), "a swallowed message is never recorded as a send");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// WAVE-8 codex pass 3, edge (b): a send guard that CANNOT read the current
+    /// screen must fail CLOSED — refuse rather than type blindly. Before the fix
+    /// the capture-error arm logged and fell through to the keystrokes.
+    #[tokio::test]
+    async fn a_retry_send_fails_closed_when_the_screen_cannot_be_captured() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "blind", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let rt = StubRuntime::capture_fails();
+        state.session_runtimes.insert("blind".to_string(), rt.clone());
+
+        let res = send_harness_text(&state, "blind", "message into the unknown", None).await;
+        assert!(
+            matches!(res, Err(AppError::Conflict(_))),
+            "a capture failure must refuse the send (fail closed), got {res:?}",
+        );
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0, "nothing is typed when the screen is unreadable");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0, "and no Enter is submitted");
+        let s = db::sessions::get(&state.pool, "blind").await.unwrap().unwrap();
+        assert!(s.last_send_text.is_empty(), "no last_send is written on a refused send");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// WAVE-8 codex pass 3 (native belt-and-suspenders): when the runtime reports
+    /// `shell_is_foreground() == Some(true)` — the pty IS at a bare shell — the send
+    /// is refused outright, even if the (stale) capture still shows a live composer.
+    /// This is the non-heuristic native default runtime path.
+    #[tokio::test]
+    async fn a_retry_send_refuses_when_native_reports_a_bare_shell() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "nativebare", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        // The capture LIES (still shows the old composer); shell_is_foreground is
+        // the authority and says bare shell.
+        let rt = StubRuntime::bare_shell_with_stale_capture("❯ Try \"fix tests\"\n  ? for shortcuts");
+        state.session_runtimes.insert("nativebare".to_string(), rt.clone());
+
+        let res = send_harness_text(&state, "nativebare", "into the bare shell", None).await;
+        assert!(
+            matches!(res, Err(AppError::Conflict(_))),
+            "shell_is_foreground()==Some(true) must refuse regardless of the capture, got {res:?}",
+        );
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0, "nothing typed");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0, "no Enter");
+        let s = db::sessions::get(&state.pool, "nativebare").await.unwrap().unwrap();
+        assert!(s.last_send_text.is_empty(), "no last_send on refusal");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// WAVE-8 control: a BUSY turn is a legitimate queue — the already-awake path
+    /// still delivers when the current screen is the `esc to interrupt` footer, and
+    /// `shell_is_foreground` is `Some(false)` (a program owns the pty).
+    #[tokio::test]
+    async fn a_send_to_a_busy_turn_still_queues() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "busy", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let mut rt = StubRuntime::parked_at("✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)");
+        Arc::get_mut(&mut rt).unwrap().shell_fg = Some(false);
+        state.session_runtimes.insert("busy".to_string(), rt.clone());
+
+        send_harness_text(&state, "busy", "queue me", None)
+            .await
+            .expect("a send during a busy turn is a queue, not a refusal");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the queued text is typed");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "and submitted with Enter");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
