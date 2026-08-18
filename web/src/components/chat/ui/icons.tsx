@@ -116,11 +116,32 @@ export function DownIcon({ className }: IconProps) {
   )
 }
 
-/** Composer: attach / `@` / `/` — the one leading affordance. */
+/** Composer: the ADD control — opens the actions menu (attach / mention /
+ *  command / snippet / schedule / dictate). A `+` that genuinely means "add
+ *  something"; it rotates 45° into a close `×` while its sheet is open. */
 export function PlusIcon({ className }: IconProps) {
   return (
-    <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
       <path d="M8 2.9v10.2M2.9 8h10.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** Composer: the direct MENTION control (desktop pair). Icon == action — an `@`,
+ *  not a `+` — because tapping it inserts an `@` and opens the file/session
+ *  picker. Same 18px optical weight as its neighbours so the leading cluster
+ *  reads as one considered set. */
+export function AtIcon({ className }: IconProps) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden className={className}>
+      <circle cx="9" cy="9" r="3.1" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M12.1 6.4V9.6c0 1.2.7 1.9 1.6 1.9 1.1 0 1.9-1.1 1.9-2.6A6.5 6.5 0 1 0 11.4 15"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }

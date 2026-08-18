@@ -45,6 +45,7 @@ export {
 } from './facepile'
 export {
   ArrowIcon,
+  AtIcon,
   BackIcon,
   ChatGlyph,
   CheckIcon,
