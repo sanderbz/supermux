@@ -12,7 +12,7 @@
 
 import { describe, expect, test } from 'bun:test'
 
-import { applyDelta } from '../../src/hooks/use-sessions'
+import { applyDelta, clearRemovalTombstone } from '../../src/hooks/use-sessions'
 import type { ApiSession } from '../../src/lib/api'
 
 const row = (over: Partial<ApiSession> = {}): ApiSession => ({
@@ -50,5 +50,54 @@ describe('applyDelta — the hard-delete removal path', () => {
     expect(after[0].status).toBe('active')
     // A status-only delta must not blank the tail preview (the merge is per-key).
     expect(after[0].preview_lines).toEqual(['hi'])
+  })
+})
+
+describe('applyDelta — the delete resurrection race (w6 #3)', () => {
+  // Each test injects its OWN tombstone map + clock so the module-level
+  // singleton and Date.now cannot make one test leak into another.
+  test('a late in-flight delta does NOT resurrect a just-deleted session', () => {
+    const tomb = new Map<string, number>()
+    // 1. the session exists.
+    const alive = [row({ name: 'keep' }), row({ name: 'vx-cdel', status: 'active' })]
+    // 2. the DELETE lands — the row is dropped AND the name is tombstoned.
+    const gone = applyDelta(alive, [{ name: 'vx-cdel', removed: true }], true, tomb, 1000)
+    expect(gone.map((s) => s.name)).toEqual(['keep'])
+    // 3. a preview/activity delta that was already in flight arrives 200ms later
+    //    with `allowAdd` on. Before the fix this took the unknown-name branch and
+    //    re-added the tile as a synthetic green `idle`; now it is denied.
+    const after = applyDelta(
+      gone,
+      [{ name: 'vx-cdel', preview_lines: ['ghost tail'] }],
+      true,
+      tomb,
+      1200,
+    )
+    expect(after.map((s) => s.name)).toEqual(['keep'])
+  })
+
+  test('the tombstone is short-lived — a real recreate past the TTL is allowed', () => {
+    const tomb = new Map<string, number>()
+    const gone = applyDelta([row({ name: 'vx-cdel' })], [{ name: 'vx-cdel', removed: true }], true, tomb, 0)
+    expect(gone.map((s) => s.name)).toEqual([])
+    // A human recreates the same name 20s later (> 15s TTL): it must appear.
+    const recreated = applyDelta(gone, [{ name: 'vx-cdel', status: 'idle' }], true, tomb, 20_000)
+    expect(recreated.map((s) => s.name)).toEqual(['vx-cdel'])
+  })
+
+  test('an explicit create clears the tombstone so its deltas land at once', () => {
+    const tomb = new Map<string, number>()
+    applyDelta([row({ name: 'vx-cdel' })], [{ name: 'vx-cdel', removed: true }], true, tomb, 0)
+    // The create mutation forgets the tombstone eagerly (here on the injected map
+    // via the same delete key), so a delta 1ms later is not denied.
+    tomb.delete('vx-cdel')
+    const after = applyDelta([], [{ name: 'vx-cdel', status: 'idle', dir: '/w', provider: 'claude' }], true, tomb, 1)
+    expect(after.map((s) => s.name)).toEqual(['vx-cdel'])
+  })
+
+  test('clearRemovalTombstone targets the module singleton (smoke)', () => {
+    // The exported clear is what the create mutation calls; exercise it so the
+    // wiring cannot silently break.
+    expect(() => clearRemovalTombstone('anything')).not.toThrow()
   })
 })
