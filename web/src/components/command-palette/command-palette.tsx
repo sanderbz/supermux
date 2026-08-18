@@ -88,6 +88,8 @@ import { rankEntities, type RankText } from '@/lib/rank'
 import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 import { useTheme } from '@/components/theme-provider'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { useUI } from '@/stores/ui-store'
+import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 //
@@ -203,6 +205,22 @@ export function CommandPalette() {
   // inset and no allowance for a soft keyboard. Same fork every other sheet in
   // the app uses.
   const coarse = useMediaQuery('(pointer: coarse)')
+
+  // GROK MODE — the palette is a Radix Dialog PORTALLED to <body>, a sibling of
+  // the shell root, so the `data-grok` attribute layout puts on that root cannot
+  // reach it (styles/grok-mode.css WS7). Read the flag once at mount — the same
+  // decision (`grokModeOn`) and the same "read once, don't re-render on toggle"
+  // discipline layout.tsx uses — and stamp `data-grok` on the Content ITSELF
+  // below, so the picker's glass rules apply to the portalled box. Absent when
+  // off, so the default palette's DOM is byte-identical.
+  const [grok] = React.useState(() =>
+    grokModeOn(
+      useUI.getState().grokMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
 
   const [query, setQuery] = React.useState('')
   // `viaKey` rides with the index because the picker scrolls the active row
@@ -686,13 +704,21 @@ export function CommandPalette() {
         onOpenAutoFocus={(e) => e.preventDefault()}
         // …and hand focus back to the opener on the way out.
         onCloseAutoFocus={restoreFocus}
+        // WS7 — the grok gate on the portalled box. Only present when grok is on,
+        // so the default palette's DOM is unchanged.
+        data-grok={grok ? '' : undefined}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         {/* pr-11 on the row, not on the chip: the dialog's own close ✕ is
             `absolute right-4 top-4` and was overlapping the "Esc" Kbd by 16px
             at every desktop width, so the chip rendered as "Es✕". The row has
             to reserve the corner the ✕ occupies. */}
-        <div className="flex items-center gap-3 border-b border-border py-3 pl-4 pr-11">
+        <div
+          className="flex items-center gap-3 border-b border-border py-3 pl-4 pr-11"
+          // WS7 hook — under grok the seam becomes a 0.5px hairline. Marker only
+          // present when grok is on, so the default DOM is untouched.
+          data-grok-search={grok ? '' : undefined}
+        >
           <CommandIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           <input
             autoFocus
