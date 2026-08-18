@@ -879,8 +879,37 @@ describe('the slash refusal, said out loud', () => {
     expect(html).not.toContain('data-testid="chat-composer-open-terminal"')
   })
 
-  test('the composer’s `+` is a real control now — it opens the mention picker', () => {
-    expect(composer()).toContain('data-testid="chat-composer-at"')
+  test('desktop keeps a DIRECT `@` mention button (icon == action, not a `+`)', () => {
+    // With no `actions` the leading control is the desktop minimal pair. The
+    // mention button inserts `@` and opens the picker — and it is now drawn as
+    // an `@`, not the old `+` glyph that silently typed one (owner feedback #1).
+    const html = composer()
+    expect(html).toContain('data-testid="chat-composer-at"')
+    // …and it is NOT the add-menu opener: desktop has no folded sheet.
+    expect(html).not.toContain('data-testid="chat-composer-add"')
+  })
+
+  test('mobile with `actions`: ONE `+` owns the add-menu; the bare @/clock leave the bar', () => {
+    // Owner feedback #1 + the consolidation goal: the phone bar is a single
+    // leading control (`+` = "add something") that opens the menu. Mention,
+    // command and schedule move INTO that menu, so the three-button cluster is
+    // gone from the bar itself.
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        surface="phone"
+        handle={handle()}
+        onSchedule={() => {}}
+        actions={{ onSwitchSession: () => {}, onCommandPalette: () => {} }}
+      />,
+    )
+    expect(html).toContain('data-testid="chat-composer-add"')
+    // The add control announces its disclosure, closed at rest.
+    expect(html).toContain('aria-expanded="false"')
+    // No direct mention / schedule buttons on the bar — they live in the menu.
+    expect(html).not.toContain('data-testid="chat-composer-at"')
+    expect(html).not.toContain('data-testid="chat-composer-schedule"')
   })
 
   test('the popover mounts only when the handle says it is open', () => {
