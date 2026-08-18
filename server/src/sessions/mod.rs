@@ -1075,7 +1075,34 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     // lifecycle — self-terminates on delete; boot-time sessions are wired by
     // `steering::deliver_loop::spawn_all`).
     steering::deliver_loop::spawn(state.clone(), name.clone());
-    get(state, &name).await
+
+    // Build the authoritative row ONCE and reuse it for both the SSE broadcast
+    // and the HTTP response, so the two never diverge.
+    let view = get(state, &name).await?;
+
+    // SYNCHRONOUS: broadcast the full serialized SessionView as a `sessions`
+    // delta so every OTHER tab adds the tile immediately — carrying the identity
+    // columns (`dir` + `provider`) that the client's tombstone discriminator
+    // treats as authoritative. This mirrors `unarchive`'s broadcast (lifecycle
+    // ~1993). Without it, create emits no full-row SSE at all: the only cross-tab
+    // signal is the later `start` broadcast's thin `{name,status}` delta, which
+    // carries no identity fields — so a tab that hard-deleted this name moments
+    // ago (within its 15s removal-tombstone TTL) rejects the partial and strands
+    // the tile until the tombstone expires. A full row clears that tombstone at
+    // once (web wave-7 #110). `applyDelta` is idempotent, so the creating tab —
+    // which already added the row from this call's HTTP response — just re-applies
+    // the same values.
+    if let Ok(mut row) = serde_json::to_value(&view) {
+        // Belt-and-suspenders: a freshly created row is never archived/removed,
+        // so make sure neither removal branch can trip on this delta.
+        row["archived"] = json!(false);
+        let _ = state.sse_tx.send(crate::state::SseEvent {
+            event: "sessions".to_string(),
+            payload: json!({ "delta": [row] }),
+        });
+    }
+
+    Ok(view)
 }
 
 pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
