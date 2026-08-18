@@ -47,6 +47,12 @@ use crate::state::AppState;
 /// Filename of the persisted raw VAPID private key (base64url of 32 bytes).
 const VAPID_KEY_FILE: &str = "vapid_private.key";
 
+/// Reserved key in the `/api/push/prefs` map for the lock-screen message-preview
+/// toggle. It is NOT a [`NotifCategory`] — it gates whether the body carries the
+/// agent's own words or a generic tier line — but it rides the same map so the
+/// Settings section reads and writes every notification pref in one round-trip.
+const MESSAGE_PREVIEW_KEY: &str = "message_preview";
+
 /// Fallback VAPID `sub` claim when `config.push_sub` is unset. `example.com` is
 /// RFC 2606-reserved so this parses cleanly through every known push service's
 /// JWT validator (including Apple's APNs, which is the strict one), while
@@ -351,6 +357,13 @@ async fn get_prefs(
     for (cat, on) in db::push::list_prefs(&state.pool).await {
         obj.insert(cat.as_str().to_string(), json!(on));
     }
+    // The message-preview toggle rides the SAME map (it is a notification pref,
+    // just not a per-category one) so the Settings section fetches everything in
+    // one round-trip. It is a reserved key, never a `NotifCategory`.
+    obj.insert(
+        MESSAGE_PREVIEW_KEY.to_string(),
+        json!(db::push::message_preview_enabled(&state.pool).await),
+    );
     Ok(Json(json!({ "ok": true, "data": obj })))
 }
 
@@ -365,12 +378,18 @@ async fn put_prefs(
     // Validate every key BEFORE writing anything, so a bad request can't leave
     // some prefs flipped and others unchanged.
     let mut writes = Vec::with_capacity(body.len());
+    let mut preview_write: Option<bool> = None;
     for (k, v) in &body {
-        let cat = NotifCategory::from_str(k).ok_or_else(|| {
-            AppError::BadRequest(format!("unknown notification type '{k}'"))
-        })?;
         let on = v.as_bool().ok_or_else(|| {
             AppError::BadRequest(format!("'{k}' must be a boolean"))
+        })?;
+        // The reserved, non-category `message_preview` key rides the same map.
+        if k == MESSAGE_PREVIEW_KEY {
+            preview_write = Some(on);
+            continue;
+        }
+        let cat = NotifCategory::from_str(k).ok_or_else(|| {
+            AppError::BadRequest(format!("unknown notification type '{k}'"))
         })?;
         writes.push((cat, on));
     }
@@ -378,6 +397,11 @@ async fn put_prefs(
         db::push::set_pref(&state.pool, cat, on)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("set pref: {e}")))?;
+    }
+    if let Some(on) = preview_write {
+        db::push::set_message_preview(&state.pool, on)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("set message_preview: {e}")))?;
     }
     Ok(Json(json!({ "ok": true })))
 }
