@@ -2525,6 +2525,7 @@ mod boot_reconcile_tests {
             worktree: None,
             host_id: None,
             runtime: Some("native".into()),
+            model: None,
         };
         crate::sessions::create(state, inp).await.expect("create");
         db::sessions::set_last_status(&state.pool, name, status).await.unwrap();
@@ -2724,6 +2725,7 @@ mod dead_holder_tests {
             worktree: None,
             host_id: None,
             runtime: Some("native".into()),
+            model: None,
         };
         crate::sessions::create(state, inp).await.expect("create");
         db::sessions::set_last_status(&state.pool, name, status).await.unwrap();

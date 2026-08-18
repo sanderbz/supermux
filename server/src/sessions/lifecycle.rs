@@ -213,6 +213,113 @@ fn quoted_flag_words(flags: &str) -> Vec<String> {
         .collect()
 }
 
+/// Resolve a per-bot MODEL selection to the real `--model` id the provider's CLI
+/// accepts, or reject it (migration 0030 / bot identity).
+///
+/// The model NEVER arrives as free text on the launch line: it is validated
+/// against a hardcoded per-provider ALLOWLIST here (SEC-01 — the resolved value
+/// is spliced into a shell command line), and only a mapped, known-safe literal
+/// is ever emitted. This is the single source of truth shared by the create /
+/// config write path (`sessions::mod`, which stores the mapped id) and the launch
+/// path ([`build_launch_command`], which trusts a stored id but re-resolves it so
+/// a legacy / hand-edited value is dropped rather than shell-injected).
+///
+/// Contract:
+///   * `Ok(None)`      — `model` is empty ⇒ use the provider default (unchanged
+///                        behaviour for the whole pre-0030 fleet).
+///   * `Ok(Some(id))`  — a validated, allowlisted real model id.
+///   * `Err(msg)`      — an unknown selection; the caller maps it to a 400.
+///
+/// The map is deliberately small and extend-later; the KEY is the user-facing
+/// selection and the VALUE is the id the CLI is invoked with. Keeping them
+/// separate lets a friendly label diverge from a versioned id without touching
+/// callers.
+pub(crate) fn resolve_model_flag(provider: &str, model: &str) -> Result<Option<&'static str>, String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(None);
+    }
+    // (selection, real --model id). claude aliases already ARE the ids the CLI
+    // accepts; codex ids are its accepted model slugs.
+    let allow: &[(&str, &str)] = match provider {
+        p if launches_claude(p) => &[("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")],
+        "codex" => &[
+            ("gpt-5-codex", "gpt-5-codex"),
+            ("gpt-5", "gpt-5"),
+            ("o3", "o3"),
+            ("o4-mini", "o4-mini"),
+        ],
+        _ => &[],
+    };
+    match allow.iter().find(|(sel, _)| *sel == model) {
+        Some((_, id)) => Ok(Some(id)),
+        None => {
+            let allowed = allow.iter().map(|(sel, _)| *sel).collect::<Vec<_>>().join(", ");
+            if allowed.is_empty() {
+                Err(format!("provider '{provider}' does not support a model selection"))
+            } else {
+                Err(format!(
+                    "unknown model '{model}' for provider '{provider}' (allowed: {allowed})"
+                ))
+            }
+        }
+    }
+}
+
+/// Compose the READ-ONLY role/notes system-prompt block injected at launch
+/// (migration 0030 / bot identity), or `None` when this session has neither a
+/// role (`desc`) nor notes (`memory`).
+///
+/// The owner's ask — "sluit rol nu echt aan": until now `desc` ("Standing
+/// instructions") was displayed but injected NOWHERE, so the role steered nothing.
+/// This turns it into the agent's system prompt at launch. `memory` (the bot's
+/// "Notes it keeps") is appended after the role under a clear delimiter. v1 is
+/// READ-ONLY — the agent can SEE its role + notes; a write-back path is a later
+/// phase and is deliberately not built here.
+fn role_system_prompt(s: &Session) -> Option<String> {
+    let role = s.desc.trim();
+    let notes = s.memory.trim();
+    if role.is_empty() && notes.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    if !role.is_empty() {
+        out.push_str(role);
+    }
+    if !notes.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        // A clearly delimited section so the agent can tell its standing role
+        // from the mutable notes it keeps.
+        out.push_str("Notes you keep:\n");
+        out.push_str(notes);
+    }
+    Some(out)
+}
+
+/// Write the composed role/notes block to a per-session instructions file the
+/// codex arm points at, returning its path — or `None` when this session has no
+/// role/notes (then any stale file from a previous launch is removed, so a
+/// cleared role does not keep steering codex). Best-effort: any fs error yields
+/// `None` and the launch simply proceeds without role injection.
+fn write_codex_role_file(config: &crate::config::Config, s: &Session) -> Option<std::path::PathBuf> {
+    let dir = config.data_dir.join("bot-role");
+    let path = dir.join(format!("{}.md", s.name));
+    match role_system_prompt(s) {
+        Some(body) => {
+            if std::fs::create_dir_all(&dir).is_err() {
+                return None;
+            }
+            std::fs::write(&path, body).ok().map(|_| path)
+        }
+        None => {
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
 /// Per-session tmux env. Excludes the dashboard bearer by construction.
 ///
 /// `agent_teams` gates the experimental Claude Code Agent Teams feature:
@@ -415,6 +522,25 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             }
             // Per-session flags are caller-supplied → quoted word by word.
             parts.extend(quoted_flag_words(&s.flags));
+            // ── bot identity (migration 0030), codex arm ───────────────────
+            // Per-bot MODEL via codex's own `--model <id>` flag, allowlist-
+            // resolved exactly like the claude arm (never free text).
+            if let Ok(Some(id)) = resolve_model_flag(&s.provider, &s.model) {
+                parts.push("--model".to_string());
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Borrowed(id)).into_owned());
+            }
+            // ROLE + NOTES for codex. Codex has no per-launch `--append-system-
+            // prompt`, so v1 writes the composed role/notes to a per-session
+            // instructions FILE and points codex at it via its config override
+            // (`-c experimental_instructions_file="<path>"`). READ-ONLY, same as
+            // the claude arm. Best-effort: a write failure just skips injection
+            // (the session still launches). CONNECTOR-STORE seam applies here too
+            // (see the claude arm's note) — this consumes only its own `-c` pair.
+            if let Some(path) = write_codex_role_file(config, s) {
+                parts.push("-c".to_string());
+                let kv = format!("experimental_instructions_file={:?}", path.display().to_string());
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(kv)).into_owned());
+            }
             let codex = parts.join(" ");
 
             // Codex is an optional provider, so make its first launch
@@ -493,6 +619,34 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
                 parts.push(s.name.clone());
                 false
             };
+            // ── bot identity (migration 0030) ──────────────────────────────
+            // Per-bot MODEL: fold the stored selection into the launch line as
+            // `--model <id>`. Re-resolved through the allowlist (never trusted as
+            // free text) so a legacy / hand-edited column value is dropped rather
+            // than shell-injected; the id it yields is a known-safe literal, and
+            // we single-quote it anyway to keep the argv shape audit-obvious.
+            if let Ok(Some(id)) = resolve_model_flag(&s.provider, &s.model) {
+                parts.push("--model".to_string());
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Borrowed(id)).into_owned());
+            }
+            // ROLE + NOTES: inject the session's role (`desc`) and the bot's notes
+            // (`memory`) into Claude's SYSTEM PROMPT via `--append-system-prompt`
+            // (per-launch, clean, no file to clean up). READ-ONLY in v1. The value
+            // is shell-escaped as one word by the same quoting the flags path uses.
+            //
+            // CONNECTOR-STORE COEXISTENCE SEAM — see
+            // docs/superpowers/specs/2026-08-18-connector-store-design.md
+            // (branch feat/connector-store). That work injects at THIS SAME point
+            // via `--mcp-config <path>` (and/or `CLAUDE_CONFIG_DIR` in
+            // `build_env`). This role/notes injection is designed to COMPOSE with
+            // it: it appends its OWN `--append-system-prompt` flag pair and does
+            // NOT consume the `--mcp-config` slot or any env slot the connector
+            // work needs — a later MCP-config flag simply sits beside this one in
+            // `parts`. Keep them as independent flag pairs; do not merge.
+            if let Some(sys) = role_system_prompt(s) {
+                parts.push("--append-system-prompt".to_string());
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(sys)).into_owned());
+            }
             (parts.join(" "), resume_intended)
         }
     };
@@ -2835,6 +2989,9 @@ mod build_env_tests {
             seen_ts: None,
             seen_count: None,
             seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -2896,6 +3053,9 @@ mod build_env_tests {
             seen_ts: None,
             seen_count: None,
             seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -2960,6 +3120,9 @@ mod build_env_tests {
             seen_ts: None,
             seen_count: None,
             seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session);
@@ -2968,6 +3131,92 @@ mod build_env_tests {
             .status()
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "generated Codex bootstrap must parse as shell");
+    }
+
+    // ── bot identity (migration 0030): role/notes/model injection ────────────
+
+    /// The MODEL allowlist maps a selection to a real id per provider and rejects
+    /// anything else — the guard that keeps free text off the launch line.
+    #[test]
+    fn model_allowlist_maps_known_and_rejects_unknown() {
+        assert_eq!(resolve_model_flag("claude", "opus"), Ok(Some("opus")));
+        assert_eq!(resolve_model_flag("claude", "sonnet"), Ok(Some("sonnet")));
+        assert_eq!(resolve_model_flag("codex", "gpt-5-codex"), Ok(Some("gpt-5-codex")));
+        // Empty = provider default (no injection).
+        assert_eq!(resolve_model_flag("claude", ""), Ok(None));
+        assert_eq!(resolve_model_flag("claude", "   "), Ok(None));
+        // A claude model asked of codex (and vice-versa) is refused, not silently
+        // accepted — the allowlist is per-provider.
+        assert!(resolve_model_flag("claude", "gpt-5-codex").is_err());
+        assert!(resolve_model_flag("codex", "opus").is_err());
+        // Junk / shell-meta never maps.
+        assert!(resolve_model_flag("claude", "opus; rm -rf /").is_err());
+        assert!(resolve_model_flag("shell", "opus").is_err());
+    }
+
+    /// THE KEY NEW BEHAVIOUR: a non-empty role (`desc`) and the bot's notes
+    /// (`memory`) are injected into Claude's system prompt via
+    /// `--append-system-prompt`, and the model column lands as `--model <id>`.
+    #[test]
+    fn role_notes_and_model_inject_into_the_claude_launch_line() {
+        let config = cfg();
+        let mut s = claude_session("bot", "");
+        s.desc = "You are a meticulous code reviewer.".into();
+        s.memory = "The build is debug-only; never run cargo --release.".into();
+        s.model = "opus".into();
+
+        let (cmd, _resume) = build_launch_command(&config, &s);
+        // Role + notes ride ONE `--append-system-prompt` word.
+        assert!(cmd.contains("--append-system-prompt"), "cmd: {cmd}");
+        assert!(cmd.contains("meticulous code reviewer"), "role missing: {cmd}");
+        assert!(cmd.contains("Notes you keep:"), "notes delimiter missing: {cmd}");
+        assert!(cmd.contains("never run cargo --release"), "notes body missing: {cmd}");
+        // Model column → validated `--model opus`.
+        assert!(cmd.contains("--model opus"), "model missing: {cmd}");
+
+        // CONNECTOR-STORE COEXISTENCE: role injection consumes only its own
+        // `--append-system-prompt` slot and leaves `--mcp-config` free for the
+        // later connector-store work to sit beside it.
+        assert!(!cmd.contains("--mcp-config"), "must not pre-empt the connector slot");
+    }
+
+    /// A session with neither role nor notes injects NO system prompt — the launch
+    /// line is unchanged for the whole pre-0030 fleet.
+    #[test]
+    fn no_role_no_notes_means_no_system_prompt_injection() {
+        let config = cfg();
+        let s = claude_session("plain", "");
+        let (cmd, _resume) = build_launch_command(&config, &s);
+        assert!(!cmd.contains("--append-system-prompt"), "cmd: {cmd}");
+        assert!(!cmd.contains("--model"), "no model column → no --model: {cmd}");
+    }
+
+    /// A poisoned/legacy model column value is DROPPED at launch (re-resolved
+    /// through the allowlist), never shell-injected.
+    #[test]
+    fn a_junk_model_column_is_not_injected() {
+        let config = cfg();
+        let mut s = claude_session("legacy", "");
+        s.model = "totally-made-up".into();
+        let (cmd, _resume) = build_launch_command(&config, &s);
+        assert!(!cmd.contains("--model"), "an unmappable model must be dropped: {cmd}");
+    }
+
+    /// The composed launch line still parses as shell with role/notes/model on it
+    /// (the escaping holds for a system prompt full of spaces and shell-meta).
+    #[test]
+    fn role_injected_claude_launch_is_valid_shell() {
+        let config = cfg();
+        let mut s = claude_session("shellcheck", "");
+        s.desc = "Mind the $PATH; use \"quotes\" & `ticks` — carefully.".into();
+        s.memory = "Rule: don't `rm -rf`.".into();
+        s.model = "sonnet".into();
+        let (command, _resume) = build_launch_command(&config, &s);
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "role-injected launch must parse as shell: {command}");
     }
 
     // ── SEC-01: caller-supplied `flags` on a shell command line ──────────────
@@ -3010,6 +3259,9 @@ mod build_env_tests {
             seen_ts: None,
             seen_count: None,
             seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
         }
     }
 

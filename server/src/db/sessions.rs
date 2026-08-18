@@ -90,6 +90,25 @@ pub struct Session {
     /// dot rather than a number.
     #[serde(default)]
     pub seen_epoch: Option<i64>,
+    /// The launch-line model selection (migration 0030), e.g. `"opus"`. Injected
+    /// as `--model <id>` at launch (`sessions::lifecycle::build_launch_command`).
+    /// ALLOWLIST-validated on every write (create / config PATCH), so a value on
+    /// record is already one of the provider's accepted ids; empty = provider
+    /// default (the whole pre-0030 fleet). `#[serde(default)]` so a binary that
+    /// predates the column still deserialises.
+    #[serde(default)]
+    pub model: String,
+    /// The bot's "Notes it keeps" (migration 0030): free text injected READ-ONLY
+    /// into the agent's system prompt at launch, after the role (`desc`). v1 is
+    /// read-only — the agent writing back here is a later phase. Empty for the
+    /// whole pre-0030 fleet.
+    #[serde(default)]
+    pub memory: String,
+    /// Reserved per-bot skills selection (migration 0030): a JSON-array string,
+    /// `"[]"` by default. Nothing consumes it yet — carried so the column exists
+    /// when per-bot skills land.
+    #[serde(default)]
+    pub skills: String,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -385,6 +404,11 @@ pub struct NewSession {
     /// this is already one of the two literals. Mirrors `host_id`: the create
     /// path (CreateInput → NewSession → INSERT) carries it end-to-end.
     pub runtime: String,
+    /// The launch-line model selection (migration 0030), already ALLOWLIST-mapped
+    /// to a real provider model id by `sessions::create` before it reaches here
+    /// (empty = provider default). Mirrors `runtime`: carried end-to-end so the
+    /// create path persists it in one INSERT.
+    pub model: String,
 }
 
 /// Insert a full session config row. `created_at` is set to now.
@@ -393,8 +417,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
-             worktree, worktree_repo, host_id, runtime, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             worktree, worktree_repo, host_id, runtime, model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.display_name)
@@ -410,6 +434,7 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(&s.worktree_repo)
     .bind(s.host_id)
     .bind(&s.runtime)
+    .bind(&s.model)
     .bind(now)
     .execute(pool)
     .await?;
@@ -458,10 +483,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, notif, mark_pin, created_at)
+             host_id, runtime, notif, mark_pin, model, memory, skills, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, notif, mark_pin, ?
+                host_id, runtime, notif, mark_pin, model, memory, skills, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)
@@ -537,6 +562,26 @@ pub async fn set_flags(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Resu
 /// Set the tags column (JSON-array string).
 pub async fn set_tags(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "tags", json).await
+}
+/// Set the launch-line model selection (migration 0030). The value is
+/// ALLOWLIST-mapped to a real provider model id by the caller
+/// (`sessions::config_patch`) before it lands here, and injected as
+/// `--model <id>` at the next launch — so a change takes effect on restart, not
+/// under a live agent (the PATCH returns `restart_required`).
+pub async fn set_model(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "model", value).await
+}
+/// Set the bot's "Notes it keeps" (migration 0030). Injected READ-ONLY into the
+/// agent's system prompt at the next launch, so like `model`/`desc` a change is a
+/// launch-line change (the PATCH returns `restart_required`).
+pub async fn set_memory(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "memory", value).await
+}
+/// Set the reserved per-bot skills selection (migration 0030), a JSON-array
+/// string. Nothing consumes it yet, so unlike model/memory it is NOT a
+/// launch-line change.
+pub async fn set_skills(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "skills", json).await
 }
 
 /// Set / clear the `team_name` backlink (None → NULL). NULL means "this session
