@@ -183,8 +183,20 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Core token block — DARK (spec §2.1 dark; `.dark` ancestor swaps the half) ── */
-.dark [data-grok] {
+/* ── Core token block — DARK (spec §2.1 dark; `.dark` ancestor swaps the half) ──
+   THEME PARITY (jury round-2 light-wash blocker): the half was keyed ONLY on the
+   ancestor `.dark` CLASS. But globals.css also honours a `[data-theme]` ATTRIBUTE
+   as the SUBTREE switch (a light board rendered inside a dark app — design
+   surfaces, the /dev store bench, and any nested light region). grok-mode.css
+   ignored it, so a `[data-theme='light']` subtree living under an ancestor `.dark`
+   still inherited the DARK grok tokens — the mid-grey-on-mid-grey wash on every
+   bot-context surface. Fix, mirroring globals.css exactly: dark also answers to
+   `[data-theme='dark']`, and a `[data-theme='light']` subtree re-asserts the light
+   half below (placed after this block so the equal-specificity tie resolves to
+   light). Production is untouched — it swaps the whole app via the `.dark`/`.light`
+   class, never `data-theme`, so these attribute rules are inert there. */
+.dark [data-grok],
+[data-theme='dark'] [data-grok] {
   color-scheme: dark;
 
   --sm-substrate: #1c1c1a9e;
@@ -232,6 +244,63 @@
 
   /* needs-you halo, lifted for the dark ground (overview.md §4). */
   --sm-halo: rgba(255, 128, 150, 0.24);
+}
+
+/* ── Core token block — LIGHT subtree re-assertion (theme parity) ──────────────
+   Mirrors globals.css's `[data-theme='light']` subtree switch for the grok token
+   half. Same specificity as `.dark [data-grok]` (0,2,0) and placed AFTER it, so a
+   `[data-theme='light']` board WINS the light half even under an ancestor `.dark`.
+   Only the tokens the DARK block overrode are re-declared — the light VALUES from
+   the base `[data-grok]` block above (radii/type/spacing don't flip, so they are
+   not repeated). This is the fix for the round-2 light-wash blocker on the five
+   bot-context surfaces (store grid, install sheet, inline connect-card, bot-panel
+   Tools + Memory). Inert in production (class-driven theme, never `data-theme`). */
+[data-theme='light'] [data-grok] {
+  color-scheme: light;
+
+  --sm-substrate: #f7f7f5a6;
+  --sm-bg-chrome: #f4f4f2;
+  --sm-bg-editor: #fafaf8;
+  --sm-bg-elevated: #ffffff;
+  --sm-bg-card: #0000000a;
+  --sm-bg-tertiary: #0000000d;
+  --sm-bg-hover: #0000000a;
+  --sm-bg-active: #00000014;
+
+  --sm-text-primary: #0a0a0a;
+  --sm-text-secondary: #0000008c;
+  --sm-text-tertiary: #00000059;
+  --sm-ink-on-emphasis: #fff;
+
+  --sm-sidebar-text-primary: #141414;
+  --sm-sidebar-text-secondary: #14141499;
+  --sm-sidebar-text-tertiary: #14141466;
+  --sm-sidebar-tint: #fbfbfb59;
+  --sm-sidebar-separator: #14141426;
+
+  --sm-accent: #0a84ff;
+  --sm-accent-fill: #006ceb;
+  --gr-onaccent: #ffffff;
+
+  --sm-border: #0000001a;
+
+  --sm-tone-accent: #0a84ff;
+  --sm-tone-success: #1f8a65;
+  --sm-tone-warning: #8a5200;
+  --sm-tone-danger: #c0362c;
+
+  --sm-fill-emphasis: #111110;
+  --sm-fill-secondary: #1010000a;
+  --sm-bubble-user: #111110;
+  --sm-bubble-user-ink: #fff;
+  --sm-bubble-agent: #0000000a;
+
+  --sm-chat-fill: color-mix(in srgb, var(--sm-bg-elevated) 86%, transparent);
+  --sm-raised-fill: color-mix(in srgb, var(--sm-bg-elevated) 70%, transparent);
+  --sm-title-fill: color-mix(in srgb, var(--sm-bg-elevated) 78%, transparent);
+  --sm-glass-title: blur(28px) saturate(165%);
+
+  --sm-halo: rgba(197, 56, 79, 0.22);
 }
 
 /* ══ WS2 — SHELL & NAV CHROME (foundation for every route) ════════════════════

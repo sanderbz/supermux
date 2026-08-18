@@ -243,6 +243,18 @@ function SearchBox({ value, onChange }: { value: string; onChange: (v: string) =
   )
 }
 
+// A one-line editorial hook for the hero — the curated `card.hook` when present,
+// else a social-proof line derived from real catalog data (stars), else the
+// connector's primary category. Always distinct from the functional description.
+function heroHook(card: Card): string {
+  if (card.hook) return card.hook
+  if (typeof card.stars === 'number' && card.stars >= 1000) {
+    return `Popular — ${Math.round(card.stars / 1000)}k developers rely on it.`
+  }
+  const cat = (card.categories ?? []).find((c) => c !== 'featured')
+  return cat ? `A featured ${cat} connector.` : 'A featured connector.'
+}
+
 function FeaturedCard({
   card,
   installed,
@@ -256,15 +268,16 @@ function FeaturedCard({
   botScope: boolean
   onOpen: () => void
 }) {
-  const n = connectorToolCount(card)
+  const tools = connectorToolCount(card)
   const chip = chipFor(installed, granted, botScope)
+  const brand = brandMark(card)
   // The hero wash is the connector's OWN brand hue — editorial, distinct from the
   // calm grid card below it (blocker H1). Falls back to the app primary.
-  const hue = brandMark(card)?.hex ?? 'var(--primary)'
+  const hue = brand?.hex ?? 'var(--primary)'
   return (
     <div
       data-vr="connector-featured"
-      className="cs-featured group relative flex min-h-[168px] flex-col justify-between overflow-hidden rounded-[22px] border border-border bg-card p-4 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[0_12px_36px_-16px_rgba(0,0,0,0.42)]"
+      className="cs-featured group relative flex min-h-[176px] flex-col justify-between overflow-hidden rounded-[22px] border border-border bg-card p-4 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[0_12px_36px_-16px_rgba(0,0,0,0.42)] active:translate-y-0 active:shadow-none"
     >
       <span
         className="pointer-events-none absolute inset-0"
@@ -273,24 +286,47 @@ function FeaturedCard({
           background: `radial-gradient(130% 100% at 100% 0%, color-mix(in srgb, ${hue} 20%, transparent), transparent 62%)`,
         }}
       />
+      {/* Brand artwork — the connector's real mark, large and translucent, bleeding
+          off the top-right corner. Fills the hero's formerly-dead upper quadrant
+          and earns the extra size (blocker H1); clipped by the card's overflow. */}
+      {brand?.path && (
+        <svg
+          aria-hidden
+          viewBox="0 0 24 24"
+          className="pointer-events-none absolute -right-5 -top-6 z-0 size-[132px] opacity-[0.07] transition-transform duration-200 group-hover:scale-105"
+          fill={hue}
+        >
+          <path d={brand.path} />
+        </svg>
+      )}
       <button
         type="button"
         onClick={onOpen}
         aria-label={`Open ${card.display_name}`}
         className="absolute inset-0 z-0 rounded-[22px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
-      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-3">
-        <ConnectorIcon card={card} size={54} className="cs-icon-lift transition-transform duration-150 group-hover:scale-[1.03]" />
-        {n !== null && (
-          <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground backdrop-blur-sm">
-            {n} tools
-          </span>
-        )}
+      {/* Same card grammar as the grid below: icon top-left, name + tool-count
+          INLINE beside it (never a top-right pill) — one anatomy down the page,
+          the hero differs by size + artwork + hook, not by layout (blocker H3). */}
+      <div className="pointer-events-none relative z-10 flex items-start gap-3">
+        <ConnectorIcon card={card} size={48} className="cs-icon-lift transition-transform duration-150 group-hover:scale-[1.03]" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="text-[16.5px] font-semibold leading-tight tracking-tight text-foreground">{card.display_name}</span>
+          {tools !== null && (
+            <div className="mt-1.5">
+              <span className="inline-flex items-center rounded-full bg-background/60 px-2 py-0.5 text-[11.5px] font-medium tabular-nums text-muted-foreground backdrop-blur-sm">
+                {tools} tools
+              </span>
+            </div>
+          )}
+        </div>
       </div>
-      <div className="relative z-10 mt-4 flex flex-col">
-        <span className="text-[16.5px] font-semibold tracking-tight text-foreground">{card.display_name}</span>
-        <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
-        <button type="button" onClick={onOpen} className="pointer-events-auto relative z-10 mt-3 self-start" tabIndex={-1}>
+      <div className="relative z-10 mt-3 flex items-end justify-between gap-3">
+        {/* The editorial hook — one curated line, distinct from the description. */}
+        <p className="pointer-events-none min-w-0 flex-1 text-[13px] font-medium leading-snug text-foreground/80">
+          {heroHook(card)}
+        </p>
+        <button type="button" onClick={onOpen} className="pointer-events-auto relative z-10 shrink-0" tabIndex={-1}>
           <StateChip kind={chip} count={card.tools?.length || card.tool_count || 0} />
         </button>
       </div>

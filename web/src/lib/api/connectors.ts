@@ -57,6 +57,10 @@ export interface ConnectorCard {
   /** Catalog preview cards declare no tools[]; the count rides here instead. */
   tool_count?: number | null
   featured?: boolean
+  /** A short editorial hook for the Featured hero — one curated line, distinct
+   *  from the functional `description`. Optional; the hero derives a social-proof
+   *  line from `stars`/category when it is absent. */
+  hook?: string
   categories?: string[]
   created_at?: string
   // Catalog popularity / provenance (optional, all secret-free).

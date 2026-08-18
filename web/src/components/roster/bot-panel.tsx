@@ -499,7 +499,7 @@ function ToolsTab({ name, session }: { name: string; session: ApiSession | null 
   const mcp = session?.mcp?.trim() || ''
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Skills" hint="Uses the workspace defaults — per-bot selection lands with a later release.">
+      <Field label="Skills" hint="This bot runs with your workspace skill set.">
         <p className="text-[13px] text-muted-foreground">Workspace defaults.</p>
       </Field>
 

@@ -77,9 +77,19 @@ pub struct SessionConfig {
     /// switch). The memory phase adds its own vars here.
     env: HashMap<String, String>,
     /// Extra launch-line flag WORDS (raw; `build_launch_command` shell-escapes
-    /// each). The connector tier appends `--mcp-config <json> --strict-mcp-config`;
-    /// `finish` appends `--settings <overlay path>`.
+    /// each). `finish` appends `--mcp-config <json> --strict-mcp-config` (when any
+    /// MCP server was accumulated) then `--settings <overlay path>`.
     launch_flags: Vec<String>,
+    /// The inline `mcpServers` map under construction: granted connectors (keyed
+    /// by connector id) PLUS the ambient `connect` affordance. Emitted as ONE
+    /// `--mcp-config`/`--strict-mcp-config` pair by `finish` — so the connect
+    /// server rides the same strict config as the grants, never a second pair.
+    mcp_servers: Map<String, Value>,
+    /// `permissions.allow` rules under construction — the connector tool globs,
+    /// the `connect` tool, and the memory write-CLI grant all MERGE here and are
+    /// written to `settings.permissions.allow` once by `finish` (no tier clobbers
+    /// another's rules).
+    allow_rules: Vec<Value>,
     /// True once any tier contributed something requiring the overlay. Gates the
     /// whole thing off for a plain session (byte-identical launch).
     active: bool,
@@ -94,6 +104,8 @@ impl SessionConfig {
             settings: Map::new(),
             env: HashMap::new(),
             launch_flags: Vec::new(),
+            mcp_servers: Map::new(),
+            allow_rules: Vec::new(),
             active: false,
         }
     }
@@ -122,12 +134,14 @@ impl SessionConfig {
         }
         self.active = true;
 
-        // Inline mcp-config: { "mcpServers": { "<id>": <emit>, ... } }.
-        let mut servers = Map::new();
-        let mut allow: Vec<Value> = Vec::new();
+        // Accumulate into the shared inline mcp-config + allow list; `finish`
+        // emits the single `--mcp-config`/`--strict-mcp-config` pair and writes
+        // `permissions.allow` once (so the `connect` affordance and the memory
+        // write-CLI grant can join the SAME strict config / allow list).
         for g in grants {
-            servers.insert(g.connector_id.clone(), g.emit.clone());
-            allow.push(Value::String(format!("mcp__{}__*", g.connector_id)));
+            self.mcp_servers.insert(g.connector_id.clone(), g.emit.clone());
+            self.allow_rules
+                .push(Value::String(format!("mcp__{}__*", g.connector_id)));
             // Inject decrypted secrets as env; the emit block's ${VAR} refs
             // resolve from the process environment at Claude startup. This keeps
             // the plaintext out of `~/.claude.json`, the transcript, and the
@@ -146,27 +160,38 @@ impl SessionConfig {
                 self.env.insert(k.clone(), v.clone());
             }
         }
-        let inline = json!({ "mcpServers": Value::Object(servers) });
-        self.launch_flags.push("--mcp-config".to_string());
-        self.launch_flags
-            .push(serde_json::to_string(&inline).unwrap_or_else(|_| "{}".into()));
-        self.launch_flags.push("--strict-mcp-config".to_string());
+        // The inline `--mcp-config`/`--strict-mcp-config` flags and the
+        // `permissions.allow` array are emitted by `finish` from the accumulated
+        // `mcp_servers` / `allow_rules` — so the `connect` affordance and the
+        // memory write-CLI grant join the SAME strict config / allow list.
+        // Ungranted connectors are denied by `--strict-mcp-config` itself (their
+        // server is not in the config at all). The account/Claude.ai kill switch is
+        // applied by `finish` to EVERY active launch.
+    }
 
-        // Auto-allow the granted tools. Ungranted connectors are denied by
-        // `--strict-mcp-config` (their server is not in the config at all); project
-        // `.mcp.json` auto-approval is off too. The account/Claude.ai kill switch
-        // (`disableClaudeAiConnectors` + `ENABLE_CLAUDEAI_MCP_SERVERS=false`) is NOT
-        // set here — `finish` applies it to EVERY active launch (connectors OR
-        // memory) so an ungranted bot never inherits account connectors either.
-        let perms = self
-            .settings
-            .entry("permissions".to_string())
-            .or_insert_with(|| json!({}));
-        if let Some(obj) = perms.as_object_mut() {
-            obj.insert("allow".to_string(), Value::Array(allow));
+    // ── connect-affordance seam ────────────────────────────────────────────────
+    /// Wire the store's `connect(service)` tool into this bot's launch (spec §8
+    /// step 2): add the `connect` MCP server to the SAME inline `--mcp-config`
+    /// (under `--strict-mcp-config`) and allow-list `mcp__connect__connect` so the
+    /// call reaches the PreToolUse detector rather than being dropped. The server's
+    /// tool carries the `requiresUserInteraction` marker, so the call always stops
+    /// for the human and supermux raises the inline Connect card — the credential
+    /// never travels the tool. `emit` is [`crate::connectors::connect_server::emit`]
+    /// (no env, no secret). Idempotent-ish: only added to already-active bots, so a
+    /// plain pane never gets it.
+    pub fn apply_connect_affordance(&mut self, emit: Value) {
+        self.active = true;
+        self.mcp_servers
+            .insert(crate::connectors::connect_server::SERVER_KEY.to_string(), emit);
+        let rule = Value::String("mcp__connect__connect".to_string());
+        if !self.allow_rules.contains(&rule) {
+            self.allow_rules.push(rule);
         }
-        self.settings
-            .insert("enableAllProjectMcpServers".to_string(), Value::Bool(false));
+    }
+
+    /// True once any tier has contributed — the launch will carry the overlay.
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 
     // ── memory-phase seam ─────────────────────────────────────────────────────
@@ -199,22 +224,12 @@ impl SessionConfig {
             obj.insert("SessionStart".to_string(), group);
         }
 
-        // permissions.allow: MERGE the write-CLI grant with whatever the connector
-        // tier already put there (do not replace the array).
-        let perms = self
-            .settings
-            .entry("permissions".to_string())
-            .or_insert_with(|| json!({}));
-        if let Some(obj) = perms.as_object_mut() {
-            let allow = obj
-                .entry("allow".to_string())
-                .or_insert_with(|| Value::Array(Vec::new()));
-            if let Some(arr) = allow.as_array_mut() {
-                let entry = Value::String("Bash(supermux-memory *)".to_string());
-                if !arr.contains(&entry) {
-                    arr.push(entry);
-                }
-            }
+        // permissions.allow: MERGE the write-CLI grant into the shared allow list
+        // (the connector globs + the connect tool live there too); `finish` writes
+        // the array once, so no tier clobbers another's rules.
+        let entry = Value::String("Bash(supermux-memory *)".to_string());
+        if !self.allow_rules.contains(&entry) {
+            self.allow_rules.push(entry);
         }
 
         // env: the hook + CLI read these to resolve the store + identity.
@@ -252,6 +267,34 @@ impl SessionConfig {
         if !self.active {
             return Ok(None);
         }
+
+        // Emit the ONE inline mcp-config pair from the accumulated servers (granted
+        // connectors + the `connect` affordance). `--strict-mcp-config` makes the
+        // launch use ONLY this config (ignoring `~/.claude.json`, project
+        // `.mcp.json`, and account connectors); `enableAllProjectMcpServers=false`
+        // is the belt-and-suspenders twin. Kept BEFORE `--settings` so
+        // `launch_flags[1]` stays the inline JSON.
+        if !self.mcp_servers.is_empty() {
+            let inline = json!({ "mcpServers": Value::Object(self.mcp_servers.clone()) });
+            self.launch_flags.push("--mcp-config".to_string());
+            self.launch_flags
+                .push(serde_json::to_string(&inline).unwrap_or_else(|_| "{}".into()));
+            self.launch_flags.push("--strict-mcp-config".to_string());
+            self.settings
+                .insert("enableAllProjectMcpServers".to_string(), Value::Bool(false));
+        }
+
+        // Write the merged allow list once (connector globs + connect + memory).
+        if !self.allow_rules.is_empty() {
+            let perms = self
+                .settings
+                .entry("permissions".to_string())
+                .or_insert_with(|| json!({}));
+            if let Some(obj) = perms.as_object_mut() {
+                obj.insert("allow".to_string(), Value::Array(self.allow_rules.clone()));
+            }
+        }
+
         // Every active launch gets the kill switch, decoupled from grants.
         self.apply_account_connector_killswitch();
         let settings_path = self.settings_dir.join("settings.json");
@@ -343,6 +386,21 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 &session,
                 &state.config.data_dir,
             ));
+        }
+    }
+
+    // ── connect affordance ───────────────────────────────────────────────────────
+    // Give every ACTIVE bot launch (grants and/or memory) the store's
+    // `connect(service)` tool, so a real agent actually HAS it in its toolset (spec
+    // §8 step 2). Gated on `is_active()` so a plain (non-bot) pane with no grants
+    // and no memory stays byte-identical — it never gets the connect server. The
+    // server is materialized best-effort; a write failure just omits the affordance
+    // rather than failing the launch.
+    if cfg.is_active() {
+        if let Some(path) =
+            crate::connectors::connect_server::ensure(&state.config.data_dir).await
+        {
+            cfg.apply_connect_affordance(crate::connectors::connect_server::emit(&path));
         }
     }
 
@@ -473,6 +531,85 @@ mod tests {
         assert_ne!(settings_flag(&fa), settings_flag(&fb));
         assert!(!fa.env.contains_key("CLAUDE_CONFIG_DIR"));
         assert!(!fb.env.contains_key("CLAUDE_CONFIG_DIR"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The store's `connect(service)` tool is EXPOSED to a bot: the connect MCP
+    /// server rides the same strict inline config, and `mcp__connect__connect` is
+    /// allow-listed so the call reaches the PreToolUse detector (round-2 claim 5,
+    /// tool-exposure half). The server carries no secret.
+    #[tokio::test]
+    async fn connect_affordance_exposes_the_connect_tool() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "ada");
+        // A bot with one granted connector AND the connect affordance.
+        cfg.apply_connectors(&[resolved("pmcp-notion", None)]);
+        let emit = crate::connectors::connect_server::emit(std::path::Path::new(
+            "/data/connectors/connect/server.py",
+        ));
+        cfg.apply_connect_affordance(emit);
+        let fin = cfg.finish().await.unwrap().expect("active");
+
+        // ONE strict mcp-config pair carrying BOTH the granted connector AND connect.
+        assert!(fin.launch_flags.iter().any(|w| w == "--strict-mcp-config"));
+        let json_arg = &fin.launch_flags[1];
+        let v: Value = serde_json::from_str(json_arg).unwrap();
+        assert!(v["mcpServers"]["pmcp-notion"].is_object(), "grant present");
+        assert_eq!(
+            v["mcpServers"]["connect"]["command"],
+            json!("python3"),
+            "connect server injected into the SAME strict config"
+        );
+        assert!(
+            v["mcpServers"]["connect"].get("env").is_none(),
+            "connect carries no credentials"
+        );
+
+        // The connect tool is allow-listed so the call reaches PreToolUse.
+        let text = std::fs::read_to_string(
+            dir.join("session-config").join("ada").join("settings.json"),
+        )
+        .unwrap();
+        let s: Value = serde_json::from_str(&text).unwrap();
+        let allow = s["permissions"]["allow"].as_array().unwrap();
+        assert!(allow.contains(&json!("mcp__pmcp-notion__*")), "grant allow kept: {allow:?}");
+        assert!(
+            allow.contains(&json!("mcp__connect__connect")),
+            "connect tool allow-listed: {allow:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A memory-only bot (zero connector grants) still gets the connect tool — so
+    /// it can connect its first connector — and that is the ONLY server in its
+    /// strict config.
+    #[tokio::test]
+    async fn connect_affordance_alone_produces_a_strict_config() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "solo");
+        cfg.apply_memory(mem_params(&dir, "solo", "reviewer"));
+        // No grants, but active (memory) → connect is added.
+        assert!(cfg.is_active());
+        cfg.apply_connect_affordance(crate::connectors::connect_server::emit(
+            std::path::Path::new("/x/server.py"),
+        ));
+        let fin = cfg.finish().await.unwrap().expect("active");
+        let json_arg = &fin.launch_flags[1];
+        let v: Value = serde_json::from_str(json_arg).unwrap();
+        assert!(v["mcpServers"]["connect"].is_object());
+        assert!(v["mcpServers"].as_object().unwrap().len() == 1, "connect is the only server");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plain (non-bot) pane never activates, so `apply_connect_affordance` is
+    /// never reached in `assemble` — the launch stays byte-identical. Proven here
+    /// by the activeness gate the assembler checks.
+    #[tokio::test]
+    async fn inactive_pane_is_not_given_connect() {
+        let dir = temp_dir();
+        let cfg = SessionConfig::new(&dir, "plain");
+        assert!(!cfg.is_active(), "a fresh pane is inactive → assemble skips connect");
+        assert!(cfg.finish().await.unwrap().is_none(), "byte-identical launch");
         std::fs::remove_dir_all(&dir).ok();
     }
 

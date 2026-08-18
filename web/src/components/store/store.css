@@ -6,9 +6,15 @@
  * removing `data-grok` from the shell root is a byte-exact revert to the base
  * look. Nothing here leaks outside `.cs-*`. */
 
-/* The category-chip rail hides its scrollbar but stays scrollable. */
+/* The category-chip rail hides its scrollbar but stays scrollable. A right-edge
+ * fade mask signals the horizontal scroll instead of hard-clipping a chip
+ * mid-word at the viewport edge (jury M: "Develope[r]" read as an overflow bug).
+ * The mask only bites when the rail actually overflows — a short rail on desktop
+ * shows no fade. */
 .cs-chips {
   scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 22px), transparent 100%);
 }
 .cs-chips::-webkit-scrollbar {
   display: none;

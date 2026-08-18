@@ -19,6 +19,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod connect_server;
 pub mod icloud;
 pub mod manifest;
 

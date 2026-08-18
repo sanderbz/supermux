@@ -60,7 +60,7 @@ export function ConnectorCard({
             <span className="truncate text-[14px] font-medium text-foreground">{card.display_name}</span>
             {tools && <ToolPill>{tools}</ToolPill>}
           </span>
-          <span className="mt-0.5 line-clamp-1 text-[12.5px] text-muted-foreground">{card.description}</span>
+          <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
         </span>
         <StateChip kind={chip} count={n} />
       </button>
