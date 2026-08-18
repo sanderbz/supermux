@@ -541,3 +541,48 @@ describe('the refused turn and the stalled one', () => {
     )
   })
 })
+
+/**
+ * **The hard-limit block, tightened (wave 6 #6, #11).** The real captures for
+ * the quota wall live in `pty-state-parity` (`limit-weekly`, `limit-session-5h`);
+ * these are the NEGATIVE and credit-form edges that no capture covers, typed the
+ * same way the ❯-collision and API-error cases above are — the point of each is
+ * a string that must NOT read as a block, or a server-enumerated form that must.
+ */
+describe('readNotice — the quota noun and the gutter anchor', () => {
+  test('an ordinary assistant line with no quota noun is NOT a block (#11)', () => {
+    // `You've reached your desired deployment state` is prose. Before the `limit`
+    // requirement it false-matched, disabled the composer and raised attention.
+    expect(readLens('● You’ve reached your desired deployment state.\n❯\n').notice).toBeNull()
+  })
+
+  test('the SAME verb with the quota noun, in the banner gutter, IS a block', () => {
+    const lens = readLens(
+      '  ⎿  You’ve reached your Fable 5 limit. Run /usage-credits to continue.\n❯\n',
+    )
+    expect(lens.notice?.kind).toBe('limit-blocked')
+  })
+
+  test('an assistant QUOTING the banner mid-sentence is not a block (gutter anchor)', () => {
+    // The phrase is real, but it is not at the gutter — it is inside a sentence.
+    // The old `\b…` match fired on it; the start anchor after `noticeLine` does
+    // not.
+    expect(
+      readLens('● I told them you’ve hit your weekly limit, so we waited.\n❯\n').notice,
+    ).toBeNull()
+  })
+
+  test('the credit-exhaustion forms the server enumerates block too (#6)', () => {
+    // Mirrored from `agent_error.rs::limit_bucket`. None use the "hit/reached
+    // your … limit" wording, so the old regex missed every one and left the
+    // session composable and Idle in the exact no-transcript case this covers.
+    for (const line of [
+      'You’re out of usage credits · /upgrade to continue',
+      'This action requires usage credits',
+      'Your monthly spend limit has been reached',
+      'Usage allocation has been disabled for this organization',
+    ]) {
+      expect(readLens(`  ⎿  ${line}\n❯\n`).notice?.kind).toBe('limit-blocked')
+    }
+  })
+})

@@ -1019,10 +1019,30 @@ function readDialog(
  *  `status::CAPTURE_LINES` (30) rows at all. */
 const NOTICE_TAIL_SLACK = 20
 
-/** HARD BLOCK. `hit` (a bucket ran out) and `reached` (the model-specific /
- *  usage-credit form) are the two verbs the bundle emits; `used`/`Approaching`
- *  are the warning verbs and are deliberately not here. */
-const LIMIT_BLOCK_RE = /\byou['’]ve (?:hit|reached) your\b.*$/i
+/** HARD BLOCK — the quota wall. `hit` (a bucket ran out) and `reached` (the
+ *  model-specific form) are the two verbs the bundle emits; `used`/`Approaching`
+ *  are the warning verbs and are deliberately not here.
+ *
+ *  ANCHORED at the START of the gutter-stripped line and REQUIRING the `limit`
+ *  noun the two banner templates always end their phrase on (wave 6 #11). Before
+ *  this, `\byou['’]ve (?:hit|reached) your\b.*$` matched any tail — so an
+ *  ordinary assistant line ("You've reached your desired deployment state") was
+ *  read as a hard block, disabled the composer and raised attention, and an
+ *  assistant QUOTING the phrase mid-sentence matched on the `\b` alone. The
+ *  start anchor is the gutter tightening (`noticeLine` strips CC's `⎿`/`●`
+ *  gutter first, so a banner starts the content and prose does not); the `limit`
+ *  requirement is the quota noun (`server/.../agent_error.rs::noun_phrase`
+ *  requires the same). */
+const LIMIT_BLOCK_RE = /^you['’]ve (?:hit|reached) your\b[^\n]*\blimit\b/i
+/** HARD BLOCK — credit exhaustion. The forms the server ALREADY enumerates
+ *  (`agent_error.rs::limit_bucket`) that do NOT use the "hit/reached your …
+ *  limit" wording and so slip past `LIMIT_BLOCK_RE` entirely (wave 6 #6). In the
+ *  exact no-transcript case this plane exists for, a session out of credits
+ *  otherwise stayed composable and read Idle. Mirrored from the server list so
+ *  both planes block on the same set; `contains`-style like the server, because
+ *  these phrases are distinctive and CC prints each on its own banner line. */
+const CREDIT_BLOCK_RE =
+  /\b(?:out of usage|monthly spend limit|requires usage credits|usage credits are required|usage allocation has been disabled)\b/i
 /** WARNING. Three shapes: the captured `You've used N% of your …` footer
  *  (suppressed by CC below 70 % utilisation), and the two `Approaching …` /
  *  `You're close to …` branches recorded from the bundle's own strings. */
@@ -1089,9 +1109,14 @@ function readNotice(
   }
 
   for (let i = tail; i >= from; i--) {
-    const m = LIMIT_BLOCK_RE.exec(lines[i])
-    if (!m) continue
-    const text = noticeLine(m[0])
+    // Strip CC's gutter FIRST (the `⎿`/`●` continuation), then match on the
+    // content: the quota wall is anchored at the start of that content, and an
+    // assistant line that merely mentions a limit is not (wave 6 #11). Both the
+    // `hit/reached your … limit` templates and the credit-exhaustion forms the
+    // server enumerates count as a hard block (wave 6 #6).
+    const content = noticeLine(lines[i])
+    if (!LIMIT_BLOCK_RE.test(content) && !CREDIT_BLOCK_RE.test(content)) continue
+    const text = content
     // The remediation subline CC prints under the banner (`/upgrade or
     // /usage-credits …`), when the next row is still the banner's own.
     const next = i + 1 <= tail ? lines[i + 1] : ''
