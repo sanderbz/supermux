@@ -39,6 +39,21 @@ const SEND_ANCHOR_WINDOW_MS = 30_000
  *  layer polling `/peek` once a second forever. Well past the a0 confirm
  *  latency (text-only p50 31s) so it never fires on a healthy turn. */
 const TURN_CONFIRM_TIMEOUT_MS = 120_000
+/**
+ * The honest ceiling on the confirm bridge, measured from the moment the session
+ * LEFT `active` (the turn's real end), NOT from its start.
+ *
+ * Once the session is idle the turn is over — the pty is at its prompt, the
+ * terminal renderer already shows it. The live layer is kept only long enough for
+ * a genuine answer's confirming batch to REPLACE the provisional tail instead of
+ * blanking it; a healthy turn clears the instant that batch lands
+ * (`confirmedCaughtUp`), so this only governs the case where NO batch ever comes
+ * — a cancel with no output. There the 120s `TURN_CONFIRM_TIMEOUT_MS` ceiling
+ * (anchored to the turn START) left the chat plane "thinking" for up to two
+ * minutes after the pty had gone quiet: the exact desync the owner hit. Anchored
+ * to the idle edge and cut short, the chat plane settles to idle promptly instead.
+ */
+const IDLE_SETTLE_MS = 6_000
 
 /**
  * Should the live-turn anchor be torn down?
@@ -49,11 +64,13 @@ const TURN_CONFIRM_TIMEOUT_MS = 120_000
  * `confirmedCaughtUp`. It is torn down when any of these hold:
  *   · the confirming batch for THIS turn has landed (`confirmedCaughtUp`), or
  *   · the session reached a TERMINAL rest (`stopped`/`error`) — no batch is ever
- *     coming, so waiting for one strands the live layer on `/peek` until the
- *     ceiling; a cancelled turn that ends `stopped` used to sit "thinking" for a
- *     full 120s for exactly this reason, or
- *   · the bounded fallback ceiling elapsed (`turnStranded`) — the backstop for a
- *     confirming batch that never lands (an interrupt, a compact).
+ *     coming, so waiting for one strands the live layer on `/peek`; a cancelled
+ *     turn that ends `stopped` used to sit "thinking" for a full 120s, or
+ *   · the session has been idle past the confirm bridge (`idleSettled`) — the
+ *     honest ceiling that reconciles the chat plane with a pty that is already at
+ *     its prompt, so a cancel with no confirming batch does not keep "thinking",
+ *     or
+ *   · the absolute fallback ceiling elapsed (`turnStranded`).
  *
  * While the session is still `active` this NEVER fires: a live turn is not over
  * just because time passed. The one thing that can end a still-`active` turn is
@@ -65,10 +82,11 @@ export function shouldEndTurn(a: {
   confirmedCaughtUp: boolean
   turnStranded: boolean
   terminalRest: boolean
+  idleSettled: boolean
 }): boolean {
   if (a.turnStart == null) return false
   if (a.active) return false
-  return a.confirmedCaughtUp || a.terminalRest || a.turnStranded
+  return a.confirmedCaughtUp || a.terminalRest || a.idleSettled || a.turnStranded
 }
 
 export interface ChatTurn {
@@ -153,10 +171,36 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // A TERMINAL rest can never produce a confirming batch, so the caught-up gate
   // would never satisfy and the live layer would strand until the 120s ceiling.
   const terminalRest = session?.status === 'stopped' || session?.status === 'error'
-  const endsTurn = shouldEndTurn({ active, turnStart, confirmedCaughtUp, turnStranded, terminalRest })
+
+  // WHEN THE SESSION LEFT `active` — the turn's real end, stamped on the SSE
+  // status edge (external event), server clock. The confirm bridge is measured
+  // from here, not from the turn start: an idle session's turn is over, and the
+  // chat plane must not keep "thinking" past a short settle just because the
+  // start was recent (or, worse, until the 120s start-anchored ceiling). Cleared
+  // to null while active, so a live turn has no idle edge.
+  const [leftActiveAt, setLeftActiveAt] = React.useState<number | null>(null)
   React.useEffect(() => {
-    // Turn teardown on the (status flip + confirmed batch / terminal rest) edge —
-    // all external events; the guard makes it fire at most once per turn.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLeftActiveAt(active ? null : serverNowMs())
+  }, [active])
+  const idleSettled =
+    turnStart != null &&
+    !active &&
+    leftActiveAt != null &&
+    serverNowMs() - leftActiveAt > IDLE_SETTLE_MS
+
+  const endsTurn = shouldEndTurn({
+    active,
+    turnStart,
+    confirmedCaughtUp,
+    turnStranded,
+    terminalRest,
+    idleSettled,
+  })
+  React.useEffect(() => {
+    // Turn teardown on the (confirmed batch / terminal rest / idle settle /
+    // ceiling) edge — all external events; the guard fires it at most once per
+    // turn (the anchor is null after, and only an idle→active edge re-arms it).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (endsTurn) setTurnStart(null)
   }, [endsTurn])

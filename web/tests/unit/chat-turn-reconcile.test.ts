@@ -18,6 +18,7 @@ const base = {
   confirmedCaughtUp: false,
   turnStranded: false,
   terminalRest: false,
+  idleSettled: false,
 }
 
 describe('shouldEndTurn — when the live-turn anchor is torn down', () => {
@@ -28,16 +29,27 @@ describe('shouldEndTurn — when the live-turn anchor is torn down', () => {
   test('a still-`active` turn is NEVER torn down here, however long it has run', () => {
     // A live turn is not over just because time passed — a 3-minute turn is
     // still a turn. Only the user's Stop (`endTurn`, imperative) ends a live one.
+    // `idleSettled` cannot fire while active (it is gated on `!active` upstream),
+    // but assert the guard holds even if the pieces are inconsistent.
     expect(shouldEndTurn({ ...base, active: true, turnStranded: true })).toBe(false)
     expect(shouldEndTurn({ ...base, active: true, terminalRest: true })).toBe(false)
     expect(shouldEndTurn({ ...base, active: true, confirmedCaughtUp: true })).toBe(false)
+    expect(shouldEndTurn({ ...base, active: true, idleSettled: true })).toBe(false)
   })
 
-  test('cancelled to idle, answer not yet confirmed → HELD (the confirm window)', () => {
-    // The deliberate window: the session left `active` but the confirming batch
-    // for the answer may still be in flight (prose p50 31s). Blanking the
-    // provisional tail now would flash empty before the confirmed form lands.
+  test('just idle, still within the confirm bridge → HELD', () => {
+    // The deliberate bridge: the session left `active` moments ago and the
+    // confirming batch for the answer may still be landing. Blanking the
+    // provisional tail now would flash empty before the confirmed form arrives.
     expect(shouldEndTurn({ ...base, active: false })).toBe(false)
+  })
+
+  test('idle PAST the confirm bridge → torn down (the desync fix)', () => {
+    // The owner's bug: the pty is already at its prompt (idle/stopped), but the
+    // chat plane kept "thinking" because no confirming batch ever came for a
+    // cancelled turn — and the only ceiling was 120s from the turn START. The
+    // idle-edge settle reconciles the chat plane with the quiet pty promptly.
+    expect(shouldEndTurn({ ...base, idleSettled: true })).toBe(true)
   })
 
   test('idle AND the confirming batch has landed → torn down', () => {
