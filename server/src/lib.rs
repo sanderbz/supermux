@@ -5,6 +5,7 @@
 //! definition.
 
 pub mod agents;
+pub mod alerts;
 pub mod audit;
 pub mod auth;
 pub mod board;

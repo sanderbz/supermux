@@ -45,6 +45,7 @@ async fn spawn_server() -> (SocketAddr, PathBuf) {
         ws: WsConfig::default(),
         remote_callback_url: None,
             push_sub: None,
+            alert_webhook_url: None,
             github_token: None,
             statusline_tap: false,
     };

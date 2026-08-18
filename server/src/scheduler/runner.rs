@@ -133,6 +133,17 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
     // loop is never blocked on the push service; `send_push_for` honours the
     // `schedule_error` category toggle in Settings.
     if outcome.status == "error" {
+        // Outbound webhook alert (opt-in, see `crate::alerts`). Co-located with
+        // the push because they answer the same question, "who finds out?", but
+        // independent of it: the webhook needs no subscribed device, which is
+        // what made a failed boot invisible on a host with zero subscriptions.
+        let alert_state = state.clone();
+        let alert_sched = sched.clone();
+        let alert_note = outcome.note.clone();
+        tokio::spawn(async move {
+            crate::alerts::schedule_error(&alert_state, &alert_sched, &alert_note).await;
+        });
+
         let st = state.clone();
         let title = sched.title.clone();
         let note = outcome.note.clone();

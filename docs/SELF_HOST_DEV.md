@@ -166,6 +166,51 @@ startup and sent as an `Authorization: Bearer <token>` header on every release
 fetch. Unset: anonymous fetch (the default). Wrong value: GitHub returns 401
 and the UI falls back to its existing *"Couldn't reach GitHub"* state.
 
+## Schedule failure alerts (webhook)
+
+A schedule run that ends in `error` writes a `schedule_runs` row, raises an
+in-app alert, and tries a web push. On a host with no push subscription that
+adds up to nothing an operator will see today, which is how a boot schedule
+that failed to start its session stayed unnoticed for hours.
+
+Set an incoming-webhook URL and every failed run also posts a line to that
+channel:
+
+```
+sudo systemctl edit supermux
+# add under [Service]:
+#   Environment=SUPERMUX_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
+sudo systemctl restart supermux
+```
+
+…or add `alert_webhook_url = "https://hooks.slack.com/services/..."` to
+`$SUPERMUX_DATA_DIR/config.toml`. The env var wins if both are set. Unset, or
+set to an empty string, means no alerts and no outbound request of any kind.
+
+What it does:
+
+- **Trigger**: a schedule run whose status is `error`, for every kind (`boot`,
+  `shell`, `tmux`). Successful runs never alert.
+- **Cooldown**: at most one alert per schedule id per 30 minutes, so a broken
+  1-minute cron cannot flood the channel. The window is stamped when the alert
+  is attempted, not when it succeeds, and it is in-memory (a server restart
+  starts the window over).
+- **Payload**: `POST` with a JSON body in Slack's incoming-webhook shape, which
+  Mattermost and most other receivers accept too:
+
+  ```json
+  {"text": "supermux schedule 'nightly sweep' (boot, SCHED-7) errored at 2026-08-17 04:30:00Z: boot start failed: ..."}
+  ```
+
+  The failure note is trimmed to 500 characters plus a trailing ellipsis, and
+  `&`, `<` and `>` in the title and note are escaped so Slack renders them as
+  text instead of markup. The request has a 10 second timeout and is
+  fire-and-forget: a webhook that is down or rejects the post is logged
+  (`schedule error alert failed`) and changes nothing about the run.
+- **The URL is a credential.** It is never logged and never served to the UI.
+  A failed post is logged by failure class ("connect failed", "timed out"), so
+  the underlying HTTP error, which carries the URL, never reaches the log.
+
 ## Troubleshooting: "Claude won't render in the dev session"
 
 Two distinct failure modes can leave the dev session showing only the shell

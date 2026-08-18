@@ -365,6 +365,7 @@ mod remove_member_tests {
             ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            alert_webhook_url: None,
             github_token: None,
             statusline_tap: false,
             extra_origins: Vec::new(),

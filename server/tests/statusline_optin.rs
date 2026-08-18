@@ -66,6 +66,7 @@ async fn session_create_and_start_never_install_the_statusline() {
         ws: Default::default(),
         remote_callback_url: None,
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         // THE DEFAULT. Not a test convenience — `config.toml` with no
         // `statusline_tap` key resolves to exactly this.

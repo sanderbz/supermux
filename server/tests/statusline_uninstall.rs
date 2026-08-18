@@ -71,6 +71,7 @@ async fn uninstall_reports_the_truth_and_keeps_the_sidecar_when_it_removed_nothi
         ws: Default::default(),
         remote_callback_url: None,
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };

@@ -56,6 +56,14 @@ pub struct Config {
     /// operator with real iPhone subscribers knows to set this. The env
     /// override `SUPERMUX_PUSH_SUB` takes precedence.
     pub push_sub: Option<String>,
+    /// Optional Slack-compatible incoming-webhook URL. When set, a schedule run
+    /// that ends in `error` posts a one-line `{"text": ...}` alert to it (all
+    /// schedule kinds, at most one alert per schedule per 30 minutes) so a
+    /// failure is visible without a web-push subscription. See
+    /// [`crate::alerts`]. Unset = no alerts, which is the default. The env
+    /// override `SUPERMUX_ALERT_WEBHOOK_URL` takes precedence over
+    /// `config.toml`; the URL is a credential, so it is never logged.
+    pub alert_webhook_url: Option<String>,
     /// Optional GitHub Personal Access Token used ONLY by the in-UI updater
     /// when fetching `releases/latest`. The default (anonymous) request works
     /// for every user on the public `sanderbz/supermux` repo. Two cases need
@@ -189,6 +197,9 @@ struct RawConfig {
     /// See [`Config::push_sub`].
     #[serde(default)]
     push_sub: Option<String>,
+    /// See [`Config::alert_webhook_url`].
+    #[serde(default)]
+    alert_webhook_url: Option<String>,
     /// See [`Config::github_token`].
     #[serde(default)]
     github_token: Option<String>,
@@ -252,6 +263,21 @@ pub fn load() -> Result<Config> {
         .filter(|s| !s.is_empty())
         .or(raw.push_sub);
 
+    // SUPERMUX_ALERT_WEBHOOK_URL env override wins over config.toml, same as
+    // the push sub: an operator can point a deploy at a channel without
+    // shipping the (credential-bearing) URL in a config file. Both sides are
+    // trimmed and emptied-out to None, so `alert_webhook_url = ""` in the file
+    // really does turn the feature off rather than firing doomed posts.
+    let alert_webhook_url = std::env::var("SUPERMUX_ALERT_WEBHOOK_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            raw.alert_webhook_url
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
     // GitHub token for the in-UI updater (see `Config::github_token`).
     // Env wins so an operator's PAT NEVER lands on disk inadvertently. If
     // only `config.toml` provides it, re-export to env so `release::fetch_latest`
@@ -288,6 +314,7 @@ pub fn load() -> Result<Config> {
         ws: raw.ws,
         remote_callback_url: raw.remote_callback_url,
         push_sub,
+        alert_webhook_url,
         github_token,
         extra_origins: raw.extra_origins,
         statusline_tap: raw.statusline_tap,

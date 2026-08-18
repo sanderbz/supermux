@@ -43,6 +43,7 @@ async fn dismiss_parks_unmapped_team_under_archived() {
         ws: Default::default(),
         remote_callback_url: None,
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };

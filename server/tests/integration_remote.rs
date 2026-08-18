@@ -92,6 +92,7 @@ fn config_round_trips_remote_callback_url() {
         ws: WsConfig::default(),
         remote_callback_url: Some("https://supermux.tailnet.ts.net:8823".to_string()),
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };
@@ -116,6 +117,7 @@ fn config_round_trips_remote_callback_url() {
         ws: WsConfig::default(),
         remote_callback_url: None,
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };
@@ -158,6 +160,7 @@ fn effective_remote_callback_url_resolution_order() {
         ws: WsConfig::default(),
         remote_callback_url: remote.map(|s| s.to_string()),
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };
@@ -231,6 +234,7 @@ async fn spawn_server(remote_callback_url: Option<String>) -> Fixture {
         ws: WsConfig::default(),
         remote_callback_url,
         push_sub: None,
+        alert_webhook_url: None,
         github_token: None,
         statusline_tap: false,
     };
