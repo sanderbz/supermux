@@ -84,13 +84,21 @@ export interface ComposerProps {
    * typography is B0's, not the caller's.
    */
   field?: ComposerFieldProps
+  /**
+   * The pill is TALL right now — multi-line text, or a chip row above the field.
+   * A stadium (`rounded-full`) at 100px reads as a giant pill, so the corner
+   * softens to a fixed 26px radius only while grown; at rest (single line, no
+   * chips) it stays `rounded-full` and the boards are byte-identical. Optional,
+   * defaults false — an unwired caller renders exactly as before.
+   */
+  grown?: boolean
   className?: string
 }
 
 /** The field's typography, shared by both hosts so the swap is invisible: the
  *  pill's own metrics, and the 16px iOS no-zoom floor on the phone. */
 const FIELD =
-  'min-w-0 flex-1 bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none max-h-[120px]'
+  'min-w-0 flex-1 bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none max-h-[120px] overflow-y-auto'
 
 export function Composer({
   placeholder,
@@ -99,6 +107,7 @@ export function Composer({
   trailing,
   leading,
   field,
+  grown,
   className,
 }: ComposerProps) {
   const mobile = size === 'mobile'
@@ -140,17 +149,31 @@ export function Composer({
   return (
     <div
       className={cn(
-        'sm-composer flex items-center rounded-full border-[0.5px] border-hairline bg-surface',
+        // `items-end`, not `items-center`: the `+`, the growing field and the
+        // send/mic disc all sit on the LAST line's baseline, so the side discs
+        // stay pinned to the bottom edge as the field grows up — the exact
+        // ChatGPT / Claude / Grok geometry. The vertical breathing that
+        // `items-center` used to do moves into symmetric `py`, so the
+        // single-line rest state keeps its 58/52px height (disc 40 + 9 + 9 = 58)
+        // and the discs do not shift.
+        'sm-composer flex items-end border-[0.5px] border-hairline bg-surface',
+        grown ? 'rounded-[26px]' : 'rounded-full',
         'backdrop-blur-[60px] backdrop-saturate-[180%]',
         'shadow-[var(--sm-popover-shadow)]',
         'sm-t-morph',
         'focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--sm-accent)_22%,transparent),var(--sm-popover-shadow)]',
-        mobile ? 'min-h-[52px] gap-3 pl-3 pr-[7px]' : 'min-h-[58px] gap-3 pl-3.5 pr-[9px]',
+        mobile
+          ? 'min-h-[52px] gap-3 pl-3 pr-[7px] py-1.5'
+          : 'min-h-[58px] gap-3 pl-3.5 pr-[9px] py-[9px]',
         className,
       )}
     >
       {leading ?? (
-        <span aria-hidden className="grid size-[26px] flex-none place-items-center text-ink-2">
+        // `self-center`: the row is `items-end` (so the live composer's discs
+        // bottom-anchor as the field grows), but this decorative fallback `+`
+        // is a 26px glyph, not a 40px disc — keeping it centered holds the
+        // read-only boards byte-identical.
+        <span aria-hidden className="grid size-[26px] flex-none place-items-center self-center text-ink-2">
           <PlusIcon />
         </span>
       )}
@@ -183,7 +206,7 @@ export function Composer({
         <span
           aria-hidden
           className={cn(
-            'sm-mic grid flex-none place-items-center rounded-full',
+            'sm-mic grid flex-none place-items-center self-center rounded-full',
             mobile ? 'size-9' : 'size-10',
           )}
         >
