@@ -165,6 +165,32 @@ pub async fn set_pref(
     super::prefs::put_pref(pool, &cat.prefs_key(), if on { "on" } else { "off" }).await
 }
 
+/// The `prefs` k/v key behind the "message preview in notifications" toggle.
+/// Lives in the SAME k/v table as the per-category prefs, so no migration.
+///
+/// **Default ON.** The owner explicitly asked for a real preview of what
+/// happened on the lock screen, so previews are the shipped behaviour and this
+/// toggle is the privacy OFF-switch, not an opt-in. A junk / absent value reads
+/// ON, like the category prefs: notifications fail OPEN (toward telling the
+/// user), never silently degrade to a contentless banner.
+pub const MESSAGE_PREVIEW_PREF_KEY: &str = "notif.message_preview";
+
+/// Is the lock-screen message preview ON? Absent / junk / `"on"` → ON; only an
+/// explicit `"off"` (any case) drops the body down to a generic, contentless
+/// line. A DB error reads ON — see [`pref_enabled`] for the fail-open rationale.
+pub async fn message_preview_enabled(pool: &SqlitePool) -> bool {
+    match super::prefs::get_pref(pool, MESSAGE_PREVIEW_PREF_KEY).await {
+        Ok(Some(v)) => !v.trim().eq_ignore_ascii_case("off"),
+        _ => true,
+    }
+}
+
+/// Set the message-preview toggle. Stored as the literal `"on"`/`"off"`,
+/// mirroring [`set_pref`].
+pub async fn set_message_preview(pool: &SqlitePool, on: bool) -> sqlx::Result<()> {
+    super::prefs::put_pref(pool, MESSAGE_PREVIEW_PREF_KEY, if on { "on" } else { "off" }).await
+}
+
 /// Snapshot every category's on/off state in one call. The Settings UI fetches
 /// this on mount to render every toggle's initial position.
 pub async fn list_prefs(pool: &SqlitePool) -> Vec<(NotifCategory, bool)> {
@@ -245,6 +271,44 @@ mod tests {
         // 5. list_prefs returns every category exactly once.
         let snapshot = list_prefs(&pool).await;
         assert_eq!(snapshot.len(), NotifCategory::ALL.len());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn message_preview_defaults_on_and_round_trips() {
+        // The owner asked for previews, so the DEFAULT is ON and this toggle is
+        // the privacy off-switch. It must also fail OPEN on junk (a lock-screen
+        // preview quietly vanishing is the worse surprise than one showing).
+        let (pool, dir) = test_pool().await;
+
+        // 1. Absent row → ON.
+        assert!(
+            message_preview_enabled(&pool).await,
+            "message preview must default ON",
+        );
+
+        // 2. Round-trip OFF then ON.
+        set_message_preview(&pool, false).await.unwrap();
+        assert!(!message_preview_enabled(&pool).await, "OFF after set(false)");
+        set_message_preview(&pool, true).await.unwrap();
+        assert!(message_preview_enabled(&pool).await, "ON after set(true)");
+
+        // 3. Fail OPEN on garbage — a manual sqlite edit reads as ON.
+        crate::db::prefs::put_pref(&pool, MESSAGE_PREVIEW_PREF_KEY, "maybe")
+            .await
+            .unwrap();
+        assert!(
+            message_preview_enabled(&pool).await,
+            "junk preview value MUST read as ON (fail-open)",
+        );
+
+        // 4. Only an explicit "off" (any case) mutes.
+        crate::db::prefs::put_pref(&pool, MESSAGE_PREVIEW_PREF_KEY, "OFF")
+            .await
+            .unwrap();
+        assert!(!message_preview_enabled(&pool).await, "OFF is case-insensitive");
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

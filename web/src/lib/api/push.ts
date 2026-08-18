@@ -34,10 +34,16 @@ export type NotifCategory =
   | 'schedule_error'
   | 'schedule_finished'
 
-/** `GET /api/push/prefs` response — every category's on/off state. The map is
- *  COMPLETE (server fills every key with a default when absent) so the UI never
- *  has to handle an undefined toggle. */
-export type PushPrefs = Record<NotifCategory, boolean>
+/** `GET /api/push/prefs` response — every category's on/off state, PLUS the
+ *  reserved `message_preview` toggle. The map is COMPLETE (server fills every
+ *  key with a default when absent) so the UI never has to handle an undefined
+ *  toggle. `message_preview` is NOT a category: it gates whether the push body
+ *  shows the agent's own words (ON, the default) or a generic contentless line
+ *  on the lock screen (OFF, the privacy posture). It rides this same map so the
+ *  Settings section fetches every notification pref in one round-trip. */
+export type PushPrefs = Record<NotifCategory, boolean> & {
+  message_preview: boolean
+}
 
 /** One row in the in-memory diagnostic ring (`GET /api/push/attempts`). The
  *  Settings "Recent activity" panel renders this list. Body / URL are

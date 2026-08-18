@@ -657,6 +657,19 @@ function NotificationsSection() {
     })
   }
 
+  // The lock-screen message-preview toggle. Same optimistic pattern as
+  // `togglePref`, but its key is the reserved (non-category) `message_preview`.
+  function togglePreview(next: boolean) {
+    if (!prefs) return
+    const prev = prefs
+    setPrefs({ ...prefs, message_preview: next })
+    setPrefError(null)
+    void pushApi.putPrefs({ message_preview: next }).catch((e) => {
+      setPrefs(prev)
+      setPrefError(e instanceof Error ? e.message : 'Could not save preference.')
+    })
+  }
+
   // Generic transport test (the existing "Send test" button — bypasses category
   // gates so it always fires when subscribed).
   const [testing, setTesting] = React.useState(false)
@@ -789,6 +802,21 @@ function NotificationsSection() {
               }
             />
           ))}
+
+          {/* Privacy: show the actual message on the lock screen, or keep
+              banners generic. Default ON — the owner asked for real previews. */}
+          <Row
+            label="Message preview"
+            hint="Show a preview of what happened on the lock screen. Off keeps banners generic for privacy."
+            control={
+              <Switch
+                ariaLabel="Message preview in notifications"
+                checked={prefs?.message_preview ?? true}
+                onCheckedChange={togglePreview}
+                disabled={!prefs}
+              />
+            }
+          />
 
           {prefError ? (
             <Row>

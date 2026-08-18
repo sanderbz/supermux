@@ -405,7 +405,7 @@ pub fn tag_for(session: &str) -> String {
 
 /// Everything [`compose`] is allowed to look at. Assembled by the impure shell;
 /// the composition itself sees nothing else — no pool, no clock, no network.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ComposeCtx {
     /// `sessions.display_name` (migration 0019, backfilled to `name`).
     pub display_name: String,
@@ -419,6 +419,29 @@ pub struct ComposeCtx {
     pub activity_label: Option<String>,
     /// Sessions currently needing attention.
     pub badge: u32,
+    /// Whether the lock-screen MESSAGE PREVIEW is on (Settings → Notifications,
+    /// `db::push::message_preview_enabled`). When false the body is a generic,
+    /// contentless line for the event's tier — the privacy posture, opt-back-in.
+    /// Defaults `true`: previews are the shipped behaviour the owner asked for.
+    pub preview: bool,
+}
+
+impl Default for ComposeCtx {
+    fn default() -> Self {
+        // `preview` defaults ON — every other field is its natural empty. A
+        // `#[derive(Default)]` would make `preview` false, which would flip the
+        // shipped behaviour to "generic body" for anything that builds a ctx
+        // off `..Default::default()`.
+        Self {
+            display_name: String::new(),
+            name: String::new(),
+            permission: None,
+            tail: None,
+            activity_label: None,
+            badge: 0,
+            preview: true,
+        }
+    }
 }
 
 /// Compose the notification for one event. PURE.
@@ -454,8 +477,31 @@ pub fn compose(ev: &NotifEvent, ctx: &ComposeCtx) -> PushPayload {
     }
 }
 
+/// The contentless body for a push whose message preview is OFF, chosen by
+/// tier. This is what the lock screen shows once the owner turns previews off:
+/// enough to know WHICH kind of thing happened — and the title still names the
+/// bot — without putting a single word of the agent's own text on a lock
+/// screen. It is the deliberate privacy floor, not a fallback for missing data.
+fn generic_body(tier: Tier) -> String {
+    match tier {
+        Tier::Attention => "An agent needs your attention.",
+        Tier::Unread => "Your agent finished — tap to read.",
+        Tier::Error => "Your agent hit a problem — tap to view.",
+        // The schedule lane never composes through here (it uses
+        // `PushPayload::simple`), but a generic line keeps the match total.
+        Tier::Schedule => "A scheduled task has an update.",
+    }
+    .to_string()
+}
+
 /// The body table. Split out so each row reads as one arm.
 fn compose_body(ev: &NotifEvent, ctx: &ComposeCtx) -> String {
+    // Privacy floor: with previews OFF the agent's own words never reach the
+    // lock screen — only a generic, tier-shaped line does. Checked FIRST so no
+    // content-bearing arm can leak below it.
+    if !ctx.preview {
+        return generic_body(ev.tier());
+    }
     match ev {
         NotifEvent::PermissionAsked => match ctx.permission.as_ref() {
             // Plan approval: the plan TEXT is not in the payload, so we do not
@@ -684,8 +730,13 @@ pub async fn build_payload(
         .ok()
         .flatten()?;
     let act = state.session_activity(session).unwrap_or_default();
-    // Only a finish needs the (possibly disk-reading) tail.
-    let tail = if matches!(ev, NotifEvent::TurnFinished) {
+    // The privacy toggle (Settings → Notifications). OFF → the body is a
+    // generic tier line, no agent words on the lock screen. Read here in the
+    // impure shell so `compose` stays pure.
+    let preview = db::push::message_preview_enabled(&state.pool).await;
+    // Only a finish needs the (possibly disk-reading) tail — and only when the
+    // preview is on, since a muted body never reads it.
+    let tail = if preview && matches!(ev, NotifEvent::TurnFinished) {
         tail_for_push(state, &row).await
     } else {
         None
@@ -698,6 +749,7 @@ pub async fn build_payload(
             permission: act.permission.clone(),
             tail,
             activity_label: act.activity.clone(),
+            preview,
             badge: badge_including_self(
                 attention_badge(state),
                 ev.tier(),
@@ -1224,6 +1276,91 @@ mod tests {
         // Pre-0019 edge: an empty display_name falls back to the slug.
         c.display_name = "   ".to_string();
         assert_eq!(compose(&NotifEvent::TurnFinished, &c).title, "deploy-fix-7");
+    }
+
+    #[test]
+    fn preview_off_replaces_every_body_with_a_generic_tier_line_and_leaks_no_content() {
+        // The privacy floor. With previews OFF the lock screen still says WHICH
+        // kind of thing happened and WHO (the title stays the bot's name), but
+        // not one word the agent wrote. Every content-bearing variant must
+        // collapse to its tier's generic line — and none of the original
+        // content may survive anywhere in the body.
+        let secret = "TOP-SECRET-PROMPT-TEXT";
+        let mut c = ctx();
+        c.display_name = "Deploy Fixer".to_string();
+        c.name = "deploy-fix".to_string();
+        c.preview = false;
+        c.permission = Some(ask("Bash", secret, Some("acceptEdits")));
+        c.activity_label = Some(secret.to_string());
+        c.tail = Some(ChatTail {
+            user: String::new(),
+            agent: secret.to_string(),
+            ts: 1,
+            entry_count: 0,
+            last_entry_ts: 0,
+            epoch: 0,
+        });
+
+        // (event, expected generic body by tier)
+        let cases = [
+            (NotifEvent::PermissionAsked, "An agent needs your attention."),
+            (
+                NotifEvent::AgentNotice(secret.to_string()),
+                "An agent needs your attention.",
+            ),
+            (
+                NotifEvent::Question(secret.to_string()),
+                "An agent needs your attention.",
+            ),
+            (
+                NotifEvent::McpFormAsked {
+                    server: secret.to_string(),
+                },
+                "An agent needs your attention.",
+            ),
+            (NotifEvent::TurnFinished, "Your agent finished — tap to read."),
+            (
+                NotifEvent::TurnFailed {
+                    etype: secret.to_string(),
+                    msg: secret.to_string(),
+                },
+                "Your agent hit a problem — tap to view.",
+            ),
+            (
+                NotifEvent::SessionCrashed {
+                    reason: secret.to_string(),
+                },
+                "Your agent hit a problem — tap to view.",
+            ),
+        ];
+        for (ev, expected) in cases {
+            let p = compose(&ev, &c);
+            assert_eq!(p.body, expected, "{ev:?} preview-off body");
+            assert_eq!(p.title, "Deploy Fixer", "title stays the bot name: {ev:?}");
+            assert!(
+                !p.body.contains(secret),
+                "preview-off body must leak no content: {ev:?} → {:?}",
+                p.body,
+            );
+        }
+    }
+
+    #[test]
+    fn preview_defaults_on_so_bodies_stay_rich_by_default() {
+        // The whole redesign hinges on the DEFAULT being a real preview — assert
+        // the ctx default carries it, so a future `#[derive(Default)]` slip that
+        // flipped it to `false` fails here instead of silently muting every body.
+        assert!(ComposeCtx::default().preview, "preview defaults ON");
+        let mut c = ctx();
+        c.tail = Some(ChatTail {
+            user: String::new(),
+            agent: "shipped it".to_string(),
+            ts: 1,
+            entry_count: 0,
+            last_entry_ts: 0,
+            epoch: 0,
+        });
+        assert_eq!(compose(&NotifEvent::TurnFinished, &c).body, "shipped it");
     }
 
     #[test]
