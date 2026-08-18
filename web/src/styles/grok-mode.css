@@ -1,0 +1,211 @@
+/* ══ GROK MODE — the scoped token layer (WS1 foundation) ═════════════════════
+   Puts supermux's whole app into Grok Bot's visual language, gated behind the
+   Settings "Grok mode" toggle (default OFF). Every value here is extracted from
+   Grok's shipped CSS (see docs/grok-design/tokens.md §1–12). This is the verbatim
+   contract for the token layer (GROK-MODE-SPEC §2).
+
+   THE ONE INVARIANT: every rule is scoped under `[data-grok]`, an attribute the
+   shell root only carries while `lib/grok-mode-flag.ts` says so. Nothing outside
+   `[data-grok]` is touched, so removing the attribute is a BYTE-EXACT REVERT to
+   today's app with no rebuild — the same guarantee `data-substrate` gives.
+
+   THEME SELECTOR ADAPTATION (deviation from the spec's `[data-theme="dark"]`):
+   supermux applies theme as a `.dark` / `.light` CLASS on <html>
+   (components/theme-provider.tsx), not a `data-theme` attribute — and it applies
+   one ALWAYS, before first paint (even "system" resolves to a concrete class).
+   `[data-grok]` lives on a shell <div> DESCENDANT of that <html>. So:
+     · light (default)  →  `[data-grok]`
+     · dark             →  `.dark [data-grok]`   (ancestor `.dark`, descendant gate)
+   Because a class is ALWAYS present, the spec's `@media (prefers-color-scheme)`
+   mirror is intentionally omitted here — there is no bare "system" state to catch,
+   and adding it would double-apply. `.dark [data-grok]` (0,2,0) also out-specifies
+   the light `[data-grok]` (0,1,0), so the dark swap wins regardless of order.
+
+   This file is `@import`ed from styles/globals.css (the Tailwind v4 entry) so its
+   `@theme` utilities are Tailwind-processed; the token blocks below are plain
+   custom properties and are the SOURCE OF TRUTH (spec §2.1). */
+
+/* ── Tailwind @theme aliases (so utilities exist for WS2+) ────────────────────
+   `@theme` is GLOBAL and cannot be scoped under `[data-grok]`, and several names
+   the spec lists (`--color-primary/secondary/accent`, `--radius-sm/md/lg`) ALREADY
+   exist in globals.css's `@theme inline` block, mapped to the default (shadcn/iOS)
+   palette. Redefining them here would clobber the DEFAULT app's utilities app-wide
+   — a regression. So ONLY the non-colliding, Grok-new names are aliased. WS2+
+   consumes the semantic-name tokens directly via `--sm-*` (the source of truth) or
+   `*-[var(--sm-…)]` arbitrary values. `inline` so the utility references the var
+   and resolves per-scope under `[data-grok]` (undefined elsewhere, but no default
+   markup uses these names, so nothing emits outside Grok mode). */
+@theme inline {
+  --color-substrate: var(--sm-substrate);
+  --color-chrome: var(--sm-bg-chrome);
+  --color-editor: var(--sm-bg-editor);
+  --color-elevated: var(--sm-bg-elevated);
+  --color-tertiary: var(--sm-text-tertiary);
+  --radius-xs: 6px;
+}
+
+/* ── Core token block — LIGHT (ship as-is, spec §2.1 / tokens.md §1–12) ──────── */
+[data-grok] {
+  color-scheme: light;
+
+  /* ground & elevation (tokens.md §1) */
+  --sm-substrate: #fcfcfca6;
+  --sm-bg-chrome: #fbfbfb;
+  --sm-bg-editor: #fcfcfc;
+  --sm-bg-elevated: #fcfcfc;
+  --sm-bg-card: #0000000a;
+  --sm-bg-tertiary: #0000000d;
+  --sm-bg-hover: #0000000a;
+  --sm-bg-active: #00000014;
+
+  /* text (§2) */
+  --sm-text-primary: #0a0a0a;
+  --sm-text-secondary: #0000008c;
+  --sm-text-tertiary: #00000059;
+  --sm-ink-on-emphasis: #fff;
+
+  /* sidebar's own warmer ink ramp (§2) */
+  --sm-sidebar-text-primary: #141414;
+  --sm-sidebar-text-secondary: #14141499;
+  --sm-sidebar-text-tertiary: #14141466;
+  --sm-sidebar-tint: #fbfbfb59;
+  --sm-sidebar-separator: #14141426;
+
+  /* accent — links/focus/info ONLY (§3) */
+  --sm-accent: #0a84ff;
+  --sm-accent-fill: #006ceb;
+
+  /* borders — always applied at 0.5px (§4) */
+  --sm-border: #0000001a;
+
+  /* semantic tones — consumed ONLY as color-mix(...14%) fill + full-strength text (§5) */
+  --sm-tone-accent: #0a84ff;
+  --sm-tone-success: #1f8a65;
+  --sm-tone-warning: #b26a00;
+  --sm-tone-danger: #c0362c;
+
+  /* fills & bubbles (§7) */
+  --sm-fill-emphasis: #111110;
+  --sm-fill-secondary: #1010000a;
+  --sm-bubble-user: #111110;
+  --sm-bubble-user-ink: #fff;
+  --sm-bubble-agent: #0000000a;
+
+  /* radii (§8) */
+  --sm-r-pill: 9999px;
+  --sm-r-lg: 12px;
+  --sm-r-md: 10px;
+  --sm-r-sm: 8px;
+  --sm-r-xs: 6px;
+  --sm-r-code: 4px;
+  --sm-r-overlay: 22px;
+  --sm-r-window: 24px;
+
+  /* type (§9) */
+  --sm-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    Roboto, system-ui, "Helvetica Neue", Arial, sans-serif;
+  --sm-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  --sm-fw-regular: 400;
+  --sm-fw-medium: 500;
+  --sm-fw-semibold: 600;
+  /* composite type tokens (tokens.md §9.1) */
+  --sm-text-name: 500 14px / 20px var(--sm-font-sans);
+  --sm-text-body: 400 14px / 20px var(--sm-font-sans);
+  --sm-text-meta: 400 12px / 16px var(--sm-font-sans);
+  --sm-text-badge: 500 13px / 18px var(--sm-font-sans);
+  --sm-text-sys: 400 13px / 16px var(--sm-font-sans);
+
+  /* spacing scale (tokens.md §10) */
+  --sm-space-0_5: 2px;
+  --sm-space-1: 4px;
+  --sm-space-1_5: 6px;
+  --sm-space-2: 8px;
+  --sm-space-2_5: 10px;
+  --sm-space-3: 12px;
+  --sm-space-3_5: 14px;
+  --sm-space-4: 16px;
+
+  /* fixed geometry (§10) — align two columns to the pixel */
+  --sm-toolbar-h: 44px;
+  --sm-titlebar-inset: 52px;
+  --sm-sidebar-w: 280px;
+  --sm-list-fade: 36px;
+
+  /* glass recipes (tokens.md §1.2) — ONE substrate blur; columns never re-blur */
+  --sm-glass-substrate: blur(80px) saturate(180%);
+  --sm-glass-top: blur(24px) saturate(120%);
+  --sm-glass-raised: blur(20px) saturate(160%);
+  --sm-glass-title: blur(28px) saturate(165%);
+  --sm-chat-fill: color-mix(in srgb, var(--sm-bg-elevated) 86%, transparent);
+  --sm-raised-fill: color-mix(in srgb, var(--sm-bg-elevated) 70%, transparent);
+  --sm-title-fill: color-mix(in srgb, var(--sm-bg-elevated) 78%, transparent);
+
+  /* shadows — ONLY the window + true overlays (§11) */
+  --sm-shadow-window: 0 14px 40px #00000029, 0 0 0 0.5px #0000000d;
+  --sm-shadow-popover: 0 1px 2px #0000000f, 0 14px 36px -10px #00000047;
+  --sm-shadow-overlay: 0 20px 52px -16px #00000059;
+
+  /* per-agent hue (spec §2.2) — DEFAULTS only. The focused session's identity
+     colour is written as INLINE custom properties on the shell root at runtime
+     (one variable write re-skins ~6 surfaces), derived from the immutable session
+     slug via roster-marks. That runtime write is WS4/WS5; these neutral fallbacks
+     (the single accent) keep every consumer defined before any session is focused,
+     and preserve the firewall: with no per-agent write, two focused sessions
+     produce byte-identical page pixels. */
+  --sm-agent-tint: var(--sm-accent);
+  --sm-agent-accent: var(--sm-accent);
+  --sm-agent-ink: #fff;
+  --sm-agent-coat: var(--sm-accent);
+
+  font-family: var(--sm-font-sans);
+  color: var(--sm-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Core token block — DARK (spec §2.1 dark; `.dark` ancestor swaps the half) ── */
+.dark [data-grok] {
+  color-scheme: dark;
+
+  --sm-substrate: #1c1c1a9e;
+  --sm-bg-chrome: #141414;
+  --sm-bg-editor: #1c1c1c;
+  --sm-bg-elevated: #262626;
+  --sm-bg-card: #ffffff0f;
+  --sm-bg-tertiary: #ffffff12;
+  --sm-bg-hover: #ffffff0f;
+  --sm-bg-active: #ffffff1f;
+
+  --sm-text-primary: #f2f2f2;
+  --sm-text-secondary: #ffffff94;
+  --sm-text-tertiary: #ffffff5c;
+  --sm-ink-on-emphasis: #141414;
+
+  --sm-sidebar-text-primary: #ffffffe6;
+  --sm-sidebar-text-secondary: #ffffff8c;
+  --sm-sidebar-text-tertiary: #ffffff52;
+  --sm-sidebar-tint: #14141447;
+  --sm-sidebar-separator: #ffffff1f;
+
+  --sm-accent: #64b5ff;
+  --sm-accent-fill: #64b5ff;
+
+  --sm-border: #ffffff1f;
+
+  --sm-tone-accent: #64b5ff;
+  --sm-tone-success: #4cc79b;
+  --sm-tone-warning: #e8a33d;
+  --sm-tone-danger: #ff6b5e;
+
+  --sm-fill-emphasis: #f0f0f0;
+  --sm-fill-secondary: #ffffff0f;
+  --sm-bubble-user: #ecece8;
+  --sm-bubble-user-ink: #141414;
+  --sm-bubble-agent: #ffffff0f;
+
+  /* dark-only glass fills + title saturation (tokens.md §1.2) */
+  --sm-chat-fill: color-mix(in srgb, var(--sm-bg-elevated) 84%, transparent);
+  --sm-raised-fill: color-mix(in srgb, var(--sm-bg-elevated) 68%, transparent);
+  --sm-title-fill: color-mix(in srgb, var(--sm-bg-elevated) 76%, transparent);
+  --sm-glass-title: blur(28px) saturate(150%);
+}

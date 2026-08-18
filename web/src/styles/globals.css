@@ -13,6 +13,12 @@
    semantic `--accent` (subtle hover fill) is distinct from the `--brand` amber. */
 @import "tailwindcss";
 @import "tw-animate-css";
+/* GROK MODE (WS1) — the scoped skin token layer. Every rule inside is under
+   `[data-grok]`, so it is inert until the shell root carries that attribute
+   (Settings → Experimental → "Grok mode", default OFF). Imported here — inside
+   the Tailwind entry — so its `@theme` utilities are Tailwind-processed. Deleting
+   this line + styles/grok-mode.css is a complete revert. */
+@import "./grok-mode.css";
 
 /* `dark:` variant keys off a `.dark` class on an ancestor (set on <html>). */
 @custom-variant dark (&:is(.dark *));

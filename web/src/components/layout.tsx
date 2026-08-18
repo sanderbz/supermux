@@ -11,6 +11,8 @@ import {
 
 import { cn } from '@/lib/utils'
 import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
+import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { useUI } from '@/stores/ui-store'
 import {
   ShellOverlayProvider,
   useShellOverlayProvider,
@@ -309,6 +311,20 @@ export function Layout() {
   const setArchivedOpen = useArchivedSheet((s) => s.setOpen)
   // Kill switch, read ONCE at mount (see the attribute below).
   const [substrate] = React.useState(isShellSubstrateEnabled)
+  // Grok mode (WS1) — the app-wide skin flag. Read ONCE at mount, non-reactively
+  // (`useUI.getState()`, not a selector subscription): a skin flip is a
+  // reload-level change like the substrate kill-switch, not a live re-render, so
+  // toggling it in Settings takes effect on the next reload and never thrashes a
+  // live session mid-flight. The store field is the user preference; the
+  // `localStorage['supermux:grok-mode']` kill-switch ('0') overrides it.
+  const [grok] = React.useState(() =>
+    grokModeOn(
+      useUI.getState().grokMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
   // The shell-overlay host: the content column, published on context so any
   // route can raise a <ShellOverlay> without prop-drilling and without a
   // body-level portal (which could not be bounded by the column).
@@ -335,6 +351,12 @@ export function Layout() {
       // revert to the pre-B1 appearance with no redeploy. Read once, at mount:
       // the flag is a kill switch, not a preference, and must not re-render.
       data-substrate={substrate ? '' : undefined}
+      // WS1 — the Grok-mode skin gate. One attribute keys the entire scoped
+      // token layer (styles/grok-mode.css, every rule under `[data-grok]`); the
+      // dark half swaps via `.dark [data-grok]` (theme is a `.dark` class on
+      // <html>). Absent by default, so removing it is a byte-exact revert to
+      // today's app with no rebuild — the same guarantee `data-substrate` gives.
+      data-grok={grok ? '' : undefined}
     >
       {/* THE SKIP LINK (fase A6 T7.6 — gap G10). Zero existed app-wide, so
           every route made a keyboard user tab through the whole side nav, the

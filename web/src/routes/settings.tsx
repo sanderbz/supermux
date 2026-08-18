@@ -335,10 +335,12 @@ function ExperimentalSection() {
   const enabled = !!data?.enabled
   const chatRenderer = useUI((s) => s.chatRenderer)
   const setChatRenderer = useUI((s) => s.setChatRenderer)
+  const grokMode = useUI((s) => s.grokMode)
+  const setGrokMode = useUI((s) => s.setGrokMode)
 
   const footnote = isError
     ? 'This server build doesn’t support Agent Teams yet.'
-    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Applies only when you start a team. Chat renderer: read-only preview of Claude sessions in focus mode (terminal one tap away) — early A1 dogfood, local Claude sessions only.'
+    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Applies only when you start a team. Chat renderer: read-only preview of Claude sessions in focus mode (terminal one tap away) — early A1 dogfood, local Claude sessions only. Grok mode: restyles the entire app in Grok’s visual language — early dogfood, takes effect on the next reload.'
 
   return (
     <Section title="Experimental" footnote={footnote}>
@@ -360,6 +362,16 @@ function ExperimentalSection() {
             ariaLabel="Enable the chat renderer for local Claude sessions"
             checked={chatRenderer}
             onCheckedChange={setChatRenderer}
+          />
+        }
+      />
+      <Row
+        label="Grok mode"
+        control={
+          <Switch
+            ariaLabel="Restyle the entire app in Grok's visual language"
+            checked={grokMode}
+            onCheckedChange={setGrokMode}
           />
         }
       />

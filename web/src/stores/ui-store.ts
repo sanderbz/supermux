@@ -90,6 +90,15 @@ interface UIStore {
    *  default flip ships in fase A7, never here. */
   chatRenderer: boolean
   setChatRenderer: (v: boolean) => void
+  /** Grok mode (WS1) — the app-wide SKIN flag. When ON, the shell root carries
+   *  `data-grok` and the scoped token layer (styles/grok-mode.css) restyles the
+   *  whole app in Grok's visual language. Kill-switch:
+   *  `localStorage['supermux:grok-mode'] = '0'` force-disables regardless of
+   *  this toggle (checked in lib/grok-mode-flag.ts). Read ONCE at mount by the
+   *  layout — a skin flip is a reload-level change, not a live re-render.
+   *  Default OFF — the default flip ships in a later, separate PR, never here. */
+  grokMode: boolean
+  setGrokMode: (v: boolean) => void
   /** Fase A5 — the GLOBAL default renderer for eligible sessions at `auto`.
    *  Only ever `chat` or `terminal`; the buck stops here (`auto` is the
    *  per-session fixpoint, not a default). Takes effect only once the
@@ -131,6 +140,8 @@ export const useUI = create<UIStore>()(
       hideStopped: false,
       chatRenderer: false,
       setChatRenderer: (chatRenderer) => set({ chatRenderer }),
+      grokMode: false,
+      setGrokMode: (grokMode) => set({ grokMode }),
       defaultRenderer: 'chat',
       rendererOverrides: {},
       setDefaultRenderer: (defaultRenderer) => set({ defaultRenderer }),
