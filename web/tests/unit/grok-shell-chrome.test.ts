@@ -75,14 +75,31 @@ describe('grok mode — one substrate blur, on a leaf pseudo only', () => {
     expect(blurs.some((d) => d.text.includes('none') === false)).toBe(true)
   })
 
-  test('every backdrop-filter sits on `[data-grok]::before` (or its fallbacks)', () => {
-    // The innermost selector must be the leaf substrate pseudo. The two a11y
-    // fallback blocks (@media reduce-transparency / @supports not …) restate it
-    // with the SAME innermost selector, so one predicate covers all three.
+  test('the SUBSTRATE blur (--sm-glass-substrate) sits only on `[data-grok]::before`', () => {
+    // The one heavy 80px substrate blur is the containing-block hazard: it must
+    // live on the leaf pseudo (no element descendants → nobody's containing
+    // block) and nowhere else. The two a11y fallback blocks restate it with the
+    // SAME innermost selector, so one predicate covers all three. WS7's raised
+    // popover glass is a DIFFERENT, lighter tier (tokens.md §1.2) — not caught
+    // here; it is bounded by the two safety tests below instead.
+    const offenders = blurs
+      .filter((d) => d.text.includes('--sm-glass-substrate'))
+      .filter((d) => (d.path[d.path.length - 1] ?? '') !== '[data-grok]::before')
+      .map((d) => `${d.path.join(' > ')} { ${d.text} }`)
+    expect(offenders).toEqual([])
+  })
+
+  test('no backdrop-filter on the bare shell root (containing-block safety)', () => {
+    // A blur on the bare `[data-grok]` root (not the `::before` pseudo) would
+    // make the root the containing block for its fixed overlay children — the
+    // exact bug the substrate pseudo exists to avoid. Raised popover/dialog
+    // surfaces (`[data-anchor='token']`, `[role='dialog']`) are DESCENDANTS /
+    // portalled boxes, never the root, so they are allowed to carry the raised
+    // glass tier; the bare root never is.
     const offenders = blurs
       .filter((d) => {
         const innermost = d.path[d.path.length - 1] ?? ''
-        return innermost !== '[data-grok]::before'
+        return innermost === '[data-grok]'
       })
       .map((d) => `${d.path.join(' > ')} { ${d.text} }`)
     expect(offenders).toEqual([])

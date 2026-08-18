@@ -12,6 +12,10 @@
 //
 //   ?surface=phone   render every panel at the phone row height
 //   ?theme=dark      (the VR rig sets the class itself; this is for eyeballing)
+//   ?grok=1          stamp `data-grok` on the bench so WS7's glass rules apply —
+//                    the one way to review the picker's Grok skin without booting
+//                    the whole shell (the real palette carries `data-grok` on its
+//                    portalled Dialog; here the bench root carries it instead).
 
 import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -28,6 +32,7 @@ import {
 
 import { EntityPickerView } from '@/components/ui/entity-picker'
 import type { EntityRow } from '@/lib/entity'
+import { cn } from '@/lib/utils'
 
 const noop = () => {}
 
@@ -83,10 +88,17 @@ function Panel({
  *  contract `ComposerFrame` provides in the real surface. The box below stands
  *  in for it, at the composer's own width, so the VR shot shows the popover
  *  where it actually lands. */
-function TokenStage({ children }: { children: React.ReactNode }) {
+function TokenStage({ grok, children }: { grok?: boolean; children: React.ReactNode }) {
   return (
     <div className="relative h-[300px] w-full max-w-[640px]">
-      <div className="absolute inset-x-0 bottom-0 flex h-[58px] items-center rounded-full border-[0.5px] border-hairline bg-surface px-4 text-[14px] text-ink-2 shadow-[var(--sm-popover-shadow)]">
+      <div
+        className={cn(
+          'absolute inset-x-0 bottom-0 flex h-[58px] items-center rounded-full border-[0.5px] px-4 text-[14px] text-ink-2',
+          grok
+            ? 'border-[var(--sm-border)] bg-[var(--sm-raised-fill)] shadow-[var(--sm-shadow-popover)] backdrop-blur-[20px] backdrop-saturate-[160%]'
+            : 'border-hairline bg-surface shadow-[var(--sm-popover-shadow)]',
+        )}
+      >
         compare notes with @com
       </div>
       {children}
@@ -96,10 +108,22 @@ function TokenStage({ children }: { children: React.ReactNode }) {
 
 /** The field anchor's parent owns the box. This is the shape the ⌘K dialog and
  *  a Vaul sheet both provide. */
-function FieldStage({ children }: { children: React.ReactNode }) {
+function FieldStage({ grok, children }: { grok?: boolean; children: React.ReactNode }) {
   return (
-    <div className="w-full max-w-[640px] overflow-hidden rounded-xl border-[0.5px] border-hairline bg-surface shadow-[var(--sm-popover-shadow)]">
-      <div className="border-b border-hairline px-4 py-3 text-[14px] text-ink-2">
+    <div
+      className={cn(
+        'w-full max-w-[640px] overflow-hidden border-[0.5px]',
+        grok
+          ? 'rounded-[12px] border-[var(--sm-border)] bg-[var(--sm-raised-fill)] shadow-[var(--sm-shadow-popover)] backdrop-blur-[20px] backdrop-saturate-[160%]'
+          : 'rounded-xl border-hairline bg-surface shadow-[var(--sm-popover-shadow)]',
+      )}
+    >
+      <div
+        className={cn(
+          'px-4 py-3 text-[14px] text-ink-2',
+          grok ? 'border-b border-[var(--sm-border)]' : 'border-b border-hairline',
+        )}
+      >
         Jump to a session or run a /command
       </div>
       {children}
@@ -110,9 +134,13 @@ function FieldStage({ children }: { children: React.ReactNode }) {
 export default function DevPickers() {
   const [params] = useSearchParams()
   const surface = params.get('surface') === 'phone' ? 'phone' : 'desktop'
+  const grok = params.get('grok') === '1'
 
   return (
-    <main className="min-h-dvh bg-paper p-6">
+    <main
+      data-grok={grok ? '' : undefined}
+      className={cn('min-h-dvh p-6', grok ? 'bg-[var(--sm-bg-chrome)]' : 'bg-paper')}
+    >
       <h1 className="mb-1 text-[15px] font-semibold text-ink">
         /dev/pickers — the shared EntityPicker
       </h1>
@@ -135,7 +163,7 @@ export default function DevPickers() {
           title="Token anchor — up from an @ / token"
           note="Draws its own glass and shadow; floats over the transcript."
         >
-          <TokenStage>
+          <TokenStage grok={grok}>
             <EntityPickerView
               anchor="token"
               surface={surface}
@@ -152,7 +180,7 @@ export default function DevPickers() {
           title="Field anchor — inside a box the parent drew"
           note="No positioning, no border of its own."
         >
-          <FieldStage>
+          <FieldStage grok={grok}>
             <EntityPickerView
               anchor="field"
               surface={surface}
@@ -165,7 +193,7 @@ export default function DevPickers() {
         </Panel>
 
         <Panel title="All nine kinds, with icons" note="The union, in its own order.">
-          <FieldStage>
+          <FieldStage grok={grok}>
             <EntityPickerView
               anchor="field"
               surface={surface}
@@ -182,7 +210,7 @@ export default function DevPickers() {
           title="Overflow — 40 rows"
           note="Proves the scroll box, and that the highlight fill stays inset when it scrolls."
         >
-          <FieldStage>
+          <FieldStage grok={grok}>
             <EntityPickerView
               anchor="field"
               surface={surface}
@@ -195,7 +223,7 @@ export default function DevPickers() {
         </Panel>
 
         <Panel title="Empty — the trigger was just typed" note="No bare quotation marks.">
-          <FieldStage>
+          <FieldStage grok={grok}>
             <EntityPickerView
               anchor="field"
               surface={surface}
@@ -210,7 +238,7 @@ export default function DevPickers() {
 
         <Panel title="Empty — a query that matched nothing, and loading">
           <div className="flex flex-col gap-3">
-            <FieldStage>
+            <FieldStage grok={grok}>
               <EntityPickerView
                 anchor="field"
                 surface={surface}
@@ -221,7 +249,7 @@ export default function DevPickers() {
                 onPick={noop}
               />
             </FieldStage>
-            <FieldStage>
+            <FieldStage grok={grok}>
               <EntityPickerView
                 anchor="field"
                 surface={surface}

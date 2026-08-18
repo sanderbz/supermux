@@ -624,3 +624,127 @@
     opacity: 0.7;
   }
 }
+
+/* ══ GROK MODE — ONE PICKER (search · +new · @// mention · ⌘K) (WS7) ═══════════
+   The app already consolidated its four pickers to ONE <EntityPickerView> (fase
+   B3): two anchors — `token` (up from an @/-token in the composer, over the
+   transcript) and `field` (inside a box the parent drew: the ⌘K dialog, a sheet)
+   — nine row kinds, and ONE highlight atom (`[data-highlighted]`) that keyboard
+   and pointer both write so they can never disagree (mechanics §4.2). WS7 gives
+   that one component the Grok glass treatment, scoped under `[data-grok]` so the
+   default app stays byte-identical and the attribute's removal is a clean revert.
+
+   REACH — the two homes of the one picker, and why the ⌘K case is special. The
+   composer token popover and every field list live INSIDE the shell root, so
+   `[data-grok] …` reaches them by ancestry for free. The ⌘K palette, though, is a
+   Radix Dialog PORTALLED to <body> — a sibling of the shell root, NOT a
+   descendant — so `[data-grok]` on the shell root cannot reach it. So
+   command-palette.tsx stamps `data-grok` on the portalled Content ITSELF (read
+   once at mount, the same flag layout reads). The theme still resolves because
+   `.dark` lives on <html>, an ANCESTOR of the portal, so `.dark [data-grok]`
+   (the dark token half) matches the portalled dialog exactly as it matches the
+   shell. That is the whole trick: put the gate on the portalled node, keep the
+   theme swap on the ancestor.
+
+   NESTED RADII STEP DOWN (tokens.md §8 — never match): the token popover is a
+   10px container with 6px rows; the field popover / ⌘K dialog is a 12px container
+   with 8px rows. Raised glass (blur 20 / saturate 160 — a LIGHTER blur than the
+   80px substrate, never a second heavy blur), the popover shadow, one 0.5px
+   hairline — so the popover reads as one object with the shell, not a menu that
+   happened to land nearby. */
+
+/* The token popover container — raised glass, 10px, popover shadow. Overrides the
+   default `bg-surface backdrop-blur-[60px] rounded-[22px]` on the token anchor.
+   `mb-2` (8px) becomes 10px to match `bottom:calc(100%+10px)` (mechanics §4.2). */
+[data-grok] [data-anchor='token'] {
+  border-radius: var(--sm-r-md);
+  border-color: var(--sm-border);
+  background: var(--sm-raised-fill);
+  -webkit-backdrop-filter: var(--sm-glass-raised);
+  backdrop-filter: var(--sm-glass-raised);
+  box-shadow: var(--sm-shadow-popover);
+  margin-bottom: var(--sm-space-2_5);
+  animation: sm-popover-in 0.15s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The ⌘K palette / field container — the Radix Dialog Content, which carries
+   `data-grok` on ITSELF (see command-palette.tsx), so this selector self-scopes
+   under grok without reaching the shell root (whose role is not `dialog`).
+   12px, raised glass, hairline, popover shadow — overrides the Dialog's default
+   `bg-card border border-border shadow-lg rounded-lg`. */
+[data-grok][role='dialog'] {
+  border-width: 0.5px;
+  border-color: var(--sm-border);
+  border-radius: var(--sm-r-lg);
+  background: var(--sm-raised-fill);
+  -webkit-backdrop-filter: var(--sm-glass-raised);
+  backdrop-filter: var(--sm-glass-raised);
+  box-shadow: var(--sm-shadow-popover);
+}
+/* The palette's search-input seam → a 0.5px hairline (it draws `border-b
+   border-border`). Hooked by the `data-grok-search` marker the palette adds only
+   when grok is on, so the default app's DOM is untouched. */
+[data-grok][role='dialog'] [data-grok-search] {
+  border-color: var(--sm-border);
+}
+
+/* Rows — ONE rule for both anchors (they share `[role=option]`). Field rows 8px;
+   token rows step down to 6px. The 0.12s transition animates background AND color
+   together (tokens.md §12.1 — hover/press is never fill-only). */
+[data-grok] [role='listbox'] [role='option'] {
+  border-radius: var(--sm-r-sm);
+  transition:
+    background-color 0.12s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-grok] [data-anchor='token'] [role='option'] {
+  border-radius: var(--sm-r-xs);
+}
+/* The single highlight atom — keyboard AND pointer both set `[data-highlighted]`
+   on the same row (mechanics §4.2), so this is the one wash that renders whether
+   the cursor arrived by arrow key or by mouse. A warm-grey active fill, NEVER the
+   accent (accent is links/focus/info only — §3). Unlayered, so it out-specifies
+   the component's layered `.bg-fill-soft-2` utility on the active row. */
+[data-grok] [role='option'][data-highlighted] {
+  background: var(--sm-bg-active);
+}
+/* Group headings inside the listbox (`role=presentation`) → tertiary meta ink. */
+[data-grok] [role='listbox'] [role='presentation'] {
+  color: var(--sm-text-tertiary);
+}
+
+/* Popover-in: 0.15s scale-settle (mechanics §4 — popover in 0.15 / out 0.10; the
+   out is the unmount, i.e. instant, which honours "exits faster than entries").
+   A keyframe rather than a transition, so it fires on the popover's mount. */
+@keyframes sm-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] [data-anchor='token'] {
+    animation: none;
+  }
+}
+
+/* Reduced-transparency / no-backdrop fallback — opaque elevated fill, no blur:
+   the same accessibility gate the substrate pseudo uses above. */
+@media (prefers-reduced-transparency: reduce) {
+  [data-grok] [data-anchor='token'],
+  [data-grok][role='dialog'] {
+    background: var(--sm-bg-elevated);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  [data-grok] [data-anchor='token'],
+  [data-grok][role='dialog'] {
+    background: var(--sm-bg-elevated);
+  }
+}
