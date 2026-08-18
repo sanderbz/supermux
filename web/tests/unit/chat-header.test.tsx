@@ -326,11 +326,24 @@ describe('the phone header gives its width to the name (QA #6)', () => {
     expect(out).toContain('shrink')
   })
 
-  test('a header with neither a mode nor a trailing slot grows no empty cell', () => {
+  test('the presence dot joins the grouped status cluster on the phone (mobile polish #1)', () => {
+    // The dot used to float alone on the name row, mid-header; it now sits in the
+    // trailing status cluster with the mode/connection chips, so the "status bits
+    // (bypass, version, dot)" read as one quiet group and the toggle keeps its
+    // own place. A bare idle session (no mode, no trailing) therefore DOES grow a
+    // cluster — but only for the dot, which is meaningful, not empty.
     const out = renderToStaticMarkup(
       <SessionHeaderPill name={FOCUS} session={session()} surface="phone" />,
     )
+    expect(out).toContain('flex-col')
+    expect(out).toContain('bg-status-ready')
+  })
+
+  test('the desktop keeps the presence dot on the name row', () => {
+    // Only the phone regroups; the desktop header is unchanged, dot inline.
+    const out = pill(session())
     expect(out).not.toContain('flex-col')
+    expect(out).toContain('bg-status-ready')
   })
 
   test('labels="selected" drops the unselected WORD, never its name', () => {

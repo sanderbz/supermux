@@ -85,6 +85,7 @@ import { composerSessionInput } from '@/components/chat/composer-draft'
 import { useArmComposerFocus } from '@/components/chat/arm-composer-focus'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { RendererShell } from '@/components/chat/renderer-shell'
+import { ChatActionsSheet } from '@/components/chat/chat-actions-sheet'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
@@ -118,6 +119,8 @@ import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { KeyBar, useKeyBar } from '@/components/focus-mode/key-bar'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
+import { useDictation } from '@/components/focus-mode/use-dictation'
+import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
@@ -495,6 +498,46 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // disable edge-swipe nav while it's open, matching `pickerOpen`.
   const [keyBarPickerOpen, setKeyBarPickerOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
+  // ── the composer's folded-actions sheet (mobile chat — mobile polish #4) ─────
+  // Under chat the old global dock below the composer is gone; its session
+  // switcher, command palette, snippets and dictation live behind ONE expander in
+  // the composer. The sheet is owned HERE because the route holds the picker, the
+  // snippet drawer and the write plane the mic streams into.
+  const [chatActionsOpen, setChatActionsOpen] = React.useState(false)
+  // Chat dictation streams into the composer DRAFT (`input.insert` stages under
+  // chat), never straight at a `❯`. Same onFinal-first flush discipline the dock
+  // uses — iOS fires Web Speech's `onend` unreliably, so final segments land
+  // immediately and the unsent interim tail is flushed on the stop tap.
+  const dictePendingRef = React.useRef('')
+  const dicteSentRef = React.useRef(0)
+  const chatDictation = useDictation({
+    onTranscript: React.useCallback((t: string) => {
+      dictePendingRef.current = t
+    }, []),
+    onFinal: React.useCallback(
+      (segment: string) => {
+        const seg = segment.trim()
+        if (!seg) return
+        void input.insert(seg + ' ')
+        dicteSentRef.current = dictePendingRef.current.length
+      },
+      [input],
+    ),
+  })
+  const flushDictation = React.useCallback(() => {
+    const tail = dictePendingRef.current.slice(dicteSentRef.current).trim()
+    dictePendingRef.current = ''
+    dicteSentRef.current = 0
+    if (tail) void input.insert(tail + ' ')
+  }, [input])
+  const toggleDictation = React.useCallback(() => {
+    if (chatDictation.listening) {
+      flushDictation()
+      chatDictation.stop()
+    } else {
+      chatDictation.start()
+    }
+  }, [chatDictation, flushDictation])
   // The on-demand native EDITOR sheet (feat-edit-in-native-editor). The dock's
   // bottom-left Edit field is its trigger: tapping it sends Ctrl+G to the pty,
   // Claude lifts its current `❯` input into the supermux bridge, and the sheet
@@ -754,6 +797,10 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
                     // way out of it.
                     input={restInput}
                     onOpenTerminal={() => setRenderer('terminal')}
+                    // The single-bar fold (mobile polish #4): the composer's
+                    // leading expander opens the folded-actions sheet below, in
+                    // place of the old global dock.
+                    onMore={() => setChatActionsOpen(true)}
                     // The card's two shell slots (`mobile-light.png`): navigation
                     // on the left, the renderer choice on the right. The surface
                     // owns neither, which is why they arrive as nodes.
@@ -834,6 +881,12 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
               content is passed as children so MobileBottomPanel stays a pure
               presentational shell that doesn't have to know the dock's many
               props. */}
+          {/* ONE INPUT BAR UNDER CHAT (mobile polish #4). The global dock — a
+              second bottom bar below the composer — is folded into the composer's
+              expander (the <ChatActionsSheet> below). Terminal and stopped panes
+              keep it: they have raw keys, the session-pill switcher and the ⌨
+              toggle to host, and no chat composer to fold them into. */}
+          {!chatActive && (
           <MobileBottomPanel
             sessions={sessions}
             currentName={name}
@@ -881,6 +934,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
               rawKeys={chrome.dockRawKeys}
             />
           </MobileBottomPanel>
+          )}
         </MobileSheet>
       </motion.div>
 
@@ -905,8 +959,30 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
       <SnippetPanel
         open={snippetsOpen}
         onOpenChange={setSnippetsOpen}
-        onInsert={(body) => composerInsert.current?.(body)}
+        // Under chat the dock is unmounted, so `composerInsert` (the dock's
+        // registered target) is null — stage straight into the composer draft via
+        // the chat input plane instead. Terminal keeps the dock's live-type path.
+        onInsert={(body) => {
+          if (chatActive) void input.insert(body)
+          else composerInsert.current?.(body)
+        }}
         onRun={(body) => void input.submit(body)}
+      />
+
+      {/* The composer's folded-actions sheet (mobile polish #4) — session
+          switcher, command palette, snippets and dictation, the actions the old
+          chat-mode dock exposed, now behind the composer's one expander. */}
+      <ChatActionsSheet
+        open={chatActionsOpen}
+        onOpenChange={setChatActionsOpen}
+        onSwitchSession={() => setPickerOpen(true)}
+        onCommandPalette={triggerCommandPalette}
+        onSnippets={() => setSnippetsOpen(true)}
+        dictation={{
+          supported: chatDictation.supported,
+          listening: chatDictation.listening,
+          toggle: toggleDictation,
+        }}
       />
 
       {/* The on-demand native EDITOR sheet (feat-edit-in-native-editor) — morphs

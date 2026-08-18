@@ -90,6 +90,7 @@ export default function ChatPanel({
   surface,
   headerLeading,
   headerTrailing,
+  onMore,
 }: {
   name: string
   session: TileSession | null
@@ -123,6 +124,15 @@ export default function ChatPanel({
    */
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
+  /**
+   * Open the composer's folded-actions sheet (mobile chat only). The phone's old
+   * global dock — session switcher, command palette, snippets, dictation — is
+   * gone under chat; those actions now live behind ONE expander in the composer,
+   * so the surface is a single input bar. The route owns the sheet (it holds the
+   * picker, the dictation plane and the snippet drawer); the panel only forwards
+   * the trigger to the composer. Omit → no expander (desktop, bench).
+   */
+  onMore?: () => void
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
@@ -632,14 +642,12 @@ export default function ChatPanel({
       overlay={overlay}
       surface={phone ? 'phone' : 'desktop'}
       headerLeading={headerLeading}
-      // The honesty chip rides in the header's own trailing slot rather than
-      // over the transcript: nothing is broken, so nothing should move.
-      headerTrailing={
-        <>
-          {connectionNote}
-          {headerTrailing}
-        </>
-      }
+      // The honesty chip rides in the header's own STATUS slot (grouped with the
+      // mode chip and presence dot), not bundled onto the renderer toggle — so the
+      // phone header keeps the toggle in its own clear place (mobile polish #1).
+      // Nothing is broken, so nothing moves over the transcript.
+      headerStatus={connectionNote}
+      headerTrailing={headerTrailing}
       pinFor={pinFor}
       // The header's honesty half: an `offline` plane greys the presence dot so
       // it stops reading as a live green "ready" beside the "Offline" chip. Only
@@ -751,6 +759,7 @@ export default function ChatPanel({
           // same rule as `mentions`/`names`.
           pickerData={pickerData}
           onSchedule={scheduleDraft}
+          onMore={onMore}
           // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
           //
           // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`

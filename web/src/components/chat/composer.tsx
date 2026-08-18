@@ -37,6 +37,7 @@ import { cn } from '../../lib/utils'
 import { ComposerFrame } from './composer-shell'
 import type { EntityPickerProps } from './entity-picker'
 import { pickerOptionId, PICKER_LISTBOX_ID, type EntityPickerData } from './slash'
+import { speechRecognitionSupported } from './speech'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { Composer, MicIcon, PlusIcon } from './ui'
@@ -94,6 +95,15 @@ export interface ChatComposerProps {
    */
   onSchedule?: (draft: string) => void
   /**
+   * Open the folded-actions sheet (mobile chat only). On the phone the old
+   * global dock below the composer is gone — its session switcher, command
+   * palette, snippets and dictation now live behind ONE expander in the
+   * composer's leading cluster, so the surface has a single input bar
+   * (`routes/focus/mobile.tsx`). Omit and the expander is not drawn: the desktop
+   * split keeps its sidebar, the bench renders no dead control.
+   */
+  onMore?: () => void
+  /**
    * This session cannot work — a quota bucket, an auth death (`blocked.ts`).
    * The string is the REASON, already naming the limit and, where there is one,
    * when it lifts.
@@ -119,11 +129,17 @@ export function ChatComposer({
   renderPicker,
   pickerData,
   onSchedule,
+  onMore,
   blocked,
   className,
 }: ChatComposerProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
+  // The rest-state mic is a dictation affordance, and dictation is the Web Speech
+  // API — which iOS Safari / WKWebView do not expose. Read once (the constructor
+  // does not appear after load) so an iPhone never shows a mic that is dead the
+  // moment it is tapped. See `speech.ts`.
+  const micSupported = React.useMemo(() => speechRecognitionSupported(), [])
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
@@ -191,6 +207,33 @@ export function ChatComposer({
         placeholder={`Message ${label}`}
         leading={
           <>
+          {/* THE FOLDED-ACTIONS EXPANDER (mobile chat only). On the phone the
+              redundant global dock below the composer is gone; its session
+              switcher, command palette, snippets and dictation live behind this
+              one control, so the surface is a single input bar. Leftmost — the
+              conventional place for "expand" — and set off from the insert pair
+              by the row's own `gap-3`, so it reads as its own group. */}
+          {onMore && (
+            <button
+              type="button"
+              data-testid="chat-composer-more"
+              aria-label="More actions"
+              onClick={onMore}
+              className={cn(
+                'grid size-[26px] flex-none place-items-center rounded-full text-ink-2',
+                '[@media(pointer:coarse)]:size-11',
+              )}
+            >
+              <MoreIcon />
+            </button>
+          )}
+          {/* THE INSERT PAIR — mention (`@`) and schedule (clock). A related
+              pair, so they are grouped in one flex box at a tight gap rather
+              than served the row's full `gap-3` each: the boards drew them as
+              siblings, not as two lone accessories a field-width apart (mobile
+              polish #2). Each cell keeps its own 44pt touch floor on a coarse
+              pointer; the tight gap only pulls the GLYPHS together. */}
+          <div className="flex flex-none items-center [@media(pointer:coarse)]:-space-x-1.5">
           <button
             type="button"
             data-testid="chat-composer-at"
@@ -233,6 +276,7 @@ export function ChatComposer({
               <ClockIcon />
             </button>
           )}
+          </div>
           </>
         }
         field={{
@@ -333,10 +377,16 @@ export function ChatComposer({
                   >
                     <StopIcon />
                   </TrailingButton>
-                ) : (
+                ) : micSupported ? (
                   /* At rest the boards' mic keeps its cell. It is decoration
                      until dictation lands — so it is `aria-hidden` and not a
-                     button, exactly as B0 draws it. */
+                     button, exactly as B0 draws it.
+
+                     GATED ON WEB SPEECH (mobile polish #3). The mic reads as a
+                     dictation control, and dictation is the Web Speech API that
+                     iOS Safari / WKWebView do not expose — so on an iPhone it
+                     was a dead glyph. Absent support, the cell is empty rather
+                     than promising a capability the browser cannot deliver. */
                   <span
                     aria-hidden
                     className={cn(
@@ -346,6 +396,11 @@ export function ChatComposer({
                   >
                     <MicIcon />
                   </span>
+                ) : (
+                  /* No Web Speech here — draw nothing rather than a dead mic. The
+                     cell keeps its footprint so the field width does not jump
+                     between the idle and the armed states. */
+                  <span aria-hidden className={phone ? 'size-9' : 'size-10'} />
                 )}
               </motion.div>
             </AnimatePresence>
@@ -622,6 +677,21 @@ function ClockIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  )
+}
+
+/** More actions — a 2×2 grid of dots, the app's word for "a small set of
+ *  things behind one control". Deliberately NOT a second plus (the `@` cell
+ *  already carries one) and not the dock's `···` (that meant the key bar):
+ *  distinct from every glyph it sits beside. Monochrome `currentColor`. */
+function MoreIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="currentColor" aria-hidden>
+      <circle cx="6" cy="6" r="1.6" />
+      <circle cx="12" cy="6" r="1.6" />
+      <circle cx="6" cy="12" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
     </svg>
   )
 }
