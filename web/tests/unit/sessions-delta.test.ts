@@ -106,6 +106,63 @@ describe('applyDelta — the delete resurrection race (w6 #3)', () => {
   })
 })
 
+describe('applyDelta — tombstone must not strand a real restore (w7 regression)', () => {
+  // The w6 tombstone denied EVERY unknown-name add inside the TTL — including
+  // the server's own FULL authoritative row for an archive→unarchive or a
+  // same-name recreate. Those must win: they mean "the session is really back".
+  // The gate belongs on "this is a SYNTHETIC PARTIAL" (no identity columns),
+  // never on "the name is tombstoned". A full row carries `dir` + `provider`;
+  // no partial delta does — that pair is the discriminator.
+
+  test('archive then an authoritative full-row SSE restores the tile at once', () => {
+    const tomb = new Map<string, number>()
+    const alive = [row({ name: 'keep' }), row({ name: 'arch', status: 'active' })]
+    // Archive drops the row and (today) tombstones the name.
+    const gone = applyDelta(alive, [{ name: 'arch', archived: true }], true, tomb, 1000)
+    expect(gone.map((s) => s.name)).toEqual(['keep'])
+    // Unarchive: the server broadcasts the FULL re-listed SessionView (dir +
+    // provider present, archived:false), 200ms later — deep inside the 15s TTL.
+    // It must re-add the tile immediately, not wait the tombstone out.
+    const restored = applyDelta(
+      gone,
+      [row({ name: 'arch', status: 'stopped', archived: false })],
+      true,
+      tomb,
+      1200,
+    )
+    expect(restored.map((s) => s.name).sort()).toEqual(['arch', 'keep'])
+    // …and the tombstone is cleared so nothing lingers to re-block a later delta.
+    expect(tomb.has('arch')).toBe(false)
+  })
+
+  test('a full-row create for a tombstoned name applies inside the TTL', () => {
+    const tomb = new Map<string, number>()
+    // A hard delete tombstones the name.
+    const gone = applyDelta([row({ name: 'vx-cdel' })], [{ name: 'vx-cdel', removed: true }], true, tomb, 0)
+    expect(gone.map((s) => s.name)).toEqual([])
+    // A full authoritative recreate row (dir + provider present) for the SAME
+    // name, 200ms later — inside the TTL. A recreate is server truth: apply it.
+    const after = applyDelta(gone, [row({ name: 'vx-cdel', status: 'idle' })], true, tomb, 200)
+    expect(after.map((s) => s.name)).toEqual(['vx-cdel'])
+    expect(tomb.has('vx-cdel')).toBe(false)
+  })
+
+  test('a SYNTHETIC partial for a tombstoned name is STILL denied within the TTL', () => {
+    // The other half of the discriminator: the hard-delete resurrection guard
+    // (w6 #3) must survive. A late preview partial (no dir/provider) inside the
+    // TTL must NOT resurrect the tile — for a hard delete OR an archive.
+    const tomb = new Map<string, number>()
+    const goneDel = applyDelta([row({ name: 'hd' })], [{ name: 'hd', removed: true }], true, tomb, 0)
+    const afterDel = applyDelta(goneDel, [{ name: 'hd', preview_lines: ['ghost'] }], true, tomb, 500)
+    expect(afterDel.map((s) => s.name)).toEqual([])
+
+    const tomb2 = new Map<string, number>()
+    const goneArch = applyDelta([row({ name: 'ar' })], [{ name: 'ar', archived: true }], true, tomb2, 0)
+    const afterArch = applyDelta(goneArch, [{ name: 'ar', preview_lines: ['ghost'] }], true, tomb2, 500)
+    expect(afterArch.map((s) => s.name)).toEqual([])
+  })
+})
+
 describe('status version — a reordered event cannot regress newer truth (w6 #8)', () => {
   test('statusToDelta threads the per-session `version` through', () => {
     // The root: the version used to be discarded here, so `applyDelta` had

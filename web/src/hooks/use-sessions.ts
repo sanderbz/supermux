@@ -77,12 +77,18 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
  *  RE-ADDS the session with synthetic defaults (`status: 'idle'`) — a deleted
  *  session comes back as a green Idle tile and lingers until a full resync.
  *
- *  The tombstone denies the re-add for a brief window after the delete. It is
- *  intentionally short: a genuine RE-CREATE of the same name (names are
- *  reusable) is a human action seconds+ later and must be allowed, so an entry
- *  older than the TTL no longer blocks. An explicit create also clears it
- *  eagerly (`clearRemovalTombstone`), and any full refetch bypasses this path
- *  entirely (it replaces the cache from server truth). */
+ *  The tombstone denies only a SYNTHETIC PARTIAL re-add (a preview/status/
+ *  activity tick that carries a handful of keys) for a brief window after the
+ *  delete — that is the only shape that can wrongly resurrect the tile. A FULL
+ *  AUTHORITATIVE row for the name (the server re-listing the whole SessionView
+ *  on unarchive/recreate — identifiable by its `dir` + `provider` identity
+ *  columns, which no partial carries) is NEVER blocked: it means the session is
+ *  really back, so it applies at once and clears the tombstone (w7). The window
+ *  is intentionally short anyway: a genuine RE-CREATE of the same name (names
+ *  are reusable) is a human action seconds+ later and must be allowed, so even
+ *  a partial older than the TTL no longer blocks. An explicit create also
+ *  clears it eagerly (`clearRemovalTombstone`), and any full refetch bypasses
+ *  this path entirely (it replaces the cache from server truth). */
 const REMOVAL_TOMBSTONE_TTL_MS = 15_000
 const removalTombstones = new Map<string, number>()
 
@@ -143,13 +149,31 @@ export function applyDelta(
     }
     if (idx === undefined) {
       if (!allowAdd) continue
-      // A name we just saw deleted must not be re-added by a delta that was
-      // already in flight. Inside the TTL: deny. Past it: a real recreate, so
-      // forget the tombstone and fall through to add.
-      const tombstonedAt = tombstones.get(row.name)
-      if (tombstonedAt !== undefined) {
-        if (now - tombstonedAt < REMOVAL_TOMBSTONE_TTL_MS) continue
+      // The tombstone must block ONE thing: a SYNTHETIC PARTIAL add (a late
+      // preview/status/activity tick — a handful of keys) resurrecting a tile
+      // we just saw removed (the w6 #3 resurrection race). It must NOT block a
+      // FULL AUTHORITATIVE row: the server re-listing the session for real —
+      // an archive→unarchive re-broadcasts the whole SessionView
+      // (lifecycle.rs::unarchive), a recreate broadcasts one. That row means
+      // "the session is genuinely back" and has to WIN outright, or the restore
+      // is stranded behind the 15s TTL — invisible until an unrelated resync
+      // (w7 regression). So gate the deny on "this is a partial", not on "the
+      // name is tombstoned". The discriminator: a full row always carries the
+      // identity columns `dir` + `provider`; no partial delta ever does.
+      const isFullRow =
+        typeof row.dir === 'string' && typeof row.provider === 'string'
+      if (isFullRow) {
+        // Authoritative: the session is really back. Clear any tombstone so it
+        // can't re-block a follow-up delta, and fall through to add.
         tombstones.delete(row.name)
+      } else {
+        // Synthetic partial: honour the tombstone. Inside the TTL: deny. Past
+        // it: a real recreate we missed — forget the tombstone and fall through.
+        const tombstonedAt = tombstones.get(row.name)
+        if (tombstonedAt !== undefined) {
+          if (now - tombstonedAt < REMOVAL_TOMBSTONE_TTL_MS) continue
+          tombstones.delete(row.name)
+        }
       }
       // New session seen via SSE before the next list refetch. Seed sane
       // defaults so the tile renders even from a partial delta.
