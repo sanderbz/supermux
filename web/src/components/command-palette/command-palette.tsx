@@ -48,6 +48,7 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Archive,
+  Bot,
   CalendarClock,
   Command as CommandIcon,
   FolderClosed,
@@ -76,6 +77,7 @@ import { type ApiSession, type SlashCommand } from '@/lib/api'
 import { SessionFace } from '@/components/roster/session-face'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
+import { useNewSessionAction } from '@/stores/new-session-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { useOverlayGate } from '@/stores/overlay-gate-store'
 import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
@@ -90,7 +92,8 @@ import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 import { useTheme } from '@/components/theme-provider'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useUI } from '@/stores/ui-store'
-import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 //
@@ -195,6 +198,7 @@ export function CommandPalette() {
   // The Overview installs its handler while mounted; absent on every other
   // route, so the "New group" row is conditionally surfaced below.
   const newGroupAction = useNewGroupAction((s) => s.action)
+  const newSessionAction = useNewSessionAction((s) => s.action)
 
   const { toast } = useToast()
   const { resolvedTheme, setTheme } = useTheme()
@@ -215,8 +219,11 @@ export function CommandPalette() {
   // below, so the picker's glass rules apply to the portalled box. Absent when
   // off, so the default palette's DOM is byte-identical.
   const [grok] = React.useState(() =>
-    grokModeOn(
-      useUI.getState().grokMode,
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(BOT_KILL_SWITCH_KEY),
       typeof localStorage === 'undefined'
         ? null
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),
@@ -366,6 +373,19 @@ export function CommandPalette() {
       group: 'Actions',
     })
     const base = [
+      // The create verb — FIRST, so ⌘K has an obvious way to start a bot. Only
+      // present while a surface (roster/overview) has installed the opener.
+      ...(newSessionAction
+        ? [
+            mk(
+              'action:new-bot',
+              'New bot',
+              'new bot session create hire agent start spawn',
+              Bot,
+              newSessionAction,
+            ),
+          ]
+        : []),
       mk(
         'action:view-archived',
         'View archived sessions',
@@ -398,7 +418,7 @@ export function CommandPalette() {
       )
     }
     return base
-  }, [openArchived, openClaudeTools, sessions, newGroupAction])
+  }, [openArchived, openClaudeTools, sessions, newGroupAction, newSessionAction])
 
   // Merge the slash-command list (built-ins + supermux skills) with the registry's
   // file commands (e.g. ~/.claude/commands/*.md, project commands) — deduped by

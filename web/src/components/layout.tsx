@@ -11,7 +11,8 @@ import {
 
 import { cn } from '@/lib/utils'
 import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
-import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { agentHueVarsFor } from '@/lib/grok-agent-hue'
 import { useUI } from '@/stores/ui-store'
 import {
@@ -320,8 +321,11 @@ export function Layout() {
   // live session mid-flight. The store field is the user preference; the
   // `localStorage['supermux:grok-mode']` kill-switch ('0') overrides it.
   const [grok] = React.useState(() =>
-    grokModeOn(
-      useUI.getState().grokMode,
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(BOT_KILL_SWITCH_KEY),
       typeof localStorage === 'undefined'
         ? null
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),

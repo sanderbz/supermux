@@ -192,6 +192,22 @@ export interface ApiSession {
    *  (the built-in pty holder) or `"tmux"`. Read by the recovery ladder, which
    *  can only heal a holder it owns — a tmux pane has no holder to recover. */
   runtime?: string
+  /** Per-bot launch-line MODEL (migration 0030), e.g. `"opus"`. Empty/absent =
+   *  provider default. Injected as `--model <id>` at launch; changing it via the
+   *  config PATCH is a launch-line change (see `restart_required`). */
+  model?: string
+  /** The bot's "Notes it keeps" (migration 0030) — free text injected READ-ONLY
+   *  into the agent's system prompt at launch, after the role (`desc`). v1 is
+   *  read-only server-side; the editor round-trips it. */
+  memory?: string
+  /** Reserved per-bot skills selection (migration 0030). Nothing consumes it
+   *  yet; surfaced so the editor can round-trip it. */
+  skills?: string[]
+  /** TRUE only on a config-PATCH RESPONSE whose change touched a launch-line
+   *  property (model / role / notes): the UI shows "Applies on next start"
+   *  instead of relaunching the agent. Omitted from the wire when false, so
+   *  `get`/`list`/SSE rows never carry it — it is purely the PATCH advisory. */
+  restart_required?: boolean
   /** Cross-device seen cursor (migration 0029) — server-clock **ms** at which
    *  this session was last read on ANY device, or null/absent for never seen.
    *  Merged newest-wins with the localStorage cursor in `use-attention.ts`;
@@ -464,6 +480,18 @@ export interface SessionConfigPatch {
    *  the mute decision. ANDed with the global per-category toggles in Settings:
    *  a push goes out only when both allow it. See [`NotifPolicy`]. */
   notif?: NotifPolicy
+  /** Per-bot MODEL (migration 0030), e.g. `"opus"`. Resolved against the
+   *  provider allowlist server-side (unknown → 400). `''` clears it back to the
+   *  provider default. A launch-line change: the PATCH response carries
+   *  `restart_required: true` and the live agent is NOT relaunched. */
+  model?: string
+  /** The bot's "Notes it keeps" (migration 0030) — injected READ-ONLY into the
+   *  system prompt at launch. Like `model`/`desc`, a launch-line change →
+   *  `restart_required: true`. */
+  memory?: string
+  /** Reserved per-bot skills selection (migration 0030). Stored as a JSON array;
+   *  nothing injects it yet, so it does NOT set `restart_required`. */
+  skills?: string[]
 }
 
 /** Per-session notification policy — notifications live on the BOT, not only in

@@ -21,7 +21,8 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
 import { useUI } from '@/stores/ui-store'
-import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 
 export interface WelcomeBannerProps {
   /** Migrated session count — drives the copy ("your N sessions are here"). */
@@ -48,8 +49,11 @@ export function WelcomeBanner({
   // handled separately — OnboardingHost suppresses the banner while a modal is
   // open, in BOTH modes.
   const [grok] = React.useState(() =>
-    grokModeOn(
-      useUI.getState().grokMode,
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(BOT_KILL_SWITCH_KEY),
       typeof localStorage === 'undefined'
         ? null
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),

@@ -40,8 +40,8 @@ export default function DevTiles() {
   // pass, so an effect would paint one ANSI frame into every screenshot.
   // `setState` outside React is zustand's documented API, and this is a DEV-only
   // route (mirrors `/dev/focus-mobile?chat=1`).
-  if (params.get('chat') === '1' && !useUI.getState().chatRenderer) {
-    useUI.setState({ chatRenderer: true })
+  if (params.get('chat') === '1' && !useUI.getState().botMode) {
+    useUI.setState({ botMode: true })
   }
 
   // Live tail demo: append a line to the first tile every 1.6s to exercise the

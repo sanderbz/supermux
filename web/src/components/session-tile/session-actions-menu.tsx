@@ -148,7 +148,7 @@ export function SessionActionsMenu({
   // for an INELIGIBLE session and while the experiment is off: a control that
   // decides nothing is worse than no control, and `resolveRenderer` would
   // overrule it anyway.
-  const chatExperiment = useUI((st) => st.chatRenderer)
+  const chatExperiment = useUI((st) => st.botMode)
   const rendererEligible = useChatRenderer(
     { provider: session.provider, host_id: session.host_id },
     false,

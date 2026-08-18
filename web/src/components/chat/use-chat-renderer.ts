@@ -3,6 +3,7 @@
 // flipping the kill-switch takes effect on the next render/navigation, which
 // is fine for an emergency lever).
 
+import { BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
 import { useUI } from '@/stores/ui-store'
 
 import {
@@ -15,12 +16,14 @@ export function useChatRenderer(
   s: ChatEligibleSession | null,
   isTeamLead: boolean,
 ): boolean {
-  const settingOn = useUI((st) => st.chatRenderer)
-  let kill: string | null = null
+  const botOn = useUI((st) => st.botMode)
+  let killMaster: string | null = null
+  let killChat: string | null = null
   try {
-    kill = window.localStorage.getItem(CHAT_KILL_SWITCH_KEY)
+    killMaster = window.localStorage.getItem(BOT_KILL_SWITCH_KEY)
+    killChat = window.localStorage.getItem(CHAT_KILL_SWITCH_KEY)
   } catch {
     /* private mode / quota — treat as no kill-switch */
   }
-  return chatRendererOn(settingOn, kill, s, isTeamLead)
+  return chatRendererOn(botOn, killMaster, killChat, s, isTeamLead)
 }

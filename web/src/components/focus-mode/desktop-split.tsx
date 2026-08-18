@@ -326,7 +326,7 @@ export function DesktopSplit({
     () => teams.some((t) => t.lead_supermux_session === name),
     [teams, name],
   )
-  const chatSetting = useUI((s) => s.chatRenderer)
+  const chatSetting = useUI((s) => s.botMode)
   const chatOn = useChatRenderer(current ?? null, isTeamLead)
   // renderer null = undecided. With the experiment ON we wait for the
   // sessions query (`current` is null on first paint) before choosing, so the

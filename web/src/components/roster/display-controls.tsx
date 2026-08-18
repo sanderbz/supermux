@@ -96,7 +96,7 @@ export function DisplayControls({
   // more props: the value has no overview-local meaning, and this popover is the
   // home of the account-wide display choices. Hidden while the experiment is
   // off — a control that decides nothing is worse than an absent one.
-  const chatExperiment = useUI((s) => s.chatRenderer)
+  const chatExperiment = useUI((s) => s.botMode)
   const defaultRenderer = useUI((s) => s.defaultRenderer)
   const setDefaultRenderer = useUI((s) => s.setDefaultRenderer)
 

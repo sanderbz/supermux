@@ -231,6 +231,25 @@ pub struct SessionView {
     /// the UI can badge a native session (and so a native-vs-tmux bug report
     /// carries the answer without a DB dump).
     pub runtime: String,
+    /// The launch-line model selection (migration 0030 / bot identity), e.g.
+    /// `"opus"`. Empty = provider default. Injected as `--model <id>` at launch;
+    /// changing it is a launch-line change (see [`restart_required`]).
+    pub model: String,
+    /// The bot's "Notes it keeps" (migration 0030) — free text injected READ-ONLY
+    /// into the agent's system prompt at launch, after the role (`desc`). v1 is
+    /// read-only; a write-back path is a later phase.
+    pub memory: String,
+    /// Reserved per-bot skills selection (migration 0030): a JSON array. Nothing
+    /// consumes it yet; surfaced so the editor can round-trip it.
+    pub skills: Vec<String>,
+    /// TRUE only on a config PATCH response whose change is a LAUNCH-LINE property
+    /// (model, or the role/notes now injected at launch): the UI shows "Applies on
+    /// next start" instead of relaunching the agent under the user. Always `false`
+    /// on `get`/`list`/SSE rows (a session does not "need a restart" as a standing
+    /// property), and OMITTED from the wire when false so those shapes are
+    /// unchanged — it is purely the PATCH result's advisory bit.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub restart_required: bool,
     /// Last 6 lines of `last_capture`, ANSI-stripped.
     pub preview_lines: Vec<String>,
     /// Same last 6 lines, with SGR escape sequences preserved — the colour-true
@@ -486,6 +505,15 @@ fn view(
         } else {
             s.runtime.clone()
         },
+        // Bot identity (migration 0030). `skills` is a JSON-array string in the
+        // column; parse it with the same tolerant helper as `tags` so a junk
+        // value degrades to `[]` rather than failing the read.
+        model: s.model.clone(),
+        memory: s.memory.clone(),
+        skills: parse_tags(&s.skills),
+        // Only ever flipped true by `config_patch` on a launch-line change; every
+        // other construction path (get/list/SSE) leaves it false → omitted.
+        restart_required: false,
         preview_lines: preview_lines(last_capture),
         preview_ansi: last_n_lines(last_capture_ansi, 20),
         activity: act.as_ref().and_then(|a| a.activity.clone()),
@@ -963,6 +991,13 @@ pub struct CreateInput {
     /// they timed out.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Per-bot MODEL selection (migration 0030), e.g. `"opus"`. NOT free text:
+    /// resolved against the provider's hardcoded allowlist
+    /// ([`lifecycle::resolve_model_flag`]) and stored as the mapped real id, which
+    /// is what lands on the launch line as `--model <id>` (SEC-01 — an unknown
+    /// value is a 400 and writes no row). Absent = provider default.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
@@ -1047,6 +1082,15 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
             .trim()
             .to_string();
     }
+    // Per-bot MODEL (migration 0030): resolve the selection against the provider's
+    // allowlist and store the mapped real id. NEVER free text on the launch line
+    // (SEC-01) — an unknown selection is a 400, checked before the DB write so a
+    // rejected value never becomes a stored row. Empty = provider default.
+    let model = match lifecycle::resolve_model_flag(&provider, input.model.as_deref().unwrap_or("")) {
+        Ok(Some(id)) => id.to_string(),
+        Ok(None) => String::new(),
+        Err(msg) => return Err(AppError::BadRequest(msg)),
+    };
     let new = NewSession {
         name: name.clone(),
         display_name,
@@ -1062,6 +1106,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         worktree_repo: String::new(),
         host_id: input.host_id,
         runtime: runtime_kind,
+        model,
     };
     db::sessions::create(&state.pool, &new).await?;
     let hook_token = gen_hook_token();
@@ -1290,6 +1335,20 @@ pub struct ConfigInput {
     /// coercion — mis-typing this would quietly change whether the user's phone
     /// rings, which is exactly the class of failure that must be loud.
     pub notif: Option<String>,
+    /// Per-bot MODEL selection (migration 0030), e.g. `"opus"`. Resolved against
+    /// the provider's allowlist ([`lifecycle::resolve_model_flag`]) — an unknown
+    /// value is a 400. `Some("")` clears it back to the provider default. Changing
+    /// it is a LAUNCH-LINE change → the PATCH returns `restart_required: true` and
+    /// the live agent is NOT relaunched under the user.
+    pub model: Option<String>,
+    /// The bot's "Notes it keeps" (migration 0030). Injected READ-ONLY into the
+    /// system prompt at launch, so — like `model` and `desc` — a change here is a
+    /// launch-line change and returns `restart_required: true`.
+    pub memory: Option<String>,
+    /// Reserved per-bot skills selection (migration 0030), a list of skill names.
+    /// Stored as a JSON array. Nothing injects it yet, so unlike model/memory it
+    /// does NOT set `restart_required`.
+    pub skills: Option<Vec<String>>,
 }
 
 pub async fn config_patch(
@@ -1300,6 +1359,13 @@ pub async fn config_patch(
     ensure_session(state, name).await?;
     let mut current = name.to_string();
     let mut changed = false;
+    // Set when the patch touches a LAUNCH-LINE property (model, or the role/notes
+    // now injected at launch). The response carries this as `restart_required` so
+    // the UI shows "Applies on next start" — we DELIBERATELY do not relaunch a
+    // live agent under the user (see the module doc on the bypass-restart pattern
+    // this mirrors: a launch-line change is applied by the next start, not by
+    // yanking the agent out from under a running turn).
+    let mut restart_required = false;
 
     if let Some(target) = patch.rename.as_deref() {
         let target = target.trim();
@@ -1404,6 +1470,10 @@ pub async fn config_patch(
     }
     if let Some(v) = patch.desc {
         db::sessions::set_desc(&state.pool, &current, &v).await?;
+        // The role (`desc`) is now injected into the agent's system prompt at
+        // launch (migration 0030 — "sluit rol nu echt aan"), so editing it is a
+        // launch-line change that takes effect on the next start.
+        restart_required = true;
         changed = true;
     }
     if let Some(v) = patch.dir {
@@ -1446,6 +1516,38 @@ pub async fn config_patch(
         db::sessions::set_notif_policy(&state.pool, &current, parsed).await?;
         changed = true;
     }
+    if let Some(v) = patch.model {
+        // Resolve against the provider's allowlist (the provider is fixed at
+        // create), store the mapped real id. `""` clears back to the default.
+        // Never free text on the launch line (SEC-01) — an unknown value is a 400,
+        // checked before the write so a rejected value never lands.
+        let provider = db::sessions::get(&state.pool, &current)
+            .await?
+            .map(|s| s.provider)
+            .unwrap_or_default();
+        let id = match lifecycle::resolve_model_flag(&provider, v.trim()) {
+            Ok(Some(id)) => id.to_string(),
+            Ok(None) => String::new(),
+            Err(msg) => return Err(AppError::BadRequest(msg)),
+        };
+        db::sessions::set_model(&state.pool, &current, &id).await?;
+        restart_required = true;
+        changed = true;
+    }
+    if let Some(v) = patch.memory {
+        // The notes are injected READ-ONLY into the system prompt at launch, so a
+        // change is a launch-line change (mirrors `desc`/`model`).
+        db::sessions::set_memory(&state.pool, &current, &v).await?;
+        restart_required = true;
+        changed = true;
+    }
+    if let Some(v) = patch.skills {
+        // Reserved: stored but not yet injected anywhere, so NOT a launch-line
+        // change (no `restart_required`).
+        let json = serde_json::to_string(&v).unwrap_or_else(|_| "[]".into());
+        db::sessions::set_skills(&state.pool, &current, &json).await?;
+        changed = true;
+    }
     if patch.toggle_pin.is_some() {
         db::sessions::toggle_pin(&state.pool, &current).await?;
         changed = true;
@@ -1458,7 +1560,12 @@ pub async fn config_patch(
     if !changed {
         return Err(AppError::BadRequest("no recognized config field".into()));
     }
-    get(state, &current).await
+    let mut view = get(state, &current).await?;
+    // The PATCH result's advisory bit: a launch-line change was made, so the UI
+    // shows "Applies on next start" rather than relaunching the live agent. Only
+    // ever set here — `get`/`list`/SSE rows leave it false (omitted on the wire).
+    view.restart_required = restart_required;
+    Ok(view)
 }
 
 // ── git status ───────────────────────────────────────────────────────────────
@@ -2296,6 +2403,7 @@ mod tests {
             worktree: None,
             host_id: None,
             runtime: None,
+            model: None,
         }
     }
 
@@ -2448,6 +2556,108 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Bot identity (migration 0030): a MODEL selection is allowlist-validated on
+    /// create — a known value is stored as its mapped id and surfaces on the view;
+    /// an unknown one is a 400 that writes NO row.
+    #[tokio::test]
+    async fn model_selection_is_allowlisted_on_create() {
+        let (state, dir) = test_state().await;
+
+        let mut good = input("with-model");
+        good.provider = Some("claude".into());
+        good.model = Some("opus".into());
+        let view = create(&state, good).await.expect("a valid model creates");
+        assert_eq!(view.model, "opus");
+        let row = db::sessions::get(&state.pool, "with-model").await.unwrap().unwrap();
+        assert_eq!(row.model, "opus");
+
+        let mut bad = input("bad-model");
+        bad.provider = Some("claude".into());
+        bad.model = Some("gpt-4-turbo".into());
+        let err = create(&state, bad).await.expect_err("an unknown model is refused");
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert!(!db::sessions::exists(&state.pool, "bad-model").await.unwrap());
+
+        for n in ["with-model"] {
+            crate::sessions::native::forget(n);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The restart-required contract: changing a LAUNCH-LINE property (model, role
+    /// `desc`, or notes `memory`) returns `restart_required: true` — the UI shows
+    /// "Applies on next start" and the live agent is NOT relaunched under the user.
+    /// A pure-metadata change (tags, skills) does not.
+    #[tokio::test]
+    async fn launch_line_config_changes_are_restart_required() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("bot");
+        inp.provider = Some("claude".into());
+        create(&state, inp).await.expect("create");
+
+        // Role (desc) is now launch-injected → restart_required.
+        let mut p = blank_config();
+        p.desc = Some("You are a triage bot.".into());
+        let v = config_patch(&state, "bot", p).await.expect("patch desc");
+        assert!(v.restart_required, "a role change must require a restart");
+
+        // Notes (memory) likewise.
+        let mut p = blank_config();
+        p.memory = Some("Keep replies terse.".into());
+        let v = config_patch(&state, "bot", p).await.expect("patch memory");
+        assert!(v.restart_required, "a notes change must require a restart");
+        assert_eq!(v.memory, "Keep replies terse.");
+
+        // Model likewise, and it validates + surfaces.
+        let mut p = blank_config();
+        p.model = Some("sonnet".into());
+        let v = config_patch(&state, "bot", p).await.expect("patch model");
+        assert!(v.restart_required, "a model change must require a restart");
+        assert_eq!(v.model, "sonnet");
+
+        // An unknown model is a 400.
+        let mut p = blank_config();
+        p.model = Some("nope".into());
+        let err = config_patch(&state, "bot", p).await.expect_err("bad model");
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+
+        // Skills (reserved) round-trips WITHOUT requiring a restart.
+        let mut p = blank_config();
+        p.skills = Some(vec!["reviewer".into(), "planner".into()]);
+        let v = config_patch(&state, "bot", p).await.expect("patch skills");
+        assert!(!v.restart_required, "a skills change is not a launch-line change");
+        assert_eq!(v.skills, vec!["reviewer".to_string(), "planner".to_string()]);
+
+        // Tags (pure metadata) likewise.
+        let mut p = blank_config();
+        p.tags = Some(vec!["x".into()]);
+        let v = config_patch(&state, "bot", p).await.expect("patch tags");
+        assert!(!v.restart_required, "a tags change is not a launch-line change");
+
+        crate::sessions::native::forget("bot");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An all-`None` ConfigInput — each test overrides just the field it exercises.
+    fn blank_config() -> ConfigInput {
+        ConfigInput {
+            rename: None,
+            display_name: None,
+            desc: None,
+            dir: None,
+            branch: None,
+            mcp: None,
+            tags: None,
+            toggle_pin: None,
+            mark_pin: None,
+            notif: None,
+            toggle_auto_continue: None,
+            model: None,
+            memory: None,
+            skills: None,
+        }
+    }
+
     /// Fake a native session's on-disk state: `<data>/native/<name>/meta.json`
     /// with `pid` (our own pid = "running"; `0` = gone) and, optionally, the
     /// exit marker a holder writes when its child dies.
@@ -2507,6 +2717,9 @@ mod tests {
                 mark_pin: None,
                 notif: None,
                 toggle_auto_continue: None,
+                model: None,
+                memory: None,
+                skills: None,
             },
         )
         .await
@@ -2548,6 +2761,9 @@ mod tests {
                 mark_pin: None,
                 notif: None,
                 toggle_auto_continue: None,
+                model: None,
+                memory: None,
+                skills: None,
             },
         )
         .await
@@ -2687,6 +2903,9 @@ mod tests {
             mark_pin: Some(value.into()),
             notif: None,
             toggle_auto_continue: None,
+            model: None,
+            memory: None,
+            skills: None,
         }
     }
 
@@ -2719,6 +2938,9 @@ mod tests {
             mark_pin: None,
             notif: None,
             toggle_auto_continue: None,
+            model: None,
+            memory: None,
+            skills: None,
         }
     }
 

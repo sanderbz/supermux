@@ -22,15 +22,8 @@
 // which reads it ONCE at mount (a skin flip is a reload-level change, not a live
 // re-render — that also avoids a mid-session theme thrash).
 
+// The SKIN's legacy scoped kill-switch. Kept as a standalone constant (the skin
+// decision now lives in `botModeOn`, lib/bot-mode-flag.ts): `= '0'` kills ONLY
+// the Grok skin while Bot mode's chat renderer stays on — the debug split the
+// merge preserves.
 export const GROK_KILL_SWITCH_KEY = 'supermux:grok-mode'
-
-/** The full decision: settings toggle AND kill-switch. `killSwitch` is the raw
- *  localStorage value; exactly `'0'` forces OFF. Mirrors `chatRendererOn`. */
-export function grokModeOn(
-  settingOn: boolean,
-  killSwitch: string | null,
-): boolean {
-  if (!settingOn) return false // default OFF until the toggle is flipped
-  if (killSwitch === '0') return false // hidden escape hatch (PR-#27 discipline)
-  return true
-}

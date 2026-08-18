@@ -277,6 +277,7 @@ pub async fn start_team(
             // tmux split-window panes, which the native runtime has no analogue
             // for. EXPLICIT since the create default became native.
             runtime: Some(crate::sessions::runtime::RUNTIME_TMUX.to_string()),
+            model: None,
         },
     )
     .await?;
@@ -694,6 +695,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: Some("native".into()),
+                model: None,
             },
         )
         .await
@@ -743,6 +745,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -781,6 +784,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -826,6 +830,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await

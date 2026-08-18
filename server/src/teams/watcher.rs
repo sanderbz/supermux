@@ -975,6 +975,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -1019,6 +1020,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -1085,6 +1087,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -1151,6 +1154,7 @@ mod tests {
                 worktree: None,
                 host_id: None,
                 runtime: None,
+                model: None,
             },
         )
         .await
@@ -1227,6 +1231,7 @@ mod tests {
             worktree: None,
             host_id: None,
             runtime: None,
+            model: None,
         };
         crate::sessions::create(&state, mk("old-host", "/old")).await.unwrap();
         crate::sessions::create(&state, mk("new-host", "/new")).await.unwrap();

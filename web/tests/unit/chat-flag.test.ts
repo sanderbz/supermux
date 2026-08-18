@@ -19,18 +19,24 @@ describe('chat renderer flag', () => {
     expect(chatEligible({ provider: 'claude' }, false)).toBe(true)
   })
 
-  test('setting off → off, regardless of eligibility', () => {
-    expect(chatRendererOn(false, null, claude, false)).toBe(false)
+  test('bot mode off → off, regardless of eligibility', () => {
+    expect(chatRendererOn(false, null, null, claude, false)).toBe(false)
   })
 
-  test("kill-switch '0' force-disables even with the setting on", () => {
-    expect(chatRendererOn(true, '0', claude, false)).toBe(false)
-    expect(chatRendererOn(true, null, claude, false)).toBe(true)
-    expect(chatRendererOn(true, '1', claude, false)).toBe(true)
+  test("master kill '0' force-disables even with bot mode on", () => {
+    expect(chatRendererOn(true, '0', null, claude, false)).toBe(false)
+    expect(chatRendererOn(true, null, null, claude, false)).toBe(true)
+    expect(chatRendererOn(true, '1', null, claude, false)).toBe(true)
+  })
+
+  test("legacy renderer-scoped kill '0' force-disables the renderer (skin stays)", () => {
+    expect(chatRendererOn(true, null, '0', claude, false)).toBe(false)
+    expect(chatRendererOn(true, null, null, claude, false)).toBe(true)
+    expect(chatRendererOn(true, null, '1', claude, false)).toBe(true)
   })
 
   test('null session → off', () => {
-    expect(chatRendererOn(true, null, null, false)).toBe(false)
+    expect(chatRendererOn(true, null, null, null, false)).toBe(false)
   })
 
   test('kill-switch key is the documented one', () => {

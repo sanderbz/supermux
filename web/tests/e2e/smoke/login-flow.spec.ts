@@ -57,7 +57,7 @@ const BACKEND_ENV = {
 }
 
 /** The zustand persist payload that puts the chat renderer on the focus seam. */
-const FLAG_ON = JSON.stringify({ state: { chatRenderer: true }, version: 0 })
+const FLAG_ON = JSON.stringify({ state: { botMode: true }, version: 1 })
 
 /** Starts with `c` on purpose: a lone `c` in that field copies the URL and
  *  CLEARS it, so a char-at-a-time writer destroys this code on keystroke one. */
