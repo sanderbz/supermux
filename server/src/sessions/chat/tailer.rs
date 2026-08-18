@@ -862,8 +862,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let hooks_live = state.has_hooks(&name);
         let last_hook = last_hook_ms(&state, &name, now_ms);
-        let running = session_running(&state, &name).await;
-        let crashed = !running && session_crashed(&state, &name);
+        let (running, crashed) = session_liveness(&state, &name).await;
         let hook_fresh = last_hook
             .is_some_and(|h| now_ms.saturating_sub(h) <= HOOK_ACTIVITY_WINDOW_MS);
 
@@ -978,31 +977,86 @@ fn last_hook_ms(state: &AppState, name: &str, now_ms: i64) -> Option<i64> {
     Some(now_ms - newest.elapsed().as_millis() as i64)
 }
 
-/// Is the session anything other than `stopped`? Prefers the detector's own
-/// last classification (already computed every 2s) and only falls back to
-/// asking the runtime when no tick has been recorded yet.
-async fn session_running(state: &AppState, name: &str) -> bool {
+/// `(running, crashed)` for [`classify_pointer`], from the most authoritative
+/// source that is actually available.
+///
+/// The detector's own recent classification (the in-memory `cadence_recency`
+/// cache) and the `HOLDER_DIED` badge are the fast, precise answer — but they
+/// are BOTH in-memory and empty right after a server restart, which the in-app
+/// updater performs on every release. That restart window is exactly where a
+/// holder that died before or during the restart used to slip through: with no
+/// cache and no badge, `session_running` fell back to the runtime probe, found
+/// it dead (`running=false`), and `session_crashed` returned false because the
+/// badge was gone — so `classify_pointer` read `!running && !crashed` as a clean
+/// STOP and returned `Live`, presenting a dead data plane as a trustworthy
+/// historical tail.
+///
+/// The fix consults a PERSISTENT signal when the cache is cold: the DB's
+/// `last_status`. `force_stopped_on_death` and a user Stop both persist
+/// `stopped`, so a dead runtime whose persisted status is `stopped` is a clean
+/// stop (→ `Live`, history). But a dead runtime whose persisted status is
+/// anything else — `active`/`idle`/`starting` — was supposed to be RUNNING, so
+/// its death was never recorded as a stop: that is a crash, and it must classify
+/// `Reconnecting`, not `Live`.
+async fn session_liveness(state: &AppState, name: &str) -> (bool, bool) {
+    let badge_crashed = holder_died_badge(state, name);
+
+    // The detector's last classification, recomputed every ~2s while this
+    // process has been up. Present ⇒ trust it, and the badge is the crash bit.
     let cached = {
         let map = state.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());
         map.get(name).map(|r| r.status)
     };
-    match cached {
-        Some(status) => status != crate::sessions::status::Status::Stopped,
-        None => match state.runtime_for(name).await {
-            Ok(rt) => rt.alive().await,
-            Err(_) => false,
-        },
+    if let Some(status) = cached {
+        let running = status != crate::sessions::status::Status::Stopped;
+        return (running, !running && badge_crashed);
     }
+
+    // Cold cache (fresh process). Probe the runtime directly.
+    let alive = match state.runtime_for(name).await {
+        Ok(rt) => rt.alive().await,
+        Err(_) => false,
+    };
+    if alive {
+        return (true, false);
+    }
+
+    // Not alive, and no in-memory tick to say whether that was intended. The
+    // persisted status is the tie-breaker. Only a status that positively means
+    // the session was RUNNING (active/idle/waiting/starting) turns a dead
+    // runtime into a crash: its death was never recorded as a stop. `stopped` is
+    // a clean stop, and `unknown` — the cold-start non-decision — is NOT
+    // evidence the session was ever live, so neither is a crash. This keeps a
+    // never-run / freshly-tracked session (persisted `unknown`) reporting its
+    // historical tail as Live rather than falsely flagging it crashed.
+    let persisted_running = crate::db::sessions::runtime(&state.pool, name)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|r| is_running_status(&r.last_status));
+    (false, badge_crashed || persisted_running)
 }
 
-/// Did this session STOP, or did it DIE?
+/// Does a persisted `last_status` mean the session was RUNNING (as opposed to a
+/// clean `stopped` or the cold-start `unknown`)? A dead runtime under one of
+/// these is a crash the restart erased the badge for.
+fn is_running_status(last_status: &str) -> bool {
+    use crate::sessions::status::Status;
+    last_status == Status::Active.as_str()
+        || last_status == Status::Idle.as_str()
+        || last_status == Status::Waiting.as_str()
+        || last_status == Status::Starting.as_str()
+}
+
+/// Did the death detector raise the in-memory `HOLDER_DIED` badge?
 ///
-/// The distinction lives in the in-memory error badge the death detector raises
 /// (`auto_actions::force_stopped_on_death` → `state.set_error(HOLDER_DIED)`),
 /// which is also what the roster and the focus header read to draw "Terminal
 /// died". Cleared on the next `UserPromptSubmit`/`SessionStart`, so a healed or
-/// restarted session stops being crashed the moment it is alive again.
-fn session_crashed(state: &AppState, name: &str) -> bool {
+/// restarted session stops being crashed the moment it is alive again — and gone
+/// entirely after a server restart, which is why [`session_liveness`] cannot
+/// rely on it alone.
+fn holder_died_badge(state: &AppState, name: &str) -> bool {
     state
         .session_activity(name)
         .and_then(|a| a.error)
@@ -1032,6 +1086,7 @@ fn arm_fs_watcher(project: &Path, wake: Arc<Notify>) -> Option<notify::Recommend
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::status::Status;
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
@@ -1213,6 +1268,108 @@ mod tests {
         // says nothing — `session_running` wins, and the normal ladder applies.
         let healed = PointerInputs { session_running: true, session_crashed: true, ..base() };
         assert_eq!(classify_pointer(healed), TailState::Live);
+    }
+
+    async fn liveness_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-liveness-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    #[tokio::test]
+    async fn a_dead_runtime_after_a_restart_classifies_crashed_not_a_clean_stop() {
+        // #9 (MEDIUM): dead-vs-stopped used to be inferred ONLY from the in-memory
+        // HOLDER_DIED badge and the in-memory detector cache. Both are empty right
+        // after a server restart (the in-app updater restarts on every release),
+        // so a holder that died before/during the restart fell through: the
+        // runtime probe found it dead (running=false), the badge was gone
+        // (crashed=false), and classify_pointer read that as a clean stop → Live,
+        // presenting a dead data plane as a trustworthy historical tail.
+        //
+        // The persisted `last_status` is the tie-breaker the restart cannot erase.
+        let (state, dir) = liveness_state().await;
+        let name = "dead-after-restart";
+        crate::db::sessions::insert_minimal(&state.pool, name, "/tmp", "claude")
+            .await
+            .unwrap();
+        crate::db::sessions::ensure_runtime(&state.pool, name, "tok")
+            .await
+            .unwrap();
+
+        // Simulate the exact post-restart state: no cadence tick recorded, no
+        // HOLDER_DIED badge, runtime not alive, and a persisted status that says
+        // the session was RUNNING when the process went down.
+        crate::db::sessions::set_last_status(&state.pool, name, Status::Active.as_str())
+            .await
+            .unwrap();
+        assert!(
+            state.cadence_recency.lock().unwrap().get(name).is_none(),
+            "the detector cache must be cold, as it is after a restart"
+        );
+        let (running, crashed) = session_liveness(&state, name).await;
+        assert!(!running, "the runtime is not alive");
+        assert!(
+            crashed,
+            "a dead runtime whose persisted status was RUNNING is a crash, not a stop"
+        );
+        assert!(
+            matches!(
+                classify_pointer(PointerInputs {
+                    session_running: running,
+                    session_crashed: crashed,
+                    ..base()
+                }),
+                TailState::Reconnecting { .. }
+            ),
+            "so the tail must publish Reconnecting, never Live",
+        );
+
+        // The control: a session the user DELIBERATELY stopped persists `stopped`,
+        // and after the same restart its historical tail is still legitimately
+        // Live — the fix must not flag a clean stop as a crash.
+        crate::db::sessions::set_last_status(&state.pool, name, Status::Stopped.as_str())
+            .await
+            .unwrap();
+        let (running, crashed) = session_liveness(&state, name).await;
+        assert!(!running);
+        assert!(!crashed, "a persisted clean stop is history, not a crash");
+        assert_eq!(
+            classify_pointer(PointerInputs {
+                session_running: running,
+                session_crashed: crashed,
+                ..base()
+            }),
+            TailState::Live,
+        );
+
+        // A freshly-tracked / never-run session persists `unknown` — the
+        // cold-start non-decision, NOT evidence it was ever live — so a dead
+        // runtime under it is history, not a crash. (This is the exact edge that
+        // must not flip a brand-new chat's tail to Reconnecting.)
+        crate::db::sessions::set_last_status(&state.pool, name, Status::Unknown.as_str())
+            .await
+            .unwrap();
+        let (running, crashed) = session_liveness(&state, name).await;
+        assert!(!running);
+        assert!(!crashed, "persisted `unknown` is not proof the session was running");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
