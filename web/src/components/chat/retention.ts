@@ -40,8 +40,6 @@ export interface RetentionInput {
   stopped: boolean
 }
 
-export const NO_RETENTION: Retention = { name: '', chat: false, terminal: false }
-
 /**
  * Sticky-once-mounted, keyed by session.
  *

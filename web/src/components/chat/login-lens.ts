@@ -16,8 +16,10 @@
 // be shared: a shape taught to one plane and forgotten on the other compiles
 // clean in both languages.
 //
-// RELATIVE imports only, and none at all here: this module is pure and is run
-// by `bun test` without alias config (same rule as `peek-lens.ts`).
+// RELATIVE imports only: this module is pure and is run by `bun test` without
+// alias config (same rule as `peek-lens.ts`).
+
+import { lastContentLine } from '../../lib/ansi'
 
 export type LoginStage = 'method_select' | 'paste_prompt' | 'invalid' | 'success' | 'error'
 /** `/login` (the account credential) vs `/design-login` (`user:design:read`).
@@ -81,11 +83,6 @@ function stripAnsi(s: string): string {
 function isComposerRow(line: string): boolean {
   if (!line.startsWith('❯')) return false
   return !/^\d/.test(line.slice(1).trimStart())
-}
-
-function lastContentLine(lines: readonly string[]): number {
-  for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim()) return i
-  return -1
 }
 
 /** The rows a login flow could still own: from the bottom, up to `LOOKBACK`
@@ -391,12 +388,6 @@ export function loginCodeProblem(raw: string): string | null {
     return 'That looks like only half of it: a login code contains a # joining the code to its state.'
   }
   return null
-}
-
-/** What is rendered in place of the code. The field is a credential; nothing on
- *  this surface ever echoes it back, the same way the pty's own field masks it. */
-export function maskCode(code: string): string {
-  return '•'.repeat(Math.min(code.trim().length, 48))
 }
 
 /* ── the other providers ─────────────────────────────────────────────────── */

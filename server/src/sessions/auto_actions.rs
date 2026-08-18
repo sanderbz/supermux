@@ -1601,15 +1601,14 @@ static HEAL_DRY_RUN_READY: std::sync::atomic::AtomicBool =
 static HEAL_ATTEMPTS: once_cell::sync::Lazy<dashmap::DashMap<String, u32>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
-/// Test-only: suppress the real `start` inside [`run_heal_start`]. See there.
-#[cfg(test)]
-/// Dry-run gate for the heal's restart. In PRODUCTION this must be false —
-/// a true default here shipped a no-op auto-heal (caught live in E2E: the
-/// death badge appeared but the session never restarted). Tests default it ON
-/// so unrelated tests can't spawn real sessions; the one end-to-end heal test
+/// Dry-run gate for the heal's restart, TEST-ONLY: the only reader is the
+/// `.load()` inside [`run_heal_start`]'s `#[cfg(test)]` block, so production
+/// never consults it (the real heal always calls the real restart) and the
+/// former `#[cfg(not(test))] = false` twin was a dead static kept for symmetry.
+/// A true default once shipped a no-op auto-heal (caught live in E2E: the death
+/// badge appeared but the session never restarted); tests default it ON so
+/// unrelated tests can't spawn real sessions, and the one end-to-end heal test
 /// flips it off explicitly.
-#[cfg(not(test))]
-static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(test)]
 static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 

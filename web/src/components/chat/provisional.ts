@@ -8,7 +8,7 @@
 //
 // RELATIVE import so `bun test` runs without alias config; `lib/ansi`'s React
 // dependency is type-only (erased at runtime).
-import { parseAnsiLine } from '../../lib/ansi'
+import { plain } from '../../lib/ansi'
 import { readLens } from './peek-lens'
 
 /** Status-bar / hint noise the tail must never show.
@@ -128,12 +128,6 @@ const RULE_ROW = /^[─╌—]{3,}$/
  *  turn, and the only `❯` that may START a block. */
 function isPromptEcho(t: string): boolean {
   return t.startsWith('❯') && !BARE_CARET.test(t.trimEnd())
-}
-
-function plain(line: string): string {
-  return parseAnsiLine(line)
-    .map((s) => s.text)
-    .join('')
 }
 
 /** Filter a raw ANSI pty capture down to the lines worth showing as the

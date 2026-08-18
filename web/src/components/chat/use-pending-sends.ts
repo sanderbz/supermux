@@ -82,11 +82,6 @@ function patch(name: string, id: string, fields: Partial<PendingSend>): void {
   })
 }
 
-/** Test/bench escape hatch: forget everything this session has pending. */
-export function clearPendingSends(name: string): void {
-  update(name, (cur) => (cur.length === 0 ? cur : EMPTY))
-}
-
 let seq = 0
 
 /* ── the hook ────────────────────────────────────────────────────────────── */

@@ -102,13 +102,6 @@ export function setDraft(name: string, value: string): void {
   emit(name)
 }
 
-/** Drop a session's draft everywhere — the send path's "the message left the
- *  box" (a `setDraft(name, '')` already does this; this is the explicit name for
- *  it, and the one a test can call to reset the store). */
-export function clearDraft(name: string): void {
-  setDraft(name, '')
-}
-
 /** Subscribe to one session's draft (the hook's `useSyncExternalStore`). */
 export function subscribeDraft(name: string, fn: () => void): () => void {
   const set = listeners.get(name) ?? new Set()

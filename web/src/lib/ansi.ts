@@ -302,3 +302,24 @@ export function parseAnsiLine(line: string): AnsiSegment[] {
   const nonEmpty = cleaned.filter((s) => s.text.length > 0)
   return nonEmpty.length > 0 ? nonEmpty : [{ text: '', style: {}, dim: false }]
 }
+
+/** One line of pty capture as its plain text — ANSI/CSI stripped, styled runs
+ *  flattened. The lens plane's common projection when only the characters
+ *  matter (fingerprint matching, blank-row scans), shared so the two lens files
+ *  cannot drift. */
+export function plain(line: string): string {
+  return parseAnsiLine(line)
+    .map((s) => s.text)
+    .join('')
+}
+
+/** The index of the last capture row with a printable glyph on it, or −1 when
+ *  every row is blank. A bottom-up scan — the lens plane anchors to the tail,
+ *  so the last content row is where a dialog/login window ends. Shared by the
+ *  peek and login lenses so the two cannot drift. */
+export function lastContentLine(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim()) return i
+  }
+  return -1
+}

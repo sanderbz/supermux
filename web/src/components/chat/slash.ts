@@ -226,6 +226,7 @@ export function classifySlash(text: string): SlashClass {
 // here would keep this module (and its built-in command table) alive on every
 // chunk that only wanted the 30-line matcher.
 import { rankEntities } from '../../lib/rank'
+import { basename } from '../../lib/path'
 
 // ── 4. The rows ─────────────────────────────────────────────────────────────
 //
@@ -407,11 +408,6 @@ const WARN: Record<SlashClass, string | undefined> = {
   unknown: undefined,
   picker: 'opens in terminal',
   unverified: 'terminal only',
-}
-
-function basename(path: string): string {
-  const at = path.lastIndexOf('/')
-  return at < 0 ? path : path.slice(at + 1)
 }
 
 function dirname(path: string): string {

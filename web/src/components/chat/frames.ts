@@ -20,6 +20,8 @@
  * behind `@/env` and would drag the whole API client into a unit test. The
  * component receives a `rawUrl` injector instead (see `transcript-item.tsx`).
  */
+import { basename } from '../../lib/path'
+
 import { stripEmojiPrefix, type ReceiptLine } from './entries'
 
 /** What one receipt line is showing, if anything. */
@@ -56,10 +58,6 @@ const TRAILING = /[),.;:!?]+$/
 function isFrameTool(label: string): boolean {
   const head = label.split(/\s+/, 1)[0] ?? ''
   return head === 'Read' || head === 'Write' || /screenshot/i.test(label)
-}
-
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1)
 }
 
 /**

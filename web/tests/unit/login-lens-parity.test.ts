@@ -25,7 +25,6 @@ import { readFileSync } from 'node:fs'
 
 import {
   loginCodeProblem,
-  maskCode,
   readLogin,
   loginOwnsScreen,
   readProviderAuth,
@@ -157,14 +156,6 @@ describe('the code field', () => {
     expect(loginCodeProblem('abc#state')).toBeNull()
     // Hyphens are ordinary inside an authorization code.
     expect(loginCodeProblem('abc-def-ghi#state-nonce')).toBeNull()
-  })
-
-  test('never echoes the credential back', () => {
-    const code = 'cQfTy2QK9nZ8vLpR3sWx7mBd4gHj1kAe#hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa'
-    const masked = maskCode(code)
-    expect(masked).not.toContain('#')
-    expect(masked).not.toContain('cQfTy')
-    expect(masked).toMatch(/^•+$/)
   })
 })
 

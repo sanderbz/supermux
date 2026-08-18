@@ -15,7 +15,7 @@
 //
 // RELATIVE import so `bun test` runs without alias config (same rule as
 // `provisional.ts`); `lib/ansi`'s React dependency is type-only.
-import { hasAnsi, parseAnsiLine } from '../../lib/ansi'
+import { hasAnsi, lastContentLine, parseAnsiLine, plain } from '../../lib/ansi'
 import type { KeyName } from '../../lib/session-input/types'
 
 /** A dialog the lens can SEE. Whether it may be answered is the registry's call
@@ -396,11 +396,6 @@ const OPTION_RE = /^(\s*)(❯\s*)?(\d+)\.\s+(\S.*)$/
  *  periwinkle RGB(177,185,249) permission rule vs the plan dialog's teal
  *  RGB(72,150,140) as the future tie-breaker, and it was never needed once
  *  option-1 text proved sufficient to separate the two families. */
-function plain(line: string): string {
-  return parseAnsiLine(line)
-    .map((s) => s.text)
-    .join('')
-}
 
 /** Whitespace-normalised, NBSP included (JS `\s` covers U+00A0). */
 function norm(s: string): string {
@@ -867,14 +862,6 @@ const BLOCK_LOOKBACK = 24
  * plus a blank line or two on every a0 capture — so 10 rows is slack, not hope.
  */
 const DIALOG_TAIL_SLACK = 10
-
-/** The last row with a printable glyph on it, or −1. */
-function lastContentLine(lines: readonly string[]): number {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].trim()) return i
-  }
-  return -1
-}
 
 /**
  * Is this numbered block a MODAL — something that will eat the next Enter —

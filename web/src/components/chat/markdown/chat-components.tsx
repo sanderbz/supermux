@@ -41,6 +41,7 @@ import type { Components } from 'react-markdown'
 import type { Element } from 'hast'
 
 import type { MarkPin } from '../../../brand/marks'
+import { basename } from '../../../lib/path'
 import { cn } from '../../../lib/utils'
 import { mentionSegments } from '../grouping'
 import {
@@ -122,13 +123,6 @@ function isLoneImage(node: Element | undefined): boolean {
     (child) => !(child.type === 'text' && child.value.trim() === ''),
   )
   return meaningful.length === 1 && meaningful[0].type === 'element' && meaningful[0].tagName === 'img'
-}
-
-/** `/a/b/shot.png` → `shot.png`; the caption when the author wrote no alt. */
-function basename(path: string): string {
-  const clean = path.split(/[?#]/, 1)[0]
-  const slash = clean.lastIndexOf('/')
-  return slash >= 0 ? clean.slice(slash + 1) : clean
 }
 
 /**
