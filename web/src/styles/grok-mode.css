@@ -1743,6 +1743,8 @@
 [data-grok] .sm-composer .sm-mic {
   background: var(--sm-fill-emphasis);
   color: var(--sm-ink-on-emphasis);
+}
+
 /* ══ WS9 — EMPTY / LOADING / ERROR / ATTENTION SURFACES ═══════════════════════
    The states of the app: nothing yet, loading, something went wrong, something
    wants you. ENTIRELY scoped under `[data-grok]`; every surface below already
