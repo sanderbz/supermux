@@ -347,7 +347,19 @@ const BUDGET_ENTRY_JS = 160 * KB
 // action + botMode flag read) that folds onto the lazy grok-roster chunk plus a
 // rounding crumb on entry (entry still 149.15/160, 93%). Both fases' weight is now
 // remeasured together on one branch; ceil(measured) = 250. No new hero-path cost.
-const BUDGET_APP_JS = 250 * KB
+//
+// 255 as of the feat/grok-mode BOT PANEL (ASK 3): the roster's detail pane stopped
+// GLANCING and became a real per-bot settings page — a tabbed BotPanel (Overview ·
+// Instructions · Tools · Activity) that reuses session-info-panel's section bodies
+// (name/desc/tags/git/schedules/issues/notif) and adds the editable model picker,
+// role presets, notes editor and a [...] actions menu. Measured 254.31; +5.22 KB
+// over the 249.09 baseline, ALL of it on the lazy chunks — `bot-panel` is
+// `React.lazy`, mounted only when a bot is selected (desktop pane) or the mobile
+// focus title opens its sheet — so the ENTRY/hero path is untouched (149.48/160,
+// 93%, a rounding crumb off the prior 149.15). A genuine additive feature, not a
+// regression to trim: ceil(measured) = 255. The .gr-botpane CSS (~0.15 KB) lands
+// in the CSS budget (27.76/30, 93%), not here.
+const BUDGET_APP_JS = 255 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

@@ -60,7 +60,7 @@ import { useCloneSession } from './use-clone-session'
 import { useRenameSession, cleanDisplayName } from './use-rename-session'
 
 /** Sentence-case label for each Claude permission mode (mirrors mode-menu.tsx). */
-const MODE_LABEL: Record<SessionMode, string> = {
+export const MODE_LABEL: Record<SessionMode, string> = {
   normal: 'Normal',
   accept_edits: 'Accept edits',
   plan: 'Plan mode',
@@ -330,7 +330,7 @@ function PanelBody({
 
 // ── settings rows ────────────────────────────────────────────────────────────
 
-function SettingsRows({
+export function SettingsRows({
   session,
   name,
 }: {
@@ -426,7 +426,7 @@ function InfoRow({
  *  does NOT navigate (the route is unchanged) — the panel stays open and the new
  *  label flows in via the cache invalidation. An empty label resets to the slug
  *  (server-coalesced). */
-function NameEditor({
+export function NameEditor({
   name,
   displayName,
   autoEdit,
@@ -553,7 +553,7 @@ function NameEditor({
 /** Live git status for the session's working dir. The PanelBody only mounts
  *  while open, so `enabled` is constant `true` here — the query never runs at
  *  rest. Calm, monochrome treatment (no alarmist color) per the brand. */
-function GitRow({ name }: { name: string }) {
+export function GitRow({ name }: { name: string }) {
   const { data, isLoading } = useSessionGit(name, true)
 
   if (isLoading && !data) {
@@ -610,7 +610,7 @@ const SessionSchedulesSheet = React.lazy(
 
 // ── schedules ────────────────────────────────────────────────────────────────
 
-function SchedulesList({ name }: { name: string }) {
+export function SchedulesList({ name }: { name: string }) {
   const { data, isLoading } = useSchedules()
   const reduce = useReducedMotion()
   // The rows open THIS SESSION's Schedules sheet (fase B4 T8.6). They used to
@@ -710,7 +710,7 @@ function SchedulesList({ name }: { name: string }) {
 /** A mono value row with a copy-to-clipboard affordance (≥44pt copy target).
  *  Optional `trailing` slot appends another icon button right of Copy — used by
  *  the Working dir section to surface "Open in file browser". */
-function CopyableMono({
+export function CopyableMono({
   value,
   ariaLabel,
   trailing,
@@ -772,7 +772,7 @@ function CopyableMono({
  * invalidates the sessions query, and doing that per character would refetch the
  * whole roster while the user types.
  */
-function DescEditor({ name, desc }: { name: string; desc: string }) {
+export function DescEditor({ name, desc }: { name: string; desc: string }) {
   const { setDesc, pending } = useSessionConfig()
   const [draft, setDraft] = React.useState(desc)
   // Re-seed when the row lands / changes underneath us, but never while the
@@ -812,7 +812,7 @@ function DescEditor({ name, desc }: { name: string; desc: string }) {
  * Tags are a SET — duplicates and blanks are dropped rather than rejected with
  * an error, because there is nothing for the user to fix.
  */
-function TagsEditor({ name, tags }: { name: string; tags: string[] }) {
+export function TagsEditor({ name, tags }: { name: string; tags: string[] }) {
   const { setTags, pending } = useSessionConfig()
   const [draft, setDraft] = React.useState('')
 
@@ -873,7 +873,7 @@ function TagsEditor({ name, tags }: { name: string; tags: string[] }) {
 }
 
 /** A labelled section — mirrors board-detail-pane's PaneSection. */
-function PaneSection({
+export function PaneSection({
   label,
   children,
 }: {

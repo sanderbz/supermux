@@ -30,6 +30,15 @@ export interface SessionConfigApi {
   setTags: (name: string, tags: string[]) => Promise<void>
   /** The session's standing instructions (`desc`). */
   setDesc: (name: string, desc: string) => Promise<void>
+  /** Per-bot launch MODEL (migration 0030). A launch-line change: the PATCH
+   *  response carries `restart_required`, which this resolves so the caller can
+   *  show "Applies on next start" (the live agent is NOT relaunched). Resolves
+   *  `false` on failure (a toast already surfaced the error). */
+  setModel: (name: string, model: string) => Promise<boolean>
+  /** The bot's "Notes it keeps" (`memory`, migration 0030) — injected read-only
+   *  into the system prompt at launch. Also a launch-line change → resolves the
+   *  response's `restart_required`. */
+  setMemory: (name: string, memory: string) => Promise<boolean>
 }
 
 export function useSessionConfig(): SessionConfigApi {
@@ -104,7 +113,51 @@ export function useSessionConfig(): SessionConfigApi {
     [run],
   )
 
-  return { pending, togglePin, setTags, setDesc }
+  /** Launch-line write that RESOLVES the server's `restart_required` advisory.
+   *  Same optimistic idiom as `run`, but the resolved row is what tells the
+   *  caller whether the change is deferred to the next start. */
+  const runLaunchLine = React.useCallback(
+    async (
+      name: string,
+      optimistic: Partial<ApiSession>,
+      call: () => Promise<ApiSession>,
+      failure: string,
+    ): Promise<boolean> => {
+      if (pending) return false
+      setPending(true)
+      const prev = patchCache(name, optimistic)
+      try {
+        const row = await call()
+        void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+        return row?.restart_required ?? false
+      } catch (e) {
+        if (prev) qc.setQueryData<ApiSession[]>(SESSIONS_KEY, prev)
+        toast({
+          message: `${failure} — ${e instanceof Error ? e.message : 'unknown error'}`,
+          tone: 'error',
+          duration: 4000,
+        })
+        return false
+      } finally {
+        setPending(false)
+      }
+    },
+    [pending, patchCache, qc, toast],
+  )
+
+  const setModel = React.useCallback(
+    (name: string, model: string) =>
+      runLaunchLine(name, { model }, () => sessionsApi.config(name, { model }), 'Model change failed'),
+    [runLaunchLine],
+  )
+
+  const setMemory = React.useCallback(
+    (name: string, memory: string) =>
+      runLaunchLine(name, { memory }, () => sessionsApi.config(name, { memory }), 'Save failed'),
+    [runLaunchLine],
+  )
+
+  return { pending, togglePin, setTags, setDesc, setModel, setMemory }
 }
 
 /**

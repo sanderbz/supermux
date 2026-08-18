@@ -26,6 +26,7 @@
 // "pending" plate — an empty section and a missing section look identical in a
 // screenshot. There are none left, and `dev-roster-cast.test.tsx` asserts that.
 import * as React from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PAPER } from '@/brand/tokens'
 import type { MarkState } from '@/brand/marks'
@@ -63,6 +64,117 @@ import {
   AutoHealToggle,
   RecoveryLadder,
 } from '@/components/recovery/recovery-ladder'
+import { BotPanel } from '@/components/roster/bot-panel'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import type { ApiSession } from '@/lib/api'
+
+/* ── the bot panel bench (ASK 3) ─────────────────────────────────────────────
+   The per-bot settings page needs a live session row, so the bench SEEDS the
+   sessions query with one mock bot (rich enough to fill every tab: role/desc,
+   tags, model, notes, tokens, a chat tail) and renders `<BotPanel variant="pane">`
+   at each of its four tabs, in both themes, wrapped in the `[data-grok]
+   .grok-roster` skin context the pane's CSS keys off. Query-backed sub-sections
+   (Issues / Schedules / Git) degrade to their empty/offline states here, which is
+   the honest still frame for a design review. */
+const BOT_PANEL_BENCH_NAME = 'web-app'
+const MOCK_BOT: ApiSession = {
+  name: BOT_PANEL_BENCH_NAME,
+  display_name: 'Web app',
+  status: 'active',
+  provider: 'claude',
+  dir: '/opt/projects/web-app',
+  branch: 'feat/grok-mode',
+  tokens: 96_400,
+  model: 'opus',
+  desc: 'You implement features end to end. Prefer small, verifiable steps; run the tests before claiming done; keep changes scoped to the task.',
+  memory: 'Design system tokens live in web/src/brand. Never edit server/migrations. The build gate is `bun run build:perf`.',
+  tags: ['frontend', 'grok'],
+  notif: 'attention',
+  mcp: '',
+  worktree: true,
+  runtime: 'native',
+  updated_at: new Date(1_800_000_000_000).toISOString(),
+  task_summary: 'Wiring the per-bot settings panel into the roster detail pane.',
+} as ApiSession
+
+const BOT_PANEL_TABS: {
+  tab: 'overview' | 'instructions' | 'tools' | 'activity'
+  label: string
+}[] = [
+  { tab: 'overview', label: 'Overview' },
+  { tab: 'instructions', label: 'Instructions' },
+  { tab: 'tools', label: 'Tools' },
+  { tab: 'activity', label: 'Activity' },
+]
+
+// The bench runs BotPanel against an ISOLATED, PRE-SEEDED query client so it
+// reviews offline with real data and never fires a live fetch (`staleTime:
+// Infinity` keeps the seeded rows fresh; `retry:false` keeps a stray board/git
+// probe from looping). One client for the whole bench.
+const BENCH_QC = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false, refetchOnWindowFocus: false, staleTime: Infinity, gcTime: Infinity },
+  },
+})
+BENCH_QC.setQueryData<ApiSession[]>(SESSIONS_KEY, [MOCK_BOT])
+// The Activity tab's schedules list assumes an array; seed an empty one so the
+// offline bench shows its real "No schedules" empty state instead of crashing on
+// a non-array offline response.
+BENCH_QC.setQueryData(['schedules'], [])
+
+/** Backstop so an offline query hiccup in one tab degrades to a message rather
+ *  than taking down the shared /dev/roster route. */
+class BenchBoundary extends React.Component<
+  { label: string; children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-xl border border-dashed border-ink-3/40 p-4 text-[12px] text-ink-3">
+          {this.props.label} tab could not render offline ({this.state.error.message.slice(0, 80)}).
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function BotPanelBench({ theme }: { theme: BenchTheme }) {
+  return (
+    <QueryClientProvider client={BENCH_QC}>
+      <div className="grid gap-6 lg:grid-cols-2">
+        {BOT_PANEL_TABS.map(({ tab, label }) => (
+          <div key={tab} data-bench-bot-tab={tab} className="flex flex-col gap-2">
+            <span className="text-[11px] text-ink-3">{label} tab</span>
+            {/* the pane's CSS is `[data-grok] .grok-roster .gr-…`; recreate that
+                ancestry, and give the flex pane a bounded height to scroll in. */}
+            <div data-grok data-vr={`bot-panel-${theme}-${tab}`}>
+              <div
+                className="grok-roster overflow-hidden rounded-2xl"
+                style={{ display: 'flex', height: 560, border: '0.5px solid var(--gr-line)' }}
+              >
+                <BenchBoundary label={label}>
+                  <BotPanel
+                    variant="pane"
+                    name={BOT_PANEL_BENCH_NAME}
+                    initialTab={tab}
+                    onOpenThread={() => {}}
+                    onNavigate={() => {}}
+                  />
+                </BenchBoundary>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </QueryClientProvider>
+  )
+}
 
 /* ── page furniture ──────────────────────────────────────────────────────── */
 
@@ -446,6 +558,14 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
           note="Ordered by what each rung PRESERVES, least-destructive first — never by how drastic the verb sounds. Every row states both halves; the destroys sentence is never softened, because it is the one that prevents regret. The blocked row shows a rung that cannot help this session type, saying why rather than offering a button whose only answer is 'unsupported'."
         >
           <RecoveryLadderMatrix />
+        </Section>
+
+        <Section
+          id="bot-panel"
+          title="The bot panel — per-bot settings (ASK 3)"
+          note="The roster detail pane stopped GLANCING and became an editable, tabbed bot page: Overview (context ring HERO · tokens · provider · status · editable tags · working dir) · Instructions (role presets + desc, the model picker, notes, notifications — all launch-injected) · Tools (skills / connectors placeholders + MCP) · Activity (Schedules · Issues · Git). One component, three fidelities (pane here, sheet on mobile, and the popover it grew from). Section bodies are REUSED from session-info-panel, not reimplemented. Query-backed sub-sections show their offline empty states here."
+        >
+          <BotPanelBench theme={theme} />
         </Section>
       </div>
     </div>

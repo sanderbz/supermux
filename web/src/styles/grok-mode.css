@@ -1555,6 +1555,16 @@
   font-size: 13.5px;
 }
 
+/* ── BOT PANEL (ASK 3) — the per-bot settings page fills the pane slot. It owns
+      its own header/tabs/padding (Tailwind), so the pane is just the surface. ── */
+[data-grok] .grok-roster .gr-botpane {
+  padding: 0;
+}
+[data-grok] .grok-roster .gr-botpane > div {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ══ WS6 — density options wired into the header segmented control ════════════
    Comfortable = Row A (default). Compact = Row C (dense one-line feed). Cards =
    Row B (budget-watcher opt-in, cost/context first-class). Same data, same rows,

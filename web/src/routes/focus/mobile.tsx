@@ -122,7 +122,17 @@ import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
+
+// The per-bot settings page — the SAME component the desktop roster's detail
+// pane renders. Under Grok mode the mobile focus-view title opens it as a bottom
+// sheet instead of the flat info panel, so there is ONE bot surface, not two.
+// Lazy so the default (non-grok) focus route never pulls it.
+const BotPanel = React.lazy(() =>
+  import('@/components/roster/bot-panel').then((m) => ({ default: m.BotPanel })),
+)
 import { neighborSession } from '@/components/focus-mode/session-order'
 import type { TileSession } from '@/components/session-tile/types'
 
@@ -554,6 +564,15 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   }, [])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
+  // Grok skin, read ONCE at mount (a skin flip is a reload-level change). When on,
+  // the title opens the tabbed BotPanel sheet; off, the flat SessionInfoPanel.
+  const [grok] = React.useState(() =>
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined' ? null : localStorage.getItem(BOT_KILL_SWITCH_KEY),
+      typeof localStorage === 'undefined' ? null : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
   // feat-last-prompt — recall sheet for the user's last prompt. No auto-show
   // on mobile (the icon in the header is the only entry).
   const [lastSendOpen, setLastSendOpen] = React.useState(false)
@@ -967,12 +986,25 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
       {/* feat-session-info — the title-click info panel (bottom Sheet on mobile).
           Cloning an agent navigates to its focus route via `goSession`. The
           panel's content only mounts while open (Vaul unmounts when closed). */}
-      <SessionInfoPanel
-        name={name}
-        open={infoOpen}
-        onOpenChange={setInfoOpen}
-        onNavigate={goSession}
-      />
+      {grok ? (
+        <React.Suspense fallback={null}>
+          <BotPanel
+            name={name}
+            variant="sheet"
+            open={infoOpen}
+            onOpenChange={setInfoOpen}
+            onOpenThread={() => setInfoOpen(false)}
+            onNavigate={goSession}
+          />
+        </React.Suspense>
+      ) : (
+        <SessionInfoPanel
+          name={name}
+          open={infoOpen}
+          onOpenChange={setInfoOpen}
+          onNavigate={goSession}
+        />
+      )}
 
       {/* feat-last-prompt — the recall bottom sheet. Heavy content only mounts
           while open (Vaul unmounts when closed). Gated on the SESSION, not on

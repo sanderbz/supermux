@@ -43,6 +43,13 @@ import { smartSort, nameSort } from '@/lib/overview-layout'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import type { Team } from '@/lib/api/teams'
 
+// The per-bot settings page. Lazy — it only mounts once a bot is selected (a
+// detail pane on desktop), so its section bodies (issues, schedules, git,
+// session-actions) never weigh on the roster's first paint.
+const BotPanel = React.lazy(() =>
+  import('@/components/roster/bot-panel').then((m) => ({ default: m.BotPanel })),
+)
+
 /* ── small pure helpers (local; the row is the only caller) ─────────────────── */
 
 function relativeTime(iso?: string): string {
@@ -102,12 +109,6 @@ function ctxPct(tokens?: number): number | null {
 }
 function rcClass(pct: number): string {
   return pct < 50 ? 'rc-ok' : pct < 80 ? 'rc-mid' : 'rc-hot'
-}
-
-/** The model, parsed out of the launch flags (`--model opus` → `opus`). */
-function modelOf(s: ApiSession): string | undefined {
-  const m = s.flags?.match(/--model[= ]+(\S+)/)
-  return m?.[1]
 }
 
 type GroupKey = 'needs' | 'active' | 'done' | 'idle'
@@ -322,97 +323,6 @@ function TeamRow({ team, onOpen, index }: { team: Team; onOpen: (t: Team) => voi
         </span>
       </span>
     </button>
-  )
-}
-
-/* ── the detail pane — the power-user glance (desktop) ──────────────────────── */
-
-function DetailPane({ session, onOpenThread }: { session: ApiSession; onOpenThread: () => void }) {
-  const name = displayLabel(session)
-  const pct = ctxPct(session.tokens)
-  const tokens = fmtTokens(session.tokens)
-  const model = modelOf(session)
-  const preview = previewOf(session)
-  const sub = [
-    session.status,
-    model ?? session.provider,
-    session.branch,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  return (
-    <div className="gr-pane" data-shell-pane>
-      <div className="gr-pane-hd">
-        <SessionFace name={session.name} status={session.status} size={44} />
-        <div style={{ minWidth: 0 }}>
-          <div className="nm">{name}</div>
-          <div className="sub">{sub}</div>
-        </div>
-        <div className="acts">
-          <button type="button" className="gr-btn primary" onClick={onOpenThread}>
-            Open thread →
-          </button>
-        </div>
-      </div>
-      <div className="gr-pane-body">
-        <div className="glance">
-          <div className="gcard">
-            <div className="glab">Context</div>
-            {pct !== null ? (
-              <div
-                className={`bigring ${rcClass(pct)}`}
-                style={{ '--p': pct } as React.CSSProperties}
-              >
-                <b>{pct}%</b>
-              </div>
-            ) : (
-              <div className="gval plain">—</div>
-            )}
-            <div className="gsub">{tokens ? `${tokens} tokens` : 'no tokens yet'}</div>
-          </div>
-          <div className="gcard">
-            <div className="glab">Tokens</div>
-            <div className="gval">{tokens ?? '0'}</div>
-            <div className="gsub">cumulative</div>
-          </div>
-          <div className="gcard">
-            <div className="glab">Provider</div>
-            <div className="gval plain">{session.provider}</div>
-            <div className="gsub">{model ?? (session.runtime === 'native' ? 'native runtime' : 'runtime')}</div>
-          </div>
-          <div className="gcard">
-            <div className="glab">Status</div>
-            <div className="gval plain">{session.status}</div>
-            <div className="gsub">{session.dir?.split('/').pop() ?? ''}</div>
-          </div>
-        </div>
-
-        {preview && (
-          <>
-            <div className="dt-h3">Latest</div>
-            <div className="msg">
-              {preview}
-              <div className="meta">{relativeTime(session.updated_at)}</div>
-            </div>
-          </>
-        )}
-
-        {(session.tags?.length ?? 0) > 0 && (
-          <div className="dt-tags">
-            {session.tags!.map((t) => (
-              <span key={t} className="tag">
-                #{t}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="spark-note">
-          Cost &amp; context here are the power-user edge Grok&apos;s surface never exposes.
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -743,7 +653,16 @@ export default function GrokRoster() {
         </div>
 
         {hasDetail ? (
-          <DetailPane session={selectedSession} onOpenThread={openThread} />
+          <React.Suspense
+            fallback={<div className="gr-pane" data-shell-pane aria-hidden />}
+          >
+            <BotPanel
+              variant="pane"
+              name={selectedSession.name}
+              onOpenThread={openThread}
+              onNavigate={(n) => navigate(`/focus/${encodeURIComponent(n)}`)}
+            />
+          </React.Suspense>
         ) : (
           <div className="gr-pane" aria-hidden>
             <div className="gr-pane-empty">
