@@ -1479,6 +1479,23 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
 /// surface as the send preview the roster renders (`last-send-recall.tsx`) or as
 /// the text `receiptClaims` matches against, hence `preview_text`.
 /// `preview: None` keeps the old behaviour (preview == what was sent).
+/// The runtime a `send_harness_text` WRITE must target. Pure decision, factored
+/// out so the "re-resolve after a migrating wake" rule is unit-tested against the
+/// real runtime cache: when `woke` is true the pre-wake handle may point at a
+/// backend `start` just migrated away from, so re-resolve; otherwise reuse it.
+async fn write_runtime(
+    state: &AppState,
+    name: &str,
+    pre_wake: Arc<dyn SessionRuntime>,
+    woke: bool,
+) -> Result<Arc<dyn SessionRuntime>, AppError> {
+    if woke {
+        Ok(state.runtime_for(name).await?)
+    } else {
+        Ok(pre_wake)
+    }
+}
+
 pub async fn send_harness_text(
     state: &AppState,
     name: &str,
@@ -1515,12 +1532,20 @@ pub async fn send_harness_text(
     }
     let rt = state.runtime_for(name).await?;
     // Auto-wake BEFORE taking the lock (start() acquires it itself).
-    if !rt.alive().await {
+    let woke = !rt.alive().await;
+    if woke {
         wake_for_send(state, name).await?;
     }
 
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
+    // RE-RESOLVE after a wake. `wake_for_send` → `start` can migrate a legacy
+    // tmux session to native on its fresh start, which `runtime_invalidate`s the
+    // cache — so `rt`, resolved BEFORE the wake, is now a handle to the dead tmux
+    // backend. Writing `text` through it would let the wake succeed yet drop the
+    // very first message into nothing. When we did not wake, the pre-resolved
+    // handle is still valid; reuse it.
+    let rt = write_runtime(state, name, rt, woke).await?;
     rt.send_text(text).await?;
     // Backend-declared gap between the text and its submit (see `submit_gap`).
     submit_gap(rt.as_ref()).await;
@@ -3192,5 +3217,95 @@ mod peek_cap_tests {
         let s = "x".repeat(1_000);
         let out = cap_bytes_from_tail(s, 100);
         assert_eq!(out.len(), 100);
+    }
+}
+
+#[cfg(test)]
+mod write_runtime_tests {
+    //! REGRESSION (codex #10). `send_harness_text` resolved the runtime BEFORE
+    //! the auto-wake. When the wake's `start` migrates a legacy tmux session to
+    //! native it `runtime_invalidate`s the cache — so the pre-wake handle points
+    //! at the dead tmux backend, and writing the first message through it drops it
+    //! into nothing while the wake reports success. `write_runtime` is the fix's
+    //! decision point: re-resolve after a wake, reuse otherwise.
+
+    use super::*;
+    use crate::config::Config;
+    use crate::sessions::runtime::{RUNTIME_NATIVE, RUNTIME_TMUX};
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("supermux-writert-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    /// After a wake that migrated tmux→native, re-resolving yields a DIFFERENT
+    /// (live, native) handle than the one resolved before the wake — proving that
+    /// reusing the pre-wake handle (the old bug) would have targeted the dead
+    /// backend. When we did NOT wake, the pre-resolved handle is reused verbatim.
+    #[tokio::test]
+    async fn re_resolves_the_runtime_only_after_a_migrating_wake() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "mig", "/tmp", "claude")
+            .await
+            .unwrap();
+        db::sessions::set_runtime(&state.pool, "mig", RUNTIME_TMUX)
+            .await
+            .unwrap();
+        db::sessions::ensure_runtime(&state.pool, "mig", "tok")
+            .await
+            .unwrap();
+
+        // The handle `send_harness_text` resolves BEFORE the auto-wake.
+        let pre_wake = state.runtime_for("mig").await.unwrap();
+
+        // The wake's `start` migrates the legacy row and invalidates the cache.
+        db::sessions::set_runtime(&state.pool, "mig", RUNTIME_NATIVE)
+            .await
+            .unwrap();
+        state.runtime_invalidate("mig");
+
+        // woke == true → re-resolve. Must be a fresh handle, not the tmux one.
+        let after_wake = write_runtime(&state, "mig", pre_wake.clone(), true)
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&pre_wake, &after_wake),
+            "a migrating wake must hand the write the NEW backend, not the stale \
+             pre-wake tmux handle that start migrated away from",
+        );
+        assert_ne!(
+            pre_wake.target(),
+            after_wake.target(),
+            "the re-resolved handle is the native backend, distinct from tmux",
+        );
+
+        // woke == false → reuse the pre-resolved handle exactly (no needless churn).
+        let no_wake = write_runtime(&state, "mig", pre_wake.clone(), false)
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&pre_wake, &no_wake),
+            "with no wake there was no migration; reuse the handle we already had",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
