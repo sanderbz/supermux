@@ -373,7 +373,33 @@ const BUDGET_ENTRY_JS = 160 * KB
 // thin margin = 257. Every byte of expression/motion is CSS under `[data-grok]`
 // (28.47/30 CSS, 95%) and byte-inert off the skin. The next thing through here
 // should measure first — 1.7 KB of headroom is intentional.
-const BUDGET_APP_JS = 257 * KB
+// 268 as of the feat/connectors-memory CONNECTOR STORE (the owner's flagship Bot-
+// mode surface): the whole store landed — the `/store` catalog grid + card +
+// detail + grant control (lazy `store-view` chunk, 4.69 KB), the per-bot Tools-tab
+// `GrantedConnectors` list, the inline chat `connect-card` (secure paste / sign-in
+// → straight to the vault, on the chat chunk), the Memory-tab learned-notes panel,
+// and the `connectors.ts` foundation client + `connectors-store` query cache.
+// Measured 267.77; +12.49 KB over the 255.28 faces baseline. Where the bytes went:
+//   +4.69 KB  `store-view` — the flagship grid: header+search, Featured rail,
+//             category chips, responsive card grid, the detail sheet + the connect
+//             flow. A LAZY chunk (the `/store` route AND the bot-scoped sheet both
+//             `React.lazy` it), so none of it is on the cold hero path.
+//   +~3.5 KB  the always-reachable store atoms the bot-panel/chat pull statically:
+//             `connector-card`, `connector-icon`, `grant-control`, `granted-
+//             connectors` (the Tools-tab list), `learned-notes` + `memory.ts`.
+//   +~2.0 KB  `chat/ui/connect-card.tsx` — the Grok moment, on the chat chunk: the
+//             six-state secure connect card (proposed/oauth/key/saving/added/error)
+//             that POSTs the credential to the vault and NEVER through the MCP
+//             stream. Its dispatch branch in `live-layer` is a few bytes.
+//   +~2.3 KB  `connectors.ts` (9-endpoint client) + `connectors-store` (the query
+//             cache + optimistic grant/revoke verbs) + the settings/palette
+//             doorways. The client rides the `@/lib/api` barrel, which is why the
+//             ENTRY gate moved 149.68 -> 151.40 / 160 (95%) — the one hero-path
+//             cost, still 8.6 KB inside the gate that actually guards first paint.
+// A genuine additive feature — the owner's top-priority surface, not a regression
+// to trim: ceil(measured) = 268. The `.cs-*` store skin (base + the scoped
+// `[data-grok]` glass) lands in the CSS budget (29.47/30, 98%), not here.
+const BUDGET_APP_JS = 268 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
