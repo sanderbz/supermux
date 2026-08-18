@@ -2323,3 +2323,40 @@
 [data-grok] [data-testid='chat-header-pill'] .bg-status-error\/15 {
   background-color: color-mix(in srgb, var(--sm-tone-warning) 16%, transparent);
 }
+
+/* 4) OFFLINE PRESENCE-DOT HONESTY (the jury's worst break: a GREEN "ready" dot on
+      a "Couldn't load this conversation." screen). When the tail can't be read the
+      header wraps the dot in `data-tail-error-dot`; grey it to the neutral
+      "unknown" tone so it no longer vouches for a session it cannot see. Matches
+      the `<OfflineDot>` treatment the terminal-offline path already gets. */
+[data-grok] [data-tail-error-dot] > [role='img'] {
+  background-color: var(--sm-text-tertiary);
+  /* a spinner variant (border-t only) also loses its live amber arc */
+  border-top-color: var(--sm-text-tertiary);
+}
+
+/* ══ WS12 — PICKER ROW SECONDARY CONTRAST (non-dialog anchors) ════════════════
+   The shared EntityPicker draws its row descriptor (`row.meta` — file path, kind,
+   schedule) and its group headings in tertiary ink (`text-ink-3`). Inside the ⌘K
+   dialog WS7 already lifts tertiary for AA, but the TOKEN popover (composer @//)
+   and the FIELD lists do not carry `[role='dialog']`, so there the meta measured
+   2.43:1 light / 3.29:1 dark on the picker ground — below AA and Grok's 3.92
+   floor for text that is the row's primary descriptor. Lift tertiary within any
+   picker listbox to the same solid AA mid-grey the dialog uses (light #5f6773 ≈
+   5.2:1, dark #9a9a9a ≈ 6.5:1). The ⌘K dialog already re-points tertiary, so this
+   is additive there, not conflicting.
+
+   BOTH tokens are re-declared here. The group heading reads `--sm-text-tertiary`
+   directly (grok-mode.css §WS7), but the row META reads it through `text-ink-3` →
+   `--sm-ink-3`, whose value is COMPUTED at `[data-grok]` (var() in a custom prop
+   substitutes at its declaring element) and inherited down — so re-pointing only
+   `--sm-text-tertiary` here lifts the heading but NOT the meta. Re-aliasing
+   `--sm-ink-3` on the listbox recomputes it against the listbox's tertiary. */
+[data-grok] [role='listbox'] {
+  --sm-text-tertiary: #5f6773;
+  --sm-ink-3: var(--sm-text-tertiary);
+}
+.dark [data-grok] [role='listbox'] {
+  --sm-text-tertiary: #9a9a9a;
+  --sm-ink-3: var(--sm-text-tertiary);
+}

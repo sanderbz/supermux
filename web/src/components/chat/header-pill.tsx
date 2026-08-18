@@ -166,6 +166,17 @@ export interface SessionHeaderPillProps {
    * dot must not contradict it (showcase honesty: green dot beside "Offline").
    */
   offline?: boolean
+  /**
+   * The transcript itself could not be READ (`isError`) — a distinct failure
+   * from `offline` (the socket giving up): the session may be alive, but the
+   * status we hold is a stale claim we cannot vouch for. Under the GROK SKIN the
+   * presence dot is greyed to the neutral "unknown" tone so it stops reading as a
+   * live green "ready" beside a "Couldn't load this conversation." body (the
+   * jury's worst honesty break). Off grok the dot is UNCHANGED — the wrapper this
+   * adds is an inert `data-tail-error-dot` hook with no pixels of its own, so the
+   * base app stays byte-identical.
+   */
+  tailError?: boolean
   className?: string
 }
 
@@ -178,6 +189,7 @@ export function SessionHeaderPill({
   trailing,
   connection,
   offline = false,
+  tailError = false,
   className,
 }: SessionHeaderPillProps) {
   const phone = surface === 'phone'
@@ -199,7 +211,12 @@ export function SessionHeaderPill({
   // indicator, not two. On the desktop it rides the name row; on the phone it
   // joins the grouped status cluster on the right (mobile polish #1), so it stops
   // floating alone in the middle of the bar.
-  const presence = status ? offline ? <OfflineDot /> : <StatusDot status={status} /> : null
+  const dot = status ? offline ? <OfflineDot /> : <StatusDot status={status} /> : null
+  // When the tail could not be read (and the socket is not already flagged
+  // offline), wrap the dot in an inert `data-tail-error-dot` hook so the grok
+  // skin can grey it to the "unknown" tone. Off grok the wrapper is a bare inline
+  // span with no pixels — the dot renders exactly as before (byte-identical).
+  const presence = dot && tailError && !offline ? <span data-tail-error-dot="">{dot}</span> : dot
 
   return (
     <header

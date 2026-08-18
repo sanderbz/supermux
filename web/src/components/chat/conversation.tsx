@@ -463,6 +463,12 @@ export function ChatConversation({
           trailing={headerTrailing}
           connection={headerStatus}
           offline={offline}
+          // The tail itself could not be read (`isError`): the status we hold is
+          // a stale claim, so under the grok skin the presence dot stops reading
+          // as a live green "ready" beside a "Couldn't load this conversation."
+          // body (the jury's worst honesty break). Inert off grok — the base
+          // app's dot is unchanged.
+          tailError={isError}
         />
       }
       footer={
