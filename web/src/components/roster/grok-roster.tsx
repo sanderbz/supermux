@@ -399,6 +399,11 @@ export default function GrokRoster() {
   const groups = React.useMemo(() => groupSessions(sorted, needNames), [sorted, needNames])
 
   const needCount = groups.needs.length
+  // The VISIBLE list is empty when neither a team nor any session survives the
+  // current filter — the honest trigger for the empty state (jury d). `totalBots`
+  // counts the UNFILTERED roster, so it cannot answer "did this search find
+  // nothing".
+  const listEmpty = filteredTeams.length === 0 && sorted.length === 0
 
   // Keep the selection valid by DERIVATION, not by an effect: a session that
   // left the list (archived, deleted, filtered out) resolves to `null` here, so
@@ -615,11 +620,34 @@ export default function GrokRoster() {
               )
             })}
 
-            {totalBots === 0 && (
-              <div className="gr-pane-empty" style={{ padding: '48px 24px' }}>
-                {needle
-                  ? `No bots match “${rawQuery.trim()}”.`
-                  : 'No bots yet. Press + to boot your first one.'}
+            {/* MEASURED-GAP FIX (jury d): the empty message was gated on
+                `totalBots === 0`, so a search that matched NOTHING left the rail
+                blank (13 bots exist, 0 shown → the message never rendered). Gate
+                on the VISIBLE list being empty instead, so "No bots match …"
+                actually appears. The message is the primary thing on screen, so
+                it reads at primary weight/colour (not the muted floor) and — for
+                the zero-bots case — pairs with the inline create verb, all
+                vertically centred to match the right pane's hint. */}
+            {listEmpty && (
+              <div className="gr-list-empty">
+                {needle ? (
+                  <p className="gr-empty-msg">
+                    No bots match “{rawQuery.trim()}”.
+                  </p>
+                ) : (
+                  <>
+                    <p className="gr-empty-msg">No bots yet — hire your first one.</p>
+                    <button
+                      type="button"
+                      className="gr-newbot"
+                      aria-label="New bot"
+                      onClick={() => setSheetOpen(true)}
+                    >
+                      <Plus size={16} aria-hidden />
+                      <span className="gr-newbot-lbl">New bot</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

@@ -836,6 +836,16 @@
   height: 0.5px;
   background: var(--sm-sidebar-separator);
 }
+/* PRIORITY 2 — safe-area top. The shell's MobileTopBar renders nothing, so each
+   route owns its own top inset; the grok roster never did, so in an installed
+   iOS PWA (viewport-fit=cover, status bar overlays the webview) the header's
+   "+ New bot" pill + count + controls ran UNDER the battery/signal row. Reserve
+   the inset on the header. Scoped to `[data-standalone]` (the PWA gate the shell
+   root sets) so browser-tab mobile — where the URL bar already offsets the page
+   — is untouched; `max()` keeps it a no-op wherever the inset is 0. */
+[data-grok][data-standalone] .grok-roster .gr-head {
+  padding-top: max(14px, env(safe-area-inset-top));
+}
 [data-grok] .grok-roster .gr-brand {
   display: inline-flex;
   align-items: center;
@@ -1022,7 +1032,11 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  --sm-fade: 28px;
+  /* MEASURED-GAP FIX (jury e): a 28px edge-mask faded the topmost row's title
+     into the ground (~2:1) while it was still meant to be read. Shorten the fade
+     so the transparent lip is a hairline hint of "more above/below", never deep
+     enough to swallow a line of text. */
+  --sm-fade: 14px;
 }
 [data-grok] .grok-roster .gr-list[data-fade-top][data-fade-bottom] {
   mask-image: linear-gradient(
@@ -1555,6 +1569,29 @@
   font-size: 13.5px;
 }
 
+/* ── empty LIST (jury d) — the left rail's own empty state ──────────────────────
+   Vertically centred to sit level with the right pane's hint, and led by a
+   PRIMARY-weight message (it is the one thing on the screen — never the muted
+   floor), paired with the inline create verb on the zero-bots path. */
+[data-grok] .grok-roster .gr-list-empty {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 24px;
+  text-align: center;
+}
+[data-grok] .grok-roster .gr-empty-msg {
+  color: var(--sm-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  max-width: 34ch;
+  line-height: 1.4;
+}
+
 /* ── BOT PANEL (ASK 3) — the per-bot settings page fills the pane slot. It owns
       its own header/tabs/padding (Tailwind), so the pane is just the surface. ── */
 [data-grok] .grok-roster .gr-botpane {
@@ -1633,7 +1670,11 @@
 [data-grok] .grok-roster[data-density='cards'] .gr-rowA .gr-top {
   display: flex;
   gap: 12px;
-  align-items: center;
+  /* MEASURED-GAP FIX (jury a/b): centring the 42px mark against a taller column
+     floated it into a dead band and left the title top-anchored above it. Anchor
+     the mark to the title baseline (flex-start) so it reads as ONE row and the
+     card hugs its content instead of reserving a centred void. */
+  align-items: flex-start;
   width: 100%;
 }
 [data-grok] .grok-roster .gr-rowA .gr-top {
@@ -1641,8 +1682,10 @@
 }
 [data-grok] .grok-roster[data-density='cards'] .gr-rowA .l3 {
   width: 100%;
-  margin-top: 12px;
-  padding-top: 11px;
+  /* tightened from 12/11 — the context bar still gets its hairline divider, but
+     the card no longer reserves a ~2-line empty band above it (jury a). */
+  margin-top: 9px;
+  padding-top: 9px;
   border-top: 0.5px solid var(--sm-sidebar-separator);
 }
 [data-grok] .grok-roster[data-density='cards'] .gr-rowA .cbar {
