@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
+  awaitingInputState,
   blockedComposerNote,
   blockedState,
   lensBlockedAsBlockedState,
@@ -161,6 +162,72 @@ describe('the amber card', () => {
   })
 })
 
+describe('awaitingInputState — the TRANSCRIPT dialog plane the composer gate must read', () => {
+  // The states audit's other residual: a `request_user_dialog` or an MCP
+  // `task_* input_required` writes a durable "waiting on a human" row carrying
+  // `body.blocked=true`, but `systemRow` renders it as a display-only
+  // `kind:'dialog'` line and dropped the bit. `blockedState` only ever saw
+  // `kind:'blocked'`, and `dialogCard` is the LIVE hook/lens only — so a dialog
+  // the peek could not fingerprint (the elicitation family it cannot read at
+  // all, or a peek that is simply down) went on accepting sends while the
+  // transcript visibly said "waiting". This is the plane that gates on the
+  // transcript alone.
+  const dialog = (over: Partial<ChatEntry> = {}): ChatEntry => ({
+    uuid: 'd1',
+    ts: 1_000,
+    kind: 'dialog',
+    text: 'an MCP task on “github” is waiting for your input',
+    awaitsInput: true,
+    ...over,
+  })
+
+  test('an un-answered dialog row gates the composer, verbatim', () => {
+    const state = awaitingInputState([dialog()])
+    expect(state).not.toBeNull()
+    // CC's own sentence stands as the note — no bucket/clock split to join.
+    expect(blockedComposerNote(state!)).toBe(
+      'an MCP task on “github” is waiting for your input',
+    )
+  })
+
+  test('a display-only dialog with no blocked bit does NOT gate', () => {
+    // The bit is the discriminator, not the kind: a `kind:'dialog'` row that
+    // never carried `body.blocked` is not a session waiting on a human.
+    expect(awaitingInputState([dialog({ awaitsInput: undefined })])).toBeNull()
+  })
+
+  test('a NEWER user prompt does NOT clear it', () => {
+    // Same asymmetry as `blockedState`: typing AT a waiting dialog is exactly
+    // what somebody does before they notice it, and it must not reopen the gate.
+    const entries: ChatEntry[] = [
+      { uuid: 'p1', ts: 2_000, kind: 'prompt', text: 'still there?' },
+      dialog(),
+    ]
+    expect(awaitingInputState(entries)).not.toBeNull()
+  })
+
+  test('a newer assistant or tool turn DOES clear it — the dialog was answered', () => {
+    for (const kind of ['assistant', 'tool_use']) {
+      const entries: ChatEntry[] = [
+        { uuid: 'a1', ts: 3_000, kind, text: 'proceeding.' },
+        dialog(),
+      ]
+      expect(awaitingInputState(entries)).toBeNull()
+    }
+  })
+
+  test('the panel chain: a quota wall wins, but a dialog fills the silence', () => {
+    // `chat-panel` feeds the gate `wireBlocked ?? uncoveredDialog ?? lens…`. A
+    // real quota banner is the richer sentence and wins; with none, the dialog
+    // is what stops the composer promising delivery into a modal that drops it.
+    const wall = blockedState([banner()])
+    expect(wall ?? awaitingInputState([dialog()])).toBe(wall)
+    // Transcript with only the dialog: the dialog is the gate.
+    const only = awaitingInputState([dialog()])
+    expect((null as ReturnType<typeof blockedState>) ?? only).toBe(only)
+  })
+})
+
 describe('the attention causes', () => {
   test('a blocked agent outranks every other cause on this surface', () => {
     // The other causes are about what THIS APP cannot do; this one is about the
@@ -180,6 +247,16 @@ describe('the attention causes', () => {
     expect(copy.body).toContain('Aug 17, 4am')
     // …and still reads as a sentence with neither fact present.
     expect(attentionCopy('agent-blocked').title.endsWith('.')).toBe(true)
+  })
+
+  test('a transcript dialog no live card explains raises waiting-unmodelled, ranked below the lens dialog', () => {
+    // The panel raises `waiting-unmodelled` for `uncoveredDialog` — the session
+    // says it is waiting and nothing visible here (no lens/hook card) explains
+    // it. It must not outrank the lens-driven dialog causes.
+    expect(topAttention(['waiting-unmodelled', 'dialog-unmapped'])).toBe('dialog-unmapped')
+    expect(topAttention(['waiting-unmodelled', 'turn-refused'])).toBe('waiting-unmodelled')
+    const copy = attentionCopy('waiting-unmodelled')
+    expect(copy.body).toContain('terminal')
   })
 
   test('the transcript-blind card explains an empty conversation instead of showing one', () => {

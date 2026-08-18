@@ -34,7 +34,12 @@ import { useRosterMarks } from '@/hooks/use-roster-marks'
 import { claimChatSurface } from '@/lib/live-region-owner'
 
 import { detailFor, topAttention } from './attention'
-import { blockedComposerNote, blockedState, lensBlockedAsBlockedState } from './blocked'
+import {
+  awaitingInputState,
+  blockedComposerNote,
+  blockedState,
+  lensBlockedAsBlockedState,
+} from './blocked'
 import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
 import { CHAT_GONE, isPlaneDown } from './connection'
@@ -500,6 +505,16 @@ export default function ChatPanel({
   // nothing more); a startup wedge draws a dialog card of its own, which is the
   // thing that can actually resolve it.
   const wireBlocked = React.useMemo(() => blockedState(entries), [entries])
+  // THE TRANSCRIPT DIALOG PLANE (states audit). A `request_user_dialog` or an
+  // MCP `task_* input_required` writes a durable "waiting on a human" row. The
+  // live hook/lens (`dialogCard`/`formCard`) is the fast path, but it is blind
+  // to the elicitation form family entirely and to everything while the peek is
+  // down — exactly the case this durable plane exists to cover. It only gates
+  // when NO live card already does: a card above the composer is answered by
+  // typing into its own free-text row, so disabling the composer there would
+  // take away the way to answer. With no card, nothing else refuses the send.
+  const transcriptDialog = React.useMemo(() => awaitingInputState(entries), [entries])
+  const uncoveredDialog = transcriptDialog && !dialogCard && !formCard ? transcriptDialog : null
   const lensBlocked =
     peek.lens.notice?.kind === 'limit-blocked' ? peek.lens.notice : null
   // …and the other silence: a live pty with an empty transcript. The lens sees
@@ -520,7 +535,8 @@ export default function ChatPanel({
   // (the turn ended on an ordinary Stop, so no banner was ever written). Wiring
   // only `wireBlocked` was the half-fix: the attention card + header read the
   // lens, but the composer stayed live and promised delivery into a spent bucket.
-  const composerBlock = wireBlocked ?? lensBlockedAsBlockedState(lensBlocked)
+  const composerBlock =
+    wireBlocked ?? uncoveredDialog ?? lensBlockedAsBlockedState(lensBlocked)
   const attention = topAttention([
     lensPaused ? ('session-paused' as const) : null,
     wireBlocked ? ('agent-blocked' as const) : null,
@@ -528,6 +544,10 @@ export default function ChatPanel({
     lensBlocked ? ('session-blocked' as const) : null,
     pending.attention,
     dialogAttention,
+    // The transcript plane's own dialog, when no live card is covering it — the
+    // session says it is waiting and nothing visible here explains it, which is
+    // exactly `waiting-unmodelled`. Ranks below the lens-driven dialog causes.
+    uncoveredDialog ? ('waiting-unmodelled' as const) : null,
     lensRefused ? ('turn-refused' as const) : null,
   ])
   // What the abort actually was. `dialog-unmapped`'s copy reads "no verified

@@ -57,6 +57,20 @@ export interface ChatEntry {
    * a person's decision back to them as a broken tool.
    */
   denied?: boolean
+  /**
+   * `kind: 'dialog'` only — this session is WAITING ON A HUMAN and cannot get
+   * on with it (`server/src/sessions/chat/parser.rs` sets `body.blocked` on
+   * `request_user_dialog` and on an MCP `task_*` that parks on
+   * `input_required`).
+   *
+   * The dialog row is drawn as a display-only line, but the blocked bit outlives
+   * that: `awaitingInputState` (blocked.ts) reads it to gate the composer and
+   * raise attention from the TRANSCRIPT plane alone, for exactly the dialog the
+   * peek lens is down for or has never fingerprinted. Distinct from `blocking`,
+   * which is a `kind:'blocked'` quota/auth wall with a clock; this is a question
+   * a person answers in the terminal.
+   */
+  awaitsInput?: boolean
 }
 
 export interface ReceiptLine {

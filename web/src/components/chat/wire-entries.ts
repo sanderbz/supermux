@@ -512,6 +512,10 @@ function num(body: unknown, key: string): number | undefined {
   return typeof v === 'number' ? v : undefined
 }
 
+function bool(body: unknown, key: string): boolean {
+  return field(body, key) === true
+}
+
 /** `999996` → `1.0M`, `16752` → `17k`. Two significant figures is all a "how
  *  much history went away" clause can support, and an exact token count would
  *  read as a precision the number does not have. */
@@ -892,6 +896,16 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
         kind: row.badge,
         reply: row.detail,
         truncated: w.truncated || undefined,
+        // THE BLOCKED BIT ON A DIALOG ROW (states audit). The server sets
+        // `body.blocked` on `request_user_dialog` and on an MCP `task_*` that
+        // parks on `input_required` — the session is waiting on a human and
+        // cannot get on with it. `systemRow` renders these as a display-only
+        // `kind:'dialog'` line; without this the durable transcript plane SAID
+        // "waiting" but neither gated the composer nor raised attention, so an
+        // unknown dialog the peek lens could not fingerprint went on accepting
+        // sends into a session that would never pick them up. Carried here so
+        // `awaitingInputState` (blocked.ts) can gate on it with no lens at all.
+        awaitsInput: bool(w.body, 'blocked') || undefined,
       })
       continue
     }

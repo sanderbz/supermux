@@ -481,6 +481,57 @@ describe('the adapter', () => {
 })
 
 /**
+ * THE DIALOG PLANE CARRIES ITS BLOCKED BIT (states audit, wave 6 #2).
+ *
+ * The server sets `body.blocked` on `request_user_dialog` and on an MCP `task_*`
+ * that parks on `input_required` — the session is waiting on a human. The wire
+ * fold rendered these as a display-only `kind:'dialog'` line and DROPPED the
+ * bit, so the composer gate (`awaitingInputState`, which reads `awaitsInput`)
+ * had nothing to gate on and an unknown dialog kept accepting sends.
+ */
+describe('the dialog row and its blocked bit', () => {
+  test('a request_user_dialog carries awaitsInput through to the display model', () => {
+    const entries = toChatEntries([
+      block({
+        uuid: 'd1',
+        kind: 'system',
+        label: 'request_user_dialog',
+        body: { dialog: 'tool_permission', blocked: true },
+      }),
+    ])
+    expect(entries.map((e) => [e.kind, e.awaitsInput])).toEqual([['dialog', true]])
+    expect(entries[0].text).toContain('waiting on a permission dialog')
+  })
+
+  test('an MCP task on input_required carries it too, with the server name', () => {
+    const entries = toChatEntries([
+      block({
+        uuid: 'm1',
+        kind: 'system',
+        label: 'task_notification',
+        body: { status: 'input_required', server: 'github', blocked: true },
+      }),
+    ])
+    expect(entries.map((e) => [e.kind, e.awaitsInput])).toEqual([['dialog', true]])
+    expect(entries[0].text).toContain('github')
+  })
+
+  test('a task that is merely progressing is neither a row nor a block', () => {
+    // Only `input_required` blocks; `working`/`completed` stay silent, and the
+    // server never sets `blocked` on them, so nothing must gate.
+    const entries = toChatEntries([
+      block({
+        uuid: 'm2',
+        kind: 'system',
+        label: 'task_progress',
+        body: { status: 'working', server: 'github' },
+      }),
+    ])
+    expect(entries).toEqual([])
+  })
+})
+
+/**
  * THE MODEL'S REASONING REACHES THE SURFACE (verified finding 16, A6 §S21).
  *
  * `wire-entries.ts` ended its dispatch by dropping `kind:'thinking'` on the
