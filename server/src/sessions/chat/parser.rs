@@ -671,8 +671,15 @@ fn retracted_uuids(obj: &Map<String, Value>) -> Option<Vec<Value>> {
 /// on purpose: a tool whose OUTPUT quotes the sentence must not be re-read as a
 /// refusal.
 fn is_denial(content: &Value) -> bool {
-    const HEAD: &str = "The user doesn't want to proceed with this tool use.";
-    let starts = |s: &str| s.trim_start().starts_with(HEAD);
+    // Match on a NORMALIZED sentence, not a byte-exact ASCII one. Two things
+    // legitimately vary between a test fixture and Claude Code's live copy:
+    // letter case, and the apostrophe glyph — CC's UI renders a curly U+2019, so
+    // a straight-ASCII `starts_with` silently fails and a refusal is recorded as
+    // a SUCCESS (`ok=true`), drawing a green tick next to a declined action.
+    // Still anchored at the start: a tool whose OUTPUT quotes the sentence must
+    // not be re-read as a refusal.
+    const HEAD: &str = "the user doesn't want to proceed with this tool use.";
+    let starts = |s: &str| normalize_denial(s.trim_start()).starts_with(HEAD);
     match content {
         Value::String(s) => starts(s),
         Value::Array(items) => items.iter().any(|b| {
@@ -682,6 +689,19 @@ fn is_denial(content: &Value) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Fold a candidate refusal prefix to lowercase ASCII with a straight
+/// apostrophe, so case changes and CC's curly `’` (U+2019) do not defeat the
+/// match. Bounded to the sentence length — only the prefix is compared.
+fn normalize_denial(s: &str) -> String {
+    s.chars()
+        .take(80)
+        .map(|c| match c {
+            '\u{2019}' | '\u{2018}' | '\u{02BC}' => '\'',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
 }
 
 /// The wire body of a failure banner: the words CC showed, plus every fact a
@@ -1300,6 +1320,43 @@ mod tests {
         assert_eq!(entries[1].uuid, "after");
         assert_eq!(entries[1].offset, (huge.len() + 1) as u64);
         assert_eq!(off, buf.len() as u64);
+    }
+
+    #[test]
+    fn a_curly_apostrophe_or_uppercased_refusal_is_still_a_denial_not_a_success() {
+        // #15 (LOW): denial detection was byte-exact ASCII, so CC's live copy —
+        // which renders a curly U+2019 apostrophe — fell through as ok=true and
+        // a declined action got a green success tick. Case and apostrophe glyph
+        // must not defeat the match.
+        let make = |content: &str| {
+            format!(
+                r#"{{"type":"user","uuid":"d","timestamp":"2026-01-01T00:00:00Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"{content}"}}]}}}}"#
+            )
+        };
+        // Curly apostrophe (U+2019) — the exact glyph CC's UI emits.
+        let curly = make("The user doesn\u{2019}t want to proceed with this tool use.");
+        let ParsedLine::Entry(e) = parse_line(&curly, 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(e[0].label.as_deref(), Some("denied"), "curly apostrophe refusal");
+        assert_eq!(e[0].ok, Some(false), "a refusal is never a success");
+
+        // Case change in the copy.
+        let upper = make("THE USER DOESN'T WANT TO PROCEED WITH THIS TOOL USE. Stopped.");
+        let ParsedLine::Entry(e) = parse_line(&upper, 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(e[0].label.as_deref(), Some("denied"), "uppercased refusal");
+        assert_eq!(e[0].ok, Some(false));
+
+        // Anchoring preserved: a tool OUTPUT that merely quotes the sentence
+        // partway through is NOT a refusal.
+        let quoting = make("Docs say: the user doesn't want to proceed with this tool use.");
+        let ParsedLine::Entry(e) = parse_line(&quoting, 0) else {
+            panic!("must parse")
+        };
+        assert_ne!(e[0].label.as_deref(), Some("denied"), "mid-string quote is not a denial");
+        assert_eq!(e[0].ok, Some(true));
     }
 
     #[test]
