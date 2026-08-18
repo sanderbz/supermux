@@ -19,6 +19,7 @@ import * as React from 'react'
 
 import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
 import { claimConnectionVoice } from '../../lib/live-region-owner'
+import { cn } from '../../lib/utils'
 
 import type { ChatGone } from './chat-socket'
 import { CHAT_GONE, type ChatPresentation } from './connection'
@@ -63,8 +64,25 @@ export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNotePr
   // Nothing terminal is retryable: the server has answered, and a retry button
   // on "this session no longer exists" is an invitation to keep tapping.
   const retryable = terminal === null && state === 'offline' && onRetry
-  const className =
-    'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2'
+  // A DEAD STATE MUST NOT READ AS METADATA (showcase honesty wave).
+  //
+  // Every other thing this chip says is a link that may yet come back —
+  // reconnecting, stale, an outage under a grace window — so the neutral grey
+  // wash is right for them. A TERMINAL close that `CHAT_GONE` marks `alarming`
+  // is a different sentence: "this session no longer exists" is final, and a
+  // soft grey pill indistinguishable from "reconnecting…" hid exactly that (the
+  // `alarming` flag was authored for this and then read by nothing). It borrows
+  // the composer's own blocked-strip palette — the brand's calm `status-error`
+  // orange, never alarmist red — so the one chip that means "gone for good"
+  // looks unmistakably not-healthy. `chat-unavailable` is `alarming:false` and
+  // stays calm: a session with no chat plane is not a fault.
+  const alarming = terminal?.alarming ?? false
+  const className = cn(
+    'flex-none rounded-full border-[0.5px] px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px]',
+    alarming
+      ? 'border-status-error/30 bg-status-error/10 text-status-error-ink'
+      : 'border-hairline-soft bg-fill-soft text-ink-2',
+  )
 
   // One live region, `polite`, holding one short sentence. It is the STATE
   // that is announced, not the transcript — G1's streaming announcements are a

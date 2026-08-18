@@ -36,6 +36,7 @@ import { ChatComposer } from '@/components/chat/composer'
 import { followsFooterGrowth } from '@/components/chat/backlog'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
 import type { ChatGone } from '@/components/chat/chat-socket'
+import { CHAT_GONE } from '@/components/chat/connection'
 import { ConnectionNote } from '@/components/chat/connection-note'
 import { toDisplayList } from '@/components/chat/entries'
 import { EntityPickerView } from '@/components/chat/entity-picker'
@@ -161,16 +162,29 @@ export default function DevChatLive() {
  *  memo boundary (`transcript-item.tsx`'s doc). */
 const NOOP = () => {}
 
-function Surface({
+// Exported for `tests/unit/chat-gone-composer.test.tsx`: the gone→gated-composer
+// wiring is the honesty contract the `st-gone-*` shots exist to prove, so a test
+// drives THIS component (the composer expression + `BenchComposer`) rather than
+// re-deriving it, the same way the fixture test drives `liveStates` directly.
+export function Surface({
   state,
   nowMs,
   surface,
+  gone = null,
   headerLeading,
   headerTrailing,
 }: {
   state: LiveState
   nowMs: number
   surface: 'desktop' | 'phone'
+  /** The terminal 4404, threaded through EXACTLY as `chat-panel.tsx` threads
+   *  `tail.gone` — into the conversation body AND the composer's gate. Before
+   *  this the bench drove `gone` into the header chip only, so a deleted
+   *  session screenshotted a full transcript under a LIVE `Message …` composer
+   *  (the A3 read-only shell the fallback draws), while the shipped panel had
+   *  already made that composer read-only. The bench, not the product, was the
+   *  lie. */
+  gone?: ChatGone | null
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
 }) {
@@ -219,6 +233,7 @@ function Surface({
       handoff={state.handoffTo ? { to: state.handoffTo, atMs: nowMs } : null}
       pinFor={pinFor}
       surface={surface}
+      gone={gone}
       isError={state.isError}
       pending={state.pending}
       dialog={state.dialog ?? null}
@@ -246,7 +261,16 @@ function Surface({
       onReserveGrew={onReserveGrew}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}
-      composer={state.composer ? <BenchComposer state={state} surface={surface} /> : undefined}
+      // A GONE POINTER GATES THE COMPOSER even where the fixture supplies no
+      // composer spec (the `idle` board the `st-gone-*` shots ride): the shipped
+      // panel always mounts a real `<ChatComposer>` and marks it `blocked`, so
+      // the bench must too, or it screenshots the read-only-shell fallback as an
+      // invitation to type into a deleted session.
+      composer={
+        state.composer || gone ? (
+          <BenchComposer state={state} surface={surface} gone={gone} />
+        ) : undefined
+      }
       provisional={
         state.provisional ? (
           <ProvisionalTailView
@@ -280,22 +304,29 @@ function Surface({
 function BenchComposer({
   state,
   surface,
+  gone = null,
 }: {
   state: LiveState
   surface: 'desktop' | 'phone'
+  gone?: ChatGone | null
 }) {
   const ref = React.useRef<HTMLTextAreaElement | null>(null)
   const spec = state.composer
   const noop = React.useCallback(() => {}, [])
-  if (!spec) return null
+  // A gone pointer is reason enough to mount the composer even with no spec —
+  // the `st-gone-*` boards ride `idle`, which supplies none, and the whole
+  // point is to render the SHIPPED gated control rather than the read-only
+  // shell the conversation falls back to.
+  if (!spec && !gone) return null
 
   const name = state.session.name
+  const draft = spec?.draft ?? ''
   const handle: ComposerHandle = {
-    draft: spec.draft,
+    draft,
     setDraft: noop,
     ref,
     sending: false,
-    notice: spec.notice ?? null,
+    notice: spec?.notice ?? null,
     dismissNotice: noop,
     submit: noop,
     stop: noop,
@@ -304,14 +335,14 @@ function BenchComposer({
     // fixture's own draft through the SHIPPED rule, so a bench that says
     // "Hand to ●Patch" is one the composer would also say it on.
     handoff: (() => {
-      const intent = readDelegateIntent(spec.draft, MENTIONS, name)
+      const intent = readDelegateIntent(draft, MENTIONS, name)
       return intent ? { to: intent.to, label: handoffLabel(intent.to, NAMES) } : null
     })(),
     handoffPending: null,
     picker: {
-      open: spec.picker != null,
-      kind: spec.picker?.kind ?? '@',
-      query: spec.picker?.query ?? '',
+      open: spec?.picker != null,
+      kind: spec?.picker?.kind ?? '@',
+      query: spec?.picker?.query ?? '',
       pick: noop,
       close: noop,
       bind: noop,
@@ -328,8 +359,13 @@ function BenchComposer({
       handle={handle}
       surface={surface}
       active={state.session.status === 'active'}
+      // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE — verbatim the shipped rule
+      // in `chat-panel.tsx`: a gone pointer makes the field read-only and says
+      // why ("This session no longer exists.") rather than accepting a message
+      // into nothing.
+      blocked={gone ? CHAT_GONE[gone].detail : undefined}
       onOpenTerminal={noop}
-      onSchedule={spec.schedulable ? noop : undefined}
+      onSchedule={spec?.schedulable ? noop : undefined}
       pickerData={{
         files: TRACKED_FILES,
         commands: BENCH_COMMANDS,
@@ -399,6 +435,7 @@ function BoardFrame({ state, nowMs, conn, gone }: {
           state={state}
           nowMs={nowMs}
           surface="desktop"
+          gone={gone}
           headerTrailing={
             conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : undefined
           }
@@ -438,6 +475,7 @@ function PhoneFrame({ state, nowMs, conn, gone }: {
           state={state}
           nowMs={nowMs}
           surface="phone"
+          gone={gone}
           // What A5's mobile shell ACTUALLY puts in these two slots
           // (`routes/focus/mobile.tsx`), so the card's geometry is reviewable
           // as shipped rather than as sketched: the back button, and the
