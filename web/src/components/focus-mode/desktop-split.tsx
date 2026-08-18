@@ -630,7 +630,12 @@ export function DesktopSplit({
           </Tooltip>
           <FocusStripModeToggle mode={viewMode} onChange={setViewMode} />
         </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
+        {/* `overscroll-contain` (bug C): the roster is the OTHER inner scroller
+            inside the shared `<main data-shell-content overflow-auto>` (layout.tsx).
+            At its boundary the wheel delta would otherwise chain up to `<main>`/root
+            and slide the whole focus shell away (black gap below). Contained here so
+            the chain stops at the list. Same standardized fix as the chat transcript. */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 pb-3">
           {sessions.length === 0 &&
           strip.teamGroups.length === 0 &&
           strip.userGroups.length === 0 &&

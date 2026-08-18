@@ -245,7 +245,16 @@ export function ChatSurface({
         //     so "tapped above the keyboard" means "tapped the transcript" and
         //     nothing wider.
         data-chat-track=""
-        className="chat-track min-h-0 flex-1 overflow-y-auto"
+        // `overscroll-contain` (bug C): the transcript is an INNER scroller inside
+        // the shared `<main data-shell-content overflow-auto>` (layout.tsx). Without
+        // this, a wheel delta past the transcript's top/bottom CHAINS up to `<main>`
+        // (and the root), dragging the whole focus shell — rail + roster + header —
+        // out of view and exposing the app's dark ground below. `contain` stops the
+        // chain at this boundary while keeping the local bounce; it is the
+        // standardized fix (Safari 16+, macOS+iOS) and a no-op where unsupported.
+        // `body { overscroll-behavior: none }` (globals.css) is NOT sufficient — it
+        // stops the body rubber-banding the browser, not an inner list chaining into it.
+        className="chat-track min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
         {children}
       </div>

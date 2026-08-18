@@ -442,7 +442,17 @@ export function Layout() {
           // they work and not help anyone.
           tabIndex={-1}
           data-shell-content=""
-          className={cn('min-h-0 flex-1 overflow-auto')}
+          // `overflow-auto` for every route EXCEPT focus (bug C, belt to the
+          // inner scrollers' `overscroll-contain`). Overview is a long page and
+          // needs this shared scroller; the focus split is a fixed full-screen
+          // rail + pane surface that should never page-scroll — yet it lives in
+          // the same `<main>`, so any 1px overflow (or a chained wheel delta)
+          // makes `<main>` the scroll/chain target and drags the whole shell.
+          // `overflow-hidden` when `isFocus` removes that target entirely, which
+          // also covers pre-Safari-16 (where `overscroll-behavior` is a no-op).
+          // Platform-neutral: on mobile the focus route's sheet is `position:
+          // fixed` (out of `<main>`'s flow), so clipping `<main>` changes nothing.
+          className={cn('min-h-0 flex-1', isFocus ? 'overflow-hidden' : 'overflow-auto')}
         >
           <Outlet />
         </main>
