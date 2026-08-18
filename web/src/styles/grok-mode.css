@@ -280,6 +280,25 @@
   position: relative;
   isolation: isolate;
   background: var(--sm-bg-chrome);
+  /* SAFARI SCROLL FIX — the grok shell root IS the fixed viewport frame (sole app
+     child of #root). The inner scrollers already engage in Safari (the thread's
+     `.chat-track` scrolls, the composer pins), but Safari — unlike Chrome — does
+     NOT infer `overflow:hidden` on the frame, so the nested `flex:1 + min-height:0`
+     chain is allowed to grow the frame and the body scrolls the WHOLE page (rail +
+     roster + header slide off, the thread scrolls alone). Chrome clamps this
+     implicitly; Safari needs it stated. Two things fix it, both required:
+       1. an EXPLICIT definite height (`100dvh`, `100vh` fallback for pre-dvh
+          Safari) so the frame is viewport-locked and the `height:100%`/flex chain
+          below resolves against a solid anchor instead of Chrome's implicit one;
+       2. an EXPLICIT `overflow:hidden` so the frame physically cannot scroll — any
+          Safari over-grow is clipped to the frame rather than paged onto the body.
+     Behaviourally correct in BOTH grok modes (the shell already fills the viewport)
+     and byte-inert for the base app (no `data-grok`). On desktop the `padding:10px`
+     window gutter is inside `100dvh` via border-box; the `::before` window shadow
+     spills into that in-bounds gutter, so it is not clipped. */
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 /* The one substrate blur — a leaf pseudo, behind every column. `saturate(180%)`
