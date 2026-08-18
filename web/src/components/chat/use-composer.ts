@@ -336,6 +336,21 @@ export interface UseComposerOptions {
    * throws — that is the real "still running" case the `stop-failed` notice owns.
    */
   onInterrupt?: () => void
+  /**
+   * Text to PREPEND to the outgoing message, computed at submit time — the
+   * composer upgrade's attachment seam (`attachmentSentence(readyPaths())`: the
+   * quoted absolute upload paths, space-separated, one trailing space). Folded
+   * in INSIDE `submit`, before `input.submit`, so the attachment flows through
+   * the same peek / slash / hand-off gates a typed message does — never around
+   * them. Absent ⇒ `submit` is byte-identical to today.
+   */
+  getOutgoingPrefix?: () => string
+  /**
+   * Called once the POST resolves successfully (`staged.reset` clears the
+   * chips) — mirrors how the draft is subtracted only AFTER a resolved send, so
+   * a rejected send keeps both the words and the attachments to retry.
+   */
+  onSent?: () => void
   /** The session's hook-driven `permission_request` is live, i.e. a choice card
    *  is on screen above this composer. Second source for the pre-send gate —
    *  see `sendGate`. */
@@ -443,6 +458,8 @@ export function useComposer({
   formCard = false,
   handoff,
   onInterrupt,
+  getOutgoingPrefix,
+  onSent,
 }: UseComposerOptions): ComposerHandle {
   const draft = React.useSyncExternalStore(
     React.useCallback((fn) => subscribeDraft(name, fn), [name]),
@@ -505,7 +522,11 @@ export function useComposer({
     // flight — see the clear below.
     const raw = getDraft(name)
     const text = raw.trim()
-    if (text.length === 0 || sendingRef.current) return
+    // The attachment prefix (quoted upload paths) is computed HERE, at submit
+    // time, so an image staged one keystroke before Enter is still counted. An
+    // image alone is a valid message — empty text but a non-empty prefix sends.
+    const prefix = getOutgoingPrefix?.() ?? ''
+    if ((text.length === 0 && prefix.length === 0) || sendingRef.current) return
     setNotice(null)
     // THE HAND-OFF BRANCH (fase B4 T4), beside the slash gate and before it:
     // `@patch /clear` is a message to a colleague, not a slash command this
@@ -586,7 +607,10 @@ export function useComposer({
         // POST so it is on screen for the whole round-trip, and overridable by
         // the slash receipt below, which is about the same delivery.
         if (gate.notice) setNotice(gate.notice)
-        await input.submit(text)
+        // The attachment paths go on the wire FIRST, then the user's prose —
+        // quoted absolute paths Claude's Read/vision tool resolves, exactly the
+        // shape the dock and terminal drag/paste have always injected.
+        await input.submit(prefix + text)
         // Cleared only AFTER the POST resolves: a rejected send keeps the
         // user's words in the box, where they can retry them.
         //
@@ -597,6 +621,9 @@ export function useComposer({
         // gate exists to prevent, on the other side of the wire. So only the
         // sent prefix goes; anything typed after it stays in the box.
         setDraft(name, draftAfterSend(getDraft(name), raw))
+        // Chips clear only now, on a resolved POST — the same rule the draft
+        // follows, so a rejected send keeps the attachments to retry.
+        onSent?.()
         // A command that is not one of Claude's built-ins WENT — as text, which
         // is what a project/skill command is. The receipt exists so a typo
         // (`/compct`) does not quietly become a message nobody meant to write.
@@ -622,7 +649,7 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [dialogCard, formCard, handoff, input, name, peek, readIntent])
+  }, [dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the
