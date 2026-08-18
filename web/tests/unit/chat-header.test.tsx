@@ -168,6 +168,83 @@ describe('C7 — status is status, accent is accent', () => {
   })
 })
 
+/**
+ * Showcase honesty pass — the error/offline surfaces read as healthy.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * st-error: a session carrying an unrecovered `StopFailure` (`session.error`)
+ * showed only the orange StatusDot in the chat header — the same field that draws
+ * a legible amber badge on the tile, the list row and the focus header — so it
+ * read as idle. st-conn-offline: an offline data plane wore the "Offline" chip
+ * while the presence dot stayed live green, the dot contradicting the label.
+ */
+describe('honesty — the error chip (st-error)', () => {
+  test('an unrecovered agent error is a legible chip beside the name, not a bare dot', () => {
+    const html = pill(session({ status: 'error', error: { type: 'StopFailure', message: 'cargo check failed' } }))
+    expect(html).toContain('data-testid="chat-header-error"')
+    // The word is on the chip — a StopFailure classifies to no bucket, so it is
+    // the honest generic rather than nothing.
+    expect(text(html)).toContain('Error')
+    // The full message rides `title`, so the one-word chip stays short.
+    expect(html).toContain('cargo check failed')
+  })
+
+  test('the chip is calm orange in the status family, never the accent (C7)', () => {
+    const chip = pill(session({ error: { type: 'StopFailure', message: 'boom' } }))
+      .match(/<span[^>]*data-testid="chat-header-error"[^>]*>/)![0]
+    expect(chip).toContain('status-error')
+    expect(chip).not.toContain('--sm-accent')
+    expect(chip).not.toContain('--sm-session-tint')
+  })
+
+  test('a healthy session carries no error chip', () => {
+    expect(pill(session({ status: 'idle' }))).not.toContain('chat-header-error')
+  })
+
+  test('the chip stands down when the block chip already names the same limit', () => {
+    // Both witnesses to one rate-limit → one chip, not two amber nouns for one
+    // fact (`statesSameBlock`, the roster's own dedupe).
+    const html = pill(
+      session({
+        blocked: { kind: 'limit', text: "You've hit your weekly limit" },
+        error: { type: 'rate_limit', message: "You've hit your weekly limit" },
+      }),
+    )
+    expect(html).not.toContain('chat-header-error')
+    expect(html).toContain('chat-header-blocked')
+  })
+})
+
+describe('honesty — the offline dot (st-conn-offline)', () => {
+  test('an offline plane greys the presence dot — no live green, and it names itself', () => {
+    const html = renderToStaticMarkup(
+      <SessionHeaderPill name={FOCUS} session={session({ status: 'idle' })} offline />,
+    )
+    // The neutral "unknown" grey, and a name a screen reader gets.
+    const dot = element(html, 'Offline')
+    expect(dot).toContain('bg-status-idle')
+    expect(dot).toContain('data-testid="chat-header-offline-dot"')
+    // The live "ready" green disc and the busy spinner are both gone — the dot
+    // no longer claims the session is reachable.
+    expect(html).not.toContain('bg-status-ready')
+    expect(html).not.toContain('sm-status-spinner')
+  })
+
+  test('an offline plane greys the dot even while the status still reads active', () => {
+    // The contradiction the audit caught: a stale `active` status under a socket
+    // that has given up. The dot must not spin as if a turn were live.
+    const html = renderToStaticMarkup(
+      <SessionHeaderPill name={FOCUS} session={session({ status: 'active' })} offline />,
+    )
+    expect(html).not.toContain('sm-status-spinner')
+    expect(html).toContain('data-testid="chat-header-offline-dot"')
+  })
+
+  test('online, the live dot is untouched', () => {
+    expect(pill(session({ status: 'idle' }))).not.toContain('chat-header-offline-dot')
+    expect(pill(session({ status: 'idle' }))).toContain('bg-status-ready')
+  })
+})
+
 describe('the renderer switch', () => {
   // Fase A5 T2 added the third cell (`auto`) and the `resolved` prop; these
   // A3 assertions are re-pointed at it rather than rewritten, so the metrics

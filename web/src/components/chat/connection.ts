@@ -145,6 +145,18 @@ export function isPlaneDown(p: ChatPresentation): boolean {
   return p === 'reconnecting' || p === 'offline'
 }
 
+/**
+ * The composer's refusal when the data plane is `offline`.
+ *
+ * `offline` is TERMINAL — a terminal socket close, or the redialler exhausting
+ * its 8 attempts (`chat-socket.ts`) — so the plane has given up, not blipped
+ * (that is `reconnecting`, which stays calm and keeps the composer live). A
+ * fully live composer over a given-up socket invites a send that goes nowhere
+ * with no sign it did, which is the exact honesty hole the states audit found
+ * for a spent limit bucket. Read-only, draft preserved, and the composer appends
+ * its own "— messages sent now won't be picked up." clause. */
+export const CHAT_OFFLINE_BLOCKED = 'You’re offline'
+
 /** The chat socket's state, on `connection-store.ts`'s vocabulary, so the
  *  app-wide `<ReconnectBanner>` stops being blind to a dead chat socket
  *  (A6 T2.4). `stale` is NOT reported as degraded: the socket is genuinely

@@ -42,7 +42,7 @@ import {
 } from './blocked'
 import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
-import { CHAT_GONE, isPlaneDown } from './connection'
+import { CHAT_GONE, CHAT_OFFLINE_BLOCKED, isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
 import {
   FOLLOW_THRESHOLD_PX,
@@ -641,6 +641,11 @@ export default function ChatPanel({
         </>
       }
       pinFor={pinFor}
+      // The header's honesty half: an `offline` plane greys the presence dot so
+      // it stops reading as a live green "ready" beside the "Offline" chip. Only
+      // the terminal `offline` — `reconnecting`/`stale` keep the live dot, since
+      // the socket still expects to come back.
+      offline={connection === 'offline'}
       isError={tail.isError}
       isLoading={tail.isLoading}
       gone={tail.gone}
@@ -725,12 +730,20 @@ export default function ChatPanel({
           // the same slot, so the surface still says exactly one thing.
           // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE (there is no session left
           // to block); otherwise the both-planes `composerBlock` decides.
+          // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE (there is no session left
+          // to block); a limit/dialog block is next, because it carries the
+          // richer sentence (which bucket, when it lifts). An OFFLINE plane is
+          // the last gate: the socket gave up, so a send cannot be confirmed to
+          // leave — and a live composer over it is the same silent-drop the
+          // limit case shipped. Read-only, draft kept.
           blocked={
             tail.gone !== null
               ? CHAT_GONE[tail.gone].detail
               : composerBlock
                 ? blockedComposerNote(composerBlock)
-                : undefined
+                : connection === 'offline'
+                  ? CHAT_OFFLINE_BLOCKED
+                  : undefined
           }
           onOpenTerminal={onOpenTerminal}
           // The popover's three lists (fase A4 T9) — the sessions among them

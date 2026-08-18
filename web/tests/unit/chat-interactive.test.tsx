@@ -31,6 +31,7 @@ import {
   blockedComposerNote,
   lensBlockedAsBlockedState,
 } from '../../src/components/chat/blocked'
+import { CHAT_OFFLINE_BLOCKED } from '../../src/components/chat/connection'
 import type { PendingSend } from '../../src/components/chat/pending'
 import {
   composerSessionInput,
@@ -417,6 +418,30 @@ describe('the composer, live', () => {
     expect(html).toContain('aria-disabled="true"')
     // …and Send is refused even with a draft armed (canSend gates on `blocked`).
     expect(html).not.toContain('data-testid="chat-send"')
+  })
+
+  test('an OFFLINE plane gates the composer — read-only, noted, un-sendable (st-conn-offline)', () => {
+    // The socket has given up (terminal / 8 redials exhausted). A live composer
+    // over it invites a send that cannot be confirmed to leave — the same
+    // silent-drop the spent-limit bucket shipped. `chat-panel` passes
+    // `CHAT_OFFLINE_BLOCKED` as the composer's `blocked` reason; the field goes
+    // read-only, the strip states it, and Send is refused even with a draft.
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({ draft: 'ship it once CI is green' })}
+        blocked={CHAT_OFFLINE_BLOCKED}
+      />,
+    )
+    expect(html).toContain('data-testid="chat-composer-blocked"')
+    expect(text(html)).toContain('offline')
+    expect(html).toContain('readOnly=""')
+    expect(html).toContain('aria-disabled="true"')
+    expect(html).not.toContain('data-testid="chat-send"')
+    // …but the draft is preserved, not taken away — rescuable into another
+    // session, exactly like the limit block.
+    expect(html).toContain('ship it once CI is green')
   })
 
   test('Stop replaces the mic while the turn runs — same cell, no reflow', () => {

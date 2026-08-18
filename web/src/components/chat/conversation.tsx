@@ -266,6 +266,11 @@ export interface ChatConversationProps {
    *  back button and the renderer switch (`routes/focus/mobile.tsx`). */
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
+  /** The chat data plane has GIVEN UP (`ChatPresentation === 'offline'`, A6):
+   *  greys the header presence dot so it stops reading as a live green "ready"
+   *  next to the "Offline" chip. Composer gating is the panel's job (it owns the
+   *  send plane); this is the header half of the same honesty. */
+  offline?: boolean
   /** The `hook→UI p50` read-out, when the session has produced samples. */
   stat?: React.ReactNode
   scrollRef?: React.Ref<HTMLDivElement>
@@ -335,6 +340,7 @@ export function ChatConversation({
   isLoading,
   headerLeading,
   headerTrailing,
+  offline = false,
   stat,
   scrollRef,
   onScroll,
@@ -450,6 +456,7 @@ export function ChatConversation({
           surface={phone ? 'phone' : 'desktop'}
           leading={headerLeading}
           trailing={headerTrailing}
+          offline={offline}
         />
       }
       footer={

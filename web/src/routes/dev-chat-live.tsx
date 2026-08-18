@@ -36,7 +36,7 @@ import { ChatComposer } from '@/components/chat/composer'
 import { followsFooterGrowth } from '@/components/chat/backlog'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
 import type { ChatGone } from '@/components/chat/chat-socket'
-import { CHAT_GONE } from '@/components/chat/connection'
+import { CHAT_GONE, CHAT_OFFLINE_BLOCKED } from '@/components/chat/connection'
 import { ConnectionNote } from '@/components/chat/connection-note'
 import { toDisplayList } from '@/components/chat/entries'
 import { EntityPickerView } from '@/components/chat/entity-picker'
@@ -171,6 +171,7 @@ export function Surface({
   nowMs,
   surface,
   gone = null,
+  offline = false,
   headerLeading,
   headerTrailing,
 }: {
@@ -178,13 +179,11 @@ export function Surface({
   nowMs: number
   surface: 'desktop' | 'phone'
   /** The terminal 4404, threaded through EXACTLY as `chat-panel.tsx` threads
-   *  `tail.gone` — into the conversation body AND the composer's gate. Before
-   *  this the bench drove `gone` into the header chip only, so a deleted
-   *  session screenshotted a full transcript under a LIVE `Message …` composer
-   *  (the A3 read-only shell the fallback draws), while the shipped panel had
-   *  already made that composer read-only. The bench, not the product, was the
-   *  lie. */
+   *  `tail.gone` — into the conversation body AND the composer's gate. */
   gone?: ChatGone | null
+  /** The data plane is `offline` (A6): greys the header dot AND gates the
+   *  composer, so the showcase shows the true shipped offline state. */
+  offline?: boolean
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
 }) {
@@ -261,14 +260,13 @@ export function Surface({
       onReserveGrew={onReserveGrew}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}
-      // A GONE POINTER GATES THE COMPOSER even where the fixture supplies no
-      // composer spec (the `idle` board the `st-gone-*` shots ride): the shipped
-      // panel always mounts a real `<ChatComposer>` and marks it `blocked`, so
-      // the bench must too, or it screenshots the read-only-shell fallback as an
-      // invitation to type into a deleted session.
+      offline={offline}
+      // A GONE POINTER or an OFFLINE PLANE gates the composer even where the
+      // fixture supplies no composer spec: the shipped panel always mounts a
+      // real `<ChatComposer>` marked `blocked`, so the bench must too.
       composer={
-        state.composer || gone ? (
-          <BenchComposer state={state} surface={surface} gone={gone} />
+        state.composer || gone || offline ? (
+          <BenchComposer state={state} surface={surface} gone={gone} offline={offline} />
         ) : undefined
       }
       provisional={
@@ -305,13 +303,20 @@ function BenchComposer({
   state,
   surface,
   gone = null,
+  offline = false,
 }: {
   state: LiveState
   surface: 'desktop' | 'phone'
   gone?: ChatGone | null
+  /** The data plane is offline — render the real gated composer (read-only,
+   *  refusal strip) even when the state carries no composer of its own. */
+  offline?: boolean
 }) {
   const ref = React.useRef<HTMLTextAreaElement | null>(null)
-  const spec = state.composer
+  // An offline plane gates the composer regardless of the state's own spec, so
+  // an offline state that carries no draft still screenshots the real refusal
+  // instead of the live-looking read-only shell.
+  const spec = state.composer ?? (offline ? { draft: '' } : null)
   const noop = React.useCallback(() => {}, [])
   // A gone pointer is reason enough to mount the composer even with no spec —
   // the `st-gone-*` boards ride `idle`, which supplies none, and the whole
@@ -359,11 +364,10 @@ function BenchComposer({
       handle={handle}
       surface={surface}
       active={state.session.status === 'active'}
-      // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE — verbatim the shipped rule
-      // in `chat-panel.tsx`: a gone pointer makes the field read-only and says
-      // why ("This session no longer exists.") rather than accepting a message
-      // into nothing.
-      blocked={gone ? CHAT_GONE[gone].detail : undefined}
+      // A terminal close outranks offline, verbatim the shipped rule in
+      // `chat-panel.tsx`: a gone pointer says "This session no longer exists.",
+      // else an offline plane shows the "You're offline" refusal.
+      blocked={gone ? CHAT_GONE[gone].detail : offline ? CHAT_OFFLINE_BLOCKED : undefined}
       onOpenTerminal={noop}
       onSchedule={spec?.schedulable ? noop : undefined}
       pickerData={{
@@ -436,6 +440,7 @@ function BoardFrame({ state, nowMs, conn, gone }: {
           nowMs={nowMs}
           surface="desktop"
           gone={gone}
+          offline={conn === 'offline'}
           headerTrailing={
             conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : undefined
           }
@@ -476,6 +481,7 @@ function PhoneFrame({ state, nowMs, conn, gone }: {
           nowMs={nowMs}
           surface="phone"
           gone={gone}
+          offline={conn === 'offline'}
           // What A5's mobile shell ACTUALLY puts in these two slots
           // (`routes/focus/mobile.tsx`), so the card's geometry is reviewable
           // as shipped rather than as sketched: the back button, and the

@@ -48,6 +48,7 @@ import { usageTitle, worstWindow } from '../../lib/rate-limits'
 import { StatusDot } from '../session-tile/status-dot'
 import type { TileSession } from '../session-tile/types'
 
+import { errorBadgeLabel, statesSameBlock } from './agent-error'
 import { sessionAccentVarsFor } from './session-accent'
 import { MARK_SIZE, PHONE } from './ui'
 
@@ -147,6 +148,15 @@ export interface SessionHeaderPillProps {
    */
   leading?: React.ReactNode
   trailing?: React.ReactNode
+  /**
+   * The chat data plane has GIVEN UP (`ChatPresentation === 'offline'`, A6) —
+   * the socket is terminal or exhausted its redials. The status we hold is now
+   * a stale claim, so the presence dot must stop reading as a live green
+   * "ready": it goes to the neutral "unknown" grey and names itself Offline.
+   * The `<ConnectionNote>` chip in `trailing` says the same thing in words; the
+   * dot must not contradict it (showcase honesty: green dot beside "Offline").
+   */
+  offline?: boolean
   className?: string
 }
 
@@ -157,6 +167,7 @@ export function SessionHeaderPill({
   surface = 'desktop',
   leading,
   trailing,
+  offline = false,
   className,
 }: SessionHeaderPillProps) {
   const phone = surface === 'phone'
@@ -261,8 +272,23 @@ export function SessionHeaderPill({
               </span>
               {/* The app's status affordance, not a lookalike — which is how the
                   busy states keep the spinner the boot window needs. It carries
-                  the `--status-*` family and never the accent (contract C7). */}
-              {status && <StatusDot status={status} />}
+                  the `--status-*` family and never the accent (contract C7).
+                  When the data plane is OFFLINE the status is a stale claim, so
+                  the live dot stands down for the neutral offline dot: a green
+                  "ready" disc beside an "Offline" chip is the exact contradiction
+                  the honesty pass is closing. */}
+              {status && (offline ? <OfflineDot /> : <StatusDot status={status} />)}
+              {/* THE UNRECOVERED AGENT ERROR, AS A LEGIBLE CHIP — not a bare dot.
+                  `session.error` is the durable `StopFailure` field the roster,
+                  the list row and the focus header all render as an amber badge;
+                  the chat header showed only the orange StatusDot, which reads as
+                  metadata and let an errored session pass for idle. A word beside
+                  the name is the persistent affordance. Suppressed when the block
+                  chip already names the same limit (`statesSameBlock`), so one
+                  condition is never stated twice. */}
+              {session?.error && !statesSameBlock(session.blocked, session.error) && (
+                <ErrorChip error={session.error} />
+              )}
               {/* THE CONDITION, BESIDE THE STATUS — and never instead of it.
                   A limit-hit session's status IS `idle`: the turn ended
                   normally, Claude Code just cannot start another one. The dot
@@ -338,6 +364,51 @@ function BlockedChip({
     >
       {blocked.kind === 'limit' ? 'Limit reached' : 'Blocked'}
     </span>
+  )
+}
+
+/**
+ * The unrecovered agent error, as a word beside the name.
+ *
+ * `session.error` (a `StopFailure` hook) drives the amber badge on every OTHER
+ * session surface — the tile, the list row, the focus header — but the chat
+ * header carried nothing for it, so an errored session read as healthy/idle
+ * under a plain orange StatusDot. The label is the same `errorBadgeLabel` those
+ * surfaces use, falling back to the honest generic when the pair carries nothing
+ * more specific (a bare `StopFailure` classifies to no bucket). Same calm orange,
+ * same header metrics as `<BlockedChip>` — this is the same rung of bad news.
+ */
+function ErrorChip({ error }: { error: { type: string; message: string } }) {
+  const label = errorBadgeLabel(error.type, error.message) ?? 'Error'
+  return (
+    <span
+      data-testid="chat-header-error"
+      role="status"
+      title={error.message}
+      className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-status-error/15 px-2 py-[3px] text-[11.5px] font-semibold leading-[16px] text-status-error"
+    >
+      <span aria-hidden>⚠</span>
+      {label}
+    </span>
+  )
+}
+
+/**
+ * The presence dot when the data plane has GIVEN UP.
+ *
+ * A neutral "unknown" disc (`--status-idle`, the same dim grey a stopped session
+ * gets) rather than the live green "ready" — because an offline socket can no
+ * longer vouch that the session is idle-and-alive. Named Offline for assistive
+ * tech, so the dot and the `<ConnectionNote>` chip say one thing, not two.
+ */
+function OfflineDot() {
+  return (
+    <span
+      role="img"
+      aria-label="Offline"
+      data-testid="chat-header-offline-dot"
+      className="size-2 shrink-0 rounded-full bg-status-idle"
+    />
   )
 }
 
