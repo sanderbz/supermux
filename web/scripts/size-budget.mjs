@@ -282,7 +282,12 @@ const BUDGET_ENTRY_JS = 160 * KB
 //             serious `nested-interactive`) and one `data-testid`.
 // The turn announcer is on the hero path because the focus route is where a
 // turn happens and the chat chunk is lazy; the chip fix is unavoidable markup.
-const BUDGET_APP_JS = 239 * KB
+// 242 at the mobile-polish batch: the attention-rollup picker sheet, the
+// composer's folded actions sheet + real dictation wiring, and the calmer
+// header measure 241.65 total. The ENTRY (hero-path) chunk actually DROPPED to
+// 147.13 / 160 (92%) because the picker sheet is now lazy — the growth is all
+// in on-demand chunks, which is exactly where new surface belongs. ceil(measured).
+const BUDGET_APP_JS = 242 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

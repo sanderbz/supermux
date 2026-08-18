@@ -37,7 +37,12 @@ import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import { usePin } from '@/hooks/use-roster-marks'
 import { displayLabel } from '@/lib/api/sessions'
 import type { AttentionSession } from '@/lib/attention-tiers'
-import { AttentionPickerSheet } from './attention-picker-sheet'
+// Lazy: the picker sheet opens only on a tap, so it has no business in the
+// overview's entry chunk (the hero path). Splitting it keeps entry JS under its
+// hard 160 KB budget.
+const AttentionPickerSheet = React.lazy(() =>
+  import('./attention-picker-sheet').then((m) => ({ default: m.AttentionPickerSheet })),
+)
 
 /** How many faces before the pile collapses to "+N". */
 const MAX_FACES = 3
@@ -170,15 +175,17 @@ export function AttentionRollup({ sessions, className }: AttentionRollupProps) {
         )}
       </button>
 
-      <AttentionPickerSheet
-        open={open}
-        onOpenChange={setOpen}
-        sessions={sessions}
-        onPick={(s) => {
-          setOpen(false)
-          navigate(rollupTarget(s).href)
-        }}
-      />
+      <React.Suspense fallback={null}>
+        <AttentionPickerSheet
+          open={open}
+          onOpenChange={setOpen}
+          sessions={sessions}
+          onPick={(s) => {
+            setOpen(false)
+            navigate(rollupTarget(s).href)
+          }}
+        />
+      </React.Suspense>
     </>
   )
 }
