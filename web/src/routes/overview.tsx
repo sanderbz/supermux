@@ -27,6 +27,7 @@ import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { useUI } from '@/stores/ui-store'
+import { grokModeOn, GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
@@ -68,6 +69,12 @@ import {
   type OverviewLayout,
 } from '@/lib/overview-layout'
 import type { TileSession } from '@/components/session-tile'
+
+// GROK MODE (WS5+WS6) — the radical inbox overview. Lazy on PURPOSE: the overview
+// IS the entry chunk (scripts/size-budget.mjs), so a static import would land
+// GrokRoster's weight on the cold hero path every default user pays. React.lazy
+// puts it in its own chunk that is fetched only when the skin is on.
+const GrokRoster = React.lazy(() => import('@/components/roster/grok-roster'))
 
 /** Per-tier grid class — the tile grid keeps `sm:grid-cols-2` (small phones)
  *  and `md:grid-cols-N` (tablet) constant across tiers, then forks at `lg:`
@@ -113,6 +120,30 @@ function toTileSession(s: ApiSession): TileSession {
 }
 
 export function Overview() {
+  // GROK MODE — read the skin flag ONCE at mount (a skin flip is a reload-level
+  // change, like the substrate flag in layout.tsx), and when it is on render the
+  // radical inbox roster INSTEAD of today's team-card/terminal-tile board. Off
+  // grok this is `false` and the whole default overview below is untouched.
+  const [grok] = React.useState(() =>
+    grokModeOn(
+      useUI.getState().grokMode,
+      typeof localStorage !== 'undefined' ? localStorage.getItem(GROK_KILL_SWITCH_KEY) : null,
+    ),
+  )
+  // `?mock` seeding must run in BOTH skins — it lives here (not in DefaultOverview)
+  // so the Grok roster gets the same dev fixtures the default board does.
+  useDevMockSeed()
+  if (grok) {
+    return (
+      <React.Suspense fallback={<div className="h-full" />}>
+        <GrokRoster />
+      </React.Suspense>
+    )
+  }
+  return <DefaultOverview />
+}
+
+function DefaultOverview() {
   const { sessions: allSessions, isLoading, isError, refetch } = useSessions()
   // Agent Teams. The TEAM CARD owns its lead + teammates and renders
   // pinned above the session grid in EVERY sort mode. The lead IS a normal
@@ -172,8 +203,6 @@ export function Overview() {
   const [rawQuery, setRawQuery] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [sheetOpen, setSheetOpen] = React.useState(false)
-
-  useDevMockSeed()
 
   // Debounce the search 200ms.
   React.useEffect(() => {

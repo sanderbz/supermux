@@ -1,0 +1,715 @@
+/**
+ * `<GrokRoster>` — WS5 + WS6, the overview reimagined as an inbox of bots.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The headline Grok-mode surface. `routes/overview.tsx` mounts this INSTEAD of
+ * today's CI-board-of-terminal-cards when the `grok-mode` flag is on (read once
+ * at mount, like every other skin flip); off grok it never loads at all — this
+ * whole module is a lazy chunk, so the default hero path is byte-for-byte and
+ * byte-for-KB unchanged (the overview IS the entry chunk — see
+ * `scripts/size-budget.mjs`).
+ *
+ * The transform (overview.md §0 thesis): stop rendering a session as a *record*
+ * (name + model + trash) and render it as a *colleague you can read at a glance*
+ * — a face-led two-line messaging row whose second line IS the live transcript
+ * tail, grouped Needs-you → Active → Done → Idle by hairline dividers, with a
+ * detail pane that leads on the cost/context glance Grok structurally lacks.
+ *
+ * It keeps supermux's edges, not Grok's flat list: search over every field, the
+ * `smart | alpha` sort, the tag chips, the per-agent context ring + token count
+ * on a quiet L3, teams as facepile rows, and the needs-you rollup as a header
+ * count + a red section. Density (Comfortable = Row A default / Compact = Row C /
+ * Cards = Row B) is the existing density affordance in Grok's idiom, driven by
+ * one `data-density` attribute the CSS forks on.
+ *
+ * Every visual lives in `styles/grok-mode.css` under `[data-grok]`; this file is
+ * structure + data only. The marks, their expressions, the needs-you halo and
+ * the working-only breathe all come from `<SessionFace>` (WS4) for free.
+ */
+import * as React from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Search, Settings, Sparkles } from 'lucide-react'
+
+import { useSessions } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
+import { useAttentionContext } from '@/hooks/use-attention'
+import { useArchivedSheet } from '@/stores/archived-sheet-store'
+import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
+import { SessionFace } from '@/components/roster/session-face'
+import { SessionMark } from '@/brand/marks'
+import { markStateFor } from '@/lib/mark-status'
+import { smartSort, nameSort } from '@/lib/overview-layout'
+import { displayLabel, type ApiSession } from '@/lib/api'
+import type { Team } from '@/lib/api/teams'
+
+/* ── small pure helpers (local; the row is the only caller) ─────────────────── */
+
+function relativeTime(iso?: string): string {
+  if (!iso) return ''
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return ''
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000))
+  if (secs < 45) return 'now'
+  const mins = Math.round(secs / 60)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  const days = Math.round(hrs / 24)
+  if (days === 1) return 'Yesterday'
+  return `${days}d`
+}
+
+/** The last non-blank line of the roster-wide ANSI-stripped tail — the honest
+ *  fallback when no chat store is attached (which is most rows). */
+function lastPreviewLine(lines?: readonly string[]): string | undefined {
+  if (!lines) return undefined
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim()
+    if (line) return line
+  }
+  return undefined
+}
+
+/** The session's own last word for the preview slot: its chat tail if a store is
+ *  live, else the captured pane's last line, else the auto-summary. */
+function previewOf(s: ApiSession): string | undefined {
+  return (
+    s.chat_tail?.agent?.trim() ||
+    s.chat_tail?.user?.trim() ||
+    lastPreviewLine(s.preview_lines) ||
+    s.task_summary?.trim() ||
+    undefined
+  )
+}
+
+function fmtTokens(n?: number): string | undefined {
+  if (typeof n !== 'number' || n <= 0) return undefined
+  if (n < 1000) return String(n)
+  return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`
+}
+
+/** Context-window occupancy (a 200k reference — the supermux edge Grok lacks).
+ *  `tokens` is cumulative, so this is an honest *fill* indicator, not a promise
+ *  of exact residency; the ring reads green<50 amber<80 red≥80. */
+const CTX_WINDOW = 200_000
+function ctxPct(tokens?: number): number | null {
+  if (typeof tokens !== 'number' || tokens <= 0) return null
+  return Math.min(100, Math.round((tokens / CTX_WINDOW) * 100))
+}
+function rcClass(pct: number): string {
+  return pct < 50 ? 'rc-ok' : pct < 80 ? 'rc-mid' : 'rc-hot'
+}
+
+/** The model, parsed out of the launch flags (`--model opus` → `opus`). */
+function modelOf(s: ApiSession): string | undefined {
+  const m = s.flags?.match(/--model[= ]+(\S+)/)
+  return m?.[1]
+}
+
+type GroupKey = 'needs' | 'active' | 'done' | 'idle'
+
+interface StateWord {
+  word: string
+  cls: string
+}
+
+/** The coloured state WORD — the firewall's status half, never the agent hue
+ *  (overview.md §3 law 3: state is a coloured word + the mark's face). */
+function stateWordFor(s: ApiSession, group: GroupKey): StateWord {
+  if (group === 'needs') {
+    if (s.status === 'error' || s.blocked) return { word: 'blocked', cls: 'st-block' }
+    return { word: 'needs you', cls: 'st-need' }
+  }
+  if (s.status === 'active' || s.status === 'starting') return { word: 'working', cls: 'st-work' }
+  if (s.status === 'error') return { word: 'blocked', cls: 'st-block' }
+  if (s.status === 'stopped') return { word: 'stopped', cls: 'st-idle' }
+  if (group === 'done') return { word: 'done', cls: 'st-done' }
+  return { word: 'idle', cls: 'st-idle' }
+}
+
+function isSameDay(a: number, b: number): boolean {
+  const da = new Date(a)
+  const db = new Date(b)
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  )
+}
+
+/** Bucket the sorted roster into the four attention-ordered sections. A plain
+ *  module function so the `Date.now()` default lives OUTSIDE component render
+ *  (the same shape `attention-tiers.ts` uses) — a `Date.now()` in a `useMemo`
+ *  body reads as an impurity to `react-hooks/purity`, and rightly so. */
+function groupSessions(
+  sorted: readonly ApiSession[],
+  needNames: ReadonlySet<string>,
+  now: number = Date.now(),
+): Record<GroupKey, ApiSession[]> {
+  const buckets: Record<GroupKey, ApiSession[]> = { needs: [], active: [], done: [], idle: [] }
+  for (const s of sorted) {
+    if (needNames.has(s.name)) {
+      buckets.needs.push(s)
+      continue
+    }
+    if (s.status === 'active' || s.status === 'starting') {
+      buckets.active.push(s)
+      continue
+    }
+    const t = s.updated_at ? Date.parse(s.updated_at) : NaN
+    if (s.status === 'idle' && !Number.isNaN(t) && isSameDay(t, now)) {
+      buckets.done.push(s)
+      continue
+    }
+    buckets.idle.push(s)
+  }
+  return buckets
+}
+
+function matches(s: ApiSession, needle: string): boolean {
+  if (!needle) return true
+  if (s.name.toLowerCase().includes(needle)) return true
+  if (s.display_name?.toLowerCase().includes(needle)) return true
+  if (s.task_summary?.toLowerCase().includes(needle)) return true
+  if (s.desc?.toLowerCase().includes(needle)) return true
+  if (previewOf(s)?.toLowerCase().includes(needle)) return true
+  return s.tags?.some((t) => t.toLowerCase().includes(needle)) ?? false
+}
+
+/* ── persisted, tiny: the density lane (Comfortable | Compact | Cards) ───────── */
+type Density = 'comfortable' | 'compact' | 'cards'
+const DENSITY_KEY = 'supermux:grok-density'
+function readDensity(): Density {
+  if (typeof localStorage === 'undefined') return 'comfortable'
+  const v = localStorage.getItem(DENSITY_KEY)
+  return v === 'compact' || v === 'cards' ? v : 'comfortable'
+}
+
+/* ── the row (Row A anatomy; density forks in CSS) ──────────────────────────── */
+
+interface RowProps {
+  session: ApiSession
+  group: GroupKey
+  active: boolean
+  onOpen: (s: ApiSession) => void
+  index: number
+}
+
+const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, index }: RowProps) {
+  const name = displayLabel(session)
+  const time = relativeTime(session.updated_at)
+  const sw = stateWordFor(session, group)
+  const preview = previewOf(session)
+  const provider = session.provider || 'shell'
+  const tokens = fmtTokens(session.tokens)
+  const pct = ctxPct(session.tokens)
+  const tags = session.tags?.slice(0, 2) ?? []
+
+  return (
+    <button
+      type="button"
+      className="gr-rowA grok-row-enter"
+      data-active={active || undefined}
+      style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
+      onClick={() => onOpen(session)}
+      aria-label={`${name} — ${sw.word}`}
+    >
+      <span className="gr-top">
+        <SessionFace
+          name={session.name}
+          status={session.status}
+          size={42}
+          state={group === 'done' ? 'done' : markStateFor(session.status)}
+          className="gr-mark"
+        />
+        <span className="col">
+          <span className="l1">
+            <span className="nm">{name}</span>
+            {/* compact-only inline preview (Row C) */}
+            <span className="cprev">{preview}</span>
+            {time && <span className="tm">{time}</span>}
+          </span>
+          <span className="l2">
+            <span className="pv">
+              <span className={`st ${sw.cls}`}>{sw.word}</span>
+              {preview ? <> · {preview}</> : null}
+            </span>
+            {tokens && <span className="cost">{tokens}</span>}
+          </span>
+          <span className="l3">
+            <span className="prov">
+              <span className="pd" />
+              {provider}
+            </span>
+            {pct !== null && (
+              <>
+                <span
+                  className={`ring ${rcClass(pct)}`}
+                  style={{ '--p': pct } as React.CSSProperties}
+                />
+                {/* cards mode swaps the ring for a bar (CSS decides visibility) */}
+                <span className={`cbar ${rcClass(pct)}`}>
+                  <i style={{ width: `${pct}%` }} />
+                </span>
+                <span className="ctx">{pct}% ctx</span>
+              </>
+            )}
+            {tags.map((t) => (
+              <span key={t} className="tag">
+                #{t}
+              </span>
+            ))}
+          </span>
+        </span>
+      </span>
+    </button>
+  )
+})
+
+/* ── team facepile row (a team is just another row — 3 member marks) ─────────── */
+
+function TeamRow({ team, onOpen, index }: { team: Team; onOpen: (t: Team) => void; index: number }) {
+  const members = team.members.slice(0, 3)
+  const needs = team.members.filter((m) => m.status === 'needs_you').length
+  const last =
+    team.members.find((m) => m.status === 'needs_you')?.name ??
+    team.members[0]?.name ??
+    ''
+  return (
+    <button
+      type="button"
+      className="gr-rowA grok-row-enter"
+      style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
+      onClick={() => onOpen(team)}
+      aria-label={`${team.team_name} — ${team.members.length} bots`}
+    >
+      <span className="gr-top">
+        <span className="gr-pile gr-mark" aria-hidden>
+          {members.map((m, i) => (
+            <SessionMark
+              key={m.agent_id}
+              seed={m.name}
+              size={24}
+              animate={false}
+              className={`p${i}`}
+              ring="var(--gr-bg)"
+              label={null}
+            />
+          ))}
+        </span>
+        <span className="col">
+          <span className="l1">
+            <span className="nm">{team.team_name}</span>
+          </span>
+          <span className="l2">
+            <span className="pv">
+              <span className={`st ${needs > 0 ? 'st-need' : 'st-work'}`}>
+                {needs > 0 ? 'needs you' : 'active'}
+              </span>
+              {last ? <> · {last}</> : null}
+            </span>
+          </span>
+          <span className="l3">
+            <span className="prov">
+              <span className="pd" />
+              {team.members.length} bots
+            </span>
+          </span>
+        </span>
+      </span>
+    </button>
+  )
+}
+
+/* ── the detail pane — the power-user glance (desktop) ──────────────────────── */
+
+function DetailPane({ session, onOpenThread }: { session: ApiSession; onOpenThread: () => void }) {
+  const name = displayLabel(session)
+  const pct = ctxPct(session.tokens)
+  const tokens = fmtTokens(session.tokens)
+  const model = modelOf(session)
+  const preview = previewOf(session)
+  const sub = [
+    session.status,
+    model ?? session.provider,
+    session.branch,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <div className="gr-pane" data-shell-pane>
+      <div className="gr-pane-hd">
+        <SessionFace name={session.name} status={session.status} size={44} />
+        <div style={{ minWidth: 0 }}>
+          <div className="nm">{name}</div>
+          <div className="sub">{sub}</div>
+        </div>
+        <div className="acts">
+          <button type="button" className="gr-btn primary" onClick={onOpenThread}>
+            Open thread →
+          </button>
+        </div>
+      </div>
+      <div className="gr-pane-body">
+        <div className="glance">
+          <div className="gcard">
+            <div className="glab">Context</div>
+            {pct !== null ? (
+              <div
+                className={`bigring ${rcClass(pct)}`}
+                style={{ '--p': pct } as React.CSSProperties}
+              >
+                <b>{pct}%</b>
+              </div>
+            ) : (
+              <div className="gval plain">—</div>
+            )}
+            <div className="gsub">{tokens ? `${tokens} tokens` : 'no tokens yet'}</div>
+          </div>
+          <div className="gcard">
+            <div className="glab">Tokens</div>
+            <div className="gval">{tokens ?? '0'}</div>
+            <div className="gsub">cumulative</div>
+          </div>
+          <div className="gcard">
+            <div className="glab">Provider</div>
+            <div className="gval plain">{session.provider}</div>
+            <div className="gsub">{model ?? (session.runtime === 'native' ? 'native runtime' : 'runtime')}</div>
+          </div>
+          <div className="gcard">
+            <div className="glab">Status</div>
+            <div className="gval plain">{session.status}</div>
+            <div className="gsub">{session.dir?.split('/').pop() ?? ''}</div>
+          </div>
+        </div>
+
+        {preview && (
+          <>
+            <div className="dt-h3">Latest</div>
+            <div className="msg">
+              {preview}
+              <div className="meta">{relativeTime(session.updated_at)}</div>
+            </div>
+          </>
+        )}
+
+        {(session.tags?.length ?? 0) > 0 && (
+          <div className="dt-tags">
+            {session.tags!.map((t) => (
+              <span key={t} className="tag">
+                #{t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="spark-note">
+          Cost &amp; context here are the power-user edge Grok&apos;s surface never exposes.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── the roster ─────────────────────────────────────────────────────────────── */
+
+export default function GrokRoster() {
+  const navigate = useNavigate()
+  const { sessions: allSessions } = useSessions()
+  const { teams } = useTeams()
+  const attention = useAttentionContext()
+  const openArchived = useArchivedSheet((s) => s.openSheet)
+
+  const sessions = React.useMemo(
+    () => splitTeamLeads(allSessions, teams).nonLeadSessions,
+    [allSessions, teams],
+  )
+
+  const [rawQuery, setRawQuery] = React.useState('')
+  const [sort, setSort] = React.useState<'smart' | 'alpha'>('smart')
+  const [density, setDensity] = React.useState<Density>(readDensity)
+  const [selected, setSelected] = React.useState<string | null>(null)
+  const [sheetOpen, setSheetOpen] = React.useState(false)
+
+  const setDensityPersist = React.useCallback((d: Density) => {
+    setDensity(d)
+    try {
+      localStorage.setItem(DENSITY_KEY, d)
+    } catch {
+      /* private mode — the lane just won't persist */
+    }
+  }, [])
+
+  const needle = rawQuery.trim().toLowerCase()
+
+  const filtered = React.useMemo(
+    () => sessions.filter((s) => matches(s, needle)),
+    [sessions, needle],
+  )
+  const filteredTeams = React.useMemo(() => {
+    if (!needle) return teams
+    return teams.filter(
+      (t) =>
+        t.team_name.toLowerCase().includes(needle) ||
+        t.members.some((m) => m.name.toLowerCase().includes(needle)),
+    )
+  }, [teams, needle])
+
+  const sorted = React.useMemo(
+    () => (sort === 'alpha' ? nameSort(filtered) : smartSort(filtered)),
+    [filtered, sort],
+  )
+
+  // Group into the four attention-ordered sections (overview.md §6). Teams ride
+  // their own leading section (a team is a row; grouping it by a member tier is
+  // noise). The `needs` set comes from the app-wide provider's PRECOMPUTED
+  // rollup — the same list the header count and the red section read, so they
+  // can never disagree — rather than calling `attentionFor` per row in render
+  // (which would read `Date.now()` mid-render: an impurity the linter rightly
+  // flags, and the reason the rollup is memoised in the provider in the first
+  // place).
+  const needNames = React.useMemo(
+    () => new Set(attention.needs.map((s) => s.name)),
+    [attention.needs],
+  )
+  const groups = React.useMemo(() => groupSessions(sorted, needNames), [sorted, needNames])
+
+  const needCount = groups.needs.length
+
+  // Keep the selection valid by DERIVATION, not by an effect: a session that
+  // left the list (archived, deleted, filtered out) resolves to `null` here, so
+  // the detail pane closes on its own and the stale name is simply overwritten
+  // by the next click — no setState-in-effect, no cascading render.
+  const selectedSession = React.useMemo(
+    () => (selected ? sessions.find((s) => s.name === selected) ?? null : null),
+    [selected, sessions],
+  )
+
+  // Mask-fade the list edges by whether it is scrolled (no shadows on glass).
+  const listRef = React.useRef<HTMLDivElement>(null)
+  const [fade, setFade] = React.useState({ top: false, bottom: false })
+  const onScroll = React.useCallback(() => {
+    const el = listRef.current
+    if (!el) return
+    const top = el.scrollTop > 4
+    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 4
+    setFade((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }))
+  }, [])
+  React.useEffect(() => {
+    onScroll()
+  }, [onScroll, sorted, density])
+
+  const openSession = React.useCallback(
+    (s: ApiSession) => {
+      attention.markRead(s)
+      // Desktop shows the detail pane; phone has none, so tap → thread.
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+        navigate(`/focus/${encodeURIComponent(s.name)}`)
+        return
+      }
+      setSelected(s.name)
+    },
+    [attention, navigate],
+  )
+  const openTeam = React.useCallback(
+    (t: Team) => {
+      if (t.lead_supermux_session) navigate(`/focus/${encodeURIComponent(t.lead_supermux_session)}`)
+    },
+    [navigate],
+  )
+  const openThread = React.useCallback(() => {
+    if (selectedSession) navigate(`/focus/${encodeURIComponent(selectedSession.name)}`)
+  }, [navigate, selectedSession])
+
+  const totalBots = sessions.length + teams.length
+  const hasDetail = !!selectedSession
+
+  const SECTIONS: { key: GroupKey; label: string }[] = [
+    { key: 'needs', label: 'Needs you' },
+    { key: 'active', label: 'Active' },
+    { key: 'done', label: 'Done today' },
+    { key: 'idle', label: 'Idle' },
+  ]
+
+  let rowIndex = 0
+
+  return (
+    <div className="grok-roster" data-detail={hasDetail ? '1' : '0'} data-density={density}>
+      <header className="gr-head">
+        <span className="gr-brand">
+          <span className="gr-spark" aria-hidden />
+          supermux
+        </span>
+        <span className="gr-count">
+          {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
+          {needCount > 0 && (
+            <>
+              {' · '}
+              <b>{needCount} need you</b>
+            </>
+          )}
+        </span>
+
+        <span className="gr-head-sp" />
+
+        <span className="gr-search">
+          <Search aria-hidden />
+          <input
+            type="search"
+            value={rawQuery}
+            onChange={(e) => setRawQuery(e.target.value)}
+            placeholder="Search bots, tags, last lines…"
+            aria-label="Search bots, tags and last lines"
+          />
+        </span>
+
+        <span className="gr-seg" role="group" aria-label="Sort">
+          <button
+            type="button"
+            aria-pressed={sort === 'smart'}
+            onClick={() => setSort('smart')}
+          >
+            Smart
+          </button>
+          <button
+            type="button"
+            aria-pressed={sort === 'alpha'}
+            onClick={() => setSort('alpha')}
+          >
+            A–Z
+          </button>
+        </span>
+
+        <span className="gr-seg" role="group" aria-label="Density">
+          <button
+            type="button"
+            aria-pressed={density === 'comfortable'}
+            onClick={() => setDensityPersist('comfortable')}
+            title="Comfortable — inbox rows"
+          >
+            Comfortable
+          </button>
+          <button
+            type="button"
+            aria-pressed={density === 'compact'}
+            onClick={() => setDensityPersist('compact')}
+            title="Compact — dense feed"
+          >
+            Compact
+          </button>
+          <button
+            type="button"
+            aria-pressed={density === 'cards'}
+            onClick={() => setDensityPersist('cards')}
+            title="Cards — budget watcher"
+          >
+            Cards
+          </button>
+        </span>
+
+        <button
+          type="button"
+          className="gr-icon-btn gr-add"
+          aria-label="New session"
+          data-tour="new-session"
+          onClick={() => setSheetOpen(true)}
+        >
+          <Plus size={17} aria-hidden />
+        </button>
+      </header>
+
+      <div className="gr-two">
+        <div className="gr-rail" data-solo={hasDetail ? undefined : ''}>
+          <div
+            className="gr-list"
+            ref={listRef}
+            onScroll={onScroll}
+            data-fade-top={fade.top ? '' : undefined}
+            data-fade-bottom={fade.bottom ? '' : undefined}
+          >
+            {filteredTeams.length > 0 && (
+              <>
+                <div className="gr-grp">
+                  <span className="lbl">Teams</span>
+                  <span className="ct">{filteredTeams.length}</span>
+                  <span className="ln" />
+                </div>
+                {filteredTeams.map((t) => (
+                  <TeamRow key={t.team_name} team={t} onOpen={openTeam} index={rowIndex++} />
+                ))}
+              </>
+            )}
+
+            {SECTIONS.map(({ key, label }) => {
+              const items = groups[key]
+              if (items.length === 0) return null
+              return (
+                <React.Fragment key={key}>
+                  <div className="gr-grp" data-need={key === 'needs' ? '' : undefined}>
+                    <span className="lbl">{label}</span>
+                    <span className="ct">{items.length}</span>
+                    <span className="ln" />
+                  </div>
+                  {items.map((s) => (
+                    <GrokRow
+                      key={s.name}
+                      session={s}
+                      group={key}
+                      active={selected === s.name}
+                      onOpen={openSession}
+                      index={rowIndex++}
+                    />
+                  ))}
+                </React.Fragment>
+              )
+            })}
+
+            {totalBots === 0 && (
+              <div className="gr-pane-empty" style={{ padding: '48px 24px' }}>
+                {needle
+                  ? `No bots match “${rawQuery.trim()}”.`
+                  : 'No bots yet. Press + to boot your first one.'}
+              </div>
+            )}
+          </div>
+
+          <footer className="gr-ft">
+            <span className="av" aria-hidden>
+              SB
+            </span>
+            <span className="who">Sander</span>
+            <button
+              type="button"
+              className="set"
+              aria-label="Archived sessions"
+              onClick={openArchived}
+              title="Archived sessions"
+            >
+              <Settings size={18} aria-hidden />
+            </button>
+          </footer>
+        </div>
+
+        {hasDetail ? (
+          <DetailPane session={selectedSession} onOpenThread={openThread} />
+        ) : (
+          <div className="gr-pane" aria-hidden>
+            <div className="gr-pane-empty">
+              <div>
+                <Sparkles size={22} style={{ opacity: 0.5, marginBottom: 10 }} aria-hidden />
+                <div>Select a colleague to see cost, context and their latest.</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <NewSessionSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
+      />
+    </div>
+  )
+}

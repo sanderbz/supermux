@@ -301,7 +301,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // so it lands in the CSS budget (23.35/30, 78%), not here. The ENTRY (hero-path)
 // gate is UNMOVED at 147.34 / 160 (92%): none of this touches the hero path — the
 // hue write is inert until a focus route mounts under grok. ceil(measured).
-const BUDGET_APP_JS = 243 * KB
+// 247 as of WS5+WS6 (grok-mode overview / roster — the radical inbox): measured
+// 246.18 against 243 for WS4 — a +3.53 KB wave, ALL of it the new
+// `grok-roster-*.js` chunk (3.95 KB gz: `GrokRoster` + its Row A/B/C anatomy,
+// the four hairline sections, the facepile team row, and the cost/context detail
+// pane). It is a LAZY chunk fetched only when the default-OFF `grok-mode` flag is
+// on — `routes/overview.tsx` picks it with `React.lazy`, precisely so this whole
+// surface stays OFF the cold hero path. The proof is the ENTRY gate, the one that
+// actually guards first paint: it moved only +0.16 KB (147.34 → 147.50 / 160,
+// still 92%) — that sliver is the flag read + the lazy-import wiring in the
+// overview module itself (which IS the entry chunk); the roster's body is not on
+// it. This is exactly where new surface belongs (the same argument the mobile-
+// polish batch and B5's `/dev` benches made): weight on an on-demand chunk, the
+// hero path untouched. ceil(measured), the rule every fase since B3 has used; the
+// grok-mode.css half of WS5+WS6 lands in the CSS budget (25.94/30, 86%), not here.
+const BUDGET_APP_JS = 247 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
