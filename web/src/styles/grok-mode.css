@@ -1539,6 +1539,9 @@
     max-width: none;
     order: 3;
     flex-basis: 100%;
+  }
+}
+
 /* ══ GROK MODE — ONE PICKER (search · +new · @// mention · ⌘K) (WS7) ═══════════
    The app already consolidated its four pickers to ONE <EntityPickerView> (fase
    B3): two anchors — `token` (up from an @/-token in the composer, over the
@@ -1661,6 +1664,8 @@
   [data-grok][role='dialog'] {
     background: var(--sm-bg-elevated);
   }
+}
+
 /* ══ WS8 — CHAT SURFACE TOKEN RE-POINT + PROVENANCE POLISH ════════════════════
    The chat surface (fase A1, components/chat/*) is ALREADY Grok anatomy — user
    bubble bright / agent wash quiet, the mascot IS the spinner (no working colour
