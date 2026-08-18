@@ -624,3 +624,236 @@
     opacity: 0.7;
   }
 }
+
+/* ══ WS9 — EMPTY / LOADING / ERROR / ATTENTION SURFACES ═══════════════════════
+   The states of the app: nothing yet, loading, something went wrong, something
+   wants you. ENTIRELY scoped under `[data-grok]`; every surface below already
+   ships in the default app with its own (correct) look, so each rule here is
+   inert until the shell root carries `data-grok` and is a byte-exact revert when
+   it does not.
+
+   THREE LAWS this block enforces (mechanics.md §7, tokens.md §5):
+     1. ONE TONE, ONE COMPONENT. A failure and a success differ by ONE attribute
+        (`data-tone`), never a different component. A tone is consumed ONLY as a
+        `color-mix(<tone> 14%, transparent)` fill behind full-strength tone text —
+        NEVER a saturated filled bar (the #1 taste defect, tokens.md §15 #6).
+     2. THREE-LEVEL ATTENTION VOCABULARY. needs-you (a demand) is the one red
+        thing; unread is a calm dot; working is the mascot + live tail — no chip.
+     3. CALM, NOT DEAD. Skeletons are a flat tertiary wash; empty is a soft plate,
+        not a void; recovery is honest and graded, offered in the transcript.
+
+   INK BRIDGE. These surfaces are chat/roster components that paint with the app's
+   `--sm-ink*`/`bg-surface` ramp (repointed for the whole chat plane by WS8, not
+   here). So each container below re-points ITS OWN `.text-ink*` onto the Grok ink
+   ramp — scoped to the surface, never the shared token — so WS9 stands alone and
+   merges clean with WS8.
+
+   PORTAL NOTE. `[data-grok]` sits on the shell root, and the `--sm-*` tokens are
+   defined there; body-portalled overlays (vaul/Radix — e.g. the AttentionPicker
+   SHEET body) are outside it and can see neither the scope nor the tokens. That
+   is WS7's app-wide portal concern; WS9 restyles the in-shell surfaces (the
+   rollup trigger, the in-transcript attention card + pending band, the connection
+   chips, the banners), where the scope holds and the tokens resolve. */
+
+/* ── 1. THE ONE TONE SYSTEM ───────────────────────────────────────────────────
+   The canonical badge: one component, `data-tone` is the only thing that varies
+   a success into a failure. 14% tint fill + full-strength tone text + a pill.
+   Reusable primitive (mechanics.md §7.1) — available to every WS surface. */
+[data-grok] .grok-badge {
+  --gt: var(--sm-tone-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--sm-r-pill);
+  padding: 2px 8px 1px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: var(--sm-fw-medium);
+  /* The 14% fill + full-strength text — NEVER a saturated bar. */
+  background: color-mix(in srgb, var(--gt) 14%, transparent);
+  color: var(--gt);
+}
+[data-grok] .grok-badge[data-tone='accent'] {
+  --gt: var(--sm-tone-accent);
+}
+[data-grok] .grok-badge[data-tone='success'] {
+  --gt: var(--sm-tone-success);
+}
+[data-grok] .grok-badge[data-tone='warning'] {
+  --gt: var(--sm-tone-warning);
+}
+[data-grok] .grok-badge[data-tone='danger'] {
+  --gt: var(--sm-tone-danger);
+}
+/* muted is the one tone that is not a hue — a stopped/paused/archived thing. */
+[data-grok] .grok-badge[data-tone='muted'] {
+  background: var(--sm-fill-secondary);
+  color: var(--sm-text-tertiary);
+}
+[data-grok] .grok-badge__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* The bridge to the app's existing tone hook. The chat surface already marks its
+   "needs a human" ink with `data-tone="warn"` (calm orange, `--status-error`);
+   under Grok that becomes the WARNING tone — amber, the reference's calm colour
+   (clean-stage1's Teach-a-task banner), never alarmist red. Text elements recolour
+   their ink; the dot variants (which carry `bg-status-error`) recolour their fill. */
+[data-grok] [data-tone='warn'] {
+  color: var(--sm-tone-warning);
+}
+[data-grok] [data-tone='warn'].bg-status-error {
+  background-color: var(--sm-tone-warning);
+}
+
+/* ── 2. LOADING SKELETONS ─────────────────────────────────────────────────────
+   A skeleton is decoration around an absence — a flat, calm tertiary wash, never
+   the app's opaque `--muted` grey (spec §3.7). `background-color` (not the
+   `background` shorthand) so the `shimmer` variant's own sweep is preserved. */
+[data-grok] [data-skeleton] {
+  background-color: var(--sm-bg-tertiary);
+}
+/* The tile placeholder's plate: drop the 1px card border (a Grok tell — tokens.md
+   §4/§15 #2) and sit on the translucent card wash so the substrate reads through,
+   matching the real Grok row it stands in for. */
+[data-grok] [data-skeleton-tile] {
+  border-color: transparent;
+  background: var(--sm-bg-card);
+  border-radius: var(--sm-r-lg);
+}
+
+/* ── 3. EMPTY STATES ──────────────────────────────────────────────────────────
+   Never a dead void: a soft tertiary plate + quiet secondary copy in the tight
+   type scale — Grok's calm, not the app's muted grey. The icon is identity, not
+   an alert, so it never takes a tone. */
+[data-grok] [data-empty-icon] {
+  background-color: var(--sm-bg-tertiary);
+  color: var(--sm-text-tertiary);
+}
+[data-grok] [data-empty-state] p {
+  color: var(--sm-text-secondary);
+  letter-spacing: -0.1px;
+}
+
+/* ── 4. ERROR / RECOVERY SURFACES ─────────────────────────────────────────────
+   Honest, graded, one-tone. Every one of these is the app being careful, not the
+   app being broken, so none is a saturated bar. */
+
+/* 4a. Composer blocked strip — this session cannot work (a quota bucket, an auth
+   death). Warning tint, no coloured border, pill radius: the tone IS the signal. */
+[data-grok] [data-testid='chat-composer-blocked'] {
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--sm-tone-warning) 14%, transparent);
+  color: var(--sm-tone-warning);
+  border-radius: var(--sm-r-lg);
+}
+
+/* 4b. The pending band — "this didn't reach the session · Retry · Open terminal ·
+   Dismiss". Graded recovery, least→most weight: Retry (the one control that writes
+   to the pty) reads at full ink, Dismiss recedes. The warn ink is bridged above. */
+[data-grok] [data-testid='chat-pending'] [data-testid='chat-pending-retry'],
+[data-grok] [data-testid='chat-pending'] [data-testid='chat-pending-open-terminal'] {
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-testid='chat-pending'] [data-testid='chat-pending-dismiss'] {
+  color: var(--sm-text-secondary);
+}
+
+/* 4c. The Attention card — the surface that admits things (a send the watchdog
+   gave up on, a dialog with no verified mapping). INLINE ROW: raised-glass chip,
+   hairline seam, the warn dot bridged above. */
+/* Repaint only — the row already carries its own `backdrop-blur` from its
+   Tailwind classes; grok-mode.css adds NO second backdrop-filter (the one
+   substrate blur lives on `[data-grok]::before`, tokens.md §15 #4). */
+[data-grok] [data-testid='chat-attention-row'] {
+  background: var(--sm-raised-fill);
+  border-color: var(--sm-border);
+}
+[data-grok] [data-testid='chat-attention-row'] .text-ink {
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-testid='chat-attention-show'] {
+  border-color: var(--sm-border);
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-testid='chat-attention-show']:hover {
+  background-color: var(--sm-bg-hover);
+}
+/* EXPANDED CARD: an elevated surface with the popover shadow (the only place a
+   WS9 surface earns a shadow — it is a true overlay, tokens.md §11). */
+[data-grok] [data-testid='chat-attention-card'] {
+  background: var(--sm-bg-elevated);
+  border-color: var(--sm-border);
+  box-shadow: var(--sm-shadow-popover);
+}
+[data-grok] [data-testid='chat-attention-card'] .text-ink {
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-testid='chat-attention-card'] .text-ink-2 {
+  color: var(--sm-text-secondary);
+}
+[data-grok] [data-testid='chat-attention-open-terminal'] {
+  background-color: var(--sm-fill-secondary);
+  border-color: var(--sm-border);
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-testid='chat-attention-dismiss']:hover,
+[data-grok] [data-testid='chat-attention-close']:hover {
+  background-color: var(--sm-bg-hover);
+}
+
+/* 4d. The connection chip — reconnecting / stale / no-chat-here / gone-for-good.
+   The healthy case renders nothing. The calm not-yet-current states are a neutral
+   tertiary chip (a dropped link may come back — not an error). The ONE state that
+   is final — a terminal close `CHAT_GONE` marks `alarming` (it carries the
+   `bg-status-error/10` strip) — takes the danger tint so "this session no longer
+   exists" cannot read as "reconnecting…". */
+[data-grok] [data-vr='chat-connection'] {
+  border-color: var(--sm-border);
+  background-color: var(--sm-bg-tertiary);
+  color: var(--sm-text-secondary);
+}
+[data-grok] [data-vr='chat-connection'].bg-status-error\/10 {
+  border-color: color-mix(in srgb, var(--sm-tone-danger) 30%, transparent);
+  background-color: color-mix(in srgb, var(--sm-tone-danger) 14%, transparent);
+  color: var(--sm-tone-danger);
+}
+
+/* 4e. The global reconnect banner — one morphing glass pill. Keep the raised
+   glass; swap the tint per state (one attribute, `data-conn-state`) and the
+   drop-shadow onto the popover shadow. reconnecting = warning, offline = danger,
+   the recovery flash = success. Never the app's alarmist `--destructive` red. */
+[data-grok] [data-conn-pill] {
+  border-color: var(--sm-border);
+  box-shadow: var(--sm-shadow-popover);
+  color: var(--sm-text-primary);
+}
+[data-grok] [data-conn-pill][data-conn-state='reconnecting'] {
+  background-color: color-mix(in srgb, var(--sm-tone-warning) 14%, transparent);
+}
+[data-grok] [data-conn-pill][data-conn-state='offline'] {
+  background-color: color-mix(in srgb, var(--sm-tone-danger) 14%, transparent);
+}
+[data-grok] [data-conn-pill][data-conn-state='connected'] {
+  background-color: color-mix(in srgb, var(--sm-tone-success) 14%, transparent);
+}
+
+/* ── 5. THE NEEDS-ATTENTION ROLLUP ────────────────────────────────────────────
+   The overview header's answer to "is anything waiting on me?" — the cross-agent
+   inbox Grok structurally lacks (mechanics.md §6.5). The count is the one red
+   thing (spec §3.2: `needs you: N`, danger tone, semibold); the +N overflow and
+   the hover stay in the neutral ramp. The facepile marks are identity and keep
+   their own hue — the count is the only tone. */
+[data-grok] [data-vr='attention-rollup']:hover {
+  background-color: var(--sm-bg-hover);
+}
+[data-grok] [data-vr='attention-rollup'] > span:first-of-type {
+  color: var(--sm-tone-danger);
+  font-weight: var(--sm-fw-semibold);
+}
+[data-grok] [data-vr='attention-rollup-overflow'] {
+  color: var(--sm-text-tertiary);
+}

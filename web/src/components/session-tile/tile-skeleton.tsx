@@ -7,6 +7,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 export function TileSkeleton({ className }: { className?: string }) {
   return (
     <div
+      // WS9 (Grok mode) — inert hook. Default app is byte-identical; under
+      // `[data-grok]` grok-mode.css drops the 1px card border (a Grok tell) and
+      // repaints the plate onto the translucent card wash.
+      data-skeleton-tile=""
       className={cn(
         'overflow-hidden rounded-xl border border-border bg-card p-3',
         className,

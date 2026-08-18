@@ -241,6 +241,12 @@ export function ReconnectBanner() {
               <motion.button
                 type="button"
                 layout
+                // WS9 (Grok mode) — inert hooks. Default app is byte-identical;
+                // under `[data-grok]` grok-mode.css repaints the glass pill onto
+                // Grok's raised-glass + tone tints (one attribute per state, no
+                // saturated alert bar), keyed on `data-conn-state`.
+                data-conn-pill=""
+                data-conn-state={visibleState ?? undefined}
                 transition={reduce ? { duration: 0 } : springs.statusMorph}
                 onClick={v.retryable && retry ? retry : undefined}
                 disabled={!v.retryable || !retry}
