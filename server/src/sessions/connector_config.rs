@@ -1,27 +1,41 @@
-//! The per-session config-dir + settings.json writer — THE shared seam.
+//! The per-session settings-overlay writer — THE shared seam.
 //!
-//! **One component owns creating the per-session private config dir.** This
-//! module is that component. It computes, for one session, everything the launch
-//! path needs to run that session's `claude` child with an ISOLATED
-//! `CLAUDE_CONFIG_DIR`, its granted connectors wired in, and their secrets
-//! injected as env — and nothing else. When a session has NO connector grants
-//! (and, later, no memory), [`assemble`] returns `None` and the launch is
-//! BYTE-IDENTICAL to the pre-connector fleet.
+//! **One component owns building the per-session settings overlay.** This module
+//! is that component. It computes, for one session, everything the launch path
+//! needs to run that session's `claude` child with its granted connectors wired
+//! in, its bot-memory recall hook fired, its secrets injected as env, and the
+//! account/Claude.ai connector kill switch on — and nothing else. When a session
+//! has NO connector grants and no memory, [`assemble`] returns `None` and the
+//! launch is BYTE-IDENTICAL to the pre-connector fleet.
+//!
+//! **It layers OVER `~/.claude`, it does NOT repoint the config dir.** The overlay
+//! is a private `settings.json` handed to the child via Claude Code's `--settings
+//! <file>` flag, which MERGES it over the real config dir. We deliberately do NOT
+//! set `CLAUDE_CONFIG_DIR`: repointing the child at a fresh, near-empty dir would
+//! strand every subsystem that resolves against the server's `~/.claude` — the
+//! transcript tailer / recall / chat plane (`resumable::project_dir_for`), the
+//! statusline tap, teams config, `--resume`, and auth/trust — for exactly the bot
+//! sessions that have connectors or memory. Transcripts, auth, statusline, teams,
+//! and resume therefore stay pointed at the real `~/.claude`; only our hooks,
+//! permissions, and the kill switch are layered on top.
 //!
 //! **How it composes with role/notes.** `lifecycle::build_launch_command` already
 //! appends the read-only role/notes block via its OWN `--append-system-prompt`
-//! flag pair. This seam contributes a SEPARATE, independent `--mcp-config <json>
-//! --strict-mcp-config` flag pair (through [`SessionConfig::launch_flags`]) and a
-//! set of env vars (through [`SessionConfig::env`], merged over
-//! `build_env`'s map). Neither clobbers the other — both flag pairs sit side by
-//! side in the launch line, and the env slots are disjoint.
+//! flag pair. This seam contributes a SEPARATE `--mcp-config <json>
+//! --strict-mcp-config` pair for connectors, plus a `--settings <file>` flag for
+//! the hooks/permissions/kill-switch overlay (both through
+//! [`SessionConfig::launch_flags`]) and a set of env vars (through
+//! [`SessionConfig::env`], merged over `build_env`'s map). None clobbers another —
+//! the flag pairs sit side by side in the launch line, and the env slots are
+//! disjoint.
 //!
 //! **The extension seam (memory phase).** [`SessionConfig`] is a builder: the
-//! connector phase calls [`SessionConfig::apply_connectors`]. The memory phase
-//! will add a sibling `apply_memory` that merges a `hooks` block into
-//! [`SessionConfig::settings`] and adds env vars to [`SessionConfig::env`] — the
-//! same struct, the same `finish` writer, the same `CLAUDE_CONFIG_DIR`. See the
-//! marked seam in [`SessionConfig`].
+//! connector phase calls [`SessionConfig::apply_connectors`], the memory phase
+//! [`SessionConfig::apply_memory`] — both merge into the SAME
+//! [`SessionConfig::settings`] overlay and the SAME [`SessionConfig::env`], written
+//! by the SAME `finish`. The account-connector kill switch is applied by `finish`
+//! for EVERY active launch (connectors OR memory), so an ungranted bot never
+//! silently inherits account connectors.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -46,33 +60,37 @@ pub struct ResolvedGrant {
     pub secrets: BTreeMap<String, String>,
 }
 
-/// The assembled per-session config: a private `CLAUDE_CONFIG_DIR`, the settings
-/// JSON to write into it, the env to inject, and the launch flags to append.
-/// Build it, apply the tiers ([`apply_connectors`] now; `apply_memory` later),
-/// then [`finish`] to write settings.json and hand the launch path what it needs.
+/// The assembled per-session config: the settings-overlay JSON to write, the env
+/// to inject, and the launch flags to append (`--mcp-config`/`--strict-mcp-config`
+/// for connectors, `--settings <file>` for the overlay). Build it, apply the tiers
+/// ([`apply_connectors`] and/or [`apply_memory`]), then [`finish`] to write the
+/// overlay and hand the launch path what it needs.
 pub struct SessionConfig {
-    /// `<data_dir>/session-config/<name>` — becomes `CLAUDE_CONFIG_DIR`.
-    config_dir: PathBuf,
-    /// The settings.json body under construction. The memory phase merges a
-    /// `hooks` block here.
+    /// `<data_dir>/session-config/<name>` — holds this session's private
+    /// `settings.json` overlay (passed via `--settings`, NOT as `CLAUDE_CONFIG_DIR`).
+    settings_dir: PathBuf,
+    /// The settings.json overlay body under construction. Merged OVER `~/.claude`
+    /// by `--settings`; the memory phase adds a `hooks` block, `finish` adds the
+    /// account-connector kill switch.
     settings: Map<String, Value>,
-    /// Extra env for the launch child (secrets + `CLAUDE_CONFIG_DIR` + the
-    /// account-connector kill switch). The memory phase adds its own vars here.
+    /// Extra env for the launch child (secrets + the account-connector kill
+    /// switch). The memory phase adds its own vars here.
     env: HashMap<String, String>,
     /// Extra launch-line flag WORDS (raw; `build_launch_command` shell-escapes
-    /// each). The connector tier appends `--mcp-config <json> --strict-mcp-config`.
+    /// each). The connector tier appends `--mcp-config <json> --strict-mcp-config`;
+    /// `finish` appends `--settings <overlay path>`.
     launch_flags: Vec<String>,
-    /// True once any tier contributed something requiring the private dir. Gates
-    /// the whole thing off for a plain session (byte-identical launch).
+    /// True once any tier contributed something requiring the overlay. Gates the
+    /// whole thing off for a plain session (byte-identical launch).
     active: bool,
 }
 
 impl SessionConfig {
     /// A fresh, inactive config for `session_name` under `data_dir`.
     pub fn new(data_dir: &Path, session_name: &str) -> Self {
-        let config_dir = data_dir.join("session-config").join(session_name);
+        let settings_dir = data_dir.join("session-config").join(session_name);
         Self {
-            config_dir,
+            settings_dir,
             settings: Map::new(),
             env: HashMap::new(),
             launch_flags: Vec::new(),
@@ -111,7 +129,19 @@ impl SessionConfig {
             servers.insert(g.connector_id.clone(), g.emit.clone());
             allow.push(Value::String(format!("mcp__{}__*", g.connector_id)));
             // Inject decrypted secrets as env; the emit block's ${VAR} refs
-            // resolve from the process environment at Claude startup.
+            // resolve from the process environment at Claude startup. This keeps
+            // the plaintext out of `~/.claude.json`, the transcript, and the
+            // MCP stream — but it is resident in the granted child's
+            // `/proc/<pid>/environ` for the session lifetime. THREAT-MODEL NOTE
+            // (v1, accepted): all sessions run under ONE service uid, and Linux
+            // exposes `environ` to the owning uid, so a sibling agent's own Bash
+            // can read it. Closing that gap needs OS-level process isolation
+            // (a per-agent uid, a PID/user namespace, or `/proc` mounted
+            // `hidepid=2`) — all of which require root/sudo this host does not
+            // have — or an fd/socket secret broker (a larger architecture change).
+            // The vault, disk, and transcript boundaries all hold; the residual
+            // exposure is same-uid `/proc` only, and is documented here rather
+            // than silently relied upon.
             for (k, v) in &g.secrets {
                 self.env.insert(k.clone(), v.clone());
             }
@@ -122,7 +152,12 @@ impl SessionConfig {
             .push(serde_json::to_string(&inline).unwrap_or_else(|_| "{}".into()));
         self.launch_flags.push("--strict-mcp-config".to_string());
 
-        // Auto-allow the granted tools; forbid account connectors.
+        // Auto-allow the granted tools. Ungranted connectors are denied by
+        // `--strict-mcp-config` (their server is not in the config at all); project
+        // `.mcp.json` auto-approval is off too. The account/Claude.ai kill switch
+        // (`disableClaudeAiConnectors` + `ENABLE_CLAUDEAI_MCP_SERVERS=false`) is NOT
+        // set here — `finish` applies it to EVERY active launch (connectors OR
+        // memory) so an ungranted bot never inherits account connectors either.
         let perms = self
             .settings
             .entry("permissions".to_string())
@@ -131,11 +166,7 @@ impl SessionConfig {
             obj.insert("allow".to_string(), Value::Array(allow));
         }
         self.settings
-            .insert("disableClaudeAiConnectors".to_string(), Value::Bool(true));
-        self.settings
             .insert("enableAllProjectMcpServers".to_string(), Value::Bool(false));
-        self.env
-            .insert("ENABLE_CLAUDEAI_MCP_SERVERS".to_string(), "false".to_string());
     }
 
     // ── memory-phase seam ─────────────────────────────────────────────────────
@@ -199,20 +230,37 @@ impl SessionConfig {
         );
     }
 
-    /// Materialize the config: if any tier contributed, create the private dir,
-    /// atomically write its `settings.json`, and return the launch inputs
-    /// (`CLAUDE_CONFIG_DIR` set in the returned env). Otherwise return `None` and
-    /// leave the launch untouched.
+    /// The account/Claude.ai connector kill switch — applied to EVERY active
+    /// launch (connectors OR memory), never coupled to having ≥1 grant. Without
+    /// this an ungranted-but-active bot (memory-only, or connector-less) would
+    /// inherit the account's ambient Claude.ai connectors, bypassing the per-agent
+    /// grant model. `disableClaudeAiConnectors` blocks the Claude.ai account
+    /// connectors; the env var is the belt-and-suspenders twin.
+    fn apply_account_connector_killswitch(&mut self) {
+        self.settings
+            .insert("disableClaudeAiConnectors".to_string(), Value::Bool(true));
+        self.env
+            .insert("ENABLE_CLAUDEAI_MCP_SERVERS".to_string(), "false".to_string());
+    }
+
+    /// Materialize the config: if any tier contributed, atomically write the
+    /// private `settings.json` overlay and return the launch inputs — the overlay
+    /// handed to the child via `--settings <file>` (which MERGES over the real
+    /// `~/.claude`, leaving transcripts/auth/statusline/teams/resume intact),
+    /// plus the secret env. Otherwise return `None` and leave the launch untouched.
     pub async fn finish(mut self) -> Result<Option<FinishedConfig>> {
         if !self.active {
             return Ok(None);
         }
-        let settings_path = self.config_dir.join("settings.json");
+        // Every active launch gets the kill switch, decoupled from grants.
+        self.apply_account_connector_killswitch();
+        let settings_path = self.settings_dir.join("settings.json");
         write_json_atomic(&settings_path, &Value::Object(self.settings)).await?;
-        self.env.insert(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            self.config_dir.to_string_lossy().into_owned(),
-        );
+        // Layer the overlay OVER ~/.claude via --settings (Claude Code merges it),
+        // instead of repointing CLAUDE_CONFIG_DIR at a near-empty dir.
+        self.launch_flags.push("--settings".to_string());
+        self.launch_flags
+            .push(settings_path.to_string_lossy().into_owned());
         Ok(Some(FinishedConfig {
             env: self.env,
             launch_flags: self.launch_flags,
@@ -223,11 +271,14 @@ impl SessionConfig {
 /// What [`SessionConfig::finish`] hands the launch path.
 #[derive(Debug, Clone)]
 pub struct FinishedConfig {
-    /// Merge over `build_env`'s map (adds `CLAUDE_CONFIG_DIR`, the secret
-    /// `${VAR}` values, and the account-connector kill switch).
+    /// Merge over `build_env`'s map (adds the secret `${VAR}` values and the
+    /// `ENABLE_CLAUDEAI_MCP_SERVERS=false` kill switch). Note: this does NOT set
+    /// `CLAUDE_CONFIG_DIR` — the overlay rides `--settings` instead (see
+    /// `launch_flags`).
     pub env: HashMap<String, String>,
     /// Append to the claude launch line (raw words; `build_launch_command`
-    /// shell-escapes each).
+    /// shell-escapes each): the connector `--mcp-config <json> --strict-mcp-config`
+    /// pair and the `--settings <overlay path>` flag.
     pub launch_flags: Vec<String>,
 }
 
@@ -340,6 +391,12 @@ mod tests {
         d
     }
 
+    /// The path passed to `claude` via `--settings` (the overlay), if present.
+    fn settings_flag(fin: &FinishedConfig) -> Option<&str> {
+        let i = fin.launch_flags.iter().position(|w| w == "--settings")?;
+        fin.launch_flags.get(i + 1).map(String::as_str)
+    }
+
     fn resolved(id: &str, secret: Option<(&str, &str)>) -> ResolvedGrant {
         let mut secrets = BTreeMap::new();
         if let Some((k, v)) = secret {
@@ -376,13 +433,15 @@ mod tests {
         let json_arg = &fin.launch_flags[1];
         assert!(json_arg.contains("\"icloud-mail\""));
 
-        // Secret + CLAUDE_CONFIG_DIR + kill switch injected as env.
+        // Secret + kill-switch env injected; the overlay rides --settings, NOT
+        // a repointed CLAUDE_CONFIG_DIR.
         assert_eq!(fin.env.get("ICLOUD_APP_PW").map(String::as_str), Some("sekret"));
-        assert!(fin.env.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(!fin.env.contains_key("CLAUDE_CONFIG_DIR"), "must NOT repoint the config dir");
         assert_eq!(fin.env.get("ENABLE_CLAUDEAI_MCP_SERVERS").map(String::as_str), Some("false"));
 
-        // settings.json written with the allowlist + kill switch, no plaintext secret.
+        // --settings points at the written overlay.
         let settings_path = dir.join("session-config").join("alpha").join("settings.json");
+        assert_eq!(settings_flag(&fin), Some(settings_path.to_string_lossy().as_ref()));
         let text = std::fs::read_to_string(&settings_path).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["permissions"]["allow"][0], json!("mcp__icloud-mail__*"));
@@ -410,8 +469,10 @@ mod tests {
         assert_ne!(ja, jb, "distinct sessions get distinct inline mcp-config");
         assert!(ja.contains("icloud-mail") && !ja.contains("github"));
         assert!(jb.contains("github") && !jb.contains("icloud-mail"));
-        // Distinct CLAUDE_CONFIG_DIRs too.
-        assert_ne!(fa.env.get("CLAUDE_CONFIG_DIR"), fb.env.get("CLAUDE_CONFIG_DIR"));
+        // Distinct per-session overlays too (and neither repoints the config dir).
+        assert_ne!(settings_flag(&fa), settings_flag(&fb));
+        assert!(!fa.env.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(!fb.env.contains_key("CLAUDE_CONFIG_DIR"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -446,7 +507,8 @@ mod tests {
         assert_eq!(fin.env.get("BOT_MEMORY_NAME").map(String::as_str), Some("alpha"));
         assert_eq!(fin.env.get("BOT_MEMORY_ROLE").map(String::as_str), Some("reviewer"));
         assert!(fin.env.contains_key("BOT_MEMORY_DIR"));
-        assert!(fin.env.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(settings_flag(&fin).is_some(), "overlay rides --settings");
+        assert!(!fin.env.contains_key("CLAUDE_CONFIG_DIR"), "no config-dir repoint");
 
         let text =
             std::fs::read_to_string(dir.join("session-config").join("alpha").join("settings.json"))
@@ -469,18 +531,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A memory-only bot (no connector grants) still activates the private dir +
+    /// A memory-only bot (no connector grants) still activates the overlay +
     /// hook — a bot's self-writes must be recallable next turn even with zero
-    /// connectors.
+    /// connectors — AND still gets the account-connector kill switch, so an
+    /// ungranted bot never silently inherits the account's Claude.ai connectors.
     #[tokio::test]
     async fn memory_only_activates_without_connectors() {
         let dir = temp_dir();
         let mut cfg = SessionConfig::new(&dir, "solo");
         cfg.apply_memory(mem_params(&dir, "solo", ""));
         let fin = cfg.finish().await.unwrap().expect("memory alone activates");
-        assert!(fin.env.contains_key("CLAUDE_CONFIG_DIR"));
+        let overlay = settings_flag(&fin).expect("overlay rides --settings");
+        assert!(!fin.env.contains_key("CLAUDE_CONFIG_DIR"), "no config-dir repoint");
         assert!(!fin.launch_flags.iter().any(|w| w == "--mcp-config"), "no connector flags");
         assert_eq!(fin.env.get("BOT_MEMORY_ROLE").map(String::as_str), Some(""));
+
+        // Kill switch present even with ZERO connector grants (finding: an
+        // ungranted bot must not inherit account connectors).
+        assert_eq!(fin.env.get("ENABLE_CLAUDEAI_MCP_SERVERS").map(String::as_str), Some("false"));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
+        assert_eq!(v["disableClaudeAiConnectors"], json!(true), "account-connector kill switch on");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

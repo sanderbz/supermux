@@ -322,20 +322,36 @@ fn cap_core_notes(notes: &str) -> String {
         return notes.to_string();
     }
 
-    // Keep whole lines up to BOTH budgets.
+    // Keep whole lines up to BOTH budgets. The char budget binds the FIRST kept
+    // line too: a single wall-of-text line with no newlines (sessions.memory is
+    // free text a human/bot edits) must not slip past the cap in full — it is
+    // char-truncated to the remaining budget so the always-loaded token tax is
+    // genuinely bounded, not just bounded when there happen to be many newlines.
     let mut kept = String::new();
     let mut kept_lines = 0usize;
+    let mut clipped = false;
     for line in notes.lines() {
         if kept_lines >= CORE_MAX_LINES {
             break;
         }
-        // +1 for the newline we will add (except before the first line).
-        let projected = kept.chars().count() + line.chars().count() + 1;
-        if kept_lines > 0 && projected > CORE_MAX_CHARS {
+        // Chars already spent, plus the newline this line needs (none for the
+        // first). Stop if there is no room left for even a separator.
+        let used = kept.chars().count();
+        let sep = usize::from(kept_lines > 0);
+        if used + sep >= CORE_MAX_CHARS {
             break;
         }
+        let budget = CORE_MAX_CHARS - used - sep;
         if kept_lines > 0 {
             kept.push('\n');
+        }
+        if line.chars().count() > budget {
+            // Truncate this line (the first line included) to the remaining char
+            // budget; the rest is recalled on demand, never front-loaded.
+            kept.extend(line.chars().take(budget));
+            kept_lines += 1;
+            clipped = true;
+            break;
         }
         kept.push_str(line);
         kept_lines += 1;
@@ -343,6 +359,8 @@ fn cap_core_notes(notes: &str) -> String {
     let dropped = total_lines.saturating_sub(kept_lines);
     if dropped > 0 {
         kept.push_str(&format!("\n…({dropped} more in archival)"));
+    } else if clipped {
+        kept.push_str("\n…(truncated; more in archival)");
     }
     kept
 }
@@ -696,8 +714,9 @@ fn build_launch_command(
             // CONNECTOR-STORE COEXISTENCE SEAM — see
             // docs/superpowers/specs/2026-08-18-connector-store-design.md
             // (branch feat/connector-store). That work injects at THIS SAME point
-            // via `--mcp-config <path>` (and/or `CLAUDE_CONFIG_DIR` in
-            // `build_env`). This role/notes injection is designed to COMPOSE with
+            // via `--mcp-config <path>` and a `--settings <overlay>` file (with the
+            // secret `${VAR}` env in `build_env`; it does NOT repoint
+            // `CLAUDE_CONFIG_DIR`). This role/notes injection is designed to COMPOSE with
             // it: it appends its OWN `--append-system-prompt` flag pair and does
             // NOT consume the `--mcp-config` slot or any env slot the connector
             // work needs — a later MCP-config flag simply sits beside this one in
@@ -707,15 +726,17 @@ fn build_launch_command(
                 parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(sys)).into_owned());
             }
             // ── connector store (migration 0031) ───────────────────────────
-            // The per-session connector flag pair (`--mcp-config <inline json>
-            // --strict-mcp-config`), computed by the shared seam
-            // `connector_config::assemble` from this session's enabled grants
-            // (its own + all-agents). COMPOSES with the role/notes block above:
-            // a separate, independent flag pair, appended after it, escaped word
-            // by word. Empty for a session with no grants ⇒ the launch line is
-            // byte-identical to the pre-connector fleet. The matching
-            // `CLAUDE_CONFIG_DIR` + `${VAR}` secret env is injected via
-            // `build_env`'s merge in `start_locked` — not here.
+            // The per-session launch flags — the connector pair (`--mcp-config
+            // <inline json> --strict-mcp-config`) and the `--settings <overlay>`
+            // flag for the hooks/permissions/kill-switch overlay — computed by the
+            // shared seam `connector_config::assemble` from this session's enabled
+            // grants (its own + all-agents) and its bot memory. COMPOSES with the
+            // role/notes block above: separate, independent flag words appended
+            // after it, escaped word by word. Empty for a plain session (no grants,
+            // no memory) ⇒ the launch line is byte-identical to the pre-connector
+            // fleet. The matching `${VAR}` secret env is injected via `build_env`'s
+            // merge in `start_locked` — not here. Note: the overlay is layered via
+            // `--settings`, NOT by repointing `CLAUDE_CONFIG_DIR`.
             for word in mcp_flags {
                 parts.push(shell_escape::unix::escape(std::borrow::Cow::Borrowed(word)).into_owned());
             }
@@ -1354,15 +1375,18 @@ async fn start_locked(
     );
 
     // ── connector store (migration 0031): the shared per-session seam ──────────
-    // ONE component owns creating this session's private CLAUDE_CONFIG_DIR +
-    // settings.json: `connector_config::assemble`. It returns `None` (and touches
-    // nothing) unless the session has enabled connector grants — so the launch is
+    // ONE component owns building this session's private settings OVERLAY:
+    // `connector_config::assemble`. It returns `None` (and touches nothing) unless
+    // the session has enabled connector grants OR bot memory — so the launch is
     // byte-identical for the pre-connector fleet. When present it yields the env
-    // to MERGE over `build_env`'s map (`CLAUDE_CONFIG_DIR`, the decrypted `${VAR}`
-    // secrets, and the account-connector kill switch) and the launch flag words
-    // (`--mcp-config … --strict-mcp-config`) threaded into `build_launch_command`
-    // below. Claude-only (codex ignores `--mcp-config`); best-effort — a failure
-    // logs and launches without connectors rather than blocking start.
+    // to MERGE over `build_env`'s map (the decrypted `${VAR}` secrets and the
+    // account-connector kill switch) and the launch flag words
+    // (`--mcp-config … --strict-mcp-config` plus `--settings <overlay>`) threaded
+    // into `build_launch_command` below. The overlay is layered via `--settings`,
+    // NOT by repointing `CLAUDE_CONFIG_DIR`, so the transcript tailer, statusline,
+    // teams, resume, and auth all stay on the real `~/.claude`. Claude-only (codex
+    // ignores these flags); best-effort — a failure logs and launches without
+    // connectors rather than blocking start.
     let mut connector_flags: Vec<String> = Vec::new();
     if launches_claude(&s.provider) {
         match crate::sessions::connector_config::assemble(state, name).await {
@@ -3378,6 +3402,21 @@ mod build_env_tests {
         // A short index passes through untouched.
         let short = "- one\n- two\n- three";
         assert_eq!(cap_core_notes(short), short, "under budget = verbatim");
+    }
+
+    /// The char budget is HARD even for a single wall-of-text line with no
+    /// newlines: the line budget alone would emit it whole (the always-loaded
+    /// token tax stays unbounded), so the first line is char-truncated too.
+    #[test]
+    fn core_notes_cap_a_single_overlong_line() {
+        let one_huge_line = "x".repeat(20_000); // >> CORE_MAX_CHARS, zero newlines
+        let capped = cap_core_notes(&one_huge_line);
+        assert!(
+            capped.chars().count() <= CORE_MAX_CHARS + 40,
+            "a single long line is clipped to the char budget (+pointer), got {}",
+            capped.chars().count()
+        );
+        assert!(capped.contains("more in archival"), "clipped index shows the pointer");
     }
 
     /// The cap also injects the pointer through the full `role_system_prompt`
