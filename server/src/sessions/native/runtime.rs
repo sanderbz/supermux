@@ -388,10 +388,21 @@ impl NativeSession {
         // future non-main entry point) cannot reintroduce it.
         // See `sessions::lifecycle::AGENT_NESTING_ENV`.
         for key in crate::sessions::lifecycle::AGENT_NESTING_ENV {
-            if !env.contains_key(*key) {
-                cmd.env_remove(key);
-            }
+            // UNCONDITIONAL. The old `if !env.contains_key` guard PRESERVED a
+            // marker whenever the per-session `env` map itself carried it — and
+            // on the nested-daemon path that map is built from an unscrubbed
+            // snapshot that still holds CLAUDE_CODE_SESSION_ID / _CHILD_SESSION,
+            // so the guard skipped the removal and every holder shipped with
+            // CLAUDE_CODE_CHILD_SESSION=1. That turns Claude's transcript
+            // saving OFF, and the chat plane (whose only data source is that
+            // transcript) renders empty for a session whose pty is perfectly
+            // alive. `env_remove` after `envs(env)` wins, so this strips the
+            // marker no matter how it reached the map.
+            cmd.env_remove(key);
         }
+        // Belt-and-suspenders: force Claude's transcript persistence on even if
+        // some ancestor disabled it. Harmless for providers that ignore it.
+        cmd.env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1");
         // SAFETY: `setsid` is async-signal-safe. It detaches the holder from
         // the daemon's session/process group so a signal aimed at the daemon
         // (or its group) can never reach a holder or its agent.
