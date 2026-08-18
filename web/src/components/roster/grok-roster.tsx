@@ -27,9 +27,12 @@
  */
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, Plus, Search, Settings, Sparkles } from 'lucide-react'
+import { Archive, Plus, Search, Settings, SlidersHorizontal, Sparkles } from 'lucide-react'
 
 import { useSessions } from '@/hooks/use-sessions'
+import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+import { restSessionInput } from '@/lib/session-input'
+import type { TileSession } from '@/components/session-tile/types'
 import { useTeams } from '@/hooks/use-teams'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
 import { useAttentionContext } from '@/hooks/use-attention'
@@ -49,6 +52,20 @@ import type { Team } from '@/lib/api/teams'
 const BotPanel = React.lazy(() =>
   import('@/components/roster/bot-panel').then((m) => ({ default: m.BotPanel })),
 )
+
+// The live conversation thread — the SAME renderer the focus routes mount, reused
+// verbatim in the roster's right pane (desktop grok's "thread-in-pane", approach
+// (a)). It is self-wiring from `name` alone (its own chat WS + peek + REST plane),
+// needs no xterm, and is lazy so the roster's first paint never pays for it — it
+// only arrives once a chat-eligible bot is opened.
+const ChatPanel = React.lazy(() => import('@/components/chat/chat-panel'))
+
+/** Coerce the wire shape to the tile's `TileSession` (the panel wants a string
+ *  `updated_at`; the API leaves it optional for partial deltas). Same shape
+ *  `overview.tsx` uses. */
+function toTile(s: ApiSession): TileSession {
+  return { ...s, updated_at: s.updated_at ?? '' }
+}
 
 /* ── small pure helpers (local; the row is the only caller) ─────────────────── */
 
@@ -350,6 +367,12 @@ export default function GrokRoster() {
   const [density, setDensity] = React.useState<Density>(readDensity)
   const [selected, setSelected] = React.useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
+  // Which face the right pane wears for the OPEN bot: the live conversation
+  // ('thread', the default) or the per-bot settings page ('settings'). It resets
+  // to 'thread' whenever the selection changes (the render-phase guard below) so
+  // opening a new colleague always lands on their conversation, never on the last
+  // bot's settings tab.
+  const [paneView, setPaneView] = React.useState<'thread' | 'settings'>('thread')
 
   // Install the "New bot" verb for the command palette while this roster is
   // mounted; clear on unmount (parity with the New-group channel). The palette
@@ -418,6 +441,36 @@ export default function GrokRoster() {
     [selected, sessions],
   )
 
+  // Reset the pane to the thread whenever the SELECTION changes — React's
+  // "adjust state while rendering" pattern (a previous-value in state, not an
+  // effect): React re-renders immediately with the corrected value and no
+  // cascading commit. Re-clicking the SAME row is handled in `openSession`.
+  const [paneSelSeen, setPaneSelSeen] = React.useState(selected)
+  if (paneSelSeen !== selected) {
+    setPaneSelSeen(selected)
+    if (paneView !== 'thread') setPaneView('thread')
+  }
+
+  // The one hard constraint on thread-in-pane: chat eligibility. `useChatRenderer`
+  // is the SAME three-gate decision the focus seam uses (bot mode on + kill-switch
+  // + local-Claude-non-lead). A bot that fails it — Codex, shell, a remote host,
+  // a team lead — cannot be a chat surface, so the pane falls back to its settings
+  // page with an honest "Open terminal →" escape to /focus (Phase 1).
+  const isTeamLead = React.useMemo(
+    () => (selected ? teams.some((t) => t.lead_supermux_session === selected) : false),
+    [teams, selected],
+  )
+  const threadEligible = useChatRenderer(selectedSession, isTeamLead)
+  // The panel's write plane, memoised by name so a roster re-render (the seconds
+  // ticker, a sibling row's delta) doesn't hand the chat hooks a fresh input
+  // object every frame. `ChatPanel` opens its own chat WS + peek from `name`; this
+  // is only the RAW `/send`·`/paste`·`/keys` plane, exactly what the focus route
+  // hands it (desktop-split.tsx).
+  const threadInput = React.useMemo(
+    () => (selected ? restSessionInput(selected) : null),
+    [selected],
+  )
+
   // Mask-fade the list edges by whether it is scrolled (no shadows on glass).
   const listRef = React.useRef<HTMLDivElement>(null)
   const [fade, setFade] = React.useState({ top: false, bottom: false })
@@ -441,6 +494,10 @@ export default function GrokRoster() {
         return
       }
       setSelected(s.name)
+      // Re-opening the row you are already ON keeps `selected` unchanged, so the
+      // render-phase reset never fires — flip back to the thread here too, so a
+      // click always returns to the conversation.
+      setPaneView('thread')
     },
     [attention, navigate],
   )
@@ -450,7 +507,16 @@ export default function GrokRoster() {
     },
     [navigate],
   )
-  const openThread = React.useCallback(() => {
+  // DESKTOP: the pane swaps in place — no /focus hop, no second shell. The rail
+  // keeps its scroll, its selection highlight and its entry animations (the Grok
+  // inbox feel). BotPanel's "Open thread" and the thread's own settings toggle
+  // both flow through `setPaneView`.
+  const openThread = React.useCallback(() => setPaneView('thread'), [])
+  const openSettings = React.useCallback(() => setPaneView('settings'), [])
+  // The terminal escape hatch + the ineligible-bot fallback: honestly LEAVE the
+  // roster for the still-present /focus route, which owns the live terminal (and
+  // its keyboard capture). Phase 1 does not reproduce the terminal in the pane.
+  const openInFocus = React.useCallback(() => {
     if (selectedSession) navigate(`/focus/${encodeURIComponent(selectedSession.name)}`)
   }, [navigate, selectedSession])
 
@@ -685,16 +751,53 @@ export default function GrokRoster() {
         </div>
 
         {hasDetail ? (
-          <React.Suspense
-            fallback={<div className="gr-pane" data-shell-pane aria-hidden />}
-          >
-            <BotPanel
-              variant="pane"
-              name={selectedSession.name}
-              onOpenThread={openThread}
-              onNavigate={(n) => navigate(`/focus/${encodeURIComponent(n)}`)}
-            />
-          </React.Suspense>
+          paneView === 'thread' && threadEligible ? (
+            // THE LIVE THREAD in the right pane — the reused chat renderer, one
+            // shell, one composer, no route change. The settings page is one tap
+            // away via the header-pill toggle we inject here; the terminal is an
+            // honest /focus escape (Phase 1).
+            <React.Suspense
+              fallback={<div className="gr-pane gr-threadpane" data-shell-pane aria-hidden />}
+            >
+              <div className="gr-pane gr-threadpane" data-shell-pane>
+                <ChatPanel
+                  name={selectedSession.name}
+                  session={toTile(selectedSession)}
+                  input={threadInput ?? undefined}
+                  surface="desktop"
+                  onOpenTerminal={openInFocus}
+                  headerTrailing={
+                    <button
+                      type="button"
+                      onClick={openSettings}
+                      data-vr="pane-settings-toggle"
+                      aria-label="Bot settings"
+                      title="Bot settings"
+                      className="grid size-8 shrink-0 place-items-center rounded-full border-[0.5px] border-hairline text-ink-3 transition-colors hover:bg-fill-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <SlidersHorizontal className="size-4" aria-hidden />
+                    </button>
+                  }
+                />
+              </div>
+            </React.Suspense>
+          ) : (
+            // SETTINGS (the toggle's other face) — or the only face for a bot that
+            // cannot be chat (Codex/shell/remote/team-lead). Eligible → "Open
+            // thread" flips back to the conversation; ineligible → "Open terminal
+            // →" leaves for /focus, where the live terminal actually lives.
+            <React.Suspense
+              fallback={<div className="gr-pane" data-shell-pane aria-hidden />}
+            >
+              <BotPanel
+                variant="pane"
+                name={selectedSession.name}
+                onOpenThread={openThread}
+                onOpenTerminal={threadEligible ? undefined : openInFocus}
+                onNavigate={(n) => navigate(`/focus/${encodeURIComponent(n)}`)}
+              />
+            </React.Suspense>
+          )
         ) : (
           <div className="gr-pane" aria-hidden>
             <div className="gr-pane-empty">

@@ -1799,6 +1799,20 @@
   min-height: 0;
 }
 
+/* THREAD-IN-PANE — the live conversation renderer mounted in the right pane
+   (desktop grok). Mirrors `.gr-botpane`: the `.gr-pane` box stays a flex column
+   and the reused `ChatSurface` (its single child) fills it, so the transcript
+   scrolls inside the pane and the composer pins to the bottom, exactly as it does
+   on the focus route. `ChatSurface` brings its own `bg-paper-raised`, so the pane
+   ground underneath is never seen. */
+[data-grok] .grok-roster .gr-threadpane {
+  padding: 0;
+}
+[data-grok] .grok-roster .gr-threadpane > div {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ══ WS6 — density options wired into the header segmented control ════════════
    Comfortable = Row A (default). Compact = Row C (dense one-line feed). Cards =
    Row B (budget-watcher opt-in, cost/context first-class). Same data, same rows,
