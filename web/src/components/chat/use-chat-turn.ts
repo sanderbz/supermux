@@ -22,6 +22,7 @@ import * as React from 'react'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
+import { selectionInChatTrack } from './selection'
 import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
@@ -220,11 +221,26 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // 1s live-layer ticker: a prose-only turn produces NO deltas and NO
   // refetches, so every time-gated piece below (showProvisional, elapsed,
   // footer stats) must re-render on its own clock or it never appears.
+  //
+  // It STANDS DOWN while the reader holds a selection in a chat track. This tick
+  // re-renders the whole panel — the transcript above is memoised and does not
+  // move, but the live band below it (the working row's elapsed clock, the
+  // overlay receipts' running line) reprints once a second, and swapping a text
+  // node under a held selection collapses it on WebKit (desktop Safari as well
+  // as iOS — `selection.ts::selectionInChatTrack`). The thresholds this clock
+  // advances (showProvisional at 5s, the idle settle at 6s, teardown) are all
+  // re-evaluated on the next real event — an SSE frame, a status flip — and on
+  // the very next tick once the selection clears, so pausing it for the few
+  // seconds a copy takes changes nothing a reader can perceive but the frozen
+  // clock, which is the same trade the follow-bottom pin already makes.
   const liveLayerUp = active || turnStart != null
   const [, tick] = React.useReducer((n: number) => n + 1, 0)
   React.useEffect(() => {
     if (!liveLayerUp) return
-    const id = window.setInterval(tick, 1000)
+    const id = window.setInterval(() => {
+      if (selectionInChatTrack()) return
+      tick()
+    }, 1000)
     return () => window.clearInterval(id)
   }, [liveLayerUp])
 

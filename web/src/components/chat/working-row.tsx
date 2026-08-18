@@ -26,6 +26,7 @@ import { motionOff, springs } from '../../lib/springs'
 
 import { formatElapsed, stripEmojiPrefix } from './entries'
 import { serverNowMs } from './latency'
+import { selectionInChatTrack } from './selection'
 import { WorkingRow as WorkingRowUi } from './ui'
 
 /** How long a turn runs before it is worth putting a number on. */
@@ -49,9 +50,20 @@ export function WorkingRow({
   turnStartMs: number
 }) {
   // 1s tick for the elapsed clause only.
+  //
+  // It STANDS DOWN while the reader holds a selection in a chat track: this tick
+  // reprints the row's text, and the row sits at the bottom of the live band a
+  // drag-select naturally reaches into — swapping the node under a held
+  // selection collapses it on WebKit (`selection.ts::selectionInChatTrack`). The
+  // clock is cosmetic; freezing it for the few seconds a copy takes is the same
+  // trade the follow-bottom pin already makes, and it resumes at the true
+  // elapsed (read off the server clock) the moment the selection clears.
   const [, tick] = React.useReducer((n: number) => n + 1, 0)
   React.useEffect(() => {
-    const id = window.setInterval(tick, 1000)
+    const id = window.setInterval(() => {
+      if (selectionInChatTrack()) return
+      tick()
+    }, 1000)
     return () => window.clearInterval(id)
   }, [])
   const reduce = useReducedMotion() ?? false
