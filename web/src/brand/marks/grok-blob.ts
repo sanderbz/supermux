@@ -132,14 +132,13 @@ function jitterStream(seed: string): () => number {
 }
 
 /**
- * The blob's radial vertices for a character, in authored coordinates (the same
- * ±131 viewBox as every body). Deterministic: archetype from the silhouette
- * slot, jitter from the seed. Returned as points; the caller runs them through
- * `smoothClosed` DIRECTLY (no densify) so the outline is a true round spline.
+ * The archetype's radial ring, in authored coordinates (the same ±131 viewBox as
+ * every body). `jitter` supplies the per-vertex [-1,1] wobble: a seeded stream
+ * for the per-session grok blob, or a constant 0 for the canonical, shared base
+ * silhouette. Returned as points; the caller runs them through `smoothClosed`
+ * DIRECTLY (no densify) so the outline is a true round spline.
  */
-export function grokBlobPoints(ch: Character): Pt[] {
-  const arche = ARCHES[ch.silhouette] ?? ARCHES.sphere
-  const rand = jitterStream(ch.seed)
+function blobRing(arche: Arche, jitter: () => number): Pt[] {
   const { n, rx, ry, h, jit } = arche
   const pts: Pt[] = []
   for (let i = 0; i < n; i++) {
@@ -147,11 +146,39 @@ export function grokBlobPoints(ch: Character): Pt[] {
     // Base profile: 1 + the gentle harmonics → the archetype's personality.
     let profile = 1
     for (const { k, amp, ph } of h) profile += amp * Math.cos(k * theta + ph)
-    // Per-vertex seed jitter → the lopsided-pebble asymmetry (blobatar's nugget).
-    const r = profile * (1 + rand() * jit)
+    // Per-vertex jitter → the lopsided-pebble asymmetry (blobatar's nugget).
+    const r = profile * (1 + jitter() * jit)
     pts.push([Math.cos(theta) * rx * r, Math.sin(theta) * ry * r])
   }
   return pts
+}
+
+/**
+ * The Grok blob's radial vertices for a character. Deterministic: archetype from
+ * the silhouette slot, per-vertex jitter from the seed — so two sessions sharing
+ * an archetype still read as two different pebbles.
+ */
+export function grokBlobPoints(ch: Character): Pt[] {
+  const arche = ARCHES[ch.silhouette] ?? ARCHES.sphere
+  return blobRing(arche, jitterStream(ch.seed))
+}
+
+/**
+ * The BASE silhouette's radial vertices for an authored slot — the canonical,
+ * seed-INDEPENDENT version of the same organic archetype (jitter forced to 0).
+ *
+ * This is what makes the ROUND blob the shipped default: `geometry.ts` draws the
+ * three authored slots (cloud · wedge · rhombus) from this ring instead of the
+ * old angular rounded-polygon (the diamond / triangle the jury rated 2/10), so
+ * default users — every skin, every size — see a smooth convex creature, never a
+ * gem. The grok skin then layers its per-seed jitter, hue, glow and expression on
+ * top of an already-round base. Seed-independent by design: an authored outline
+ * is a shared drawing (two sessions on `cloud` get the identical body; the eyes
+ * and pigment carry their difference), which the mark unit tests pin.
+ */
+export function baseBlobPoints(silhouette: SilhouetteName): Pt[] {
+  const arche = ARCHES[silhouette] ?? ARCHES.sphere
+  return blobRing(arche, () => 0)
 }
 
 /** Test/debug seam: the archetype table is indexed by the silhouette wheel. */

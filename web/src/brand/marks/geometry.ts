@@ -6,9 +6,11 @@
  * renderer that turns those numbers into two kinds of outline.
  *
  *   silhouettePath(ch)  the body. Either the projected silhouette of a
- *                       superellipsoid solid, or one of the three authored 2-D
- *                       outlines. Never depends on state — the body does not
- *                       move, ever (concept contract C5).
+ *                       superellipsoid solid, or — for the three authored slots
+ *                       (cloud · wedge · rhombus) — the shared organic blob ring
+ *                       (`grok-blob.ts`), so the DEFAULT face is a smooth convex
+ *                       creature, never a diamond or triangle. Never depends on
+ *                       state — the body does not move, ever (concept contract C5).
  *   eyePath(ch, …)      one eye, drawn in face arc-length coordinates and
  *                       wrapped onto the face solid, so a blink on a cloud reads
  *                       exactly like a blink on a sphere.
@@ -20,8 +22,8 @@
  * non-ellipsoidal solids), so `silhouettePath` memoises per character. Eyes are
  * cheap (~80 points) and are recomputed per animation frame.
  */
-import { AUTHORED, type Character, type EyeGeometry, type Solid } from './character'
-import { grokBlobPoints } from './grok-blob'
+import { type Character, type EyeGeometry, type Solid } from './character'
+import { baseBlobPoints, grokBlobPoints } from './grok-blob'
 
 /** Half-extent of the authored coordinate system; the SVG viewBox is ±this. */
 export const VIEWBOX = 131
@@ -202,103 +204,6 @@ function solidPath(b: Solid, q: Quat, persp: number): string {
   return smoothClosed(densify(hull(pts), 4))
 }
 
-/* ── authored outlines ───────────────────────────────────────────────────── */
-
-/**
- * Exact boundary of a union of discs, swept radially. Every disc contains the
- * origin, so the union is star-shaped and the sweep cannot miss a lobe.
- */
-function cloudPts(lobes: readonly (readonly [number, number, number])[], spin: number): Pt[] {
-  const out: Pt[] = []
-  for (let i = 0; i < 168; i++) {
-    const t = (i / 168) * Math.PI * 2 + spin
-    const ux = Math.cos(t)
-    const uy = Math.sin(t)
-    let best = 0
-    for (const [cx, cy, rr] of lobes) {
-      const b = cx * ux + cy * uy
-      const c = cx * cx + cy * cy - rr * rr
-      const disc = b * b - c
-      if (disc <= 0) continue
-      best = Math.max(best, b + Math.sqrt(disc))
-    }
-    out.push([ux * best, uy * best])
-  }
-  return out
-}
-
-/** Polygon with circular corner fillets of radius `r`. */
-function roundedPoly(verts: readonly Pt[], r: number): Pt[] {
-  const out: Pt[] = []
-  const n = verts.length
-  for (let i = 0; i < n; i++) {
-    const p = verts[i]
-    const a = verts[(i - 1 + n) % n]
-    const b = verts[(i + 1) % n]
-    const v1: Pt = [a[0] - p[0], a[1] - p[1]]
-    const v2: Pt = [b[0] - p[0], b[1] - p[1]]
-    const l1 = Math.hypot(...v1) || 1
-    const l2 = Math.hypot(...v2) || 1
-    const u1: Pt = [v1[0] / l1, v1[1] / l1]
-    const u2: Pt = [v2[0] / l2, v2[1] / l2]
-    const ang = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])))
-    const tan = r / Math.tan(ang / 2)
-    const t = Math.min(tan, l1 * 0.48, l2 * 0.48)
-    const p1: Pt = [p[0] + u1[0] * t, p[1] + u1[1] * t]
-    const p2: Pt = [p[0] + u2[0] * t, p[1] + u2[1] * t]
-    const bis: Pt = [u1[0] + u2[0], u1[1] + u2[1]]
-    const bl = Math.hypot(...bis) || 1
-    const dist = t / Math.cos(ang / 2 > 1.5 ? 1.5 : ang / 2) || t
-    const c: Pt = [p[0] + (bis[0] / bl) * Math.abs(dist), p[1] + (bis[1] / bl) * Math.abs(dist)]
-    const a0 = Math.atan2(p1[1] - c[1], p1[0] - c[0])
-    const a1 = Math.atan2(p2[1] - c[1], p2[0] - c[0])
-    let d = a1 - a0
-    while (d > Math.PI) d -= 2 * Math.PI
-    while (d < -Math.PI) d += 2 * Math.PI
-    const rr = Math.hypot(p1[0] - c[0], p1[1] - c[1])
-    const steps = 9
-    for (let k = 0; k <= steps; k++) {
-      const an = a0 + (d * k) / steps
-      out.push([c[0] + Math.cos(an) * rr, c[1] + Math.sin(an) * rr])
-    }
-  }
-  return out
-}
-
-/** The three authored outlines, in authored coordinates. */
-const AUTHORED_OUTLINE: Record<keyof typeof AUTHORED, () => Pt[]> = {
-  cloud: () =>
-    cloudPts(
-      [
-        [-60, 4, 70],
-        [2, -36, 76],
-        [62, 8, 68],
-        [-26, 48, 58],
-        [30, 50, 58],
-      ],
-      0.12,
-    ),
-  wedge: () =>
-    roundedPoly(
-      [
-        [2, -118],
-        [118, 90],
-        [-114, 94],
-      ],
-      32,
-    ),
-  rhombus: () =>
-    roundedPoly(
-      [
-        [0, -128],
-        [124, 2],
-        [0, 124],
-        [-122, -2],
-      ],
-      30,
-    ),
-}
-
 /* ── the two public emitters ─────────────────────────────────────────────── */
 
 /** Memo key: a character is a pure function of (seed, pin), and so is its body. */
@@ -321,8 +226,15 @@ export function silhouettePath(ch: Character): string {
   const key = bodyKey(ch)
   const hit = bodyCache.get(key)
   if (hit !== undefined) return hit
+  // The three authored slots (cloud · wedge · rhombus) are drawn from the shared,
+  // seed-independent organic blob ring — a smooth convex creature, NOT the old
+  // rounded diamond / triangle the jury rated 2/10. The round silhouette is now
+  // the shipped DEFAULT (every skin, every size); the grok skin only layers hue,
+  // glow, expression and a per-seed jitter on top of it. The ring is splined
+  // DIRECTLY (no `densify` — see `grokSilhouettePath`'s note: densifying first
+  // collapses the Catmull-Rom curves back into straight polygon chords).
   const path = ch.authored
-    ? smoothClosed(densify(AUTHORED_OUTLINE[ch.silhouette as keyof typeof AUTHORED](), 4))
+    ? smoothClosed(baseBlobPoints(ch.silhouette))
     : solidPath(ch.body, poseQuat(ch), ch.pose.persp)
   if (bodyCache.size >= BODY_CACHE_MAX) bodyCache.delete(bodyCache.keys().next().value!)
   bodyCache.set(key, path)
