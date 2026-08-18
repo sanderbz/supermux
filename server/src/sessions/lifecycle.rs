@@ -840,7 +840,56 @@ pub async fn start(
 ) -> Result<StartResult, AppError> {
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
+    start_locked(state, name, prompt).await
+}
 
+/// Outcome of [`start_if_stopped`]: either we started (carrying `start`'s
+/// readiness flag), or the death-stamp precondition no longer held under the lock
+/// and we deliberately did nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HealStart {
+    Started(bool),
+    Superseded,
+}
+
+/// [`start`], made ATOMIC with the "is this still a death-stamped, nobody-else-
+/// touched-it session?" precondition the auto-heal depends on.
+///
+/// The old auto-heal probed `try_lock` + re-read status in a helper, dropped the
+/// lock, then called `start`, which re-acquired it — a TOCTOU window in which a
+/// user's Stop/Resume/delete could land and be silently undone by the restart.
+/// Here the status re-read and the spawn happen under ONE continuous hold of the
+/// per-session lock, so any lifecycle op that moved the row off `stopped` before
+/// we started is seen and honored: we bail `Superseded` rather than resurrect a
+/// session the owner just acted on. THE USER WINS, atomically.
+pub(super) async fn start_if_stopped(
+    state: &AppState,
+    name: &str,
+) -> Result<HealStart, AppError> {
+    let lock = state.lock_for(name);
+    let _guard = lock.lock().await;
+    // Authoritative re-check UNDER the lock we are about to start under. `stopped`
+    // is exactly the state a terminal death leaves behind; anything else means a
+    // user (or another lifecycle op) moved it while the daemon was deciding.
+    let still_stopped = matches!(
+        db::sessions::runtime(&state.pool, name).await.ok().flatten(),
+        Some(rt) if rt.last_status == "stopped",
+    );
+    if !still_stopped {
+        return Ok(HealStart::Superseded);
+    }
+    let res = start_locked(state, name, None).await?;
+    Ok(HealStart::Started(res.ready))
+}
+
+/// The body of [`start`], assuming the per-session lock is ALREADY held. Split
+/// out so [`start_if_stopped`] can wrap it with an atomic precondition without
+/// re-entering the (non-reentrant) lock.
+async fn start_locked(
+    state: &AppState,
+    name: &str,
+    prompt: Option<&str>,
+) -> Result<StartResult, AppError> {
     let mut s = require_session(state, name).await?;
 
     // RETIRED PROVIDER GUARD. A row whose provider supermux no longer ships
@@ -1139,6 +1188,33 @@ pub async fn start(
     };
 
     db::sessions::bump_start(&state.pool, name).await?;
+
+    if !ready {
+        // FAILED launch/resume: the pane came back (a bash prompt, or a modal we
+        // could not clear such as a stale resume picker) but the AGENT never took
+        // the wheel. Persisting `active` here — as this path unconditionally did —
+        // is the false-healthy bug: `Heal::Failed`'s contract is that the session
+        // STAYS stopped, yet any consumer reading `status` independently of the
+        // `holder_died` badge (the roster dot, the board's live check, the
+        // detector's own `prev` seed) saw a green `active` row over a shell.
+        //
+        // Restore `stopped` and broadcast it, and do NOT type `prompt` into
+        // whatever is sitting on the pty (that is how a delegated message got
+        // swallowed by a bash prompt / typed into the picker). The caller
+        // (`wake_for_send`, `auto_heal`) re-stamps the honest `holder_died` badge
+        // and reports UNDELIVERED. We do not wake the detector: there is nothing
+        // good for it to observe, and a live bash prompt would only tempt it to
+        // settle the row back to `idle`.
+        db::sessions::set_last_status(&state.pool, name, "stopped").await?;
+        broadcast_status(state, name, "stopped");
+        return Ok(StartResult {
+            name: name.to_string(),
+            started: true,
+            ready,
+            target: rt.target(),
+        });
+    }
+
     db::sessions::set_last_status(&state.pool, name, "active").await?;
     // Explicitly publish the `starting → active` transition ourselves. The
     // detector loop can't be trusted to do it: by the time it ticks, it seeds

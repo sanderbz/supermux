@@ -48,6 +48,7 @@ use crate::db::hosts::{Host, HostStatus};
 use crate::state::{AppState, SseEvent};
 
 use super::chat::store::{ChatStore, ChatTail};
+use super::lifecycle::HealStart;
 use super::runtime::RUNTIME_NATIVE;
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
@@ -1417,19 +1418,38 @@ pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
         // ("GHOST-DELEGATE-PROBE: command not found") while the product claimed
         // health — work destroyed silently, which is the one failure mode a
         // recovery feature must never have.
-        Ok(true) => {
+        Ok(HealStart::Superseded) => {
+            // The atomic precondition inside `start_if_stopped` saw the row move
+            // off `stopped` under the lock — a user Stop/Resume/delete landed in
+            // the window between our decision and the restart. THE USER WINS; we
+            // did not spawn anything.
+            tracing::info!(
+                name = %name,
+                "auto-heal: skipped under the lock — the session was changed by \
+                 another op just before the restart",
+            );
+            Heal::Superseded
+        }
+        Ok(HealStart::Started(true)) => {
             // The AGENT is serving again: drop the crash badge the detector
             // raised. `start` already broadcast `starting → active`.
             clear_holder_death_badge(state, name);
             tracing::info!(name = %name, "auto-heal: '{name}' is back up");
             Heal::Healed
         }
-        Ok(false) => {
+        Ok(HealStart::Started(false)) => {
             // The terminal came back; the agent did not. Keep the honest badge
             // (the frontend renders `holder_died` as "Terminal died" WITH the
             // inline Resume affordance — the one error a user can act on) and
             // say why, naming the link that failed so the next step is obvious.
             stamp_heal_failed(state, name, &s);
+            // Honor `Heal::Failed`'s contract at the daemon layer: the row must
+            // end `stopped`, not the `active` a bare `start` persists the moment
+            // the pane exists. `start_if_stopped` already restores this on the
+            // real path; re-asserting it here keeps the contract even if a start
+            // regresses, and is exactly what a false-active consumer (the roster
+            // dot, the board live-check, the detector's `prev` seed) reads.
+            let _ = db::sessions::set_last_status(&state.pool, name, "stopped").await;
             tracing::error!(
                 name = %name,
                 cc_conversation_id = %s.cc_conversation_id,
@@ -1441,6 +1461,7 @@ pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
         }
         Err(e) => {
             stamp_heal_failed(state, name, &s);
+            let _ = db::sessions::set_last_status(&state.pool, name, "stopped").await;
             tracing::error!(
                 name = %name,
                 error = %e,
@@ -1533,10 +1554,12 @@ async fn still_death_stamped(state: &AppState, name: &str) -> bool {
 /// takes, so a healed claude session resumes its conversation exactly as a
 /// manual Resume would.
 ///
-/// Returns `start`'s `ready` flag: whether the provider's own UI was observed
-/// within the wait-for-ready window. That is the provider-level proof the heal
-/// is judged on — see [`auto_heal`] for what discarding it cost.
-async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<bool> {
+/// Returns the [`HealStart`] outcome: `Started(ready)` — whether the provider's
+/// own UI was observed within the wait-for-ready window — or `Superseded` when the
+/// atomic under-lock precondition saw a user beat the daemon to the session. The
+/// `ready` flag is the provider-level proof the heal is judged on — see
+/// [`auto_heal`] for what discarding it cost.
+async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<HealStart> {
     #[cfg(test)]
     {
         HEAL_ATTEMPTS
@@ -1551,10 +1574,20 @@ async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<bool> {
         // reports READY: it stands in for a restart that worked, so a test about
         // the guards is not also a test about a failed resume.
         if HEAL_DRY_RUN.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(HEAL_DRY_RUN_READY.load(std::sync::atomic::Ordering::Relaxed));
+            let ready = HEAL_DRY_RUN_READY.load(std::sync::atomic::Ordering::Relaxed);
+            // Faithfully mirror the one `start` behaviour the failure path has to
+            // undo: a real `start` persists `active` the instant the pane exists,
+            // BEFORE it knows whether the agent took the wheel. Stamp it here on
+            // the not-ready path so the `Heal::Failed` status-restore is genuinely
+            // exercised (otherwise the row is trivially already-`stopped` and the
+            // regression can't be seen).
+            if !ready {
+                let _ = db::sessions::set_last_status(&state.pool, name, "active").await;
+            }
+            return Ok(HealStart::Started(ready));
         }
     }
-    Ok(crate::sessions::lifecycle::start(state, name, None).await?.ready)
+    Ok(crate::sessions::lifecycle::start_if_stopped(state, name).await?)
 }
 
 /// Test-only: what the dry-run restart reports for `ready`. Flipped false by the
@@ -3550,6 +3583,23 @@ mod recovery_tests {
              and meaningless",
         );
 
+        // REGRESSION (codex #5). `start` persists `active` the instant the pane
+        // exists — the dry-run stub above mirrors that on the not-ready path — so a
+        // failed heal that only restored the badge left the ROW reading `active`
+        // (green tile, live board dot, and a seed the detector could settle to
+        // `idle`). `Heal::Failed`'s contract is that the session stays stopped: the
+        // status must be restored to `stopped`, not just the badge re-raised.
+        let status = db::sessions::runtime(&state.pool, "ghost")
+            .await
+            .unwrap()
+            .expect("runtime row")
+            .last_status;
+        assert_eq!(
+            status, "stopped",
+            "a failed heal must leave the row STOPPED, never the `active` a bare \
+             start wrote before it knew the agent never came up",
+        );
+
         // The agent coming back for real (or a human driving the ladder) releases it.
         clear_holder_death_badge(&state, "ghost");
         assert!(!heal_failed_pending("ghost"));
@@ -3557,6 +3607,66 @@ mod recovery_tests {
 
         reset_heal_state("ghost");
         drop_transcript(cc);
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// REGRESSION (codex #4). The old auto-heal probed `try_lock` and re-read
+    /// status in a helper, DROPPED the lock, then called `start`, which
+    /// re-acquired it — a TOCTOU window in which a user Stop/Resume could land and
+    /// be silently undone by the restart. `start_if_stopped` re-reads status UNDER
+    /// the very lock it will start under, so a change that arrives while it is
+    /// waiting for the lock is seen: it bails `Superseded` rather than resurrect a
+    /// session the owner just acted on. This drives that exact interleaving — a
+    /// status flip performed WHILE the restart is blocked on the held lock.
+    #[tokio::test]
+    async fn start_if_stopped_honors_a_status_change_that_races_the_lock() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "raced", "claude", "stopped").await;
+
+        // Stand in for an in-flight lifecycle op (a user Stop/Resume) that holds
+        // the per-session lock — the same lock `start_if_stopped` must take.
+        let lock = state.lock_for("raced");
+        let guard = lock.lock().await;
+
+        // The daemon decides to heal and calls the atomic start. It BLOCKS on the
+        // lock we are holding, exactly where `start` would.
+        let bg = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                crate::sessions::lifecycle::start_if_stopped(&state, "raced").await
+            })
+        };
+        // Let the task park on the lock before we mutate under it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // The racing user action lands: the row moves off `stopped`. Under the OLD
+        // probe-then-separately-start design this happened AFTER the death-stamp
+        // check and was lost; here the authoritative re-check is still to come.
+        db::sessions::set_last_status(&state.pool, "raced", "active")
+            .await
+            .unwrap();
+
+        // Release — `start_if_stopped` now takes the lock and re-reads status.
+        drop(guard);
+
+        let outcome = bg.await.unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            HealStart::Superseded,
+            "the under-lock re-check must catch the racing change and refuse to \
+             start — the user wins, no ghost is resurrected",
+        );
+        // Nothing was spawned: the precondition short-circuited before `start`.
+        let status = db::sessions::runtime(&state.pool, "raced")
+            .await
+            .unwrap()
+            .expect("runtime row")
+            .last_status;
+        assert_eq!(status, "active", "the user's state stands, untouched by the heal");
+
+        reset_heal_state("raced");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
