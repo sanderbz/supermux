@@ -11,12 +11,23 @@
  *   · Ordered OLDEST-WAITING FIRST (`rollup()`): the session you have kept
  *     blocked longest is the one to answer.
  *   · N > 3 collapses to three marks and a "+N". The pile is a glance, not a
- *     list; the list is the roster underneath it.
+ *     list; the list is the PICKER underneath it.
  *
- * Motion is B0's facepile morph (§11.9): the active member expands by animating
- * PADDING, 400 ms, which is a layout change with no transform — under
- * `prefers-reduced-motion` the expanded state is simply the resting state and
- * the label is still there. Nothing here animates on its own.
+ * ── The tap, corrected ──────────────────────────────────────────────────────
+ * The pile used to be N overlapping buttons, each navigating on its own. On a
+ * phone the faces are 24px and overlap by −24%, so a thumb landed on WHICHEVER
+ * face happened to be under it — and the "+N" was not a target at all. Tapping
+ * "needs you" felt like it opened a random session, because it did.
+ *
+ * So the whole cluster is now ONE control (`aria-haspopup="dialog"`) and its tap
+ * opens `<AttentionPickerSheet>` — a proper list of EXACTLY the sessions counted
+ * in "needs you: N", each row naming what it needs and routing to THAT session's
+ * focus. The pile is the glance; the sheet is the choice. No tap is ever random.
+ *
+ * Motion is B0's facepile morph (§11.9): the pile is a still cluster now (the
+ * per-member hover-expand belonged to a per-member target that no longer
+ * exists), which is also the reduced-motion resting state. Nothing animates on
+ * its own.
  */
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -26,6 +37,7 @@ import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import { usePin } from '@/hooks/use-roster-marks'
 import { displayLabel } from '@/lib/api/sessions'
 import type { AttentionSession } from '@/lib/attention-tiers'
+import { AttentionPickerSheet } from './attention-picker-sheet'
 
 /** How many faces before the pile collapses to "+N". */
 const MAX_FACES = 3
@@ -68,6 +80,29 @@ export function rollupTarget(s: AttentionSession): RollupTarget {
   return { kind: 'session', href: base }
 }
 
+/**
+ * The short reason a session is in the "needs you" list — the picker row's
+ * subline. One fragment, sentence-case, states the demand.
+ *
+ * Precedence matches `needsYou` in `lib/attention-tiers.ts` but reads TOP-DOWN
+ * by urgency of the human action: an unanswered permission/form is the sharpest,
+ * a blocked bucket is a decision, an error is a look, a bare `waiting` is the
+ * question. A row that says "needs you" and nothing else is the failure this
+ * exists to avoid — the picker's whole point is to say WHAT.
+ */
+export function rollupReason(s: AttentionSession): string {
+  if (s.permission_request) return 'Permission request'
+  if (s.elicitation) return 'Waiting on a form'
+  if (s.status === 'waiting') return 'Waiting for your answer'
+  if (s.blocked) {
+    if (s.blocked.kind === 'limit') return 'Usage limit reached'
+    if (s.blocked.kind === 'startup' || s.blocked.wedge) return 'Needs setup to start'
+    return 'Blocked'
+  }
+  if (s.error) return 'Stopped with an error'
+  return 'Needs you'
+}
+
 export interface AttentionRollupProps {
   /** The ordered needs-you list — `rollup()` from `lib/attention-tiers.ts`. */
   sessions: readonly AttentionSession[]
@@ -76,10 +111,7 @@ export interface AttentionRollupProps {
 
 export function AttentionRollup({ sessions, className }: AttentionRollupProps) {
   const navigate = useNavigate()
-  // The member the pointer/keyboard is on — B0's facepile expands it into a
-  // labelled pill. Not "the first one": a pile that permanently expands its
-  // first member is just a wide button.
-  const [active, setActive] = React.useState<number | null>(null)
+  const [open, setOpen] = React.useState(false)
 
   const shown = sessions.slice(0, MAX_FACES)
   const overflow = sessions.length - shown.length
@@ -93,83 +125,86 @@ export function AttentionRollup({ sessions, className }: AttentionRollupProps) {
 
   if (sessions.length === 0) return null
 
+  const label =
+    sessions.length === 1
+      ? 'One session needs you — open the list'
+      : `${sessions.length} sessions need you — open the list`
+
   return (
-    <div
-      data-vr="attention-rollup"
-      data-count={sessions.length}
-      className={cn('flex items-center gap-2', className)}
-      onMouseLeave={() => setActive(null)}
-    >
-      <span className="shrink-0 text-[12px] font-medium text-ink-2">
-        needs you: {sessions.length}
-      </span>
-      <div className="flex items-center">
-        {shown.map((s, i) => (
-          <RollupMember
-            key={s.name}
-            session={s}
-            member={members[i]}
-            index={i}
-            active={active === i}
-            onHover={() => setActive(i)}
-            onPick={() => navigate(rollupTarget(s).href)}
-          />
-        ))}
-      </div>
-      {overflow > 0 && (
-        <span
-          data-vr="attention-rollup-overflow"
-          className="shrink-0 text-[12px] tabular-nums text-ink-3"
-        >
-          +{overflow}
+    <>
+      <button
+        type="button"
+        data-vr="attention-rollup"
+        data-count={sessions.length}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen(true)}
+        // ONE 44px control, not N overlapping faces. The whole cluster is the
+        // tap target and it opens the picker — the faces inside are a glance,
+        // deliberately `pointer-events-none` so nothing about which face is
+        // under the thumb changes where the tap goes.
+        className={cn(
+          'flex min-h-[44px] items-center gap-2 rounded-full px-1.5 -mx-1.5',
+          'transition-colors hover:bg-fill-soft',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          className,
+        )}
+      >
+        <span className="shrink-0 text-[12px] font-medium text-ink-2">
+          needs you: {sessions.length}
         </span>
-      )}
-    </div>
+        <span className="pointer-events-none flex items-center">
+          {shown.map((s, i) => (
+            <RollupFace key={s.name} session={s} member={members[i]} index={i} />
+          ))}
+        </span>
+        {overflow > 0 && (
+          <span
+            data-vr="attention-rollup-overflow"
+            className="shrink-0 text-[12px] tabular-nums text-ink-3"
+          >
+            +{overflow}
+          </span>
+        )}
+      </button>
+
+      <AttentionPickerSheet
+        open={open}
+        onOpenChange={setOpen}
+        sessions={sessions}
+        onPick={(s) => {
+          setOpen(false)
+          navigate(rollupTarget(s).href)
+        }}
+      />
+    </>
   )
 }
 
-/** One face in the pile. Its own component so `usePin` is a hook call per
- *  member rather than a loop, and so the whole member is one 44pt tap target. */
-function RollupMember({
+/** One face in the glance pile. Its own component so `usePin` is a hook call per
+ *  member rather than a loop. Decorative — the parent button owns the tap. */
+function RollupFace({
   session,
   member,
   index,
-  active,
-  onHover,
-  onPick,
 }: {
   session: AttentionSession
   member: FacepileMember
   index: number
-  active: boolean
-  onHover: () => void
-  onPick: () => void
 }) {
   const pin = usePin(session.name)
-  const target = rollupTarget(session)
   return (
-    <button
-      type="button"
-      data-vr="attention-rollup-member"
+    <span
+      data-vr="attention-rollup-face"
       data-session={session.name}
-      data-target={target.kind}
-      aria-label={`${member.name ?? session.name} needs you`}
-      title={`${member.name ?? session.name} — needs you`}
-      onMouseEnter={onHover}
-      onFocus={onHover}
-      onClick={onPick}
-      // The pile overlaps; the button is the hit target and the Facepile draws
-      // the face. `-ml` on everything but the first reproduces the −24% overlap
-      // without the parent having to know it.
-      className={cn('relative rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', index > 0 && '-ml-1.5')}
-      style={{ zIndex: active ? 10 : index + 1 }}
+      // The pile overlaps by −24%: `-ml` on everything but the first reproduces
+      // it without the parent having to know the geometry.
+      className={cn('relative', index > 0 && '-ml-1.5')}
+      style={{ zIndex: index + 1 }}
     >
-      <Facepile
-        members={[{ ...member, pin }]}
-        variant="row"
-        size={24}
-        activeIndex={active ? 0 : undefined}
-      />
-    </button>
+      <Facepile members={[{ ...member, pin }]} variant="row" size={24} />
+    </span>
   )
 }
