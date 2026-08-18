@@ -378,7 +378,63 @@ const BUDGET_ENTRY_JS = 160 * KB
 // the selection ticker-gate, the visualViewport keyboard-avoidance hardening + the
 // overscroll scroll-chaining fix). All on lazy/chat chunks; entry hero path unmoved
 // at 149.80/160. ceil(measured).
-const BUDGET_APP_JS = 258 * KB
+// 268 as of the feat/connectors-memory CONNECTOR STORE (the owner's flagship Bot-
+// mode surface): the whole store landed — the `/store` catalog grid + card +
+// detail + grant control (lazy `store-view` chunk, 4.69 KB), the per-bot Tools-tab
+// `GrantedConnectors` list, the inline chat `connect-card` (secure paste / sign-in
+// → straight to the vault, on the chat chunk), the Memory-tab learned-notes panel,
+// and the `connectors.ts` foundation client + `connectors-store` query cache.
+// Measured 267.77; +12.49 KB over the 255.28 faces baseline. Where the bytes went:
+//   +4.69 KB  `store-view` — the flagship grid: header+search, Featured rail,
+//             category chips, responsive card grid, the detail sheet + the connect
+//             flow. A LAZY chunk (the `/store` route AND the bot-scoped sheet both
+//             `React.lazy` it), so none of it is on the cold hero path.
+//   +~3.5 KB  the always-reachable store atoms the bot-panel/chat pull statically:
+//             `connector-card`, `connector-icon`, `grant-control`, `granted-
+//             connectors` (the Tools-tab list), `learned-notes` + `memory.ts`.
+//   +~2.0 KB  `chat/ui/connect-card.tsx` — the Grok moment, on the chat chunk: the
+//             six-state secure connect card (proposed/oauth/key/saving/added/error)
+//             that POSTs the credential to the vault and NEVER through the MCP
+//             stream. Its dispatch branch in `live-layer` is a few bytes.
+//   +~2.3 KB  `connectors.ts` (9-endpoint client) + `connectors-store` (the query
+//             cache + optimistic grant/revoke verbs) + the settings/palette
+//             doorways. The client rides the `@/lib/api` barrel, which is why the
+//             ENTRY gate moved 149.68 -> 151.40 / 160 (95%) — the one hero-path
+//             cost, still 8.6 KB inside the gate that actually guards first paint.
+// A genuine additive feature — the owner's top-priority surface, not a regression
+// to trim: ceil(measured) = 268. The `.cs-*` store skin (base + the scoped
+// `[data-grok]` glass) lands in the CSS budget (29.47/30, 98%), not here.
+// 271 as of the ROUND-1 JURY FIXES (connector store polish + connect wiring):
+// measured 270.69; +2.92 KB over the 267.77 store baseline. The whole of it is the
+// design-blocker close-out on the always-reachable store atoms (the store-view
+// chunk is lazy; these atoms are pulled statically by the bot-panel/chat, which is
+// why the weight lands here and not on a lazy chunk):
+//   +~2.0 KB  `store/brand-marks.tsx` — REAL brand marks (GitHub/Notion/Slack/
+//             Linear/Sentry/Playwright/iCloud canonical single-path SVGs + a
+//             brand-hued Postgres/browser glyph) replacing the initials-on-
+//             gradient monogram, which the jury called the single loudest
+//             placeholder tell (B1). The catalog ships NO icon bytes, so without
+//             this every card fell back to a monogram; the marks are bundled
+//             (never hotlinked) and drawn on App-Store-style tiles.
+//   +~0.9 KB  the connect/verb/featured polish across `connector-card`,
+//             `connector-detail` (the OAuth "Sign in with {service}" lead, B4;
+//             the unified Connect verb, B3; the neutral-disabled CTA, H2) and
+//             `store-view` (Featured given an actionable brand-washed treatment
+//             + de-duplicated from the grid, H1) + the inline connect-card's
+//             derived OAuth lead. `chat/ui/connect-card` gained the has_oauth
+//             derivation; its dispatch is unchanged.
+// The ENTRY (hero-path) gate moved only 151.40 -> 151.45 / 160 (95%, a rounding
+// crumb — the connectors client barrel already carried the store types): none of
+// this is on the cold hero path. A design-quality close-out the owner required,
+// not a regression to trim: ceil(measured) = 271. The store skin stays in the CSS
+// budget (29.53/30, 98% — net FLAT: the orphaned `.cs-rail`/`.cs-featured-glow`
+// rules were removed as the Featured rail became a grid), not here.
+// 273 as of the feat/connectors-memory -> feat/grok-mode MERGE: measured 272.76 —
+// the connector store (271 branch) now stacked on top of the composer-attachments +
+// selection-fix + shell-viewport batch (258) on one branch. +1.76 over the 271
+// connector ceiling = the two lines of divergence measured together for the first
+// time; entry hero path unmoved at 151.61/160. ceil(measured).
+const BUDGET_APP_JS = 273 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

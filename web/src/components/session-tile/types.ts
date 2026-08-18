@@ -1,6 +1,6 @@
 import type { SessionSummary } from '@/lib/api'
 import type { ElicitationAsk } from '@/components/chat/elicitation'
-import type { ChatTail, PermissionRequestInfo } from '@/lib/api/sessions'
+import type { ChatTail, ConnectRequestInfo, PermissionRequestInfo } from '@/lib/api/sessions'
 import type { RateLimits } from '@/lib/rate-limits'
 
 /** Display fields the hero tile layers on top of the canonical `SessionSummary`.
@@ -54,6 +54,9 @@ export interface TileSession extends SessionSummary {
   /** A third-party MCP server is demanding a typed form (`Elicitation` hook) and
    *  the session is parked on it. Same delta, same `null`-clears rule. */
   elicitation?: ElicitationAsk | null
+  /** A bot's `connect(service)` tool is parked waiting for a human — supermux
+   *  renders the inline Connect card. Same delta, same `null`-clears rule. */
+  connect_request?: ConnectRequestInfo | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number

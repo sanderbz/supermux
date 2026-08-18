@@ -22,6 +22,11 @@ import { Files } from '@/routes/files'
 const Settings = lazy(() =>
   import('@/routes/settings').then((m) => ({ default: m.Settings })),
 )
+// The connector store — lazy like Settings: a headline surface, but not on the
+// cold hero path, and its catalog/card tree should not weigh the entry bundle.
+const Store = lazy(() =>
+  import('@/routes/store').then((m) => ({ default: m.Store })),
+)
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
@@ -88,6 +93,12 @@ const DevPickers = import.meta.env.DEV
 // `tests/e2e/smoke/chat-toggle-thrash.spec.ts`. Not a product surface.
 const DevRendererThrash = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-renderer-thrash'))
+  : null
+// Connector-store bench — the grid + bot-scoped sheet + inline connect-card, in
+// both themes and the [data-grok] skin, offline. The page the store shots come
+// from.
+const DevStore = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-store'))
   : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
@@ -192,7 +203,25 @@ export default function App() {
                     </Suspense>
                   }
                 />
+                <Route
+                  path="/store"
+                  element={
+                    <Suspense fallback={null}>
+                      <Store />
+                    </Suspense>
+                  }
+                />
               </Route>
+              {DevStore && (
+                <Route
+                  path="/dev/store"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevStore />
+                    </Suspense>
+                  }
+                />
+              )}
               {DevTiles && (
                 <Route
                   path="/dev/tiles"

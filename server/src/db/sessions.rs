@@ -109,6 +109,13 @@ pub struct Session {
     /// when per-bot skills land.
     #[serde(default)]
     pub skills: String,
+    /// The shared-tier key for bot memory (migration 0031, provisioned by the
+    /// connector phase): every bot with the same `role_id` sees the same
+    /// `roles/<role_id>/` archival notes. `None` ⇒ private-only bot (recall reads
+    /// only its own `bots/<name>/` tier). Consumed by
+    /// [`crate::bot_memory`] / [`crate::sessions::connector_config`].
+    #[serde(default)]
+    pub role_id: Option<String>,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).

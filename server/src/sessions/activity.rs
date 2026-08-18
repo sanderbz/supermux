@@ -139,6 +139,11 @@ pub struct ToolInput {
     pub pattern: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// The connector id a `connect(service)` tool call carries — the store's
+    /// credential affordance (spec §8). Read by [`super::connect_ask::parse`] to
+    /// raise the inline Connect card. A plain id, never a secret.
+    #[serde(default)]
+    pub service: Option<String>,
     /// `AskUserQuestion`'s questions (B5/T1.5). The only large-ish field we
     /// admit, because it IS the payload's point: the agent's own sentence, which
     /// the notification relays verbatim rather than paraphrasing.

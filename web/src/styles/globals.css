@@ -88,7 +88,15 @@
 }
 
 /* ── Light theme (iOS light system colors) ───────────────────────────────── */
-:root {
+/* `[data-theme='light']` is included so the shadcn token layer (--background,
+   --card, …) — not just the `--sm-*` ladder below — flips for a SUBTREE theme
+   switch, making `[data-theme]` a COMPLETE theme switch (the documented intent
+   at the --sm block). Without it a light `[data-theme]` subtree inside a `.dark`
+   app kept the ancestor's dark shadcn tokens, so a store/card surface rendered
+   dark in a light bench (round-1 jury B2). `[data-theme]` is used ONLY by the
+   /dev design benches, so this is inert for the shipping app. */
+:root,
+[data-theme='light'] {
   --radius: 0.75rem; /* 12px — matches the session-tile rounded-xl spec */
 
   --background: #ffffff;            /* systemBackground */
@@ -189,7 +197,11 @@
 }
 
 /* ── Dark theme (iOS dark system colors; the default) ─────────────────────── */
-.dark {
+/* `[data-theme='dark']` joins `.dark` for the same reason the light block gains
+   `[data-theme='light']`: a `[data-theme]` subtree switch must carry the shadcn
+   token layer too, not only the `--sm-*` ladder. Dev-bench only in practice. */
+.dark,
+[data-theme='dark'] {
   --background: #0a0a0a;           /* brand splash — matches manifest
                                       background_color + index.html theme-color
                                       so the PWA splash has no flash of white */

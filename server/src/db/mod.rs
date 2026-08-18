@@ -14,6 +14,7 @@ use crate::config::Config;
 pub mod audit;
 pub mod board;
 pub mod boards;
+pub mod connectors;
 pub mod hosts;
 pub mod prefs;
 pub mod push;
@@ -113,8 +114,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 28,
-            "expected twenty-eight applied migrations (0001-0005, 0007-0024, 0026-0030)"
+            applied, 29,
+            "expected twenty-nine applied migrations (0001-0005, 0007-0024, 0026-0031)"
         );
 
         pool.close().await;

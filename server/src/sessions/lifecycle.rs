@@ -293,9 +293,76 @@ fn role_system_prompt(s: &Session) -> Option<String> {
         // A clearly delimited section so the agent can tell its standing role
         // from the mutable notes it keeps.
         out.push_str("Notes you keep:\n");
-        out.push_str(notes);
+        out.push_str(&cap_core_notes(notes));
     }
     Some(out)
+}
+
+/// Hard cap on the always-loaded CORE (the bot's `memory` index). Line and char
+/// budgets sized to the design's ~1500-token / ~40-line target (~4 chars/token).
+const CORE_MAX_LINES: usize = 40;
+const CORE_MAX_CHARS: usize = 6_000;
+
+/// Cap the CORE notes to the bounded index the design mandates. The CORE is the
+/// token tax paid on EVERY turn, so it must never grow unbounded (audit gap 4):
+/// the archival tier — recalled on demand by the bot-memory hook — is where the
+/// long tail lives. Truncates on whichever budget bites first (lines or chars)
+/// and appends a one-line pointer telling the agent the rest is recallable, so a
+/// clipped index reads as deliberate, not broken.
+///
+/// This is the SERVER-SIDE half of the cap; the bot-panel editor mirrors it so a
+/// human sees the same limit while editing (noted for the UI phase — the editor
+/// cap is additive and does not exist yet).
+fn cap_core_notes(notes: &str) -> String {
+    let notes = notes.trim_end();
+    let total_lines = notes.lines().count();
+    let within_lines = total_lines <= CORE_MAX_LINES;
+    let within_chars = notes.chars().count() <= CORE_MAX_CHARS;
+    if within_lines && within_chars {
+        return notes.to_string();
+    }
+
+    // Keep whole lines up to BOTH budgets. The char budget binds the FIRST kept
+    // line too: a single wall-of-text line with no newlines (sessions.memory is
+    // free text a human/bot edits) must not slip past the cap in full — it is
+    // char-truncated to the remaining budget so the always-loaded token tax is
+    // genuinely bounded, not just bounded when there happen to be many newlines.
+    let mut kept = String::new();
+    let mut kept_lines = 0usize;
+    let mut clipped = false;
+    for line in notes.lines() {
+        if kept_lines >= CORE_MAX_LINES {
+            break;
+        }
+        // Chars already spent, plus the newline this line needs (none for the
+        // first). Stop if there is no room left for even a separator.
+        let used = kept.chars().count();
+        let sep = usize::from(kept_lines > 0);
+        if used + sep >= CORE_MAX_CHARS {
+            break;
+        }
+        let budget = CORE_MAX_CHARS - used - sep;
+        if kept_lines > 0 {
+            kept.push('\n');
+        }
+        if line.chars().count() > budget {
+            // Truncate this line (the first line included) to the remaining char
+            // budget; the rest is recalled on demand, never front-loaded.
+            kept.extend(line.chars().take(budget));
+            kept_lines += 1;
+            clipped = true;
+            break;
+        }
+        kept.push_str(line);
+        kept_lines += 1;
+    }
+    let dropped = total_lines.saturating_sub(kept_lines);
+    if dropped > 0 {
+        kept.push_str(&format!("\n…({dropped} more in archival)"));
+    } else if clipped {
+        kept.push_str("\n…(truncated; more in archival)");
+    }
+    kept
 }
 
 /// Write the composed role/notes block to a per-session instructions file the
@@ -510,7 +577,17 @@ fn build_env(
 /// a resume-picker escape (+ destructive `clear_cc`) is safe: it NEVER is on an
 /// intended resume (escaping abandons the exact conversation asked for and wiping
 /// the cc link breaks every later Start/Resume too). Always false for codex/shell.
-fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String, bool) {
+/// `mcp_flags` are the per-session connector flag WORDS computed by the shared
+/// seam ([`crate::sessions::connector_config`]) — an empty slice for the whole
+/// pre-connector fleet, which yields a BYTE-IDENTICAL launch line. When present
+/// they are the `--mcp-config <inline json> --strict-mcp-config` pair; each word
+/// is shell-escaped here, and they sit BESIDE the role/notes
+/// `--append-system-prompt` pair (neither clobbers the other).
+fn build_launch_command(
+    config: &crate::config::Config,
+    s: &Session,
+    mcp_flags: &[String],
+) -> (String, bool) {
     let (agent, resume_intended) = match s.provider.as_str() {
         "codex" => {
             // Keep Codex in the normal terminal buffer so the browser terminal
@@ -637,8 +714,9 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             // CONNECTOR-STORE COEXISTENCE SEAM — see
             // docs/superpowers/specs/2026-08-18-connector-store-design.md
             // (branch feat/connector-store). That work injects at THIS SAME point
-            // via `--mcp-config <path>` (and/or `CLAUDE_CONFIG_DIR` in
-            // `build_env`). This role/notes injection is designed to COMPOSE with
+            // via `--mcp-config <path>` and a `--settings <overlay>` file (with the
+            // secret `${VAR}` env in `build_env`; it does NOT repoint
+            // `CLAUDE_CONFIG_DIR`). This role/notes injection is designed to COMPOSE with
             // it: it appends its OWN `--append-system-prompt` flag pair and does
             // NOT consume the `--mcp-config` slot or any env slot the connector
             // work needs — a later MCP-config flag simply sits beside this one in
@@ -646,6 +724,21 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             if let Some(sys) = role_system_prompt(s) {
                 parts.push("--append-system-prompt".to_string());
                 parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(sys)).into_owned());
+            }
+            // ── connector store (migration 0031) ───────────────────────────
+            // The per-session launch flags — the connector pair (`--mcp-config
+            // <inline json> --strict-mcp-config`) and the `--settings <overlay>`
+            // flag for the hooks/permissions/kill-switch overlay — computed by the
+            // shared seam `connector_config::assemble` from this session's enabled
+            // grants (its own + all-agents) and its bot memory. COMPOSES with the
+            // role/notes block above: separate, independent flag words appended
+            // after it, escaped word by word. Empty for a plain session (no grants,
+            // no memory) ⇒ the launch line is byte-identical to the pre-connector
+            // fleet. The matching `${VAR}` secret env is injected via `build_env`'s
+            // merge in `start_locked` — not here. Note: the overlay is layered via
+            // `--settings`, NOT by repointing `CLAUDE_CONFIG_DIR`.
+            for word in mcp_flags {
+                parts.push(shell_escape::unix::escape(std::borrow::Cow::Borrowed(word)).into_owned());
             }
             (parts.join(" "), resume_intended)
         }
@@ -660,9 +753,17 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
     // ignore it). Single-quoted so a data-dir path with spaces never word-splits.
     let bridge = config.data_dir.join("bin/supermux-edit");
     let bridge = bridge.display();
+    // Put `<data_dir>/bin` on PATH (AFTER the profile sources so it wins) so the
+    // bot-memory write CLI resolves as a bare `supermux-memory` — the name the
+    // per-session `allowedTools` grant (`Bash(supermux-memory *)`) auto-approves.
+    // Harmless for non-bot panes (an extra dir on PATH); the CLI errors cleanly if
+    // BOT_MEMORY_* is unset.
+    let bin_dir = config.data_dir.join("bin");
+    let bin_dir = bin_dir.display();
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
-         source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; {agent}"
+         source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
+         export PATH='{bin_dir}':\"$PATH\"; {agent}"
     );
     (command, resume_intended)
 }
@@ -1264,7 +1365,7 @@ async fn start_locked(
         }
     }
 
-    let env = build_env(
+    let mut env = build_env(
         &state.config,
         name,
         &hook_token,
@@ -1272,6 +1373,34 @@ async fn start_locked(
         agent_teams,
         s.host_id,
     );
+
+    // ── connector store (migration 0031): the shared per-session seam ──────────
+    // ONE component owns building this session's private settings OVERLAY:
+    // `connector_config::assemble`. It returns `None` (and touches nothing) unless
+    // the session has enabled connector grants OR bot memory — so the launch is
+    // byte-identical for the pre-connector fleet. When present it yields the env
+    // to MERGE over `build_env`'s map (the decrypted `${VAR}` secrets and the
+    // account-connector kill switch) and the launch flag words
+    // (`--mcp-config … --strict-mcp-config` plus `--settings <overlay>`) threaded
+    // into `build_launch_command` below. The overlay is layered via `--settings`,
+    // NOT by repointing `CLAUDE_CONFIG_DIR`, so the transcript tailer, statusline,
+    // teams, resume, and auth all stay on the real `~/.claude`. Claude-only (codex
+    // ignores these flags); best-effort — a failure logs and launches without
+    // connectors rather than blocking start.
+    let mut connector_flags: Vec<String> = Vec::new();
+    if launches_claude(&s.provider) {
+        match crate::sessions::connector_config::assemble(state, name).await {
+            Ok(Some(cfg)) => {
+                env.extend(cfg.env);
+                connector_flags = cfg.launch_flags;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
+            }
+        }
+    }
+
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 
@@ -1406,7 +1535,8 @@ async fn start_locked(
         _ => {
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let (cmd, resume_intended) = build_launch_command(&state.config, &s);
+            let (cmd, resume_intended) =
+                build_launch_command(&state.config, &s, &connector_flags);
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -2992,9 +3122,10 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
-        let (command, resume_intended) = build_launch_command(&config, &session);
+        let (command, resume_intended) = build_launch_command(&config, &session, &[]);
         // Per-session flags go through the SEC-01 escaper, which leaves ordinary
         // flag words alone — the rendered line is byte-identical to before.
         let invocation = "codex --no-alt-screen --model gpt-5-codex --ask-for-approval never";
@@ -3056,17 +3187,18 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
-        let (cmd, resume) = build_launch_command(&config, &base);
+        let (cmd, resume) = build_launch_command(&config, &base, &[]);
         assert!(cmd.contains("--name worker"));
         assert!(!cmd.contains("--resume"));
         assert!(!resume);
 
         // A persisted conversation id → `--resume '<id>'`, resume-intended.
         let by_id = Session { cc_conversation_id: "abc-123".into(), ..base.clone() };
-        let (cmd, resume) = build_launch_command(&config, &by_id);
+        let (cmd, resume) = build_launch_command(&config, &by_id, &[]);
         assert!(cmd.contains("--resume 'abc-123'"));
         assert!(resume);
 
@@ -3076,7 +3208,7 @@ mod build_env_tests {
             cc_conversation_id: "abc-123".into(),
             ..base
         };
-        let (cmd, resume) = build_launch_command(&config, &by_name);
+        let (cmd, resume) = build_launch_command(&config, &by_name, &[]);
         assert!(cmd.contains("--resume 'my-chat'"));
         assert!(resume);
     }
@@ -3123,9 +3255,10 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         };
 
-        let (command, _resume) = build_launch_command(&config, &session);
+        let (command, _resume) = build_launch_command(&config, &session, &[]);
         let status = std::process::Command::new("bash")
             .args(["-n", "-c", &command])
             .status()
@@ -3165,7 +3298,7 @@ mod build_env_tests {
         s.memory = "The build is debug-only; never run cargo --release.".into();
         s.model = "opus".into();
 
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         // Role + notes ride ONE `--append-system-prompt` word.
         assert!(cmd.contains("--append-system-prompt"), "cmd: {cmd}");
         assert!(cmd.contains("meticulous code reviewer"), "role missing: {cmd}");
@@ -3186,7 +3319,7 @@ mod build_env_tests {
     fn no_role_no_notes_means_no_system_prompt_injection() {
         let config = cfg();
         let s = claude_session("plain", "");
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         assert!(!cmd.contains("--append-system-prompt"), "cmd: {cmd}");
         assert!(!cmd.contains("--model"), "no model column → no --model: {cmd}");
     }
@@ -3198,7 +3331,7 @@ mod build_env_tests {
         let config = cfg();
         let mut s = claude_session("legacy", "");
         s.model = "totally-made-up".into();
-        let (cmd, _resume) = build_launch_command(&config, &s);
+        let (cmd, _resume) = build_launch_command(&config, &s, &[]);
         assert!(!cmd.contains("--model"), "an unmappable model must be dropped: {cmd}");
     }
 
@@ -3211,12 +3344,104 @@ mod build_env_tests {
         s.desc = "Mind the $PATH; use \"quotes\" & `ticks` — carefully.".into();
         s.memory = "Rule: don't `rm -rf`.".into();
         s.model = "sonnet".into();
-        let (command, _resume) = build_launch_command(&config, &s);
+        let (command, _resume) = build_launch_command(&config, &s, &[]);
         let status = std::process::Command::new("bash")
             .args(["-n", "-c", &command])
             .status()
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "role-injected launch must parse as shell: {command}");
+    }
+
+    /// Connector scoping COMPOSES with role/notes (migration 0031): a session
+    /// with both a role AND connector flags emits BOTH the role's
+    /// `--append-system-prompt` pair and the connector's `--mcp-config …
+    /// --strict-mcp-config` pair — neither clobbers the other, and the whole line
+    /// still parses as shell.
+    #[test]
+    fn connector_flags_compose_with_role_notes() {
+        let config = cfg();
+        let mut s = claude_session("compose", "");
+        s.desc = "You are the mail bot.".into();
+        s.memory = "Never delete a thread.".into();
+        let mcp_flags = vec![
+            "--mcp-config".to_string(),
+            r#"{"mcpServers":{"icloud-mail":{"command":"python","args":["s.py"]}}}"#.to_string(),
+            "--strict-mcp-config".to_string(),
+        ];
+        let (command, _resume) = build_launch_command(&config, &s, &mcp_flags);
+        // BOTH flag pairs present.
+        assert!(command.contains("--append-system-prompt"), "role flag missing: {command}");
+        assert!(command.contains("--mcp-config"), "connector flag missing: {command}");
+        assert!(command.contains("--strict-mcp-config"), "strict flag missing: {command}");
+        assert!(command.contains("icloud-mail"), "inline mcp config missing: {command}");
+        // The role's system prompt survived intact.
+        assert!(command.contains("You are the mail bot."), "role text missing: {command}");
+        // And the composed line is still valid shell (the inline JSON is quoted).
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "composed launch must parse as shell: {command}");
+    }
+
+    /// The CORE (always-loaded) notes index is HARD-CAPPED (audit gap 4): a bot
+    /// whose `memory` grows past the line budget gets a truncated index plus a
+    /// "…(N more in archival)" pointer, never the unbounded blob.
+    #[test]
+    fn core_notes_are_capped_with_archival_pointer() {
+        // 100 one-line notes — well over CORE_MAX_LINES (40).
+        let notes: String = (0..100).map(|i| format!("- note line {i}\n")).collect();
+        let capped = cap_core_notes(&notes);
+        let lines: Vec<&str> = capped.lines().collect();
+        // 40 kept lines + the pointer line.
+        assert_eq!(lines.len(), CORE_MAX_LINES + 1, "capped to the line budget + pointer");
+        assert!(lines[0].contains("note line 0"), "keeps the head");
+        assert!(!capped.contains("note line 99"), "drops the tail");
+        assert_eq!(lines.last().copied(), Some("…(60 more in archival)"), "pointer names the drop count");
+
+        // A short index passes through untouched.
+        let short = "- one\n- two\n- three";
+        assert_eq!(cap_core_notes(short), short, "under budget = verbatim");
+    }
+
+    /// The char budget is HARD even for a single wall-of-text line with no
+    /// newlines: the line budget alone would emit it whole (the always-loaded
+    /// token tax stays unbounded), so the first line is char-truncated too.
+    #[test]
+    fn core_notes_cap_a_single_overlong_line() {
+        let one_huge_line = "x".repeat(20_000); // >> CORE_MAX_CHARS, zero newlines
+        let capped = cap_core_notes(&one_huge_line);
+        assert!(
+            capped.chars().count() <= CORE_MAX_CHARS + 40,
+            "a single long line is clipped to the char budget (+pointer), got {}",
+            capped.chars().count()
+        );
+        assert!(capped.contains("more in archival"), "clipped index shows the pointer");
+    }
+
+    /// The cap also injects the pointer through the full `role_system_prompt`
+    /// composition (role + capped notes), not just the helper in isolation.
+    #[test]
+    fn role_system_prompt_caps_the_notes_section() {
+        let mut s = claude_session("bot", "");
+        s.desc = "Standing instructions: be terse.".into();
+        s.memory = (0..80).map(|i| format!("- fact {i}\n")).collect();
+        let sys = role_system_prompt(&s).expect("role+notes present");
+        assert!(sys.starts_with("Standing instructions: be terse."), "role first");
+        assert!(sys.contains("Notes you keep:"), "notes delimiter kept");
+        assert!(sys.contains("more in archival)"), "cap pointer injected");
+        assert!(!sys.contains("fact 79"), "tail dropped");
+    }
+
+    /// With NO connector flags (empty slice), the launch line is byte-identical to
+    /// the pre-connector fleet — the composition adds nothing.
+    #[test]
+    fn no_connector_flags_is_byte_identical() {
+        let config = cfg();
+        let s = claude_session("plain", "--yolo");
+        let (with_empty, _) = build_launch_command(&config, &s, &[]);
+        assert!(!with_empty.contains("--mcp-config"));
+        assert!(!with_empty.contains("--strict-mcp-config"));
     }
 
     // ── SEC-01: caller-supplied `flags` on a shell command line ──────────────
@@ -3262,6 +3487,7 @@ mod build_env_tests {
             model: String::new(),
             memory: String::new(),
             skills: "[]".into(),
+            role_id: None,
         }
     }
 
@@ -3352,7 +3578,7 @@ mod build_env_tests {
             "--version >/dev/null ; touch {} ; claude",
             sentinel.display()
         );
-        let (command, _) = build_launch_command(&cfg(), &claude_session("pwn", &payload));
+        let (command, _) = build_launch_command(&cfg(), &claude_session("pwn", &payload), &[]);
 
         // 1. It is still a VALID shell line (an unbalanced quote would 500 the
         //    pane instead of running the payload — also not acceptable).

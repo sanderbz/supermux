@@ -31,14 +31,14 @@ import {
   Files as FilesIcon,
   FolderOpen,
   Loader2,
-  Plug,
   Terminal,
-  Wrench,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
 import { SessionFace } from '@/components/roster/session-face'
+import { GrantedConnectors } from '@/components/roster/granted-connectors'
+import { LearnedNotes } from '@/components/roster/learned-notes'
 import { NotifPolicyControl } from '@/components/focus-mode/notif-policy-control'
 import {
   NameEditor,
@@ -329,13 +329,44 @@ function WorkingDirRow({ name, dir }: { name: string; dir: string }) {
 
 /* ── the four tabs ─────────────────────────────────────────────────────────── */
 
-type TabKey = 'overview' | 'instructions' | 'tools' | 'activity'
+type TabKey = 'overview' | 'instructions' | 'tools' | 'memory' | 'activity'
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'instructions', label: 'Instructions' },
   { key: 'tools', label: 'Tools' },
+  { key: 'memory', label: 'Memory' },
   { key: 'activity', label: 'Activity' },
 ]
+
+/** The CORE-notes cap — stated plainly (the truth about when edits land). */
+const CORE_NOTES_CAP = 2000
+
+function MemoryTab({
+  name,
+  session,
+  onRestartAdvised,
+}: {
+  name: string
+  session: ApiSession | null
+  onRestartAdvised: () => void
+}) {
+  const memory = session?.memory ?? ''
+  return (
+    <div className="flex flex-col gap-6">
+      <Field
+        label="Core notes"
+        hint="Kept verbatim and injected into the system prompt every run — the bot reads these, but can't rewrite them."
+      >
+        <NotesEditor name={name} memory={memory} onRestartAdvised={onRestartAdvised} />
+        <p className="mt-1 text-[12px] tabular-nums text-muted-foreground">
+          ~{memory.length} / {CORE_NOTES_CAP} chars · restart to apply
+        </p>
+      </Field>
+
+      <LearnedNotes name={name} />
+    </div>
+  )
+}
 
 function OverviewTab({ name, session }: { name: string; session: ApiSession | null }) {
   const pct = ctxPct(session?.tokens)
@@ -465,23 +496,15 @@ function InstructionsTab({
   )
 }
 
-function ToolsTab({ session }: { session: ApiSession | null }) {
+function ToolsTab({ name, session }: { name: string; session: ApiSession | null }) {
   const mcp = session?.mcp?.trim() || ''
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Skills" hint="Which skills this bot may reach for.">
-        <div className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-3 text-[13px] text-muted-foreground">
-          <Wrench className="size-4 shrink-0" aria-hidden />
-          Per-bot skill selection is coming — the bot uses the workspace defaults for now.
-        </div>
+      <Field label="Skills" hint="This bot runs with your workspace skill set.">
+        <p className="text-[13px] text-muted-foreground">Workspace defaults.</p>
       </Field>
 
-      <Field label="Connectors">
-        <div className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-3 text-[13px] text-muted-foreground">
-          <Plug className="size-4 shrink-0" aria-hidden />
-          Coming with the connector store.
-        </div>
-      </Field>
+      <GrantedConnectors name={name} />
 
       <Field label="MCP" hint="The MCP servers this bot launched with (read-only).">
         {mcp ? (
@@ -729,7 +752,10 @@ function BotPanelBody({
         {tab === 'instructions' && (
           <InstructionsTab name={name} session={session} onRestartAdvised={onRestartAdvised} />
         )}
-        {tab === 'tools' && <ToolsTab session={session} />}
+        {tab === 'tools' && <ToolsTab name={name} session={session} />}
+        {tab === 'memory' && (
+          <MemoryTab name={name} session={session} onRestartAdvised={onRestartAdvised} />
+        )}
         {tab === 'activity' && <ActivityTab name={name} onNavigate={onNavigate} />}
 
         {/* Clone — the panel's footer action, on every tab's scroll floor */}
@@ -765,7 +791,7 @@ export interface BotPanelProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
   /** Dev/bench only: seat a specific tab so a still frame can show each one. */
-  initialTab?: 'overview' | 'instructions' | 'tools' | 'activity'
+  initialTab?: 'overview' | 'instructions' | 'tools' | 'memory' | 'activity'
 }
 
 export function BotPanel({

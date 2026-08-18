@@ -1,0 +1,64 @@
+/* Connector-store skin.
+ *
+ * Base rules are token-driven and theme-agnostic (they read the app's shadcn
+ * vars, so light/dark come for free). The `[data-grok]` block is the frosted
+ * glass treatment — it uses only the `--sm-*` Grok tokens and is fully scoped, so
+ * removing `data-grok` from the shell root is a byte-exact revert to the base
+ * look. Nothing here leaks outside `.cs-*`. */
+
+/* The category-chip rail hides its scrollbar but stays scrollable. A right-edge
+ * fade mask signals the horizontal scroll instead of hard-clipping a chip
+ * mid-word at the viewport edge (jury M: "Develope[r]" read as an overflow bug).
+ * The mask only bites when the rail actually overflows — a short rail on desktop
+ * shows no fade. */
+.cs-chips {
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 22px), transparent 100%);
+}
+.cs-chips::-webkit-scrollbar {
+  display: none;
+}
+
+/* Header stays legible over the scrolling grid without a hard seam. */
+.cs-header {
+  background: color-mix(in oklab, var(--background) 88%, transparent);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cs-card,
+  .cs-featured,
+  .cs-chips button {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* ── [data-grok] glass skin ──────────────────────────────────────────────────
+ * Calm frosted panels that sit BACK; the soft glow lands on the active/hovered
+ * card only. Grok accent comes from --sm-accent. */
+[data-grok] .cs-header {
+  background: color-mix(in oklab, var(--sm-bg-chrome, var(--background)) 70%, transparent);
+  backdrop-filter: var(--sm-glass-title, blur(28px) saturate(165%));
+  -webkit-backdrop-filter: var(--sm-glass-title, blur(28px) saturate(165%));
+}
+
+[data-grok] .cs-card,
+[data-grok] .cs-featured {
+  background: color-mix(in oklab, var(--sm-surface, var(--card)) 82%, transparent);
+  backdrop-filter: var(--sm-glass-raised, blur(20px) saturate(160%));
+  -webkit-backdrop-filter: var(--sm-glass-raised, blur(20px) saturate(160%));
+  border-color: color-mix(in oklab, var(--sm-accent, var(--border)) 14%, transparent);
+}
+
+[data-grok] .cs-card:hover,
+[data-grok] .cs-featured:hover {
+  box-shadow: 0 12px 40px -18px color-mix(in oklab, var(--sm-accent, #000) 55%, transparent);
+  border-color: color-mix(in oklab, var(--sm-accent, var(--border)) 30%, transparent);
+}
+
+[data-grok] .cs-chip-primary {
+  background: var(--sm-accent-fill, var(--primary));
+}

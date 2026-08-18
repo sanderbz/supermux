@@ -55,6 +55,7 @@ import { WorkingRow } from './working-row'
 import {
   CardCode,
   ChoiceCard,
+  ConnectCard,
   DelegationPill,
   FormCard,
   InlineCode,
@@ -317,7 +318,17 @@ export function LiveLayer({
           the turn does not end, no banner is drawn, and every other signal on
           this surface reads Idle. The peek lens cannot help here (the form is
           not a numbered dialog), so the hook IS the authority. */}
-      {session?.elicitation ? (
+      {session?.connect_request ? (
+        // A CONNECT ASK IS THE MOST SPECIFIC HUMAN-IN-THE-LOOP THERE IS — a bot's
+        // `connect(service)` tool that stopped for a credential. It renders the
+        // supermux-native Connect card (secure paste / sign-in → straight to the
+        // vault), NEVER an MCP elicitation. Keyed by request id like the form.
+        <ConnectCard
+          key={session.connect_request.id ?? session.connect_request.connector_id}
+          request={session.connect_request}
+          sessionName={name}
+        />
+      ) : session?.elicitation ? (
         <FormCard
           // A NEW ASK IS A NEW FORM. The card holds the half-typed values in
           // local state, and a session can be asked twice in a row by the same

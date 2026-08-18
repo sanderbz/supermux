@@ -55,6 +55,7 @@ import {
   FolderPlus,
   LayoutGrid,
   Moon,
+  Plug,
   ServerCog,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -327,6 +328,7 @@ export function CommandPalette() {
       go('/', 'Overview', 'home sessions roster tiles dashboard start', LayoutGrid),
       go('/focus', 'Focus', 'terminal session pane current agent', Terminal),
       go('/files', 'Files', 'file tree browse edit diff working directory', FolderClosed),
+      go('/store', 'Connectors', 'connector store mcp integrations add tools plugins connect catalog', Plug),
       go('/settings', 'Settings', 'preferences config options update theme', SettingsIcon),
       go(
         '/settings#schedules',
