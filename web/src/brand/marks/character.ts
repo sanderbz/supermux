@@ -187,25 +187,7 @@ export const isAuthored = (name: SilhouetteName): name is AuthoredName => name i
  * be byte-identical to `idle` and differed only by not animating, so a
  * reduced-motion user (or any screenshot) could not tell them apart.
  */
-/**
- * The base app ships six faces (`idle · working · waiting · done · stopped ·
- * failed`) and never changes them. The Grok skin adds three MOMENTS that the
- * status field alone cannot spell — `thinking` (reasoning, looking away),
- * `streaming` (talking to you right now) and `connecting` (coming online,
- * scanning) — derived in `mark-status.ts::markStateForSession`. They are only
- * ever passed by Grok-gated render sites, so the base app renders exactly the
- * six it always did and stays byte-identical off the skin.
- */
-export type MarkState =
-  | 'idle'
-  | 'working'
-  | 'waiting'
-  | 'done'
-  | 'stopped'
-  | 'failed'
-  | 'thinking'
-  | 'streaming'
-  | 'connecting'
+export type MarkState = 'idle' | 'working' | 'waiting' | 'done' | 'stopped' | 'failed'
 
 /** What a roster assignment (or a fixture) may fix; everything else stays seeded. */
 export interface MarkPin {
@@ -426,44 +408,6 @@ export function eyesFor(ch: Character, state: MarkState): EyeGeometry {
     e.hR *= 0.86
     e.wL *= 0.62
     e.wR *= 0.62
-  } else if (state === 'thinking') {
-    // Pondering: the eyes lift and draw together, gaze up-and-aside — "reasoning,
-    // looking away from you", the phase Grok collapses into a text label. The
-    // `eyeClock` adds a slow saccade so the glance drifts rather than freezes.
-    e.spacing *= 0.88
-    e.pyL -= 12
-    e.pyR -= 12
-    e.pxL += 6
-    e.pxR += 6
-    e.hL *= 0.72
-    e.hR *= 0.72
-    e.wL *= 0.9
-    e.wR *= 0.9
-    e.angleL *= 0.5
-    e.angleR *= 0.5
-  } else if (state === 'streaming') {
-    // Talking to you right now: narrowed like `working` but a touch taller and,
-    // crucially, gaze FORWARD (pupils centred) — engaged, not heads-down. The
-    // "speaking" life is the CSS in-hue glow pulse on the mark, not a mouth.
-    const s = -14 + a.slant
-    e.angleL = s
-    e.angleR = s + 2.4
-    e.pxL = 0
-    e.pxR = 0
-    e.hL *= 0.9
-    e.hR *= 0.9
-    e.wL *= 0.6
-    e.wR *= 0.6
-  } else if (state === 'connecting') {
-    // Coming online, scanning: narrowed and levelled, the pupils swept L↔R by
-    // `eyeClock` (`gazeSweep`). An honest "up but not yet productive" read that a
-    // status dot cannot give — the base app fakes this as `working`.
-    e.hL *= 0.66
-    e.hR *= 0.66
-    e.wL *= 0.72
-    e.wR *= 0.72
-    e.angleL *= 0.2
-    e.angleR *= 0.2
   }
   return e
 }
@@ -475,27 +419,15 @@ export const BLINK_CLOSING = 0.16
 
 /** Base blink period per state; the per-seed `clock` detunes it further. */
 export function blinkPeriod(state: MarkState): number {
-  if (state === 'working' || state === 'streaming') return 2.6
-  if (state === 'connecting') return 2.0
-  if (state === 'waiting') return 3.1
-  if (state === 'thinking') return 4.2
-  return 4.6
+  return state === 'working' ? 2.6 : state === 'waiting' ? 3.1 : 4.6
 }
 
 /**
  * Which states have a heartbeat. `done`, `stopped` and `failed` are stills by
- * design — nothing is running, so nothing should breathe. The three Grok moments
- * (`thinking`/`streaming`/`connecting`) all have a pulse, so they are live.
+ * design — nothing is running, so nothing should breathe.
  */
 export function isLive(state: MarkState): boolean {
-  return (
-    state === 'idle' ||
-    state === 'working' ||
-    state === 'waiting' ||
-    state === 'thinking' ||
-    state === 'streaming' ||
-    state === 'connecting'
-  )
+  return state === 'idle' || state === 'working' || state === 'waiting'
 }
 
 /**
@@ -522,19 +454,8 @@ export function eyeClock(
     const b = Math.abs(u - 0.5) * 2
     blink = Math.max(0, b * b * (3 - 2 * b))
   }
-  let saccadeX = 0
-  if (state === 'waiting') {
-    // Quantised micro-glance — a wide-eyed face that also drifts reads as
-    // waiting FOR you, not frozen.
-    saccadeX = Math.round(Math.sin((t + ch.clock) * 0.55) * 1.6) * 1.6
-  } else if (state === 'thinking') {
-    // A slower, smaller drift up-aside — the eyes wander while reasoning.
-    saccadeX = Math.round(Math.sin((t + ch.clock) * 0.32) * 1.2) * 1.4
-  } else if (state === 'connecting') {
-    // The boot scan: a wide, steady L↔R sweep (~1.1s), continuous rather than
-    // quantised, so the gaze glides across as if looking the room over.
-    saccadeX = Math.sin((t + ch.clock) * 2.7) * 9
-  }
+  const saccadeX =
+    state === 'waiting' ? Math.round(Math.sin((t + ch.clock) * 0.55) * 1.6) * 1.6 : 0
   return { blink, saccadeX }
 }
 

@@ -14,7 +14,6 @@
  */
 import { eyeClock, eyesFor, type Character, type MarkState } from './character'
 import { eyePath, poseQuat, type Quat } from './geometry'
-import { grokEmphasis } from './grok-face'
 
 export interface LiveMark {
   ch: Character
@@ -22,9 +21,6 @@ export interface LiveMark {
   /** The two eye paths to drive. */
   left: SVGPathElement
   right: SVGPathElement
-  /** Under the skin, apply the grok `working`/`done` emphasis so the animated
-   *  frames match the still frame `session-mark` painted (jury R1, EXPRESSION). */
-  grok?: boolean
 }
 
 interface Entry extends LiveMark {
@@ -43,8 +39,7 @@ function tick(now: number) {
     const key = Math.round(blink * 40) * 10 + saccadeX
     if (key === a.lastKey) continue
     a.lastKey = key
-    const resolved = eyesFor(a.ch, a.state)
-    const base = a.grok ? grokEmphasis(resolved, a.state) : resolved
+    const base = eyesFor(a.ch, a.state)
     const e = { ...base, pxL: a.ch.gaze + saccadeX, pxR: a.ch.gaze + saccadeX }
     a.left.setAttribute('d', eyePath(a.ch, a.q, e, -1, blink))
     a.right.setAttribute('d', eyePath(a.ch, a.q, e, 1, blink))

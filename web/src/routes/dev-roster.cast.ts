@@ -195,9 +195,6 @@ export const STATE_MODELS: Readonly<Record<MarkState, string>> = {
   done: 'strato',
   stopped: 'night-watch',
   failed: 'remote-ssh',
-  thinking: 'render-bug',
-  streaming: 'deploy-fix',
-  connecting: 'strato',
 }
 
 /** Which member models each attention tier on the attention matrix. */

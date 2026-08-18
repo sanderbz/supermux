@@ -129,22 +129,18 @@ export interface SessionFaceHints {
 }
 
 /**
- * Status (+ optional live hints) → face, for the Grok skin.
+ * Status (+ optional live hints) → face.
  *
- * Differs from `markStateFor` in exactly the ways the base app must NOT: it
- * splits `starting → connecting` (honest "coming up, not yet productive", where
- * the base app fakes `working`), and it surfaces the `thinking` / `streaming`
- * moments when the caller knows them. Everything else defers to the base table,
- * so a Grok roster and a base roster agree on the six shipped faces.
+ * Inert shim retained so skin-aware call sites keep compiling: the mark renders
+ * the six shipped `markStateFor` faces everywhere, so this defers entirely to
+ * the base table. The live hints (`thinking`/`streaming`) are accepted but
+ * ignored; only the `done` moment (a valid base state) is honoured. A Grok
+ * roster and a base roster therefore agree on the same six faces.
  */
 export function markStateForSession(
   s: AttentionInput | null | undefined,
   hints: SessionFaceHints = {},
 ): MarkState {
   if (hints.done) return MARK_STATE_WITHOUT_STATUS
-  if (hints.thinking) return 'thinking'
-  if (hints.streaming) return 'streaming'
-  const status = s?.status
-  if (status === 'starting') return 'connecting'
-  return markStateFor(status)
+  return markStateFor(s?.status)
 }

@@ -575,86 +575,6 @@
   }
 }
 
-/* ── WS4-EXPRESSION keyframes (the Grok-faces wave) ────────────────────────────
-   Transform/filter ONLY on the fixed blob path — never the path `d` — so each is
-   GPU-cheap and reduced-motion drops it to the informative still. `transform-box:
-   fill-box` + a centred origin keep the shake/arrive scaling about the mark, not
-   the viewBox corner (set on the rules, not here). */
-
-/* the attention "needs" pulse: only the halo strength breathes, mark holds still */
-@keyframes sm-attention-pulse {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 4px var(--sm-halo));
-  }
-  50% {
-    filter: drop-shadow(0 0 1px var(--sm-halo)) drop-shadow(0 0 2px var(--sm-halo));
-  }
-}
-
-/* the streaming "voice": the agent's own-hue glow swells and settles like speech */
-@keyframes sm-stream-glow {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 1.5px var(--sm-mark-glow, transparent));
-  }
-  50% {
-    filter: drop-shadow(0 0 5px var(--sm-mark-glow, transparent));
-  }
-}
-
-/* connecting: a faint neutral breath while the eyes scan */
-@keyframes sm-connect-pulse {
-  0%,
-  100% {
-    opacity: 0.78;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* error: one micro-shake on entry, then rest — "it fell over, look here" */
-@keyframes sm-error-shake {
-  0% {
-    transform: translateX(0) rotate(0deg);
-  }
-  20% {
-    transform: translateX(-1.5px) rotate(-1.2deg);
-  }
-  45% {
-    transform: translateX(1.5px) rotate(1.2deg);
-  }
-  70% {
-    transform: translateX(-1px) rotate(-0.6deg);
-  }
-  100% {
-    transform: translateX(0) rotate(0deg);
-  }
-}
-
-/* arrive / leave: soft-overshoot in, quick out */
-@keyframes sm-arrive {
-  from {
-    transform: scale(0.6);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-@keyframes sm-leave {
-  from {
-    transform: scale(1);
-    opacity: 1;
-  }
-  to {
-    transform: scale(0.7);
-    opacity: 0;
-  }
-}
-
 /* ── The [data-grok]-scoped animation utilities ───────────────────────────────
    Consumers attach these to already-mounted elements; the `both` fill means the
    from-state is held before the first frame WITHOUT the consumer pre-hiding the
@@ -806,103 +726,18 @@
   animation: sm-breathe 3.4s ease-in-out infinite;
 }
 
-/* ATTENTION HALO — the soft red ring, following the silhouette, driven by the
-   DECOUPLED `data-attention` layer (`mark-status.ts::attentionFor`), NOT by a
-   status. A session that is waiting, errored, permission-blocked or elicitation-
-   blocked all raise it — the audit's fix: the halo now tracks the real signal,
-   not `data-state='waiting'`. Stacked drop-shadows so the ring reads at 18–26px
-   and 42–48px without a bloom swallowing the mark; `overflow:visible` on the svg
-   (globals.css) lets it spill. `needs` PULSES (a demand), `blocked` holds STEADY
-   and a touch stronger (an open dialog). */
-[data-grok] .sm-mark[data-attention='needs'] svg {
+/* NEEDS-YOU HALO — the soft red ring, following the silhouette. Stacked so the
+   ring reads at roster (18–26px) and detail (42–48px) sizes without a blur bloom
+   swallowing the mark. `overflow:visible` on the svg (globals.css) lets it spill
+   past the box. */
+[data-grok] .sm-mark[data-state='waiting'] svg {
   filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 4px var(--sm-halo));
-  animation: sm-attention-pulse 2s ease-in-out infinite;
-}
-[data-grok] .sm-mark[data-attention='blocked'] svg {
-  filter: drop-shadow(0 0 2.5px var(--sm-halo)) drop-shadow(0 0 5px var(--sm-halo));
 }
 
 /* IDLE — dimmed and desaturated, sitting quietly (overview.md §4 idle read). */
 [data-grok] .sm-mark[data-state='idle'] svg {
   filter: saturate(0.72);
   opacity: 0.9;
-}
-
-/* ── WS4-EXPRESSION — the alive-and-status upgrade (Grok-faces wave) ────────────
-   Everything below is scoped `[data-grok]` and rides the SAME discipline as the
-   block above: ambient values in @keyframes, pose values in the geometry (JS eye
-   shapes), so `prefers-reduced-motion` kills motion while every pose + the red
-   halo + the identity survive. NO path interpolation anywhere — motion is CSS
-   transform / filter on the fixed blob path (repo-eval's gate-safe choice). NO
-   mouth — expression is the two capsule eyes + a hue-coherent status channel. */
-
-/* NEGATIVE-SPACE EYES — the Grok signature: the eyes read as CUT-OUTS of the
-   page, so the face looks stamped from the UI rather than painted on. The base
-   app keeps its white ink (`fill={ch.ink}`, a presentation attribute CSS wins
-   over); under the skin the eye is the card paper. `--sm-mark-eye` defaults to
-   the elevated surface most marks sit on and can be overridden per surface. */
-[data-grok] .sm-mark[data-grok-face] .sm-mark__eye {
-  fill: var(--sm-mark-eye, var(--sm-bg-elevated));
-}
-
-/* IN-HUE WORKING / STREAMING GLOW — "busy" glows in the agent's OWN colour
-   (`--sm-mark-glow`, set inline per mark), never red: the colour firewall. A
-   roster of eight working bots is a calm rainbow of their own pigments; the one
-   red halo stays unmissable. A static filter — the breathe carries the life. */
-[data-grok] .sm-mark[data-grok-face][data-state='working'] svg,
-[data-grok] .sm-mark[data-grok-face][data-state='thinking'] svg {
-  filter: drop-shadow(0 0 3px var(--sm-mark-glow, transparent));
-}
-
-/* STREAMING — talking to you right now. Grok's working state is a ring AROUND a
-   static blob; ours is the blob itself, its own-hue glow PULSING like speech
-   (there is no mouth, so the glow is the voice). The eyes already face forward
-   (`eyesFor` streaming). Breathe runs too (streaming is live + working-class). */
-[data-grok] .sm-mark[data-grok-face][data-state='streaming'] svg {
-  filter: drop-shadow(0 0 2px var(--sm-mark-glow, transparent));
-  /* the speech pulse REPLACES the breathe — one loop, not two. (0,4,1) out-
-     specifies the base breathe-kill (0,3,1), so this wins even while live.) */
-  animation: sm-stream-glow 0.9s ease-in-out infinite;
-}
-
-/* CONNECTING — coming online. A faint neutral pulse while the eyes scan (JS gaze
-   sweep). Honest "up but not yet productive", where the base app fakes working. */
-[data-grok] .sm-mark[data-grok-face][data-state='connecting'] svg {
-  filter: saturate(0.85);
-  animation: sm-connect-pulse 1.4s ease-in-out infinite;
-}
-
-/* ERROR / FAILED — the strongest differentiator: Grok has no error face at all.
-   One micro-shake on entry (translate+rotate, a single iteration), then it rests
-   on the knitted-brow wilt (`eyesFor` failed) with a slight desaturate; the red
-   halo arrives via the `data-attention='blocked'` layer above. */
-[data-grok] .sm-mark[data-grok-face][data-state='failed'] svg {
-  filter: saturate(0.8);
-  transform-origin: center;
-  animation: sm-error-shake 0.42s ease-out 1;
-}
-
-/* STATUS TINT — a redundant, hue-coherent colour channel so the state survives
-   monochrome / colourblind reads (shape ≠ colour-only). done = a faint lift;
-   stopped = dimmed asleep. Kept subtle: the eyes are the primary read. */
-[data-grok] .sm-mark[data-grok-face][data-state='done'] svg {
-  filter: saturate(1.06) brightness(1.03);
-}
-[data-grok] .sm-mark[data-grok-face][data-state='stopped'] svg {
-  filter: saturate(0.6);
-  opacity: 0.82;
-}
-
-/* ARRIVE / LEAVE — a teammate joining or leaving a pile. Soft-overshoot in,
-   quick out (Grok's exits-faster-than-entries law, `grok-motion.ts`). Applied by
-   the render layer adding `data-arrive` / `data-leave`. */
-[data-grok] .sm-mark[data-grok-face][data-arrive] {
-  transform-origin: center;
-  animation: sm-arrive 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-[data-grok] .sm-mark[data-grok-face][data-leave] {
-  transform-origin: center;
-  animation: sm-leave 0.2s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
 /* THE 0.6s SETTLE — the side-pane wash (the one surface that reads the focused
@@ -923,33 +758,6 @@
   }
   [data-grok] [data-shell-pane] {
     transition: none;
-  }
-
-  /* WS4-EXPRESSION twins — every ambient loop drops to its informative still,
-     the pose (eye geometry) + the red halo + the in-hue glow all persist, so no
-     information is carried by motion alone (invariant #1). */
-
-  /* attention: the pulse stops, the halo stays (the whole point is scarcity) */
-  [data-grok] .sm-mark[data-attention='needs'] svg {
-    animation: none;
-  }
-  /* streaming: the voice-pulse stops, a static own-hue glow remains "speaking" */
-  [data-grok] .sm-mark[data-grok-face][data-state='streaming'] svg {
-    animation: none;
-    filter: drop-shadow(0 0 3px var(--sm-mark-glow, transparent));
-  }
-  /* connecting: no breath, but the eyes rest mid-scan (their static geometry) */
-  [data-grok] .sm-mark[data-grok-face][data-state='connecting'] svg {
-    animation: none;
-  }
-  /* error: no shake — it rests on the wilt + red halo immediately */
-  [data-grok] .sm-mark[data-grok-face][data-state='failed'] svg {
-    animation: none;
-  }
-  /* arrive / leave: collapse to the end-state, present at rest */
-  [data-grok] .sm-mark[data-grok-face][data-arrive],
-  [data-grok] .sm-mark[data-grok-face][data-leave] {
-    animation: none;
   }
 }
 
@@ -1517,40 +1325,13 @@
   height: 42px;
   flex: none;
   position: relative;
-  isolation: isolate;
-}
-/* Hue-coherent crew halo (jury R1, TEAM-CLUSTER): a soft glow ring behind the
-   1-over-2 stack in the primary member's OWN grok pigment (`--gr-pile-glow`, set
-   inline in TeamRow). Sits UNDER the three marks (negative z within the pile's
-   own stacking context, which the marks — z 1-3 — clear), so a team reads as one
-   glowing crew object, not three loose faces. Purely decorative; the team name
-   beside it is the label. Falls back to transparent when the var is unset. */
-[data-grok] .grok-roster .gr-pile::before {
-  content: '';
-  position: absolute;
-  inset: -5px;
-  z-index: -1;
-  border-radius: 50%;
-  background: radial-gradient(
-    closest-side,
-    color-mix(in srgb, var(--gr-pile-glow, transparent) 46%, transparent) 0%,
-    color-mix(in srgb, var(--gr-pile-glow, transparent) 20%, transparent) 55%,
-    transparent 78%
-  );
-  filter: blur(3px);
-  pointer-events: none;
 }
 [data-grok] .grok-roster .gr-pile .sm-mark {
   position: absolute;
 }
-/* 1-over-2 (Grok's crew cluster, matching `FACEPILE.cluster`): ONE member up top
-   and centred, painting last (highest z) so it reads as the prominent lead, with
-   TWO members seated below-left and below-right. (Was 2-over-1 — two on top, one
-   below — which inverted the read.) 24px marks in a 42px box: top-centre at
-   (42−24)/2 = 9px; the pair pinned to the bottom corners. */
-[data-grok] .grok-roster .gr-pile .p0 { left: 9px; top: 0; z-index: 3; }
-[data-grok] .grok-roster .gr-pile .p1 { left: 0; bottom: 0; z-index: 1; }
-[data-grok] .grok-roster .gr-pile .p2 { right: 0; bottom: 0; z-index: 2; }
+[data-grok] .grok-roster .gr-pile .p0 { left: 0; top: 1px; z-index: 1; }
+[data-grok] .grok-roster .gr-pile .p1 { right: 0; top: 0; z-index: 2; }
+[data-grok] .grok-roster .gr-pile .p2 { left: 9px; bottom: 0; z-index: 3; }
 
 /* ── the-one-human footer ──────────────────────────────────────────────────── */
 [data-grok] .grok-roster .gr-ft {

@@ -17,7 +17,7 @@
  *   · offscreen marks unregister from the rAF loop and pause the breathe, so a
  *     long roster costs only what is visible.
  */
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 // Relative, not `@/lib/utils`: the unit runner (`bun test`) resolves this file
 // directly and does not read the app tsconfig's path aliases.
@@ -30,14 +30,16 @@ import {
   type MarkPin,
   type MarkState,
 } from './character'
-import { eyePath, grokSilhouettePath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
-import { grokEmphasis, grokTune } from './grok-face'
-import { grokSkinActive } from './grok-skin'
+import { eyePath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
 import { registerMark } from './ticker'
 import { useOnScreen } from './use-on-screen'
 
-/** The transient attention layer — orthogonal to `state`, driven by the real
- *  session fields (`mark-status.ts::attentionFor`), not the status string. */
+/**
+ * The transient attention layer — `needs`/`blocked`/`null`. Retained as an
+ * accepted-but-inert channel so call sites that thread an attention read
+ * (`mark-status.ts::attentionFor`) keep type-checking; the mark itself does not
+ * consume it. State lives exclusively in the eyes (contract C5).
+ */
 export type MarkAttention = 'needs' | 'blocked' | null
 
 export interface SessionMarkProps {
@@ -66,16 +68,15 @@ export interface SessionMarkProps {
    */
   label?: string | null
   /**
-   * Force the skin. Omit and the mark auto-detects the Grok skin from the DOM
-   * (`grok-skin.ts`) once at mount. `/dev/marks` renders both skins on one page,
-   * so it passes this explicitly. Off the skin the face is byte-identical to the
-   * base app; on it the body is an organic blob and the eyes read as cut-outs.
+   * Accepted-but-inert skin flag. The mark renders one shipped face family in
+   * every context; this prop is retained only so the dev bench and skin-aware
+   * call sites keep type-checking. It changes nothing.
    */
   grok?: boolean
   /**
-   * The transient attention layer — `needs` (pulsing red halo), `blocked`
-   * (steady red halo) or `null`. Independent of `state`, and consumed only under
-   * the Grok skin, so it never touches the base app.
+   * Accepted-but-inert attention read (`needs`/`blocked`/`null`). Retained so
+   * call sites threading `attentionFor(session)` keep type-checking; the mark
+   * does not paint a halo — state lives exclusively in the eyes.
    */
   attention?: MarkAttention
 }
@@ -108,8 +109,6 @@ export function SessionMark({
   ring = null,
   animate = true,
   label,
-  grok,
-  attention = null,
 }: SessionMarkProps) {
   const pinKey = pin ? `${pin.silhouette ?? ''}|${pin.hue ?? ''}|${pin.gaze ?? ''}|${pin.tilt ?? ''}` : ''
   const ch = useMemo(
@@ -118,17 +117,6 @@ export function SessionMark({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [seed, pinKey],
   )
-
-  // The skin: an explicit prop wins (the dev bench); otherwise auto-detect once
-  // at mount. Off the skin every branch below collapses to the base render.
-  const [autoGrok] = useState(grokSkinActive)
-  const grokFace = grok ?? autoGrok
-
-  // Under the skin the face is tuned (`grok-face.ts`): cleaner pigment, and eyes
-  // calmed to a confident forward-facing pair. Off the skin `face === ch`, so the
-  // base render is byte-identical. The blob outline is unaffected either way
-  // (`grokSilhouettePath` keys on silhouette+seed, both preserved by the tune).
-  const face = useMemo(() => (grokFace ? grokTune(ch) : ch), [ch, grokFace])
 
   const reduced = useReducedMotion()
   const host = useRef<HTMLSpanElement>(null)
@@ -140,28 +128,22 @@ export function SessionMark({
   const live = wantsMotion && onScreen
 
   const { body, eyeL, eyeR } = useMemo(() => {
-    const q = poseQuat(face)
-    // Under the skin, `working`/`done` get a slightly wider delta so they survive
-    // at the 18px roster size (jury R1, EXPRESSION); off it, the resolved geometry
-    // is untouched and the base faces stay byte-identical.
-    const e = grokFace ? grokEmphasis(eyesFor(face, state), state) : eyesFor(face, state)
+    const q = poseQuat(ch)
+    const e = eyesFor(ch, state)
     return {
-      // Under the Grok skin the body is an organic blob; off it, the shipped
-      // projected silhouette, byte-for-byte. The eyes wrap onto the face solid
-      // either way (a centred sphere under the skin), so a blink reads the same.
-      body: grokFace ? grokSilhouettePath(face) : silhouettePath(face),
+      body: silhouettePath(ch),
       // The still frame is the fully-open eye: what reduced motion keeps, and
       // what every mark paints before the first animation frame lands.
-      eyeL: eyePath(face, q, e, -1, 1),
-      eyeR: eyePath(face, q, e, 1, 1),
+      eyeL: eyePath(ch, q, e, -1, 1),
+      eyeR: eyePath(ch, q, e, 1, 1),
     }
-  }, [face, state, grokFace])
+  }, [ch, state])
 
   useEffect(() => {
     const left = leftEye.current
     const right = rightEye.current
     if (!live || !left || !right) return
-    const stop = registerMark({ ch: face, state, left, right, grok: grokFace })
+    const stop = registerMark({ ch, state, left, right })
     return () => {
       stop()
       // Leave the face on the still frame: React will not rewrite `d` (the prop
@@ -169,7 +151,7 @@ export function SessionMark({
       left.setAttribute('d', eyeL)
       right.setAttribute('d', eyeR)
     }
-  }, [face, state, live, eyeL, eyeR])
+  }, [ch, state, live, eyeL, eyeR])
 
   const hidden = label === null
   // Facepile keyline: authored in viewBox units so it stays 2 CSS px at any size.
@@ -183,17 +165,7 @@ export function SessionMark({
       data-state={state}
       data-hue={ch.hue}
       {...(live ? { 'data-live': '1' } : {})}
-      {...(grokFace ? { 'data-grok-face': '' } : {})}
-      {...(grokFace && attention ? { 'data-attention': attention } : {})}
-      style={
-        grokFace
-          ? // `--sm-mark-glow` is the mark's OWN hue: the in-hue working/streaming
-            // glow reinforces identity while showing status (the colour firewall —
-            // red is reserved for attention). Set only under the skin, so the base
-            // app's `style` stays exactly `{ width, height }`.
-            ({ width: size, height: size, '--sm-mark-glow': face.color } as CSSProperties)
-          : { width: size, height: size }
-      }
+      style={{ width: size, height: size }}
       aria-hidden={hidden || undefined}
     >
       <svg
@@ -209,7 +181,7 @@ export function SessionMark({
         <path
           className="sm-mark__body"
           d={body}
-          fill={face.color}
+          fill={ch.color}
           {...(ring
             ? {
                 stroke: ring,
