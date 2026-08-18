@@ -99,7 +99,10 @@ export function Composer({
         className={cn(
           'min-w-0 flex-1 resize-none bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none',
           'max-h-[120px] placeholder:text-ink-2',
-          mobile ? 'text-[14.5px]' : 'text-[15px]',
+          // 16px is the iOS Safari floor: a focused field below it triggers an
+          // auto-zoom on tap. Keep the phone field at exactly 16 so the keyboard
+          // never zooms the viewport; desktop has no such rule and stays at 15.
+          mobile ? 'text-[16px]' : 'text-[15px]',
         )}
       />
       {trailing ?? (
