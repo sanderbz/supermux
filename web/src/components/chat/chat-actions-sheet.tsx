@@ -218,7 +218,12 @@ function ActionRow({
       onClick={onTap}
       className={cn(
         'flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left',
-        'active:bg-muted/60',
+        // `tap-transparent`: the row lives in Vaul's transformed, layer-promoted
+        // Drawer.Content, where iOS Safari paints its native tap-flash against
+        // the row's document box (ignoring the drawer's transform) — landing the
+        // grey flash OFFSET from the pressed row. Drop it and let the composited
+        // `active:bg` alone give the pressed feedback, exactly on the row.
+        'tap-transparent active:bg-muted/60',
       )}
     >
       <span className="grid size-8 flex-none place-items-center rounded-lg bg-muted/60 text-foreground">

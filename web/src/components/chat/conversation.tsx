@@ -461,6 +461,10 @@ export function ChatConversation({
       // pays for it in top padding, and the header is chat-only, so nothing
       // outside this surface moves.
       headerOverlay
+      // The phone floats the header card below the notch; the reservation of
+      // the iOS safe-area lives ONCE here as the overlay's top offset (see
+      // `--safe-top`). Off-phone the card pins to the pane top.
+      headerOverlayInsetTop={phone ? 'calc(var(--safe-top, 0px) + 12px)' : undefined}
       header={
         <SessionHeaderPill
           name={name}
@@ -550,8 +554,20 @@ export function ChatConversation({
         // of the pane with 600px of paper under it.
         //
         // The BOTTOM is measured, not a constant (QA #12 — see `trackBottom`).
-        className={`flex min-h-full flex-col ${phone ? 'px-[14px] pt-[86px]' : 'px-6 pt-[80px]'}`}
-        style={{ paddingBottom: reserve }}
+        className={`flex min-h-full flex-col ${phone ? 'px-[14px]' : 'px-6 pt-[80px]'}`}
+        style={{
+          paddingBottom: reserve,
+          // Phone: clear the FLOATING header card, which is notch-aware now.
+          // The old fixed `pt-[86px]` was budgeted for the env=0 card (~68px);
+          // on a real notch the card floats at `safe-top + 12` and is 60px tall,
+          // so its bottom sits at `safe-top + 72` and the first message scrolled
+          // UNDER the glass. Tracking `--safe-top` keeps the clearance honest on
+          // every device (and `+72px` at env=0 reproduces the old 86px budget's
+          // intent while sitting flush under the shorter card).
+          ...(phone
+            ? { paddingTop: 'calc(var(--safe-top, 0px) + 92px)' }
+            : null),
+        }}
       >
         {/* Bottom-anchored, like every board: the column sits on the floor of
             the pane and grows upward. */}

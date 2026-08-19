@@ -118,7 +118,13 @@ describe('the phone is a composition, not a width', () => {
 
   test('the header becomes a floating card the track scrolls under', () => {
     expect(phone).toContain('rounded-[22px]')
-    expect(phone).toContain('pt-[86px]')
+    // The track's top clearance is notch-AWARE now, not a fixed 86px budgeted
+    // for the env=0 header: on a real notch the floating card sits at
+    // `safe-top + 12` and is 60px tall, so a constant would let the first
+    // message scroll under the glass. It tracks `--safe-top` (+92px ≈ the old
+    // 86px intent under the shorter card at env=0).
+    expect(phone).toContain('calc(var(--safe-top, 0px) + 92px)')
+    expect(phone).not.toContain('pt-[86px]')
   })
 
   test('the composer takes its 52px rung and the phone gutters', () => {

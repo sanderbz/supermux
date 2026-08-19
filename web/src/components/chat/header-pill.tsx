@@ -234,14 +234,25 @@ export function SessionHeaderPill({
       // the two writes cannot drift into two different "session colours".
       style={sessionAccentVarsFor({ name }, pin)}
       className={cn(
-        'shrink-0 bg-surface pt-safe',
+        'shrink-0 bg-surface',
         // The boards' glass: the transcript scrolls UNDER this bar (already on
         // the phone; on the desktop once A5 makes the header an overlay), and
         // the blur is what keeps a captured frame from smearing across it.
         'backdrop-blur-[80px] backdrop-saturate-[180%]',
         phone
+          // The phone header is a FLOATING glass card (`mobile-light.png`: a
+          // 60px card inset 12px UNDER the status bar). The safe-area inset is
+          // therefore NOT this card's padding — a `pt-safe` here reserved the
+          // notch INSIDE the card, painting ~47px of empty glass above the name
+          // and doubling the card's height to ~115px on a notched device (the
+          // env=0 review rig never showed it). The reservation now lives ONCE,
+          // as the overlay wrapper's `top` offset in `chat-surface.tsx`
+          // (`calc(var(--safe-top) + 12px)`), so the card keeps its 60px floor
+          // and floats clear of the notch.
           ? 'mx-3 rounded-[22px] border-[0.5px] border-hairline'
-          : 'border-b-[0.5px] border-hairline',
+          // Desktop is not notched (`env()`=0); the bar pins to the pane top and
+          // keeps `pt-safe` for the harmless-at-env=0 additive reservation.
+          : 'border-b-[0.5px] border-hairline pt-safe',
         className,
       )}
     >

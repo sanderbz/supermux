@@ -60,6 +60,17 @@ export interface ChatSurfaceProps {
    */
   headerOverlay?: boolean
   /**
+   * The phone composition offsets the floating header card DOWN by the iOS
+   * safe-area so the card floats clear of the notch (`mobile-light.png`: a 60px
+   * card inset 12px under the status bar). The single reservation of that inset
+   * lives here as the overlay wrapper's `top` — `calc(var(--safe-top) + 12px)`
+   * — NOT as padding inside the card (that painted an empty band above the
+   * name, doubling the card's height on a notched device). Off-phone the header
+   * pins to the pane top (`top:0`), so this stays unset. See `--safe-top`
+   * (globals.css) for why the inset is a named var and not a raw `env()`.
+   */
+  headerOverlayInsetTop?: string
+  /**
    * Bottom slot — the composer. It FLOATS: the approved boards inset the pill
    * from the pane's bottom edge and let the transcript pass behind its blur, so
    * this layer is absolutely positioned and the scroll region reserves the room
@@ -173,6 +184,7 @@ export function ChatSurface({
   pin,
   header,
   headerOverlay,
+  headerOverlayInsetTop,
   footer,
   children,
   float,
@@ -220,7 +232,16 @@ export function ChatSurface({
           inset it twice. The DEFAULT occupant keeps the padding it always had,
           so a surface rendered without a header looks exactly as it did. */}
       {headerOverlay ? (
-        <div className="absolute inset-x-0 top-0 z-[3]">{top}</div>
+        <div
+          className="absolute inset-x-0 z-[3]"
+          // The notch reserved ONCE: on the phone the wrapper drops the card
+          // below the safe area (`calc(var(--safe-top) + 12px)`); off-phone it
+          // sits flush at the pane top. `top` (not padding) so the card keeps
+          // its own 60px height instead of growing to swallow the inset.
+          style={{ top: headerOverlayInsetTop ?? 0 }}
+        >
+          {top}
+        </div>
       ) : (
         <div className="shrink-0">{top}</div>
       )}

@@ -444,6 +444,30 @@
 }
 
 /* ── Safe-area utilities (PWA / Capacitor — no extra plugin needed) ──── */
+
+/* The ONE reservation of the iOS status-bar / Dynamic Island region, named.
+   `env(safe-area-inset-top)` reads 0 everywhere it does not apply (desktop, and
+   headless chromium at review time), so a plain fallback of 0px keeps every
+   `calc(var(--safe-top,0px) + …)` correct off-device. Naming it once also gives
+   the offline review rig a seam it can force (`--safe-top: 47px`) to reproduce
+   the notch that env() hides at env=0 — the reason this class of bug reached
+   production invisible. A custom property is the RIGHT owner for a floating
+   card that must offset (not pad) by the inset: a pinned bar still reserves it
+   additively with `pt-safe`, but an overlay wrapper positions with this var. */
+:root {
+  --safe-top: env(safe-area-inset-top);
+}
+
+/* Kill the iOS Safari native grey tap-flash on a control. Inside a transformed,
+   layer-promoted ancestor (Vaul's `will-change: transform` Drawer.Content) that
+   native highlight is painted against the control's DOCUMENT box, ignoring the
+   drawer layer's transform — so the flash lands vertically OFFSET from the row
+   the finger actually pressed. Dropping it leaves the CSS `active:bg-*` feedback,
+   which composites WITH the layer and sits exactly on the pressed row. */
+@utility tap-transparent {
+  -webkit-tap-highlight-color: transparent;
+}
+
 @utility pt-safe {
   padding-top: env(safe-area-inset-top);
 }
