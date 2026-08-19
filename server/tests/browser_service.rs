@@ -16,6 +16,8 @@
 //! Coverage:
 //! 1. [`lifecycle_leaves_no_orphan_process_or_profile_dir`] — THE critical one.
 //! 2. [`two_contexts_are_cookie_and_localstorage_isolated`]
+//! 2b. [`a_recycled_session_name_never_inherits_the_previous_cookie_jar`] — what
+//!     disposing the context on session end buys beyond the leak fix.
 //! 3. [`click_and_insert_text_mutate_the_page`]
 //! 4. [`human_takeover_refuses_agent_input_until_released`]
 //! 5. [`dropping_the_service_without_shutdown_still_kills_the_tree`] — the Drop backstop.
@@ -26,7 +28,7 @@ use std::time::Duration;
 use supermux_server::connectors::browser::context::ScreencastOptions;
 use supermux_server::connectors::browser::error::BrowserError;
 use supermux_server::connectors::browser::lock::{Actor, DriveMode, HandOff};
-use supermux_server::connectors::browser::{BrowserConfig, BrowserService};
+use supermux_server::connectors::browser::{dispose_on_teardown, BrowserConfig, BrowserService};
 
 // ── harness ─────────────────────────────────────────────────────────────────
 
@@ -325,6 +327,83 @@ async fn two_contexts_are_cookie_and_localstorage_isolated() {
     assert!(
         matches!(err, BrowserError::TooManyContexts { max: 4 }),
         "got {err:?}"
+    );
+
+    svc.shutdown().await;
+    server.abort();
+}
+
+// ── 2b. a recycled session name starts clean ────────────────────────────────
+
+/// The second thing `dispose_on_teardown` buys, after the leak itself.
+///
+/// supermux session names are recycled — delete `scraper`, create `scraper`
+/// again, and a different bot answers to the same name. Contexts are keyed by
+/// that name, so before the teardown wiring the new bot found the old one's
+/// context still sitting there: same page, same cookies, still logged in. No
+/// extra machinery is needed to prevent that — freeing the context when the
+/// session ends means there is simply nothing left under the name.
+///
+/// This drives the real teardown helper (the one the `SessionEnd` hook,
+/// `lifecycle::stop`, delete/archive and rename all call), not `close_context`
+/// directly, so it fails if that helper stops disposing.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the pinned chrome-headless-shell"]
+async fn a_recycled_session_name_never_inherits_the_previous_cookie_jar() {
+    if !chrome_present() {
+        return;
+    }
+    let (url, server) = serve_page(PAGE).await;
+    let svc = test_service();
+
+    // ── occupant #1 signs in ────────────────────────────────────────────────
+    let first = svc.context_for("scraper").await.expect("first occupant");
+    first.navigate(Actor::Agent, &url).await.expect("nav 1");
+    first
+        .evaluate("document.cookie='sid=THE-FIRST-BOT;path=/'; localStorage.setItem('sid','THE-FIRST-BOT'); 1")
+        .await
+        .expect("sign in");
+    assert_eq!(
+        first.evaluate("document.cookie").await.expect("jar 1"),
+        serde_json::json!("sid=THE-FIRST-BOT"),
+        "occupant #1 really is logged in"
+    );
+    let first_id = first.browser_context_id().to_string();
+
+    // ── its session ends ────────────────────────────────────────────────────
+    dispose_on_teardown(&svc, "scraper")
+        .expect("a runtime")
+        .await
+        .expect("disposal task");
+    assert_eq!(
+        svc.context_count().await,
+        0,
+        "session end must free the context (the leak fix)"
+    );
+
+    // ── the name is recycled by occupant #2 ─────────────────────────────────
+    let second = svc.context_for("scraper").await.expect("second occupant");
+    assert_ne!(
+        second.browser_context_id(),
+        first_id,
+        "there was nothing left to inherit, so this is a NEW browser context"
+    );
+    second.navigate(Actor::Agent, &url).await.expect("nav 2");
+    let jar = second.evaluate("document.cookie").await.expect("jar 2");
+    let ls = second
+        .evaluate("localStorage.getItem('sid')")
+        .await
+        .expect("ls 2");
+    eprintln!("[recycled-name] occupant #2: cookie={jar} ls={ls}");
+    assert_eq!(
+        jar,
+        serde_json::json!(""),
+        "occupant #2 can see occupant #1's cookies"
+    );
+    assert_eq!(
+        ls,
+        serde_json::Value::Null,
+        "occupant #2 can see occupant #1's localStorage"
     );
 
     svc.shutdown().await;
