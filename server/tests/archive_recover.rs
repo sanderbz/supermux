@@ -36,6 +36,7 @@ async fn setup() -> (axum::Router, std::path::PathBuf) {
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+        swarm_reaper: Default::default(),
             remote_callback_url: None,
             push_sub: None,
             github_token: None,

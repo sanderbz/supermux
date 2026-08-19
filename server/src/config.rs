@@ -38,6 +38,8 @@ pub struct Config {
     pub provider_defaults: ProviderDefaults,
     /// Live-stream WebSocket tuning.
     pub ws: WsConfig,
+    /// Periodic teardown of leaked agent-team tmux servers.
+    pub swarm_reaper: SwarmReaperConfig,
     /// URL the REMOTE host's Claude `SettingsHook` curl
     /// dials back to. `127.0.0.1:8823` is the local-session default and is
     /// useless for a Claude process running on a different machine — it would
@@ -150,6 +152,45 @@ impl Default for WsConfig {
     }
 }
 
+/// `[swarm_reaper]` block: periodic teardown of leaked Claude agent-team tmux
+/// servers (`claude-swarm-<pid>` sockets under TMUX_TMPDIR). See
+/// [`crate::sessions::swarm`] for the kill rules.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SwarmReaperConfig {
+    /// Master switch for the periodic sweep (targeted teardown at session end
+    /// is always on; it is part of the session lifecycle, not the reaper).
+    #[serde(default = "default_reaper_enabled")]
+    pub enabled: bool,
+    /// Never kill a server younger than this, even with a dead lead (seconds).
+    #[serde(default = "default_reaper_grace_secs")]
+    pub grace_secs: u64,
+    /// Sweep cadence in seconds (clamped to at least 60 at spawn).
+    #[serde(default = "default_reaper_interval_secs")]
+    pub interval_secs: u64,
+}
+
+fn default_reaper_enabled() -> bool {
+    true
+}
+
+fn default_reaper_grace_secs() -> u64 {
+    7200
+}
+
+fn default_reaper_interval_secs() -> u64 {
+    1800
+}
+
+impl Default for SwarmReaperConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_reaper_enabled(),
+            grace_secs: default_reaper_grace_secs(),
+            interval_secs: default_reaper_interval_secs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TlsConfig {
     pub cert_path: Option<PathBuf>,
@@ -183,6 +224,9 @@ struct RawConfig {
     provider_defaults: ProviderDefaults,
     #[serde(default)]
     ws: WsConfig,
+    /// See [`Config::swarm_reaper`].
+    #[serde(default)]
+    swarm_reaper: SwarmReaperConfig,
     /// See [`Config::remote_callback_url`].
     #[serde(default)]
     remote_callback_url: Option<String>,
@@ -286,6 +330,7 @@ pub fn load() -> Result<Config> {
         auth_token,
         provider_defaults: raw.provider_defaults,
         ws: raw.ws,
+        swarm_reaper: raw.swarm_reaper,
         remote_callback_url: raw.remote_callback_url,
         push_sub,
         github_token,

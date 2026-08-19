@@ -24,6 +24,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         auth_token: "wait-race-token".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+        swarm_reaper: Default::default(),
             remote_callback_url: None,
             push_sub: None,
             github_token: None,

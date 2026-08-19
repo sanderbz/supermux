@@ -31,6 +31,7 @@ fn temp_config() -> (Config, PathBuf) {
         // `ws` was added to `Config` after this test's milestone branched; default
         // it so the full suite compiles against the merged `Config`.
         ws: WsConfig::default(),
+        swarm_reaper: Default::default(),
         remote_callback_url: None,
             push_sub: None,
             github_token: None,

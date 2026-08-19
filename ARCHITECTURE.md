@@ -55,7 +55,7 @@ A design reference for contributors. Setup and deploy live in [`README.md`](READ
 | `push.rs` | VAPID keypair, subscriptions, send fan-out (web-push + reqwest rustls). |
 | `prefs.rs` | Snippets + kbd-groups CRUD. |
 | `claude_config.rs` | Writes `~/.claude/settings.json` for the service user. |
-| `sessions/` | tmux lifecycle, pty reader, status detector, teams, host pool, transport, steering deliver loop. |
+| `sessions/` | tmux lifecycle, pty reader, status detector, teams, host pool, transport, steering deliver loop, swarm reaper (`swarm.rs`). |
 | `ws/` | WebSocket router — pty fan-out (`broadcast::channel<Bytes>` per session), in-band first-frame auth. |
 | `board/` | Issue tracker, hook protocol (`/api/hook/board/*`), iCal feed, claim flow, dispatch. The Kanban PAGE was removed in fase B2 — the API, the hook edge, the iCal feed and the `supermux-task` skill are unchanged, and issues are read from session detail and the team card (`web/src/components/issues/`). |
 | `scheduler/` | 10s tick, expression parser (`cron`, `every Nm/Nh`, named), runner (tmux/shell/boot), watch mode. |
@@ -116,6 +116,31 @@ A per-session loop captures the tmux pane (`tmux capture-pane`) and classifies t
 Transitions go through a 50ms flap debounce; only confirmed edges are committed. On commit: DB write first (`last_status`), then `watch::Sender<(status, version)>` send-replace, then SSE `status` broadcast. Tick cadence is adaptive: 1s for hot-active, 2s active, 4s idle, 5s waiting/stopped.
 
 The board hook protocol and the scheduler's watch mode both subscribe to the same per-session watch channel — one source of truth for "is this turn done."
+
+---
+
+## Swarm reaper
+
+`server/src/sessions/swarm.rs`.
+
+Agent teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`) run each team on its own private tmux server, socket `$TMUX_TMPDIR/tmux-<uid>/claude-swarm-<lead pid>` (tmux always adds the per-uid subdirectory). Nothing upstream tears that server down when the lead agent exits, so every finished team leaves a detached server full of idle teammate processes. The reaper kills those. A server is killed only when all three hold: the lead PID is gone, the server has no attached tmux clients, and it is older than the grace period. A live PID is never trusted as proof that the team is active (PIDs get recycled); it only ever means "keep", which is the safe side. Leftover socket files are garbage-collected separately, and only when tmux positively answers that nothing is listening on them; an inconclusive probe leaves the file alone. Known limitation: a zombie lead process (one that exited but was never reaped by its parent) keeps `/proc/<pid>` alive, so its team server is kept until the zombie is reaped.
+
+Two entry points share those rules. Session stop, archive, delete, and the `SessionEnd` hook fire a targeted teardown for that session's lead, so a tracked exit cleans up almost immediately. A periodic sweep is the safety net for leads that die without an event (OOM kill, crash), and it also does the socket-file cleanup; the first tick runs at boot. A sweep that killed a server or removed a socket file writes an `audit_log` row with actor `reaper` carrying the full outcome; a sweep that killed something also raises an SSE `alerts` event.
+
+Only the local host is swept. A session running on a remote host over SSH keeps its agent-team server on that remote box, where neither the sweep (it reads the local `/proc`) nor the targeted teardown can see it.
+
+Configuration is the `[swarm_reaper]` block in `~/.supermux/config.toml`:
+
+```toml
+[swarm_reaper]
+enabled = true        # master switch for the periodic sweep
+grace_secs = 7200     # never kill a server younger than this
+interval_secs = 1800  # sweep cadence, clamped to at least 60
+```
+
+Targeted teardown at session end is part of the session lifecycle, so it stays on even with `enabled = false`.
+
+For a sweep by hand there is `supermux-server swarm-reaper [--dry-run] [--grace-secs N]`. It needs no DB and no listener, and like `pty-holder` it takes no `--help` by convention. It does not read the `[swarm_reaper]` block: without `--grace-secs` it uses the built-in default of 7200 seconds, so a config that widened or narrowed the grace period has to be repeated on the command line. Dry-run reports what a real run would do and changes nothing; it cannot always predict which socket files a real run would remove, because the servers it only marks for killing are still alive and still answering on their sockets. INFO tracing goes to the same terminal as the stdout report, so use `RUST_LOG=warn` for a clean one.
 
 ---
 

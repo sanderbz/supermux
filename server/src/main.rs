@@ -35,6 +35,14 @@ async fn main() -> anyhow::Result<()> {
         return sessions::native::holder::main(std::env::args().skip(2)).await;
     }
 
+    // Operator maintenance: sweep leaked `claude-swarm-*` agent-team tmux
+    // servers once and exit. `--dry-run` reports without killing anything.
+    // Needs no DB and no listener; `--help`-less by convention (see pty-holder).
+    if std::env::args().nth(1).as_deref() == Some("swarm-reaper") {
+        init_tracing();
+        return sessions::swarm::cli(std::env::args().skip(2)).await;
+    }
+
     init_tracing();
 
     // Drop the agent-nesting markers this process INHERITED before anything can
@@ -132,6 +140,9 @@ async fn main() -> anyhow::Result<()> {
     // live session row pointing at them. Cheap no-op while no remote hosts
     // are registered.
     sessions::spawn_reaper(state.host_pool.clone());
+    // Reap leaked Claude agent-team tmux servers (claude-swarm-<pid> sockets).
+    // First tick is immediate: also the boot sweep after a crash or OOM kill.
+    sessions::swarm::spawn_reaper(state.clone());
 
     let app = http::router(state);
 

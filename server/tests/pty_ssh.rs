@@ -45,6 +45,7 @@ async fn test_pool() -> (SqlitePool, PathBuf) {
         auth_token: "pty-ssh-test".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+        swarm_reaper: Default::default(),
         remote_callback_url: None,
             push_sub: None,
             github_token: None,

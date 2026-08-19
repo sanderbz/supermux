@@ -38,6 +38,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         // The WebSocket layer requires a `ws` block in `Config`; default it so
         // the cold-start test compiles against the merged `Config`.
         ws: WsConfig::default(),
+        swarm_reaper: Default::default(),
         remote_callback_url: None,
             push_sub: None,
             github_token: None,
