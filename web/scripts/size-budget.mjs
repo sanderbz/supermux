@@ -613,7 +613,12 @@ const BUDGET_ENTRY_JS = 160 * KB
 //   ~0.05 KB  `pwa/push-bridge` — the badge's `Σ needsYouCount(t)` team term
 //             (5c). The one bit on the ALWAYS-loaded path; it makes the app badge
 //             honest about a crew that needs you.
-const BUDGET_APP_JS = 295 * KB
+// 296 at the team-botmode↔mobile-fixes MERGE: merging feat/team-botmode (295)
+// into feat/grok-mode (which had gained the mobile header/nav/menu fixes) lands
+// the combined app JS at 295.13 — +0.13 over the Phase-5+6 ceiling, purely the
+// two independent branches summing. ceil(measured)=296, same rule as every merge
+// (keep higher + ratchet). Entry gate unmoved (153.46/160); Bot mode off unaffected.
+const BUDGET_APP_JS = 296 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
@@ -633,7 +638,11 @@ const BUDGET_APP_JS = 295 * KB
 // re-breaks. It is grok-scoped and mobile-only: the base app off grok downloads
 // the same bytes but matches none of them, and the ENTRY gate — the one that
 // guards first paint — is unmoved and green at 151.27/160 (95%).
-const BUDGET_CSS = 31 * KB
+// 32 at the team-botmode↔mobile-fixes MERGE: the merged grok-mode.css (team
+// TeamPanel/MemberPane skin + the mobile header/nav float + menu-bg fixes) lands
+// at 31.11 — +0.11 over the mobile-nav ceiling. ceil(measured)=32; grok-scoped,
+// base app off grok downloads but matches none of it.
+const BUDGET_CSS = 32 * KB
 
 function gzipSize(path) {
   return gzipSync(readFileSync(path), { level: 9 }).length
