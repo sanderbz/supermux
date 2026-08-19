@@ -562,6 +562,129 @@
 [data-grok] [data-shell-tabs] a:not([aria-current='page']) {
   color: var(--sm-sidebar-text-secondary);
 }
+/* ══ GROK MODE — the mobile bottom nav, FLOATED (phone only) ══════════════════
+   Everything below is `[data-grok]` + `@media (max-width:767px)` — the desktop
+   rail and the base (non-grok) tab bar are untouched at every breakpoint.
+
+   WHY: the base bar is, line-for-line, a Material `BottomNavigationView` — a
+   full-bleed flat slab welded to the screen edge, icon-over-10px-label cells and
+   a `h-1 w-8` TOP-underline active mark (layout.tsx:206-273). The rules above
+   only re-skinned its SURFACE (tint + hairline); its SHAPE still read Android.
+   Grok's 2026 phone nav is the opposite: a detached rounded glass capsule
+   hovering above the safe-area floor, with a soft accent TINT CHIP behind the
+   active tab — the exact grammar the desktop rail already uses (:528-531). This
+   block changes the shape without touching a byte of layout.tsx: the unlayered
+   grok rules out-specify Tailwind's `@layer utilities` classes on the elements.
+
+   CONTAINING-BLOCK CAVEAT (the lesson at :252-262 / globals.css:1072, restated):
+   `backdrop-filter` makes an element the containing block for every
+   `position:fixed` DESCENDANT. That is why the shell COLUMNS must never blur —
+   the palette, the tour and the connection overlay are fixed children of the
+   shell root. The tab bar is safe to blur because it has no fixed descendants
+   (its children are flow + one `position:absolute` chip), so the blur is a leaf
+   effect exactly like the substrate `::before`. */
+@media (max-width: 767px) {
+  /* A. Float it off the floor. `pb-safe` stops being a floor-filler: the
+     safe-area becomes the capsule's OUTER bottom margin, so the bar clears the
+     home indicator instead of tucking a tinted strip under it. The `padding`
+     shorthand is what neutralises `pb-safe` (one declaration, no !important). */
+  [data-grok] [data-shell-tabs] {
+    position: fixed;
+    z-index: 30;
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + 10px);
+    left: 12px;
+    padding: 6px 4px;
+    /* Rounded-rect, not a full pill: 4 LABELLED cells in a 366px capsule read
+       better with the 22px overlay radius than with `--sm-r-pill` (design §6.3). */
+    border: 0.5px solid var(--sm-sidebar-separator);
+    border-radius: var(--sm-r-overlay);
+    background: var(--sm-sidebar-tint);
+    -webkit-backdrop-filter: var(--sm-glass-raised);
+    backdrop-filter: var(--sm-glass-raised);
+    box-shadow: var(--sm-shadow-popover);
+  }
+  /* The top-only hairline (:458) becomes the capsule's full hairline RING above. */
+  [data-grok] [data-shell-tabs]::after {
+    content: none;
+  }
+
+  /* B. Active state → a soft tint chip, NOT a Material top-underline. Same
+     element, same `view-transition-name` (layout.tsx:243) — so the chip still
+     glides between tabs for free. The base classes hard-code the underline
+     geometry (`left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full`), so each
+     of those is answered here: `inset` beats left/top, `width/height:auto` lets
+     the inset resolve the box, `transform:none` drops the centring translate. */
+  [data-grok] [data-shell-tabs] [data-nav-active] {
+    inset: 6px;
+    width: auto;
+    height: auto;
+    /* `-translate-x-1/2` is Tailwind v4, so it compiles to the `translate`
+       PROPERTY, not to `transform` — cancelling only `transform` leaves the chip
+       half a cell to the left (caught in the rig, shot 1). Both are reset. */
+    translate: none;
+    transform: none;
+    border-radius: var(--sm-r-md);
+    background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+  }
+
+  /* C. Icons: 20px → 22px, and a fill/outline weight contrast for active vs
+     rest (Lucide ships no filled variant; stroke-width is the honest stand-in). */
+  [data-grok] [data-shell-tabs] svg {
+    width: 22px;
+    height: 22px;
+    stroke-width: 1.75;
+  }
+  [data-grok] [data-shell-tabs] a[aria-current='page'] svg {
+    stroke-width: 2.25;
+  }
+
+  /* D. Labels: kept (discoverability — design §6.1) but lighter and one step
+     larger, so they read as a caption under the glyph rather than as a 10px
+     Android micro-label. `position:relative` is LOAD-BEARING, not styling: the
+     chip is an absolutely-positioned earlier sibling, so a STATIC label would
+     paint underneath it. The icon wrapper is already `relative` (layout.tsx:248). */
+  [data-grok] [data-shell-tabs] > a > span:last-child,
+  [data-grok] [data-shell-tabs] > button > span:last-child {
+    position: relative;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  /* E. Content clearance — the ONE non-cosmetic rule (design §6.2). The bar no
+     longer occupies flow, so `<main>` must reserve its footprint or a route's
+     last row hides behind the glass. 92px = the capsule's MEASURED 70px (6 + the
+     cells' `min-h-14` 56 + 6 + the 0.5px ring twice) + its 10px lift + 12px of
+     ground, matching the 12px side inset so the capsule floats in an even margin.
+     (84px was the paper estimate; the rig measured a 70px bar, leaving 4px of air
+     that re-read as a second stacked toolbar under the overview's account strip.)
+     On top of that sits the safe-area the capsule now floats above.
+     `:has([data-shell-tabs])` is the point: the FOCUS route renders no bottom nav
+     (layout.tsx:469) and its `<main>` is `overflow-hidden`, so padding there would
+     shrink a full-screen surface for a bar that is not on screen. Pad only when
+     the bar is actually mounted. (`:has()` is already used at :2424.) */
+  [data-grok] [data-shell-main]:has([data-shell-tabs]) [data-shell-content] {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 92px);
+  }
+}
+
+/* Reduce-Transparency / no-backdrop-filter fallback — opaque elevated fill, no
+   blur. Same accessibility gate the substrate uses (:290-302). */
+@media (max-width: 767px) and (prefers-reduced-transparency: reduce) {
+  [data-grok] [data-shell-tabs] {
+    background: var(--sm-bg-elevated);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media (max-width: 767px) {
+    [data-grok] [data-shell-tabs] {
+      background: var(--sm-bg-elevated);
+    }
+  }
+}
 /* ══ GROK MODE — MOTION (WS3, the CSS half) ══════════════════════════════════
    The stylesheet counterpart of `lib/grok-motion.ts`. That file owns the
    framer-motion vocabulary (durations, curves in array + css-string form, the
