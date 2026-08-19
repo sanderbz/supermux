@@ -41,6 +41,7 @@ import {
 } from '../../src/components/chat/composer-draft'
 import { emptyCopy, EntityPickerView } from '../../src/components/chat/entity-picker'
 import { TranscriptItem } from '../../src/components/chat/transcript-item'
+import { MessageActions } from '../../src/components/chat/ui/message-actions'
 import {
   atRows,
   pickerOptionId,
@@ -1074,6 +1075,65 @@ describe('the transcript does not re-render on every keystroke', () => {
     // the fix; this is the reminder in the diff.
     expect(props.has('draft')).toBe(false)
     expect(props.has('composer')).toBe(false)
+  })
+})
+
+describe('the per-message action bar mounts as a stable sibling, gated', () => {
+  // A confirmed assistant turn, shaped like a `buildTranscript` node.
+  const assistantNode = {
+    kind: 'item' as const,
+    key: 'a1',
+    item: { type: 'assistant' as const, uuid: 'u1', ts: 1, text: 'Answer from the model' },
+    speaker: 'agent' as const,
+    grouped: false,
+    showGutter: true,
+    sender: undefined,
+  }
+
+  test('OFF by default — the base transcript is byte-identical (no action column at all)', () => {
+    const html = renderToStaticMarkup(<TranscriptItem node={assistantNode} name={NAME} />)
+    expect(html).toContain('Answer from the model')
+    // No hover-group wrapper and no bar hook: the AgentRow output is exactly the
+    // bare bubble it was before this feature.
+    expect(html).not.toContain('group/msg')
+    expect(html).not.toContain('data-msg-actions')
+  })
+
+  test('ON in bot mode — the bubble gains a sibling action column (never inside <Prose>)', () => {
+    const html = renderToStaticMarkup(
+      <TranscriptItem node={assistantNode} name={NAME} showActions />,
+    )
+    // The hover-group column wraps the bubble + the lazily-mounted bar as
+    // SIBLINGS; the bar itself is a separate lazy chunk (so it does not weigh on
+    // the transcript's main chunk and does not render under sync SSR — asserted
+    // directly on <MessageActions> below).
+    expect(html).toContain('group/msg')
+    expect(html).toContain('Answer from the model')
+  })
+})
+
+describe('the per-message action bar — the presentational component', () => {
+  // Rendered with NO <ToastProvider>: the bar reads the toast context directly
+  // and falls back to a no-op, so it renders anywhere (benches, this test).
+  test('desktop: Copy + a More trigger, hidden-until-hover, with the skin hooks', () => {
+    const html = renderToStaticMarkup(<MessageActions text="raw **markdown**" />)
+    expect(html).toContain('data-msg-actions')
+    expect(html).toContain('data-surface="desktop"')
+    expect(html).toContain('data-msg-action="copy"')
+    expect(html).toContain('data-msg-action="more"')
+    expect(html).toContain('aria-label="Copy message"')
+    // Hidden at rest, revealed by CSS only (no React state on the reveal path).
+    expect(html).toContain('opacity-0')
+    expect(html).toContain('group-hover/msg:opacity-100')
+  })
+
+  test('phone: the bar is persistent (no opacity-0 reveal) and 44pt', () => {
+    const html = renderToStaticMarkup(<MessageActions text="x" surface="phone" />)
+    expect(html).toContain('data-surface="phone"')
+    // Persistent, not hover-gated.
+    expect(html).not.toContain('opacity-0')
+    // 44pt targets.
+    expect(html).toContain('size-11')
   })
 })
 

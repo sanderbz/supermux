@@ -152,6 +152,13 @@ export interface ChatConversationProps {
    * Data, not a slot: `grouping.ts` decides which rows become lines, purely.
    */
   events?: readonly HarnessEvent[]
+  /**
+   * Show the per-message action bar (Copy · Share · More) under assistant
+   * bubbles. Bot/Grok-mode only — `chat-panel.tsx` passes `true`; the benches
+   * default it off so the primitives read as before. Threaded straight to
+   * `TranscriptItem`.
+   */
+  showActions?: boolean
   /** Go to another session — the destination of a harness line's chip. */
   onOpenSession?: (slug: string) => void
   /** Open this session's Schedules sheet — the destination of a `⏱` chip
@@ -310,6 +317,7 @@ export function ChatConversation({
   mentions,
   names,
   events,
+  showActions = false,
   onOpenSession,
   onOpenSchedule,
   handoff,
@@ -582,6 +590,7 @@ export function ChatConversation({
               names={names}
               rawUrl={rawUrl}
               pinFor={pinFor}
+              showActions={showActions}
               onOpenSession={onOpenSession}
               onOpenSchedule={onOpenSchedule}
               onOpenTerminal={onOpenTerminal}

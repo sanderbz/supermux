@@ -699,6 +699,11 @@ export default function ChatPanel({
       mentions={mentions}
       names={names}
       events={events}
+      // The per-message action bar (Copy · Share · More) is Bot-mode UI, and
+      // this panel is the Bot-mode renderer (it mounts only when the chat
+      // renderer is on). Passing it unconditionally here keeps every OTHER
+      // caller of the transcript (benches, unit tests) byte-identical.
+      showActions
       onOpenSession={openSession}
       onOpenSchedule={openSchedule}
       // The handoff pill's ONLY source (fase B4 T5): a POST this client made

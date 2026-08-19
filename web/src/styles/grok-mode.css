@@ -2484,3 +2484,30 @@
   --sm-text-tertiary: #9a9a9a;
   --sm-ink-3: var(--sm-text-tertiary);
 }
+
+/* ══ PER-MESSAGE ACTION BAR (WS — Copy · Share · More) ═════════════════════════
+   The bar under each assistant bubble carries `data-msg-actions`, each control
+   `data-msg-action`; the default app already styles them with semantic tokens so
+   both themes read. These rules are the GROK LIFT only — rest/hover tint and
+   radius in Grok's own token language, no TS branch. Scoped entirely to the
+   `data-msg-*` hooks, so nothing else moves. */
+[data-grok] [data-msg-action] {
+  color: var(--sm-text-tertiary);
+  border-radius: var(--sm-r-sm);
+}
+[data-grok] [data-msg-action]:hover {
+  color: var(--sm-text-secondary);
+  /* A faint accent wash instead of the neutral muted tint — Grok's emphasis. */
+  background-color: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+}
+/* The desktop bar sits a touch quieter at rest; the phone bar stays persistent
+   but reads as chrome, not as a second row of content. */
+[data-grok] [data-msg-actions][data-surface='phone'] {
+  opacity: 0.6;
+}
+/* The overflow dropdown's items take the same accent-wash focus as the bar's
+   buttons, so the menu reads as one family with its trigger. */
+[data-grok] [data-msg-actions-menu] [role='menuitem'][data-highlighted] {
+  background-color: color-mix(in srgb, var(--sm-accent) 14%, transparent);
+  color: var(--sm-text-primary);
+}

@@ -107,13 +107,17 @@ export default function DevChatLive() {
   const viewportPhone = useMediaQuery(PHONE_QUERY)
   const phone = params.get('surface') === 'phone' || viewportPhone
   const bare = params.has('bare')
+  // `&actions` turns on the per-message action bar (Bot-mode UI) so the offline
+  // rig can screenshot Copy · Share · More on a seeded transcript. Off by
+  // default → the existing shots are unchanged.
+  const showActions = params.has('actions')
 
   return (
     <div className="h-dvh w-full overflow-hidden bg-paper text-ink">
       {phone ? (
-        <PhoneFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} />
+        <PhoneFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} showActions={showActions} />
       ) : (
-        <BoardFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} />
+        <BoardFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} showActions={showActions} />
       )}
       {!bare && (
         <Picker
@@ -172,12 +176,15 @@ export function Surface({
   surface,
   gone = null,
   offline = false,
+  showActions = false,
   headerLeading,
   headerTrailing,
 }: {
   state: LiveState
   nowMs: number
   surface: 'desktop' | 'phone'
+  /** Show the per-message action bar (Bot-mode UI) — the `&actions` bench flag. */
+  showActions?: boolean
   /** The terminal 4404, threaded through EXACTLY as `chat-panel.tsx` threads
    *  `tail.gone` — into the conversation body AND the composer's gate. */
   gone?: ChatGone | null
@@ -217,6 +224,7 @@ export function Surface({
       mentions={MENTIONS}
       names={NAMES}
       events={state.events}
+      showActions={showActions}
       // The chips are LIVE on the bench (fase B4 T3.6): a screenshot of an
       // inert chip proves nothing about the interactive variant, and the two
       // render different elements. The handlers go nowhere — this page has no
@@ -394,11 +402,12 @@ function BenchComposer({
 
 /* ── desktop: the surface, in the boards' window ─────────────────────────── */
 
-function BoardFrame({ state, nowMs, conn, gone }: {
+function BoardFrame({ state, nowMs, conn, gone, showActions = false }: {
   state: LiveState
   nowMs: number
   conn: 'reconnecting' | 'stale' | 'offline' | null
   gone: ChatGone | null
+  showActions?: boolean
 }) {
   const { resolvedTheme } = useTheme()
   const ring = PAPER[resolvedTheme].paper
@@ -441,6 +450,7 @@ function BoardFrame({ state, nowMs, conn, gone }: {
           surface="desktop"
           gone={gone}
           offline={conn === 'offline'}
+          showActions={showActions}
           headerTrailing={
             conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : undefined
           }
@@ -452,11 +462,12 @@ function BoardFrame({ state, nowMs, conn, gone }: {
 
 /* ── phone: the surface, under the status bar ────────────────────────────── */
 
-function PhoneFrame({ state, nowMs, conn, gone }: {
+function PhoneFrame({ state, nowMs, conn, gone, showActions = false }: {
   state: LiveState
   nowMs: number
   conn: 'reconnecting' | 'stale' | 'offline' | null
   gone: ChatGone | null
+  showActions?: boolean
 }) {
   return (
     <div className="relative mx-auto flex h-full w-full max-w-[390px] flex-col bg-paper-raised">
@@ -482,6 +493,7 @@ function PhoneFrame({ state, nowMs, conn, gone }: {
           surface="phone"
           gone={gone}
           offline={conn === 'offline'}
+          showActions={showActions}
           // What A5's mobile shell ACTUALLY puts in these two slots
           // (`routes/focus/mobile.tsx`), so the card's geometry is reviewable
           // as shipped rather than as sketched: the back button, and the

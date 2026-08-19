@@ -434,7 +434,34 @@ const BUDGET_ENTRY_JS = 160 * KB
 // selection-fix + shell-viewport batch (258) on one branch. +1.76 over the 271
 // connector ceiling = the two lines of divergence measured together for the first
 // time; entry hero path unmoved at 151.61/160. ceil(measured).
-const BUDGET_APP_JS = 273 * KB
+// 277 as of the PER-MESSAGE ACTION BAR (Bot-mode Copy · Share · More on assistant
+// messages): measured 276.93 against 272.76 for feat/grok-mode — a +4.17 KB fase,
+// ALL of it on a new LAZY chunk. `ui/message-actions.tsx` is `React.lazy`'d by
+// `transcript-item.tsx` (the same discipline `ChatMarkdown` uses), so the ENTRY
+// (hero-path) gate — the one that actually guards first paint — MOVED DOWN to
+// 151.07/160 (94%, from 151.61): the bar's weight, the dropdown-menu it reuses and
+// the Vaul overflow sheet are all fetched only when an assistant bubble with
+// actions first renders under Bot mode, never on cold load. Where the bytes went:
+//   +~1.7 KB  `ui/message-actions.tsx` — the bar itself: the CSS-only hover-reveal
+//             (no React state on the reveal path, so it never re-renders the
+//             memoised prose subtree or fights text selection), the Copy→check
+//             flash, the feature-detected Share, and the desktop dropdown / phone
+//             sheet fork over the three exports.
+//   +~1.5 KB  `chat/message-export.ts` — the pure export plane: copy/share/
+//             download idioms + the standalone `.html` document wrapper. The
+//             markdown→HTML render (`react-dom/server` + the markdown chunk) is
+//             `await import()`ed on demand, so neither weighs here or anywhere
+//             until "Export as HTML" is actually picked.
+//   +~0.6 KB  `chat/message-actions-sheet.tsx` — the touch overflow on the shared
+//             Vaul `MobileActionSheet` (already bundled), three 44pt export rows.
+//   +~0.4 KB  the mount seam in `transcript-item.tsx` (the gated sibling column +
+//             its lazy boundary) and the `showActions` thread through
+//             `conversation.tsx`/`chat-panel.tsx`.
+// A genuine additive feature, gated so the base app (Bot mode off) is byte-
+// identical: ceil(measured) = 277, the rule every fase since B3 has used. The
+// `[data-msg-actions]` grok skin (~0.1 KB) lands in the CSS budget (29.50/30,
+// 98%), not here.
+const BUDGET_APP_JS = 277 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

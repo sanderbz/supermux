@@ -136,6 +136,14 @@ export interface TranscriptItemProps {
    * Omit and the schedule entity is plain emphasis, never a dead affordance.
    */
   onOpenSchedule?: (ref: ScheduleRef) => void
+  /**
+   * Show the per-message action bar (Copy · Share · More) under assistant
+   * bubbles. Bot/Grok-mode only — the panel passes it `true`; every other caller
+   * (the base app never renders this surface, plus the benches and unit tests)
+   * leaves it `false`, so `AgentRow`'s output is BYTE-IDENTICAL to before. See
+   * `ui/message-actions.tsx`.
+   */
+  showActions?: boolean
 }
 
 /** What a schedule chip knows about the schedule it names. Both fields optional —
@@ -283,6 +291,18 @@ function commandChip(badge: string | undefined, label: string | undefined): stri
 
 /* ── this session ────────────────────────────────────────────────────────── */
 
+/**
+ * The per-message action bar, behind its OWN lazy boundary.
+ *
+ * It pulls the dropdown-menu primitive and (on touch) the Vaul sheet, plus the
+ * export helpers — none of which the calm transcript needs until an assistant
+ * bubble with actions actually renders (Bot mode only). Splitting it here keeps
+ * that weight off the main app chunk, the same discipline `ChatMarkdown` uses
+ * for the markdown stack. The fallback is `null`: the bar is chrome, so a
+ * bubble that mounts a frame ahead of the chunk simply shows no bar for a beat.
+ */
+const MessageActions = React.lazy(() => import('./ui/message-actions'))
+
 function AgentRow({
   item,
   grouped,
@@ -305,37 +325,56 @@ function AgentRow({
     )
   }
   if (item.type !== 'assistant') return null
+  const bubble = (
+    <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
+      {/* WITHDRAWN, NOT DELETED (catalog `err.refusal_fallback_dialog`).
+          Claude Code retracted this reply — the prompt it came from was
+          flagged, and the model will not act on it any more. The words stay on
+          screen because the user READ them and a transcript that quietly
+          removes what somebody read is lying about what happened; what changes
+          is that they stop reading as live. Dimmed, captioned, and marked in
+          the DOM so the e2e can prove it. */}
+      {item.retracted && (
+        <p
+          data-testid="chat-retracted"
+          className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3"
+        >
+          Withdrawn by Claude Code
+        </p>
+      )}
+      <div className={item.retracted ? 'opacity-55' : undefined}>
+        <Prose
+          text={item.text}
+          self={rest.name}
+          mentions={rest.mentions}
+          pinFor={rest.pinFor}
+          surface={rest.surface}
+          rawUrl={rest.rawUrl}
+          onOpenSession={rest.onOpenSession}
+        />
+        {item.truncated && <ClippedMarker uuid={item.uuid} />}
+      </div>
+    </Bubble>
+  )
+  // Base app / benches / tests: byte-identical to before — just the bubble.
+  if (!rest.showActions) {
+    return (
+      <MessageRow grouped={grouped} gutter={mark} surface={rest.surface}>
+        {bubble}
+      </MessageRow>
+    )
+  }
+  // Bot/Grok mode: the bubble and its action bar share one hover-group column,
+  // the bar a STABLE SIBLING of the bubble (never inside <Prose>), so the
+  // memoised markdown subtree never re-mounts and text selection is untouched.
   return (
     <MessageRow grouped={grouped} gutter={mark} surface={rest.surface}>
-      <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
-        {/* WITHDRAWN, NOT DELETED (catalog `err.refusal_fallback_dialog`).
-            Claude Code retracted this reply — the prompt it came from was
-            flagged, and the model will not act on it any more. The words stay on
-            screen because the user READ them and a transcript that quietly
-            removes what somebody read is lying about what happened; what changes
-            is that they stop reading as live. Dimmed, captioned, and marked in
-            the DOM so the e2e can prove it. */}
-        {item.retracted && (
-          <p
-            data-testid="chat-retracted"
-            className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3"
-          >
-            Withdrawn by Claude Code
-          </p>
-        )}
-        <div className={item.retracted ? 'opacity-55' : undefined}>
-          <Prose
-            text={item.text}
-            self={rest.name}
-            mentions={rest.mentions}
-            pinFor={rest.pinFor}
-            surface={rest.surface}
-            rawUrl={rest.rawUrl}
-            onOpenSession={rest.onOpenSession}
-          />
-          {item.truncated && <ClippedMarker uuid={item.uuid} />}
-        </div>
-      </Bubble>
+      <div className="group/msg flex min-w-0 flex-col items-start">
+        {bubble}
+        <React.Suspense fallback={null}>
+          <MessageActions text={item.text} surface={rest.surface} />
+        </React.Suspense>
+      </div>
     </MessageRow>
   )
 }
