@@ -37,10 +37,32 @@
 // change, not a geometry change.
 //
 // When the keyboard is closed — `contentHeight == null`, the moment the field
-// blurs (`useKeyboardViewport` gates on editable focus) — no inline style is set
-// and the `h-svh` + `bottom-0` classes govern. `svh` (SMALL viewport) not `dvh`:
-// a late/again-null frame with `dvh` (the LARGE, URL-bar-hidden height) could
-// still overshoot the visible area and hide the bar; `svh` never does.
+// blurs (`useKeyboardViewport` gates on editable focus) — the sheet is anchored
+// by its TOP (`top: 0`, height `100dvh`), NOT by its bottom.
+//
+// WHY TOP-ANCHOR THE CLOSED STATE (the "top bar dead / mis-placed when the
+// keyboard is closed" regression). The earlier closed state was `bottom: 0` +
+// `h-svh` on a `position: fixed` box. On iOS a `position: fixed` element is laid
+// out against the LAYOUT viewport (the URL-bar-hidden / large height) and does
+// NOT track the VISUAL viewport, while `svh` is the SMALL (URL-bar-shown) height:
+// so `bottom-0 + h-svh` pinned the sheet's BOTTOM at the layout-viewport bottom
+// (behind the bottom URL bar) and left its TOP — the back button + title — pushed
+// DOWN by `layoutHeight − svh`, landing in dead space where a tap on the visible
+// top hit nothing. The same mis-placement carried the bottom dock (and its Edit
+// pill) off the hit-testable area, so the Edit button "did nothing" too. Residual
+// `visualViewport.offsetTop` that iOS leaves after a keyboard dismiss made it
+// worse. The keyboard-OPEN path never showed it because it pins the sheet to the
+// visual viewport explicitly (`height` + `translateY(-inset)`).
+//
+// `top: 0` is the fix: on iOS the layout-viewport TOP coincides with the visible
+// top (the notch sits ABOVE it, reserved by the header's own `pt-safe`; the URL
+// bar sits at the BOTTOM), so a top-anchored sheet puts the header exactly where
+// the user sees it and taps land. `height: 100dvh` (a CSS length the browser
+// resolves to the CURRENT visible height — never the JS-measured
+// `visualViewport.height` that briefly reads screen-minus-home-indicator on a PWA
+// cold launch and painted the black bar) fills the visible area top-down, so the
+// dock rides just above the URL bar with no bottom gap. No keyboard is up in this
+// state, so there is nothing to sit above — only the top bar's placement matters.
 
 import * as React from 'react'
 
@@ -49,7 +71,7 @@ import { cn } from '@/lib/utils'
 export interface MobileSheetProps {
   /** Explicit content height in px — driven by `useKeyboardViewport` so the
    *  sheet sits flush above the soft keyboard (= visualViewport.height). When
-   *  null/undefined the CSS `h-svh` className governs. */
+   *  null/undefined the sheet is top-anchored at `100dvh` (keyboard closed). */
   contentHeight?: number | null
   /** Pixels the soft keyboard overlaps the bottom of the layout viewport
    *  (offsetTop already folded in). Lifts the `bottom-0` sheet UP by this much
@@ -70,17 +92,29 @@ export function MobileSheet({
       style={
         contentHeight != null
           ? {
+              // KEYBOARD OPEN — pin to the visual viewport: bottom-anchored, exact
+              // height, lifted above the keyboard via transform (NOT `bottom`; iOS
+              // 26 fixed-offset regression). `-keyboardInset` folds in
+              // visualViewport.offsetTop. `top: auto` so the bottom edge governs.
+              top: 'auto',
+              bottom: 0,
               height: contentHeight,
-              // Lift via transform, not `bottom` (iOS 26 fixed-offset regression;
-              // see header). `-keyboardInset` folds in visualViewport.offsetTop.
               transform: `translateY(-${keyboardInset}px)`,
               transition:
                 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1), transform 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
             }
-          : undefined
+          : {
+              // KEYBOARD CLOSED — top-anchored fill so the top bar sits at the
+              // visible top and stays hit-testable (see header block). `100dvh` is
+              // the CSS viewport length, NOT the JS-measured visualViewport.height
+              // (PWA-black-bar-safe).
+              top: 0,
+              bottom: 'auto',
+              height: '100dvh',
+            }
       }
       className={cn(
-        'fixed inset-x-0 bottom-0 z-50 flex h-svh flex-col bg-background',
+        'fixed inset-x-0 z-50 flex flex-col bg-background',
       )}
     >
       {children}
