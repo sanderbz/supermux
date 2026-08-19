@@ -187,7 +187,20 @@ export const isAuthored = (name: SilhouetteName): name is AuthoredName => name i
  * be byte-identical to `idle` and differed only by not animating, so a
  * reduced-motion user (or any screenshot) could not tell them apart.
  */
-export type MarkState = 'idle' | 'working' | 'waiting' | 'done' | 'stopped' | 'failed'
+export type MarkState =
+  | 'idle'
+  | 'working'
+  | 'waiting'
+  | 'done'
+  | 'stopped'
+  | 'failed'
+  // The three Grok-skin *moments* (not raw statuses, like `done`): a session
+  // that is reasoning before it emits (`thinking`), streaming an answer at you
+  // (`streaming`), or coming online but not yet productive (`connecting`). All
+  // three are derived by `markStateForSession`; the base app never asks for them.
+  | 'thinking'
+  | 'streaming'
+  | 'connecting'
 
 /** What a roster assignment (or a fixture) may fix; everything else stays seeded. */
 export interface MarkPin {
@@ -228,6 +241,15 @@ export interface Character {
   }
   /** The right eye's deviation from the left — no face is symmetric. */
   asym: { w: number; h: number; py: number; slant: number }
+  /**
+   * The seeded *mouth rest personality* — width and rest-curvature sign, a tiny
+   * per-seed range so a bot's neutral mouth is recognisable like its eyes. Seeded
+   * LAST in `characterFromSeed` (draws AFTER `pose`) so it consumes no draw the
+   * eye layout depends on (the draw-order contract). The mouth is only ever
+   * PAINTED on `streaming`/`done`/`failed` (`mouthFor`), but the personality is
+   * carried by every character so those three read per-bot, not generic.
+   */
+  mouth: { w: number; curve: number }
   /** Head pose, degrees, plus the perspective amount. */
   pose: { x: number; y: number; z: number; persp: number }
   /** Per-seed phase (seconds) for the blink clock and the breathe loop. */
@@ -301,6 +323,12 @@ export function characterFromSeed(seed: string, pin: MarkPin = {}): Character {
       z: asym() * (authored ? 1.5 : 4.5),
       persp: 1,
     },
+    // SEEDED LAST — every draw above (eyes, asym, pose) has already consumed its
+    // slot, so these two draws cannot shift a single eye. This ordering is the
+    // proof the shipped faces stay byte-identical (draw-order contract, :251):
+    // the golden vectors pin the eyes, and they are drawn before `pose`, which is
+    // drawn before these two, so nothing the vectors cover can move.
+    mouth: { w: range(rand, 34, 46), curve: range(rand, -0.15, 0.15) },
     clock: rngFrom(seed + '#clock')() * 9,
   }
 }
@@ -408,8 +436,106 @@ export function eyesFor(ch: Character, state: MarkState): EyeGeometry {
     e.hR *= 0.86
     e.wL *= 0.62
     e.wR *= 0.62
+  } else if (state === 'streaming') {
+    // "Talking to you": the working-narrow eyes, but gaze levelled to CENTRE
+    // (looking at you, not down at the work) — the mouth carries the speaking.
+    const s = -20 + a.slant
+    e.angleL = s
+    e.angleR = s + 3.2
+    e.hL *= 0.82
+    e.hR *= 0.82
+    e.wL *= 0.58
+    e.wR *= 0.58
+    e.pxL = 0
+    e.pxR = 0
+  } else if (state === 'thinking') {
+    // Pondering: eyes drawn CLOSER together and shifted UP+aside, staying open —
+    // deliberately NOT the heads-down working narrow. "Looking away in thought".
+    e.spacing *= 0.9
+    e.pyL -= 6
+    e.pyR -= 6
+    e.pxL = g - 5
+    e.pxR = g - 5
+    e.hL *= 0.9
+    e.hR *= 0.9
+    e.angleL *= 0.6
+    e.angleR *= 0.6
+  } else if (state === 'connecting') {
+    // Coming online, looking around: narrowed and levelled; the horizontal gaze
+    // SWEEP is applied per-frame by the ticker (`eyeClock.gazeSweep`), so a still
+    // frame rests mid-scan — honest, unlike faking `working` before it is useful.
+    e.hL *= 0.7
+    e.hR *= 0.7
+    e.wL *= 0.86
+    e.wR *= 0.86
+    e.angleL *= 0.4
+    e.angleR *= 0.4
   }
   return e
+}
+
+/* ── state → mouth (the one new feature) ─────────────────────────────────────── */
+
+/** Resolved mouth geometry, in face arc-length units. `visible:false` ⇒ no mouth
+ *  is painted at all (the clean, Grok-minimal default for most states). */
+export interface MouthGeometry {
+  /** Centre, in face arc-length units (y is BELOW the eyes). */
+  cx: number
+  cy: number
+  /** Mouth width. */
+  w: number
+  /** Band thickness (crescent) or lozenge height (streaming). */
+  h: number
+  /** Signed curvature: + = up-curve (smile), − = down-curve (wilt), 0 = flat. */
+  curve: number
+  /** An open "o"/lozenge (streaming) vs a curved band (done/failed). */
+  open: boolean
+  /** Whether a mouth is painted for this state at all. */
+  visible: boolean
+}
+
+/** The vertical seat of the mouth below the eyes, in face arc-length units. */
+const MOUTH_CY = 50
+
+/**
+ * The mouth channel — the single feature added beyond the shipped eyes.
+ *
+ * ABSENT on idle/thinking/working/connecting/stopped (the clean, calm glyph).
+ * PRESENT on exactly three states, where it earns its place as a silhouette-level
+ * emotional read that survives 18px and monochrome:
+ *   · streaming — a small open lozenge that CSS pulses (`sm-stream-mouth`): talking
+ *   · done      — a gentle up-curve: delight
+ *   · failed    — a down-curve wilt: strain
+ * The per-seed rest personality (`ch.mouth`) rides all three, so two bots smiling
+ * do not smile identically.
+ */
+export function mouthFor(ch: Character, state: MarkState): MouthGeometry {
+  const base: MouthGeometry = {
+    cx: 0,
+    cy: MOUTH_CY,
+    w: ch.mouth.w,
+    h: 9,
+    curve: ch.mouth.curve,
+    open: false,
+    visible: false,
+  }
+  if (state === 'streaming') {
+    return { ...base, w: ch.mouth.w * 0.5, h: 22, curve: 0, open: true, visible: true }
+  }
+  if (state === 'done') {
+    return { ...base, w: ch.mouth.w, h: 9, curve: 0.5 + ch.mouth.curve, visible: true }
+  }
+  if (state === 'failed') {
+    return { ...base, w: ch.mouth.w * 0.82, h: 8, curve: -0.42 + ch.mouth.curve, visible: true }
+  }
+  return base
+}
+
+/** The mouth pigment — a subtly darker shade of the body, for a "shadowed mouth"
+ *  read (the eyes are white ink, so the mouth cannot also be white). */
+export const mouthInk = (hue: number): string => {
+  const [L, C] = trimFor(hue)
+  return oklchHex(L * 0.62, C * 0.85, hue)
 }
 
 /* ── the blink clock ─────────────────────────────────────────────────────── */
@@ -419,15 +545,28 @@ export const BLINK_CLOSING = 0.16
 
 /** Base blink period per state; the per-seed `clock` detunes it further. */
 export function blinkPeriod(state: MarkState): number {
-  return state === 'working' ? 2.6 : state === 'waiting' ? 3.1 : 4.6
+  if (state === 'working') return 2.6
+  if (state === 'streaming') return 2.6
+  if (state === 'waiting') return 3.1
+  if (state === 'thinking') return 4.2
+  if (state === 'connecting') return 2.0
+  return 4.6
 }
 
 /**
  * Which states have a heartbeat. `done`, `stopped` and `failed` are stills by
- * design — nothing is running, so nothing should breathe.
+ * design — nothing is running, so nothing should breathe. The three Grok moments
+ * (`thinking`/`streaming`/`connecting`) are all live: each has a reason to move.
  */
 export function isLive(state: MarkState): boolean {
-  return state === 'idle' || state === 'working' || state === 'waiting'
+  return (
+    state === 'idle' ||
+    state === 'working' ||
+    state === 'waiting' ||
+    state === 'thinking' ||
+    state === 'streaming' ||
+    state === 'connecting'
+  )
 }
 
 /**
@@ -445,7 +584,7 @@ export function eyeClock(
   ch: Character,
   state: MarkState,
   t: number,
-): { blink: number; saccadeX: number } {
+): { blink: number; saccadeX: number; gazeSweep: number } {
   const p = blinkPeriod(state) + (ch.clock % 1.7)
   const ph = (t + ch.clock) % p
   let blink = 1
@@ -454,9 +593,20 @@ export function eyeClock(
     const b = Math.abs(u - 0.5) * 2
     blink = Math.max(0, b * b * (3 - 2 * b))
   }
+  // The micro-saccade: a quantised pupil drift while `waiting` (a wide-eyed face
+  // that glances reads as waiting for you), plus a gentler one while `thinking`
+  // (eyes wandering in thought). Never on the heads-down/streaming states.
   const saccadeX =
-    state === 'waiting' ? Math.round(Math.sin((t + ch.clock) * 0.55) * 1.6) * 1.6 : 0
-  return { blink, saccadeX }
+    state === 'waiting'
+      ? Math.round(Math.sin((t + ch.clock) * 0.55) * 1.6) * 1.6
+      : state === 'thinking'
+        ? Math.round(Math.sin((t + ch.clock) * 0.4) * 1.2) * 1.2
+        : 0
+  // The connecting gaze SWEEP: a smooth L↔R scan (~1.1s), so a booting session
+  // visibly "looks around". A still frame lands somewhere on the sweep — legible
+  // as mid-scan even frozen. Zero on every other state.
+  const gazeSweep = state === 'connecting' ? Math.sin((t + ch.clock) * (Math.PI / 0.55)) * 11 : 0
+  return { blink, saccadeX, gazeSweep }
 }
 
 /* ── roster assignment ───────────────────────────────────────────────────── */

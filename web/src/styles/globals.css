@@ -896,6 +896,13 @@
   display: block;
   overflow: visible;
 }
+/* The mouth is a GROK-SKIN feature: <SessionMark> emits its path on the three
+   states that wear one (streaming/done/failed), but the BASE app never paints it
+   — hidden here, revealed only under `[data-grok]` (grok-mode.css). This keeps a
+   base `failed` mark byte-identical to before the mouth existed. */
+.sm-mark__mouth {
+  display: none;
+}
 .sm-mark[data-live='1'] svg {
   animation: sm-breathe 5.4s ease-in-out infinite;
 }

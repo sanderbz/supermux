@@ -22,19 +22,26 @@
 // No framer-motion here on purpose: the marks' two motions are the shared rAF
 // eye loop (marks/ticker.ts) and the CSS breathe (globals.css). There is no
 // component-level transition to source from lib/springs.ts.
+import { useState } from 'react'
+
 import {
   accentInk,
   bodyColor,
   HUE_SLOTS,
   SessionMark,
   SILHOUETTES,
+  type MarkAttention,
   type MarkState,
 } from '@/brand/marks'
 import { PAPER } from '@/brand/tokens'
+import { Facepile as CrewPile, type FacepileMember } from '@/components/chat/ui'
 
 import {
+  ATTENTION_TIERS,
   BENCH_THEMES,
   CAST,
+  GROK_BOARD_STATES,
+  GROK_MOMENT_STATES,
   LIVE_STATES,
   MARK_SIZE_ROLES,
   MARK_SIZES,
@@ -315,6 +322,246 @@ function LiveStrip({ size }: { size: MarkSize }) {
   )
 }
 
+/* ── the Grok expression board — the all-states review surface ─────────────── */
+
+/** The six identities the board runs every demo across (varied hue × shape). */
+const BOARD_CAST: readonly CastMember[] = CAST.slice(0, 6)
+/** The board's own size rungs (the design's 18 / 26 / 40). */
+const BOARD_SIZES = [18, 26, 40] as const
+
+/** A labelled column wrapper. */
+function BoardBlock({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-[12px] font-semibold text-ink">{title}</h3>
+        {note && <p className="max-w-2xl text-[11px] leading-relaxed text-ink-3">{note}</p>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/** 9 states × the identities, at one size — the live expression matrix. */
+function BoardStateMatrix({ size }: { size: number }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="border-collapse text-left">
+        <thead>
+          <tr>
+            <th className="w-24 pb-2 text-[11px] font-medium tabular-nums text-ink">{size}px</th>
+            {BOARD_CAST.map((m) => (
+              <th key={m.name} className="max-w-20 px-2 pb-2 text-center text-[10px] font-normal text-ink-3" title={m.name}>
+                <span className="block truncate">{m.name}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {GROK_BOARD_STATES.map((state) => (
+            <tr key={state} data-board-state={state} className="border-t-[0.5px] border-hairline">
+              <th scope="row" className="py-2 pr-4 text-[11px] font-medium text-ink-2">
+                {state}
+                {GROK_MOMENT_STATES.includes(state) && <span className="ml-1 text-ink-3">•new</span>}
+              </th>
+              {BOARD_CAST.map((m) => (
+                <td key={m.name} className="px-2 py-2 text-center">
+                  <SessionMark seed={m.name} pin={m.pin} size={size} state={state} label={null} className="mx-auto" />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** The attention overlay row: needs (pulsing) and blocked (steady) halos. */
+function BoardAttention() {
+  return (
+    <div className="flex flex-col gap-3">
+      {ATTENTION_TIERS.map((tier) => (
+        <div key={tier} className="flex items-center gap-4">
+          <span className="w-16 text-[11px] font-medium text-ink-2">{tier}</span>
+          {BOARD_CAST.map((m) => (
+            <SessionMark
+              key={m.name}
+              seed={m.name}
+              pin={m.pin}
+              size={26}
+              state={tier === 'blocked' ? 'failed' : 'waiting'}
+              attention={tier as MarkAttention}
+              label={null}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The streaming talking demo — animated mouths. */
+function BoardStreaming() {
+  return (
+    <div className="flex items-end gap-6">
+      {BOARD_CAST.map((m) => (
+        <SessionMark key={m.name} seed={m.name} pin={m.pin} size={40} state="streaming" label={null} />
+      ))}
+    </div>
+  )
+}
+
+/** Arrive / leave — a member toggling in and out of a pile. */
+function BoardArriveLeave({ ring }: { ring: string }) {
+  const [present, setPresent] = useState(true)
+  const newcomer = CAST[6]
+  return (
+    <div className="flex items-center gap-4">
+      <div className="flex items-center">
+        {BOARD_CAST.slice(0, 3).map((m, i) => (
+          <SessionMark
+            key={m.name}
+            seed={m.name}
+            pin={m.pin}
+            size={26}
+            ring={ring}
+            label={null}
+            className={i === 0 ? undefined : '-ml-1.5'}
+          />
+        ))}
+        {present && (
+          <SessionMark
+            key={newcomer.name}
+            seed={newcomer.name}
+            pin={newcomer.pin}
+            size={26}
+            ring={ring}
+            state="done"
+            label={null}
+            className="-ml-1.5 sm-arrive"
+          />
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setPresent((p) => !p)}
+        className="rounded-md border-[0.5px] border-hairline px-2 py-1 text-[11px] text-ink-2"
+      >
+        {present ? 'leave' : 'arrive'}
+      </button>
+    </div>
+  )
+}
+
+/** Facepile + rollup propagation — members carry live state + attention. */
+function BoardPropagation({ ring }: { ring: string }) {
+  const members: FacepileMember[] = [
+    { seed: BOARD_CAST[0].name, pin: BOARD_CAST[0].pin, name: BOARD_CAST[0].name, state: 'waiting', attention: 'needs' },
+    { seed: BOARD_CAST[1].name, pin: BOARD_CAST[1].pin, name: BOARD_CAST[1].name, state: 'failed', attention: 'blocked' },
+    { seed: BOARD_CAST[2].name, pin: BOARD_CAST[2].pin, name: BOARD_CAST[2].name, state: 'streaming' },
+    { seed: BOARD_CAST[3].name, pin: BOARD_CAST[3].pin, name: BOARD_CAST[3].name, state: 'working' },
+  ]
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-6">
+        <span className="w-16 text-[11px] text-ink-3">cluster</span>
+        <CrewPile members={members} variant="cluster" ring={ring} />
+      </div>
+      <div className="flex items-center gap-6">
+        <span className="w-16 text-[11px] text-ink-3">row</span>
+        <CrewPile members={members} variant="row" size={26} ring={ring} activeIndex={0} />
+      </div>
+    </div>
+  )
+}
+
+/** A live-vs-frozen side-by-side, proving every state is legible with no motion. */
+function BoardFrozen() {
+  const states: MarkState[] = ['streaming', 'done', 'failed', 'thinking', 'connecting', 'waiting']
+  return (
+    <div className="flex gap-10">
+      {(['live', 'frozen'] as const).map((mode) => (
+        <div key={mode} className={mode === 'frozen' ? 'sm-frozen flex flex-col gap-2' : 'flex flex-col gap-2'}>
+          <span className="text-[11px] font-medium text-ink-2">{mode === 'frozen' ? 'reduced-motion (frozen)' : 'live'}</span>
+          <div className="flex items-end gap-4">
+            {states.map((state) => (
+              <div key={state} className="flex w-14 flex-col items-center gap-1">
+                <SessionMark seed={BOARD_CAST[0].name} pin={BOARD_CAST[0].pin} size={34} state={state} animate={mode === 'live'} label={null} />
+                <span className="text-[9px] leading-none text-ink-3">{state}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function GrokBoard({ theme }: { theme: BenchTheme }) {
+  const [grokOn, setGrokOn] = useState(true)
+  const ring = PAPER[theme].paper
+  return (
+    <Section
+      id="grok-board"
+      title="Grok expression board — 9 states × attention × motion"
+      note="The upgrade, all on one surface and behind the [data-grok] toggle. Off, the marks are byte-identical to the base app (no mouth, no glow, no halo); on, every state wears its expression. The three •new moments (connecting · thinking · streaming) exist only here. Toggle [data-grok] to prove the base app is untouched; the frozen column is what a reduced-motion user (and every screenshot) keeps."
+    >
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setGrokOn((g) => !g)}
+          className="rounded-md border-[0.5px] border-hairline bg-paper-raised px-3 py-1.5 text-xs font-medium text-ink"
+        >
+          [data-grok] = {grokOn ? 'on' : 'off'}
+        </button>
+        <span className="text-[11px] text-ink-3">
+          {grokOn ? 'expression on — mouth / glow / halo / motion' : 'base app — the shipped six faces, no mouth'}
+        </span>
+      </div>
+
+      <div {...(grokOn ? { 'data-grok': '' } : {})} className="flex flex-col gap-9 rounded-2xl bg-paper-raised p-6">
+        <BoardBlock
+          title="Every state, every size"
+          note="9 states down, six identities across, at 18 / 26 / 40px. The mouth appears on exactly streaming / done / failed; the in-hue glow on working / streaming; the connecting eyes scan; every read survives 18px."
+        >
+          <div className="flex flex-col gap-6">
+            {BOARD_SIZES.map((size) => (
+              <BoardStateMatrix key={size} size={size} />
+            ))}
+          </div>
+        </BoardBlock>
+
+        <BoardBlock
+          title="Attention overlay (orthogonal to state)"
+          note="needs = pulsing red halo (a demand), blocked = steady red halo (an open dialog). Driven by attentionFor(session), not by the status word — a waiting, an errored and a permission-blocked session all raise it."
+        >
+          <BoardAttention />
+        </BoardBlock>
+
+        <BoardBlock title="Streaming — the face talks" note="The mouth is an open lozenge that scaleY-pulses while an assistant delta lands. Grok's face never moves while it works; ours speaks.">
+          <BoardStreaming />
+        </BoardBlock>
+
+        <BoardBlock title="Arrive / leave" note="A teammate joining (soft-overshoot pop) or leaving a pile. Click to toggle.">
+          <BoardArriveLeave ring={ring} />
+        </BoardBlock>
+
+        <BoardBlock
+          title="Facepile + rollup propagation"
+          note="The needs-you cluster shows the actual distressed faces — a waiting (needs halo), an errored (blocked halo), a streaming and a working member — not idle placeholders (audit #4)."
+        >
+          <BoardPropagation ring={ring} />
+        </BoardBlock>
+
+        <BoardBlock title="Live vs frozen (reduced-motion)" note="Every new state is legible with zero motion: the still frame carries all the information (invariant #1). The frozen column forces the reduced-motion end-state.">
+          <BoardFrozen />
+        </BoardBlock>
+      </div>
+    </Section>
+  )
+}
+
 /* ── one theme's worth of bench ──────────────────────────────────────────── */
 
 function BenchPanel({ theme }: { theme: BenchTheme }) {
@@ -343,6 +590,8 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
         >
           <ReferenceStrip />
         </Section>
+
+        <GrokBoard theme={theme} />
 
         <Section
           id="ladder"

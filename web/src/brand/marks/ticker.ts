@@ -25,7 +25,7 @@ export interface LiveMark {
 
 interface Entry extends LiveMark {
   q: Quat
-  lastKey: number
+  lastKey: string
 }
 
 const entries = new Set<Entry>()
@@ -34,13 +34,20 @@ let frame = 0
 function tick(now: number) {
   const t = now / 1000
   for (const a of entries) {
-    const { blink, saccadeX } = eyeClock(a.ch, a.state, t)
-    // Quantise: 40 blink steps × the (already quantised) saccade offset.
-    const key = Math.round(blink * 40) * 10 + saccadeX
+    const { blink, saccadeX, gazeSweep } = eyeClock(a.ch, a.state, t)
+    // Quantise every driven channel so the DOM write is skipped whenever nothing
+    // visible changed: 40 blink steps, the (already quantised) saccade offset, and
+    // the connecting gaze-sweep (rounded to the unit). A composite string key,
+    // because the sweep gives more distinct positions than a packed int held.
+    const key = `${Math.round(blink * 40)}|${saccadeX}|${Math.round(gazeSweep)}`
     if (key === a.lastKey) continue
     a.lastKey = key
+    // Start from the state's own eyes (which may already offset the pupils —
+    // `thinking` shifts them aside, `streaming` centres them) and ADD the ambient
+    // drift on top, so the per-state gaze is preserved rather than overwritten.
     const base = eyesFor(a.ch, a.state)
-    const e = { ...base, pxL: a.ch.gaze + saccadeX, pxR: a.ch.gaze + saccadeX }
+    const dx = saccadeX + gazeSweep
+    const e = { ...base, pxL: base.pxL + dx, pxR: base.pxR + dx }
     a.left.setAttribute('d', eyePath(a.ch, a.q, e, -1, blink))
     a.right.setAttribute('d', eyePath(a.ch, a.q, e, 1, blink))
   }
@@ -49,7 +56,7 @@ function tick(now: number) {
 
 /** Register a mark; the returned disposer unregisters it (and stops the loop). */
 export function registerMark(mark: LiveMark): () => void {
-  const entry: Entry = { ...mark, q: poseQuat(mark.ch), lastKey: NaN }
+  const entry: Entry = { ...mark, q: poseQuat(mark.ch), lastKey: '' }
   entries.add(entry)
   if (!frame && typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(tick)
   return () => {

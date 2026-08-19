@@ -483,7 +483,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // UNMOVED and green at 151.25/160 (95%): none of this lands on the cold path (the
 // focus split is lazy; Files/Settings are their own routes). Base app off grok is
 // byte-identical, so this ceiling only ever describes the Bot-mode surface.
-const BUDGET_APP_JS = 278 * KB
+// 279 at the AGENT-MARK EMOTION upgrade (mouth + attention decouple + streaming/
+// error/done motion, Bot mode): measured 278.09 against 278.00, a +0.09 KB fase,
+// ceil(measured) = 279 — the same rule every fase since B3 has used. The upgrade
+// adds ONE feature to the character engine (a mouth) plus the three derived
+// moments (thinking/streaming/connecting) and the decoupled attention read; the
+// JS that lands here is the engine delta (`mouthFor`/`mouthPath`/`mouthInk`, the
+// eye branches, the `markStateForSession` hints, the `attention` consume) — the
+// motion itself is all CSS in grok-mode.css (lands in the CSS budget, 30.57/31),
+// and the whole /dev/marks review board is dev-only/lazy (off this gate entirely).
+// The ENTRY (hero-path) gate is UNMOVED and green at 151.15/160 (94%): the mouth
+// geometry rides the SAME projection pipeline as the eyes (no new maths on the
+// cold path). Base app off grok is byte-identical — the mouth element is
+// `display:none` until `[data-grok]` reveals it — so this ceiling only ever
+// describes the Bot-mode surface.
+const BUDGET_APP_JS = 279 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

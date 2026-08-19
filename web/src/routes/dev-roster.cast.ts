@@ -195,6 +195,11 @@ export const STATE_MODELS: Readonly<Record<MarkState, string>> = {
   done: 'strato',
   stopped: 'night-watch',
   failed: 'remote-ssh',
+  // The three Grok-skin moments (connecting/thinking/streaming) — modelled so the
+  // roster bench can pose them too.
+  connecting: 'render-bug',
+  thinking: 'readme-launch',
+  streaming: 'title-edit',
 }
 
 /** Which member models each attention tier on the attention matrix. */

@@ -41,6 +41,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { SessionMark, type MarkPin, type MarkState } from '../../brand/marks'
 import type { SessionStatus } from '../../lib/api'
+import { attentionFor } from '../../lib/mark-status'
 import { motionOff, tweens } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import { modeChipLabel } from '../focus-mode/mode-labels'
@@ -294,6 +295,9 @@ export function SessionHeaderPill({
                 pin={pin}
                 size={MARK_SIZE.gutter}
                 state={status ? MARK_STATE[status] : 'idle'}
+                // The decoupled attention halo: the header mark raises the red
+                // ring when this session needs you (Grok skin only).
+                attention={attentionFor({ status })}
                 // The name is right there; a second announcement is noise.
                 label={null}
               />

@@ -30,6 +30,7 @@ import {
   hash32,
   HUE_SLOTS,
   isLive,
+  mouthFor,
   SILHOUETTES,
   type MarkState,
 } from '../../src/brand/marks/character'
@@ -396,5 +397,85 @@ describe('blink + micro-saccade clock', () => {
 
   test('the closing window is short enough to read as a blink', () => {
     expect(BLINK_CLOSING).toBeLessThan(0.2)
+  })
+})
+
+describe('the mouth (the one new feature)', () => {
+  // The draw-order contract: the mouth is seeded LAST (after pose), so it CANNOT
+  // shift the eye layout. The golden-vector test above already pins the eyes; this
+  // pins the other half — the mouth trait exists, varies per seed, and is bounded.
+  test('every character carries a bounded, seeded mouth rest personality', () => {
+    for (const seed of [...ROSTER_20, ...SLUGS_20]) {
+      const ch = characterFromSeed(seed)
+      expect(Number.isFinite(ch.mouth.w)).toBe(true)
+      expect(Number.isFinite(ch.mouth.curve)).toBe(true)
+      expect(ch.mouth.w).toBeGreaterThanOrEqual(34)
+      expect(ch.mouth.w).toBeLessThanOrEqual(46)
+      expect(Math.abs(ch.mouth.curve)).toBeLessThanOrEqual(0.15)
+    }
+  })
+
+  test('the mouth trait varies per seed — a rest mouth is recognisable like the eyes', () => {
+    const ws = new Set(ROSTER_20.map((s) => characterFromSeed(s).mouth.w.toFixed(4)))
+    expect(ws.size).toBeGreaterThan(1)
+  })
+
+  test('seeding the mouth did NOT move a single eye (draw-order proof)', () => {
+    // The proof, stated as a test: the mouth draws come AFTER pose, so the eye
+    // fields the golden vectors pin are byte-identical. If a refactor moved the
+    // mouth draw earlier, these frozen eye numbers would drift and this fails.
+    const ch = characterFromSeed('Patch')
+    expect(ch.eyes.wL).toBeCloseTo(35.248843, 5)
+    expect(ch.eyes.spacing).toBeCloseTo(62.809768, 5)
+  })
+
+  test('a mouth is painted ONLY on streaming / done / failed', () => {
+    const ch = characterFromSeed('Quill')
+    const visible = (['idle', 'working', 'waiting', 'stopped', 'thinking', 'connecting', 'done', 'streaming', 'failed'] as MarkState[])
+      .filter((s) => mouthFor(ch, s).visible)
+    expect(visible.sort()).toEqual(['done', 'failed', 'streaming'])
+  })
+
+  test('done smiles up, failed wilts down, streaming opens', () => {
+    const ch = characterFromSeed('Ledger')
+    expect(mouthFor(ch, 'done').curve).toBeGreaterThan(0)
+    expect(mouthFor(ch, 'failed').curve).toBeLessThan(0)
+    expect(mouthFor(ch, 'streaming').open).toBe(true)
+  })
+})
+
+describe('the three Grok-skin moments', () => {
+  const ch = characterFromSeed('Release Train')
+
+  test('thinking / streaming / connecting are all live (they have a heartbeat)', () => {
+    expect(isLive('thinking')).toBe(true)
+    expect(isLive('streaming')).toBe(true)
+    expect(isLive('connecting')).toBe(true)
+  })
+
+  test('each has its own blink cadence', () => {
+    expect(blinkPeriod('thinking')).toBe(4.2)
+    expect(blinkPeriod('streaming')).toBe(2.6)
+    expect(blinkPeriod('connecting')).toBe(2.0)
+  })
+
+  test('the gaze SWEEP fires only while connecting; streaming centres the gaze', () => {
+    let maxConnect = 0
+    let maxIdle = 0
+    for (let i = 0; i < 2000; i++) {
+      const t = (i / 2000) * 30
+      maxConnect = Math.max(maxConnect, Math.abs(eyeClock(ch, 'connecting', t).gazeSweep))
+      maxIdle = Math.max(maxIdle, Math.abs(eyeClock(ch, 'idle', t).gazeSweep))
+    }
+    expect(maxConnect).toBeGreaterThan(0)
+    expect(maxIdle).toBe(0)
+    // Streaming looks AT you: the eyes are gaze-centred (pxL = 0), not at ch.gaze.
+    expect(eyesFor(ch, 'streaming').pxL).toBe(0)
+  })
+
+  test('the nine states paint nine distinct eye geometries', () => {
+    const all: MarkState[] = ['idle', 'working', 'waiting', 'done', 'stopped', 'failed', 'thinking', 'streaming', 'connecting']
+    const shapes = all.map((s) => JSON.stringify(eyesFor(ch, s)))
+    expect(new Set(shapes).size).toBe(all.length)
   })
 })

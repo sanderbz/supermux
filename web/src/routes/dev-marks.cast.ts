@@ -53,6 +53,31 @@ export const MARK_STATES: readonly MarkState[] = [
 /** The live states — the only ones with a heartbeat (see `isLive`). */
 export const LIVE_STATES: readonly MarkState[] = ['idle', 'working', 'waiting']
 
+/**
+ * The full Grok-skin expression board order — the 9 states a mark can wear under
+ * `[data-grok]`, in a reading order that groups the calm/idle end, the busy
+ * middle, and the terminal moments. Kept SEPARATE from `MARK_STATES` (which the
+ * cast-coverage test pins to the six base faces) because these three moments
+ * (`connecting`/`thinking`/`streaming`) only exist behind the Grok skin.
+ */
+export const GROK_BOARD_STATES: readonly MarkState[] = [
+  'idle',
+  'connecting',
+  'thinking',
+  'working',
+  'streaming',
+  'waiting',
+  'done',
+  'stopped',
+  'failed',
+]
+
+/** The three moments the base app never asks for — the delta this upgrade adds. */
+export const GROK_MOMENT_STATES: readonly MarkState[] = ['thinking', 'streaming', 'connecting']
+
+/** The two attention tiers the halo paints (orthogonal to state). */
+export const ATTENTION_TIERS = ['needs', 'blocked'] as const
+
 /** Both themes are rendered on one page; `[data-theme]` is the subtree switch. */
 export const BENCH_THEMES = ['light', 'dark'] as const
 export type BenchTheme = (typeof BENCH_THEMES)[number]

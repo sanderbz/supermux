@@ -55,6 +55,17 @@ export const MARK_STATE_FOR: Readonly<Record<SessionStatus, MarkState>> = {
 }
 
 /**
+ * The Grok-skin refinement of `starting`: `connecting`, not `working`. A booting
+ * session is coming online but not yet productive — the honest face is the
+ * looking-around scan, not the heads-down concentration `working` implies. This
+ * lives OUTSIDE `MARK_STATE_FOR` (which stays the byte-identical base table the
+ * totality test pins) and is applied only by `markStateForSession`.
+ */
+const GROK_STATE_FOR: Partial<Record<SessionStatus, MarkState>> = {
+  starting: 'connecting',
+}
+
+/**
  * Status → face, tolerant at the edge.
  *
  * The wire is JSON, so a client can be handed a status string a future server
@@ -129,18 +140,26 @@ export interface SessionFaceHints {
 }
 
 /**
- * Status (+ optional live hints) → face.
+ * Status (+ optional live hints) → face, the Grok-skin resolver.
  *
- * Inert shim retained so skin-aware call sites keep compiling: the mark renders
- * the six shipped `markStateFor` faces everywhere, so this defers entirely to
- * the base table. The live hints (`thinking`/`streaming`) are accepted but
- * ignored; only the `done` moment (a valid base state) is honoured. A Grok
- * roster and a base roster therefore agree on the same six faces.
+ * The precedence, most-specific first:
+ *   1. `done`      — a just-finished turn (a moment the status field cannot spell).
+ *   2. `streaming` — an assistant text delta is landing right now: the face talks.
+ *   3. `thinking`  — a reasoning delta is in flight before any output.
+ *   4. the Grok state map — `starting → connecting` (honest booting face).
+ *   5. the base `markStateFor` table (the six shipped faces).
+ *
+ * A base roster (which never passes hints and reads `markStateFor` directly) and
+ * a Grok roster agree on every non-moment status; the moments are additive.
  */
 export function markStateForSession(
   s: AttentionInput | null | undefined,
   hints: SessionFaceHints = {},
 ): MarkState {
   if (hints.done) return MARK_STATE_WITHOUT_STATUS
+  if (hints.streaming) return 'streaming'
+  if (hints.thinking) return 'thinking'
+  const status = s?.status as SessionStatus | undefined
+  if (status && GROK_STATE_FOR[status]) return GROK_STATE_FOR[status]!
   return markStateFor(s?.status)
 }

@@ -13,7 +13,12 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, test } from 'bun:test'
 
-import { MARK_STATE_FOR, markStateFor } from '../../src/lib/mark-status'
+import {
+  attentionFor,
+  MARK_STATE_FOR,
+  markStateFor,
+  markStateForSession,
+} from '../../src/lib/mark-status'
 
 const SRC = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), 'utf8')
@@ -106,5 +111,38 @@ describe('one status channel, not two', () => {
     // Deleting `status-dot.tsx` would take the label map with it; the surfaces
     // legitimately keep importing THAT.
     expect(SRC('components/session-tile/session-row.tsx')).toContain('STATUS_LABEL')
+  })
+})
+
+describe('the Grok-skin resolver: markStateForSession + attentionFor', () => {
+  test('live hints outrank the status word, most-specific first', () => {
+    // done > streaming > thinking, then the status fallback.
+    expect(markStateForSession({ status: 'active' }, { done: true })).toBe('done')
+    expect(markStateForSession({ status: 'active' }, { streaming: true })).toBe('streaming')
+    expect(markStateForSession({ status: 'idle' }, { thinking: true })).toBe('thinking')
+    expect(markStateForSession({ status: 'active' }, { done: true, streaming: true })).toBe('done')
+  })
+
+  test('starting resolves to the honest connecting scan, not a faked working', () => {
+    // The base table stays `starting → working` (byte-identical); the Grok skin
+    // refines it on the FACE to `connecting` (coming online, not yet productive).
+    expect(markStateFor('starting')).toBe('working')
+    expect(markStateForSession({ status: 'starting' })).toBe('connecting')
+  })
+
+  test('with no hints it agrees with the base table on every plain status', () => {
+    for (const s of ['active', 'idle', 'waiting', 'stopped', 'error'] as const) {
+      expect(markStateForSession({ status: s })).toBe(markStateFor(s))
+    }
+  })
+
+  test('attentionFor reads the FIELDS, not the status word (the decoupling)', () => {
+    expect(attentionFor({ status: 'waiting' })).toBe('needs')
+    expect(attentionFor({ status: 'idle', error: { type: 'x', message: 'y' } })).toBe('blocked')
+    expect(attentionFor({ status: 'active', permission_request: {} })).toBe('blocked')
+    expect(attentionFor({ status: 'active', elicitation: {} })).toBe('blocked')
+    expect(attentionFor({ status: 'active' })).toBe(null)
+    // blocked outranks needs — an open dialog is louder than a finished turn.
+    expect(attentionFor({ status: 'waiting', error: { type: 'x', message: 'y' } })).toBe('blocked')
   })
 })

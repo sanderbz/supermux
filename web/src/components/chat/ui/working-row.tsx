@@ -43,8 +43,10 @@ export interface WorkingRowProps {
    * valid occupant — the bench passes one.
    */
   elapsed?: React.ReactNode
-  /** `working` (default) or `waiting` — the face follows the status, not the row. */
-  state?: Extract<MarkState, 'working' | 'waiting'>
+  /** `working` (default), `waiting`, or `streaming` — the face follows the status,
+   *  not the row. `streaming` gives the gutter mark the talking mouth while an
+   *  assistant delta lands, echoing the transcript's typing dots. */
+  state?: Extract<MarkState, 'working' | 'waiting' | 'streaming'>
   variant?: 'row' | 'presence'
   className?: string
 }

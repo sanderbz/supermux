@@ -98,6 +98,14 @@ export const grokDur = {
   spin: 2.4, //    tool spinner (deliberately slow = "working", not "hung")
   typing: 1.3, //   typing-dot cycle
   cursor: 2.6, //   agent ghost-cursor drift
+  // WS4b — agent-mark expression (the CSS twins live in grok-mode.css). Named
+  // here so the durations are single-sourced, not literals that can drift.
+  streamMouth: 0.9, //   streaming mouth scaleY pulse ("talking")
+  errorShake: 0.4, //    failed-state one-shot micro-shake on entry
+  attentionPulse: 2, //  needs-you halo strength pulse
+  mouthPop: 0.28, //     done-state smile pop-in
+  markArrive: 0.28, //   a mark/teammate arriving into a pile
+  markLeave: 0.2, //     a mark leaving (exits faster than entries — invariant 1)
 } as const
 
 // ── Framer-motion `transition` presets ───────────────────────────────────────
@@ -135,6 +143,13 @@ export const grokKeyframes = {
   mountFade: 'sm-mount-fade',
   typingDot: 'sm-typing-dot',
   spin: 'sm-spin',
+  // WS4b — agent-mark expression keyframes (defined in grok-mode.css).
+  streamMouth: 'sm-stream-mouth',
+  errorShake: 'sm-error-shake',
+  attentionPulse: 'sm-attention-pulse',
+  mouthPop: 'sm-mouth-pop',
+  markArrive: 'sm-mark-arrive',
+  markLeave: 'sm-mark-leave',
 } as const
 
 export type GrokEaseName = keyof typeof grokEases

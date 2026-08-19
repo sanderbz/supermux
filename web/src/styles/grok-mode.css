@@ -178,6 +178,13 @@
      colliding (status words still own `--sm-tone-danger`). Lifted on dark. */
   --sm-halo: rgba(197, 56, 79, 0.22);
 
+  /* in-hue WORKING/STREAMING glow (WS4 expression). The COLOR FIREWALL's busy
+     half: a soft drop-shadow in the agent's OWN pigment (red is reserved for the
+     needs-you/error halo above). This is the neutral fallback; each mark overrides
+     it to its own body colour via a `[data-hue]` map below, so a roster of working
+     bots is a calm rainbow of their own colours — never a wall of one alert red. */
+  --sm-agent-glow: color-mix(in srgb, var(--sm-agent-tint) 55%, transparent);
+
   font-family: var(--sm-font-sans);
   color: var(--sm-text-primary);
   -webkit-font-smoothing: antialiased;
@@ -933,16 +940,32 @@
    Reuses the existing `sm-breathe` keyframe — the refined translate/rotate
    breathe the brand tuned to "read as breathing, not a wobbling icon", never a
    scale pop. Higher specificity (0,4,1) than the kill above (0,3,1). */
-[data-grok] .sm-mark[data-state='working'][data-live='1'] svg {
+[data-grok] .sm-mark[data-state='working'][data-live='1'] svg,
+[data-grok] .sm-mark[data-state='streaming'][data-live='1'] svg {
   animation: sm-breathe 3.4s ease-in-out infinite;
 }
+/* Thinking breathes slower (pondering, not producing). */
+[data-grok] .sm-mark[data-state='thinking'][data-live='1'] svg {
+  animation: sm-breathe 4.2s ease-in-out infinite;
+}
 
-/* NEEDS-YOU HALO — the soft red ring, following the silhouette. Stacked so the
-   ring reads at roster (18–26px) and detail (42–48px) sizes without a blur bloom
-   swallowing the mark. `overflow:visible` on the svg (globals.css) lets it spill
-   past the box. */
-[data-grok] .sm-mark[data-state='waiting'] svg {
+/* NEEDS-YOU / BLOCKED HALO — the soft red ring, following the silhouette. Stacked
+   so the ring reads at roster (18–26px) and detail (42–48px) sizes without a blur
+   bloom swallowing the mark. `overflow:visible` on the svg (globals.css) lets it
+   spill past the box.
+
+   REBOUND to `data-attention`, not `data-state='waiting'` (audit #4/#5): the halo
+   is the DECOUPLED attention signal (`attentionFor` reads the real error /
+   permission / elicitation / waiting fields), so a permission-blocked or errored
+   session raises it too — not only a waiting one. `needs` PULSES (a demand),
+   `blocked` is STEADY at a higher alpha (an open dialog). */
+[data-grok] .sm-mark[data-attention='needs'] svg {
   filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 4px var(--sm-halo));
+  animation: sm-attention-pulse 2s ease-in-out infinite;
+}
+[data-grok] .sm-mark[data-attention='blocked'] svg {
+  filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 5px var(--sm-halo))
+    drop-shadow(0 0 5px var(--sm-halo));
 }
 
 /* IDLE — dimmed and desaturated, sitting quietly (overview.md §4 idle read). */
@@ -964,12 +987,215 @@
    information is lost) and the settle collapses to instant. The halo and the
    idle dim are static filters — nothing to disable. */
 @media (prefers-reduced-motion: reduce) {
-  [data-grok] .sm-mark[data-state='working'][data-live='1'] svg {
+  [data-grok] .sm-mark[data-state='working'][data-live='1'] svg,
+  [data-grok] .sm-mark[data-state='streaming'][data-live='1'] svg,
+  [data-grok] .sm-mark[data-state='thinking'][data-live='1'] svg {
     animation: none;
   }
   [data-grok] [data-shell-pane] {
     transition: none;
   }
+}
+
+/* ══ WS4b — AGENT-MARK EMOTION (mouth · streaming · error · connecting · glow) ══
+   The expression upgrade on top of WS4's halo/breathe. One new feature only — a
+   MOUTH — plus the motion that makes a roster scan read who-is-doing-what
+   pre-attentively. Everything is scoped `[data-grok]`; base app byte-identical.
+
+   THE THREE CHANNELS (all legible FROZEN — motion is only "alive", never
+   load-bearing; every animation ships a colocated reduced-motion twin that keeps
+   the static end-state):
+     · MOUTH — painted only on streaming/done/failed (the geometry is emitted by
+       `mouthFor`/`mouthPath`; here we only animate it). streaming = an open
+       lozenge that scaleY-PULSES (talking); done = a static smile that POPS in;
+       failed = a static wilt.
+     · MOTION — streaming mouth pulse, the one-shot error shake on entry, the
+       attention halo pulse (above), the done mouth pop.
+     · IN-HUE GLOW — working/streaming glow in the mark's OWN pigment
+       (`--sm-agent-glow`, per-`data-hue`), the colour firewall's busy half. */
+
+/* ── Keyframes (global; inert until referenced under [data-grok]) ───────────── */
+@keyframes sm-stream-mouth {
+  0%,
+  100% {
+    transform: scaleY(0.55);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes sm-error-shake {
+  0% {
+    transform: translateX(0) rotate(0deg);
+  }
+  20% {
+    transform: translateX(-1.5px) rotate(-1.2deg);
+  }
+  40% {
+    transform: translateX(1.5px) rotate(1.2deg);
+  }
+  60% {
+    transform: translateX(-1px) rotate(-0.8deg);
+  }
+  80% {
+    transform: translateX(1px) rotate(0.8deg);
+  }
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+}
+@keyframes sm-attention-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 2px var(--sm-halo)) drop-shadow(0 0 4px var(--sm-halo));
+  }
+  50% {
+    filter: drop-shadow(0 0 1px var(--sm-halo)) drop-shadow(0 0 2px var(--sm-halo));
+  }
+}
+@keyframes sm-mouth-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes sm-mark-arrive {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes sm-mark-leave {
+  from {
+    transform: none;
+    opacity: 1;
+  }
+  to {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+}
+
+/* ── IN-HUE working/streaming glow — the colour firewall's "busy" half ─────────
+   Each mark carries `data-hue`; map it to its own pigment so the glow is the
+   agent's OWN colour, never a shared alert red. A soft, un-animated drop-shadow
+   (the breathe carries the life); cheap even with a handful of working marks. */
+[data-grok] .sm-mark[data-hue='28'] {
+  --sm-agent-glow: #ec6d608c;
+}
+[data-grok] .sm-mark[data-hue='75'] {
+  --sm-agent-glow: #e89f168c;
+}
+[data-grok] .sm-mark[data-hue='158'] {
+  --sm-agent-glow: #42b67c8c;
+}
+[data-grok] .sm-mark[data-hue='190'] {
+  --sm-agent-glow: #00a7a08c;
+}
+[data-grok] .sm-mark[data-hue='265'] {
+  --sm-agent-glow: #4171ed8c;
+}
+[data-grok] .sm-mark[data-hue='292'] {
+  --sm-agent-glow: #7d53e18c;
+}
+[data-grok] .sm-mark[data-hue='350'] {
+  --sm-agent-glow: #db5fa18c;
+}
+[data-grok] .sm-mark[data-state='working'] svg,
+[data-grok] .sm-mark[data-state='streaming'] svg {
+  filter: drop-shadow(0 0 3px var(--sm-agent-glow));
+}
+
+/* ── The mouth ink layer (visual base — the path itself is emitted by React) ───
+   Revealed here: the base app hides `.sm-mark__mouth` (globals.css), so the mouth
+   is a purely Grok-scoped feature and a base `failed` mark stays byte-identical. */
+[data-grok] .sm-mark__mouth {
+  display: block;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* STREAMING — the mouth talks: a scaleY pulse on the lozenge path. This is the
+   single biggest "alive" win (Grok's face never moves while it works). */
+[data-grok] .sm-mark[data-state='streaming'] .sm-mark__mouth {
+  animation: sm-stream-mouth 0.9s ease-in-out infinite;
+}
+
+/* DONE — the smile POPS in once, then rests (delight). */
+[data-grok] .sm-mark[data-state='done'] .sm-mark__mouth {
+  animation: sm-mouth-pop 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* FAILED — one micro-shake on entry, then rests on the static wilt (+ the red
+   halo rides the attention layer). Audit #3: today `failed` has zero motion. */
+[data-grok] .sm-mark[data-state='failed'] svg {
+  animation: sm-error-shake 0.4s ease-out 1;
+}
+
+/* CONNECTING — a faint neutral treatment; the gaze SWEEP is JS (ticker), so the
+   still frame already reads as mid-scan. Slightly dimmed like idle, but alive. */
+[data-grok] .sm-mark[data-state='connecting'] svg {
+  filter: saturate(0.85);
+}
+
+/* ARRIVE / LEAVE — a teammate joining or leaving a pile. Consumers add the class;
+   `both` holds the from-state before the first frame without pre-hiding. */
+[data-grok] .sm-mark.sm-arrive {
+  animation: sm-mark-arrive 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+[data-grok] .sm-mark.sm-leave {
+  animation: sm-mark-leave 0.2s cubic-bezier(0.4, 0, 0.6, 1) both;
+}
+
+/* ── Reduced-motion twins (colocated; stop the loop, keep the information) ───── */
+@media (prefers-reduced-motion: reduce) {
+  /* Streaming: the mouth rests HALF-OPEN — still "speaking", statically. */
+  [data-grok] .sm-mark[data-state='streaming'] .sm-mark__mouth {
+    animation: none;
+    transform: scaleY(0.75);
+  }
+  /* Done: the smile is simply present (no pop). */
+  [data-grok] .sm-mark[data-state='done'] .sm-mark__mouth {
+    animation: none;
+  }
+  /* Failed: the wilt + red halo stay; only the shake is dropped. */
+  [data-grok] .sm-mark[data-state='failed'] svg {
+    animation: none;
+  }
+  /* Needs-you: the halo stays (static), the pulse stops — info preserved. */
+  [data-grok] .sm-mark[data-attention='needs'] svg {
+    animation: none;
+  }
+  /* Arrive/leave collapse to their end-state. */
+  [data-grok] .sm-mark.sm-arrive {
+    animation: none;
+  }
+  [data-grok] .sm-mark.sm-leave {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* FROZEN — the deterministic reduced-motion end-state, forced (for the /dev/marks
+   side-by-side column and any screenshot that must not depend on the OS setting).
+   It mirrors the reduced-motion twins above so the frozen column reads exactly as
+   a reduced-motion user sees it: loops stop, the streaming mouth rests half-open,
+   every state stays legible. `!important` because it deliberately overrides the
+   live animation rules regardless of source order. */
+[data-grok] .sm-frozen .sm-mark svg,
+[data-grok] .sm-frozen .sm-mark .sm-mark__mouth {
+  animation: none !important;
+}
+[data-grok] .sm-frozen .sm-mark[data-state='streaming'] .sm-mark__mouth {
+  transform: scaleY(0.75);
 }
 
 /* ══ WS5 + WS6 — OVERVIEW / ROSTER (the headline surface) ═════════════════════

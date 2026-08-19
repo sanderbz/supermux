@@ -20,7 +20,13 @@
  * non-ellipsoidal solids), so `silhouettePath` memoises per character. Eyes are
  * cheap (~80 points) and are recomputed per animation frame.
  */
-import { AUTHORED, type Character, type EyeGeometry, type Solid } from './character'
+import {
+  AUTHORED,
+  type Character,
+  type EyeGeometry,
+  type MouthGeometry,
+  type Solid,
+} from './character'
 
 /** Half-extent of the authored coordinate system; the SVG viewBox is ±this. */
 export const VIEWBOX = 131
@@ -391,6 +397,60 @@ export function eyePath(
   for (let i = 0; i < pts.length; i++) {
     const [lx, ly] = pts[i]
     const [fx, fy] = faceCoords(cx0 + (lx * cos - ly * sin), cy0 + (lx * sin + ly * cos))
+    const p = project(qRot(q, frontSample(ch.body, fx, fy)), ch.pose.persp)
+    d += `${i === 0 ? 'M' : 'L'}${f(p[0])} ${f(p[1])}`
+  }
+  return d + 'Z'
+}
+
+/**
+ * The mouth, wrapped onto the face solid — the one new feature.
+ *
+ * It rides the IDENTICAL pipeline the eyes do: local face-arc points →
+ * `faceCoords` → `frontSample` → `qRot` → `project`, so the mouth curves onto the
+ * body solid exactly like a blink does, on any of the nine silhouettes and under
+ * the same head pose. No new projection maths.
+ *
+ * Two shapes: a curved BAND (done up-curve / failed wilt), sampled as a filled
+ * crescent whose centreline dips by `curve`; and an open LOZENGE (streaming),
+ * a small "o" whose height `open` scales (the CSS `sm-stream-mouth` pulse drives
+ * `open` for reduced motion; the live pulse is a pure CSS `scaleY`, so `open`
+ * stays 1 there). `open` ∈ [0,1] — a half-open lozenge is the reduced-motion
+ * "speaking" still.
+ */
+export function mouthPath(ch: Character, q: Quat, m: MouthGeometry, open = 1): string {
+  const f = (v: number) => v.toFixed(2)
+  const cy0 = m.cy + ch.faceDY
+  const pts: Pt[] = []
+  if (m.open) {
+    // A small rounded "o": an ellipse, height scaled by `open`.
+    const STEPS = 28
+    const rx = m.w / 2
+    const ry = (m.h / 2) * Math.max(0.18, open)
+    for (let i = 0; i < STEPS; i++) {
+      const t = (i / STEPS) * Math.PI * 2
+      pts.push([m.cx + Math.cos(t) * rx, cy0 + Math.sin(t) * ry])
+    }
+  } else {
+    // A crescent band: centreline y(x) = cy + depth·(1−(2x/w)²). depth>0 dips the
+    // centre (a smile U); depth<0 lifts it (a wilt ∩). Thickness `h` gives it body.
+    const N = 18
+    const depth = m.curve * (m.w * 0.5)
+    const half = m.h / 2
+    const top: Pt[] = []
+    const bot: Pt[] = []
+    for (let i = 0; i <= N; i++) {
+      const x = -m.w / 2 + (m.w * i) / N
+      const yc = cy0 + depth * (1 - (2 * x / m.w) ** 2)
+      top.push([m.cx + x, yc - half])
+      bot.push([m.cx + x, yc + half])
+    }
+    pts.push(...top, ...bot.reverse())
+  }
+  let d = ''
+  for (let i = 0; i < pts.length; i++) {
+    const [lx, ly] = pts[i]
+    const [fx, fy] = faceCoords(lx, ly)
     const p = project(qRot(q, frontSample(ch.body, fx, fy)), ch.pose.persp)
     d += `${i === 0 ? 'M' : 'L'}${f(p[0])} ${f(p[1])}`
   }

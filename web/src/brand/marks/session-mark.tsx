@@ -27,18 +27,21 @@ import {
   characterFromSeed,
   eyesFor,
   isLive,
+  mouthFor,
+  mouthInk,
   type MarkPin,
   type MarkState,
 } from './character'
-import { eyePath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
+import { eyePath, mouthPath, poseQuat, silhouettePath, VIEWBOX } from './geometry'
 import { registerMark } from './ticker'
 import { useOnScreen } from './use-on-screen'
 
 /**
- * The transient attention layer — `needs`/`blocked`/`null`. Retained as an
- * accepted-but-inert channel so call sites that thread an attention read
- * (`mark-status.ts::attentionFor`) keep type-checking; the mark itself does not
- * consume it. State lives exclusively in the eyes (contract C5).
+ * The transient attention layer — `needs`/`blocked`/`null`. Orthogonal to
+ * `state` (it rides ALONGSIDE any state, per `mark-status.ts::attentionFor`): the
+ * mark sets `data-attention` on its host, and the Grok skin keys the red halo off
+ * it (pulsing for `needs`, steady for `blocked`). Off grok, `data-attention` is
+ * inert — no rule matches it — so the base app is untouched.
  */
 export type MarkAttention = 'needs' | 'blocked' | null
 
@@ -74,9 +77,10 @@ export interface SessionMarkProps {
    */
   grok?: boolean
   /**
-   * Accepted-but-inert attention read (`needs`/`blocked`/`null`). Retained so
-   * call sites threading `attentionFor(session)` keep type-checking; the mark
-   * does not paint a halo — state lives exclusively in the eyes.
+   * The decoupled attention read (`needs`/`blocked`/`null`, from
+   * `attentionFor(session)`). Sets `data-attention` on the host; the Grok skin
+   * paints a pulsing (needs) or steady (blocked) red halo off it. Off grok it is
+   * inert. `null` (default) sets nothing.
    */
   attention?: MarkAttention
 }
@@ -109,6 +113,7 @@ export function SessionMark({
   ring = null,
   animate = true,
   label,
+  attention = null,
 }: SessionMarkProps) {
   const pinKey = pin ? `${pin.silhouette ?? ''}|${pin.hue ?? ''}|${pin.gaze ?? ''}|${pin.tilt ?? ''}` : ''
   const ch = useMemo(
@@ -127,15 +132,20 @@ export function SessionMark({
   const onScreen = useOnScreen(host, wantsMotion)
   const live = wantsMotion && onScreen
 
-  const { body, eyeL, eyeR } = useMemo(() => {
+  const { body, eyeL, eyeR, mouthD } = useMemo(() => {
     const q = poseQuat(ch)
     const e = eyesFor(ch, state)
+    const m = mouthFor(ch, state)
     return {
       body: silhouettePath(ch),
       // The still frame is the fully-open eye: what reduced motion keeps, and
       // what every mark paints before the first animation frame lands.
       eyeL: eyePath(ch, q, e, -1, 1),
       eyeR: eyePath(ch, q, e, 1, 1),
+      // The mouth exists on exactly three states; elsewhere `visible` is false and
+      // no path is painted (the clean glyph). The streaming pulse is a pure CSS
+      // scaleY on this path, so the geometry is drawn once, fully open.
+      mouthD: m.visible ? mouthPath(ch, q, m) : null,
     }
   }, [ch, state])
 
@@ -164,6 +174,7 @@ export function SessionMark({
       data-shape={ch.silhouette}
       data-state={state}
       data-hue={ch.hue}
+      {...(attention ? { 'data-attention': attention } : {})}
       {...(live ? { 'data-live': '1' } : {})}
       style={{ width: size, height: size }}
       aria-hidden={hidden || undefined}
@@ -193,6 +204,9 @@ export function SessionMark({
         />
         <path ref={leftEye} className="sm-mark__eye" d={eyeL} fill={ch.ink} />
         <path ref={rightEye} className="sm-mark__eye" d={eyeR} fill={ch.ink} />
+        {mouthD && (
+          <path className="sm-mark__mouth" d={mouthD} fill={mouthInk(ch.hue)} />
+        )}
       </svg>
     </span>
   )
