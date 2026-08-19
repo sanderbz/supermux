@@ -148,12 +148,28 @@ export const CURATED_FALLBACK: ConnectorCard[] = [
     categories: ['mail'],
   },
   {
-    id: 'builtin-browser',
+    // MIRRORS the server's built-in card (`connectors::browser::mcp::manifest`):
+    // same id, same five tools, same icon — so the offline fallback and the live
+    // row are the same card, and a grant made against either lands on the real
+    // connector.
+    id: 'shared-browser',
     kind: 'builtin_browser',
     display_name: 'Shared Browser',
-    icon: '',
-    description: 'A stealth browser your bots share — no sign-in needed, already built in.',
-    tools: [],
+    icon: 'data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2338bdf8\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><rect x=\'2.5\' y=\'4\' width=\'19\' height=\'16\' rx=\'2.5\'/><path d=\'M2.5 9h19\'/><circle cx=\'6\' cy=\'6.5\' r=\'.7\' fill=\'%2338bdf8\' stroke=\'none\'/><circle cx=\'8.6\' cy=\'6.5\' r=\'.7\' fill=\'%2338bdf8\' stroke=\'none\'/><path d=\'M8 13.5h8M8 16.5h5\'/></svg>',
+    // Short on purpose: this is the OFFLINE fallback line. The live row carries
+    // the server's full copy (and this gate counts every byte of the fallback).
+    description:
+      'One real Chrome, shared with your agents — and when a bot hits a login or 2FA it asks you to take the wheel.',
+    tools: [
+      { name: 'browser_navigate', description: 'Open a URL in the shared browser and wait for it to load.' },
+      { name: 'browser_click', description: 'Click an element (CSS selector) or viewport coordinates.' },
+      { name: 'browser_read', description: 'Read the page — visible text or HTML, whole page or one element.' },
+      { name: 'browser_screenshot', description: 'See the viewport as an image.' },
+      {
+        name: 'request_human_takeover',
+        description: 'Ask the human to take the wheel (login, 2FA, CAPTCHA) and wait for the hand-back.',
+      },
+    ],
     credentials: [],
     source: 'local',
     categories: ['browser'],

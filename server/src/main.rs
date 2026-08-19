@@ -161,6 +161,10 @@ async fn main() -> anyhow::Result<()> {
     // embedded stdio MCP server to the data dir and upsert its manifest so the
     // store lists it as a grantable card. Idempotent + best-effort.
     connectors::icloud::seed(&state).await;
+    // The built-in Shared Browser connector card (kind `builtin_browser`).
+    // Seeding the row starts NO browser: chrome is spawned lazily, and only by a
+    // granted session's first tool call.
+    connectors::browser::mcp::seed(&state).await;
     // Start the HostPool reaper. Sweeps every 60s,
     // tears down SSH ControlMasters that have been idle > 10min AND have no
     // live session row pointing at them. Cheap no-op while no remote hosts

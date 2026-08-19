@@ -497,7 +497,33 @@ const BUDGET_ENTRY_JS = 160 * KB
 // cold path). Base app off grok is byte-identical — the mouth element is
 // `display:none` until `[data-grok]` reveals it — so this ceiling only ever
 // describes the Bot-mode surface.
-const BUDGET_APP_JS = 279 * KB
+// 283 at the SHARED BROWSER connector (phase 3 — the store card, the per-agent
+// grant, the in-chat takeover): measured 282.89 against 279.00, ceil(measured) =
+// 283 — the same rule every fase since B3 has used. Where the 4.80 KB is, exactly
+// (measured on this tree against baseline 278.09):
+//   +3.78 KB  `components/browser/takeover-panel` and its `lib/browser/*` pair
+//             (frame decoder + coordinate map + the takeover socket client),
+//             which SHIPPED IN DEV ONLY until now: the panel's only entry point
+//             was the `import.meta.env.DEV`-gated `/dev/browser-takeover` route,
+//             so production never carried a byte of it. Phase 3 gives it a real
+//             door (the in-chat "take the wheel" card), which is what moves it
+//             onto this gate. It stays behind `React.lazy`, so it is a chunk
+//             nobody downloads until a human actually takes the wheel.
+//   +1.02 KB  `chat/ui/takeover-card.tsx` + its wiring (the `live-layer` branch,
+//             the `BrowserTakeoverInfo` wire type on both session shapes, the
+//             `ui/index` export) and the store's curated `shared-browser` card
+//             reconciled with the server's real one (id, five tools, icon) — the
+//             card itself is `DialogShell` plus two pills and an overlay.
+// It lands at 282.89/283 — 0.11 KB. That is the knife-edge this ledger complains
+// about above, and it is stated rather than papered over with a round-up: the
+// NEXT additive fase on this surface must either delete or ratchet, and the
+// honest place to argue that is a PR body, not a pre-emptive lift here.
+// The ENTRY (hero-path) gate — the one that guards first paint — is UNMOVED and
+// green at 151.78/160 (95%): the +0.62 KB there is the card branch alone; the
+// panel is not on the cold path at all. And the whole surface is Bot-mode: a
+// session with no `shared-browser` grant never receives a `browser_takeover` ask,
+// so the base app renders exactly as before.
+const BUDGET_APP_JS = 283 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -49,6 +49,12 @@ pub fn router(state: AppState) -> Router {
         // browser `WebSocket` cannot send an `Authorization` header, so auth is
         // the identical in-band first frame.
         .merge(crate::connectors::browser::takeover::router_for(state.clone()))
+        // Shared-browser AGENT TOOL endpoint (`/api/hook/browser/tool`) — NO
+        // bearer layer; SAME per-session `X-Supermux-Hook-Token` auth as the
+        // status hook (the caller is an MCP server inside the pane, which must
+        // never hold the dashboard bearer), plus the grant check and the drive
+        // lock inside the handler.
+        .merge(crate::connectors::browser::tools::router_for(state.clone()))
         // Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Supermux-Hook-Token` validated in the handler.
         .merge(hooks::router_for(state.clone()))

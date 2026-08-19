@@ -95,6 +95,20 @@ export interface ConnectRequestInfo {
   has_oauth?: boolean
 }
 
+/** **The live browser takeover ask** — a granted bot called the Shared Browser
+ *  connector's `request_human_takeover(reason)` and is parked until a human
+ *  finishes a login / 2FA / CAPTCHA on its page. Carries the agent's own
+ *  sentence and the session whose browser context the takeover panel attaches
+ *  to. Rides the `sessions` SSE delta; `null` the moment the wheel comes back. */
+export interface BrowserTakeoverInfo {
+  /** Correlates the ask across deltas (keys the card). */
+  id?: string
+  /** The session whose browser context to attach the takeover panel to. */
+  session: string
+  /** What the agent needs you to do, in its own words. */
+  reason: string
+}
+
 /** One-line-per-side summary of a session's chat, for the tile (fase A2).
  *
  *  Rides the `sessions` SSE delta — there is NO extra request and no extra
@@ -331,6 +345,8 @@ export interface ApiSession {
    *  connect-ask plumbing (a later Build-phase addition); the card is buildable
    *  and testable against this typed shape via the `/dev/chat-live` fixture. */
   connect_request?: ConnectRequestInfo | null
+  /** The live shared-browser takeover ask (see `BrowserTakeoverInfo`). */
+  browser_takeover?: BrowserTakeoverInfo | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor and the client's clock-skew sample. */
   activity_at?: number

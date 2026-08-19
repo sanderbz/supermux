@@ -194,9 +194,23 @@ export function ConnectorDetail({
               </p>
             </>
           ) : !needsSecret ? (
-            <p className="text-[13px] text-muted-foreground">
-              No sign-in needed — {card.kind === 'builtin_browser' ? 'this is built in.' : 'grant it to a bot to use it.'}
-            </p>
+            <>
+              <p className="text-[13px] text-muted-foreground">
+                No sign-in needed — {card.kind === 'builtin_browser' ? 'this is built in.' : 'grant it to a bot to use it.'}
+              </p>
+              {/* HOW THE TAKEOVER WORKS — the one thing about this connector that
+                  is not obvious from a tool list, said once, where it is decided
+                  whether to grant it. */}
+              {card.kind === 'builtin_browser' && (
+                <p className="text-[13px] leading-[1.45] text-muted-foreground">
+                  When the bot hits a login, a 2FA prompt or a CAPTCHA it asks you
+                  to take the wheel: the live page opens in your chat, you finish
+                  the step on your phone, and closing it hands control straight
+                  back. While you are driving, the bot cannot act on — or even
+                  read — that page.
+                </p>
+              )}
+            </>
           ) : null}
 
           {/* The bottom CTA belongs to the key/no-secret path; during the OAuth

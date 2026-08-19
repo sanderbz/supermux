@@ -55,6 +55,11 @@ pub mod context;
 pub mod error;
 pub mod launch;
 pub mod lock;
+/// Phase 3: the store-facing connector — the `shared-browser` card and the
+/// embedded MCP server a granted bot launches.
+pub mod mcp;
+/// Phase 3: the lock-gated tool endpoint the MCP server forwards to.
+pub mod tools;
 /// Phase 2: the human takeover WebSocket — screencast out, input in, gated by
 /// the drive lock.
 pub mod takeover;

@@ -33,6 +33,7 @@ export {
 } from './choice-card'
 export { FormCard, type FormCardProps } from './form-card'
 export { ConnectCard, type ConnectCardProps } from './connect-card'
+export { TakeoverCard, type TakeoverCardProps } from './takeover-card'
 export { Composer, type ComposerProps } from './composer'
 export { DelegationPill, type DelegationPillProps } from './delegation-pill'
 export { Dots } from './dots'

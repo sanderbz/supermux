@@ -136,6 +136,19 @@ fn viewers() -> &'static Mutex<HashSet<String>> {
     VIEWERS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// **Is a human actually looking at this session's page right now?**
+///
+/// Phase 3 asks before deciding what a timed-out `request_human_takeover` park
+/// means: a human who IS attached is simply taking their time (keep the wheel
+/// with them), while nobody attached means the ask went unanswered and the
+/// wheel must go back to the agent rather than wedging the context.
+pub fn is_attached(session: &str) -> bool {
+    viewers()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(session)
+}
+
 /// RAII claim on a session's single viewer slot.
 struct ViewerSlot(String);
 

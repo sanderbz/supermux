@@ -142,6 +142,7 @@ impl Harness {
                 worktree_repo: String::new(),
                 host_id: None,
                 runtime: "native".to_string(),
+                model: String::new(),
             },
         )
         .await

@@ -32,6 +32,7 @@ use crate::sessions::activity::{self, HookPayload};
 use crate::sessions::connect_ask;
 use crate::sessions::elicitation;
 use crate::sessions::status::{HookEvent, Status};
+use crate::sessions::takeover_ask;
 use crate::state::{AppState, SseEvent};
 
 /// Header the hook command sets to its per-session `$SUPERMUX_HOOK_TOKEN`.
@@ -332,11 +333,20 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
                 Some(ask) => state.set_connect_request(session, ask),
                 None => false,
             };
+            // The Shared Browser connector's `request_human_takeover(reason)`
+            // affordance — the same `requiresUserInteraction` shape, so the call
+            // stops for the human here too. Raise the in-chat "take the wheel"
+            // card via `session.browser_takeover`; the takeover panel it opens
+            // is what actually drives the page.
+            let takeover = match takeover_ask::parse(payload, session) {
+                Some(ask) => state.set_browser_takeover(session, ask),
+                None => false,
+            };
             let label = match activity::activity_label(payload) {
                 Some((label, kind)) => state.set_activity(session, label, kind),
                 None => false,
             };
-            connect || label
+            connect || takeover || label
         }
         // A tool FAILED → transient `✗ {tool} failed`. Claude DOES have a
         // dedicated `PostToolUseFailure` event (live-verified on 2.1.227 +
@@ -348,7 +358,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -359,7 +369,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // …and any pending ELICITATION: the form is raised mid-tool-call, so
             // the tool having finished proves the form is gone even if the
             // `ElicitationResult` leg never arrived.
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -437,7 +447,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -459,7 +469,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
             let err = state.clear_error(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             err || sub || perm
         }
         // Session lifecycle ───────────────────────────────────────────────────
@@ -474,7 +484,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             state.reset_turn_state(session);
             state.clear_forced_status(session);
             let err = state.clear_error(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             err || perm
         }
         // End: clear activity AND force Stopped now (the capture classifier can't
@@ -502,7 +512,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
             let perm_changed =
-                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session);
+                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
             // The turn is definitively over when the session ends — drop it so a
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
@@ -592,7 +602,7 @@ fn force_stopped(state: &AppState, session: &str) {
 /// open overviews update the live line / error badge without a refetch.
 /// Cheap; sent only when the snapshot changed (the caller gates
 /// on that). A cleared field is sent as JSON `null` so the client drops it.
-fn broadcast_activity_delta(state: &AppState, session: &str) {
+pub(crate) fn broadcast_activity_delta(state: &AppState, session: &str) {
     let act = state.session_activity(session).unwrap_or_default();
     let error = act.error.as_ref().map(|(t, m)| json!({ "type": t, "message": m }));
     let permission = act.permission.as_ref().map(|a| {
@@ -618,6 +628,10 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             // the client must drop the card, so this is always present). Names
             // WHICH connector stalled; the credential never rides this plane.
             "connect_request": act.connect_request,
+            // The live browser takeover ask (`null` once the human handed the
+            // wheel back or the call moved on — the client must drop the card,
+            // so this is always present).
+            "browser_takeover": act.browser_takeover,
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
@@ -1163,6 +1177,46 @@ mod tests {
         // Re-firing the identical call is not a change → silence.
         apply_payload(&state, s, "pre_tool", &p(LIVE_CONNECT));
         assert!(rx.try_recv().is_err(), "an unchanged connect ask must not re-broadcast");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A live `request_human_takeover(reason)` call — the Shared Browser
+    /// connector's hand-the-wheel affordance, MCP-named
+    /// `mcp__browser__request_human_takeover`.
+    const LIVE_TAKEOVER: &str = r#"{"session_id":"c0ffee","hook_event_name":"PreToolUse","tool_name":"mcp__browser__request_human_takeover","tool_input":{"reason":"sign in to bank.example and approve the 2FA push"}}"#;
+
+    #[tokio::test]
+    async fn a_takeover_call_raises_the_browser_takeover_and_rides_the_sessions_delta() {
+        // Phase 3's chat surfacing, executable: the agent asks for a human, and
+        // the ask must reach `session.browser_takeover` so chat can draw the
+        // "take the wheel" card that opens the takeover panel.
+        let (state, dir) = test_state().await;
+        let s = "worker-browser";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(&state, s, "pre_tool", &p(LIVE_TAKEOVER));
+
+        let ask = state
+            .session_activity(s)
+            .and_then(|a| a.browser_takeover)
+            .expect("the takeover tool raised the browser_takeover ask");
+        assert_eq!(ask.session, s, "the panel attaches to the ASKING session");
+        assert!(ask.reason.contains("2FA"), "the agent's own sentence: {}", ask.reason);
+
+        let d = last_delta(&mut rx, s).expect("a takeover ask broadcasts a delta");
+        assert_eq!(d["browser_takeover"]["session"], json!(s));
+        assert!(d["browser_takeover"]["reason"].as_str().unwrap().contains("2FA"));
+
+        // …and it clears when the tool call moves on (same rule as connect).
+        apply_payload(&state, s, "post_tool", &p(r#"{"tool_name":"mcp__browser__request_human_takeover"}"#));
+        assert!(
+            state.session_activity(s).and_then(|a| a.browser_takeover).is_none(),
+            "the card must not outlive the call"
+        );
+        let d = last_delta(&mut rx, s).expect("the clear broadcasts too");
+        assert_eq!(d["browser_takeover"], Value::Null, "cleared as null");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

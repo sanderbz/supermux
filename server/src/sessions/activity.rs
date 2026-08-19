@@ -144,6 +144,12 @@ pub struct ToolInput {
     /// raise the inline Connect card. A plain id, never a secret.
     #[serde(default)]
     pub service: Option<String>,
+    /// The one-sentence reason a `request_human_takeover(reason)` call carries —
+    /// the Shared Browser connector's hand-the-wheel affordance. Read by
+    /// [`super::takeover_ask::parse`] to raise the in-chat takeover card. The
+    /// agent's own words, clipped there; never a secret.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// `AskUserQuestion`'s questions (B5/T1.5). The only large-ish field we
     /// admit, because it IS the payload's point: the agent's own sentence, which
     /// the notification relays verbatim rather than paraphrasing.
