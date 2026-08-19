@@ -30,7 +30,8 @@
  * body-portalled sheet; the pane's chrome reuses the roster's `.gr-pane`.
  */
 import * as React from 'react'
-import { ArrowRight, Users } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { ArrowRight, Trash2, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { SessionMark } from '@/brand/marks'
@@ -41,13 +42,21 @@ import {
   ToolsTab,
   WorkingDirRow,
 } from '@/components/roster/bot-panel'
+import { IssueList } from '@/components/issues/issue-list'
+import { IssueSurface } from '@/components/issues/issue-surface'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
+import { useToast } from '@/components/ui/use-toast'
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
+import { useBoards } from '@/hooks/use-board'
+import { RovingListProvider, useRovingItem } from '@/hooks/use-roving'
 import { useSession } from '@/hooks/use-sessions'
+import { TEAMS_KEY } from '@/hooks/use-teams'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import {
   needsYouCount,
   taskProgress,
   tasksForMember,
+  teamsApi,
   type Team,
   type TeamMember,
   type MemberStatus,
@@ -136,21 +145,193 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'activity', label: 'Activity' },
 ]
 
-/** One crew member. A plain row in Phase 2; Phase 3 passes `onOpen` and the
- *  same row becomes the button that opens the member's live pane (build spec
- *  §Phase 3 — "TeamPanel Overview's member list is the click target"). */
+/* ── destructive verbs (Phase 4b) — the ONE armed-confirm idiom ────────────
+   Both team management destructives (remove a teammate, dismiss the team) live
+   HERE, in grok, so neither needs a trip to the retiring `/focus` board. They
+   reuse `useArmedConfirm` (the shared 4 s arm window) rather than inventing a
+   dialog, and they call the EXISTING `teamsApi` methods — no new endpoints, and
+   no client ever touches `~/.claude/teams/**` (invariant 5: the team model is
+   derived; a "removal" is a supermux-side hide). */
+
+/** Remove / kill ONE teammate. Carries `kill-teammate-button.tsx`'s capability
+ *  into the grok panel (that component is on the retirement list and must not be
+ *  imported from grok code). Live member ⇒ the server kills its pane THEN hides
+ *  it; offline member ⇒ it is just hidden. The verb says which. */
+function RemoveMemberButton({
+  team,
+  member,
+  tabIndex,
+}: {
+  team: Team
+  member: TeamMember
+  tabIndex?: number
+}) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [pending, setPending] = React.useState(false)
+  const verb = member.tmux_pane_id ? 'Kill & remove' : 'Remove'
+  const run = React.useCallback(() => {
+    setPending(true)
+    void teamsApi
+      .removeTeammate(team.team_name, member.agent_id)
+      .then(() => {
+        toast({ message: `Removed ${member.name}` })
+        // Re-pull now so the row disappears without waiting for the watcher's
+        // next SSE snapshot (which also drops the dismissed member).
+        void qc.invalidateQueries({ queryKey: TEAMS_KEY })
+      })
+      .catch(() => toast({ message: `Couldn't remove ${member.name}`, tone: 'error' }))
+      .finally(() => setPending(false))
+  }, [qc, toast, team.team_name, member.agent_id, member.name])
+  const confirming = useArmedConfirm({ onConfirm: run })
+
+  if (confirming.armed) {
+    return (
+      <span className="flex shrink-0 items-center gap-1" data-vr="member-remove-confirm">
+        <button
+          type="button"
+          onClick={confirming.cancel}
+          disabled={pending}
+          className="rounded-md px-2 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={confirming.press}
+          disabled={pending}
+          className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-2.5 py-1.5 text-[12px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <Trash2 className="size-3.5" aria-hidden />
+          {verb}
+        </button>
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={confirming.press}
+      disabled={pending}
+      tabIndex={tabIndex}
+      data-vr="member-remove"
+      aria-label={`${verb} ${member.name}`}
+      title={verb}
+      className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+    >
+      <Trash2 className="size-4" aria-hidden />
+    </button>
+  )
+}
+
+/** Dismiss the whole TEAM — the Overview footer half of the verb (the roster's
+ *  TeamRow kebab is the other). Parks the team's on-disk config under
+ *  `.archived/` server-side so the watcher stops surfacing it. */
+function DismissTeamButton({
+  team,
+  onDismissed,
+}: {
+  team: Team
+  onDismissed?: () => void
+}) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [pending, setPending] = React.useState(false)
+  const run = React.useCallback(() => {
+    setPending(true)
+    void teamsApi
+      .dismiss(team.team_name)
+      .then(() => {
+        // Drop it from the shared cache at once — both reconcilers (the SSE
+        // snapshot and a hard-reload GET) already exclude an archived dir.
+        qc.setQueryData<Team[]>(TEAMS_KEY, (prev) =>
+          (prev ?? []).filter((t) => t.team_name !== team.team_name),
+        )
+        toast({ message: `Dismissed ${team.team_name}` })
+        onDismissed?.()
+      })
+      .catch(() => toast({ message: `Couldn't dismiss ${team.team_name}`, tone: 'error' }))
+      .finally(() => setPending(false))
+  }, [qc, toast, team.team_name, onDismissed])
+  const confirming = useArmedConfirm({ onConfirm: run })
+
+  return (
+    <div className="flex flex-col gap-2">
+      {confirming.armed ? (
+        <div className="flex items-center gap-2" data-vr="team-dismiss-confirm">
+          <button
+            type="button"
+            onClick={confirming.cancel}
+            disabled={pending}
+            className="min-h-9 rounded-[10px] px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={confirming.press}
+            disabled={pending}
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-[10px] bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            Dismiss {team.team_name}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={confirming.press}
+          disabled={pending}
+          data-vr="team-dismiss"
+          className="inline-flex min-h-9 items-center gap-1.5 self-start rounded-[10px] border border-border bg-card px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <Trash2 className="size-3.5" aria-hidden />
+          Dismiss this team
+        </button>
+      )}
+      <p className="text-[12px] text-muted-foreground">
+        Stops surfacing the crew in supermux. Claude's own roster on disk is never
+        edited — nothing the lead wrote is lost.
+      </p>
+    </div>
+  )
+}
+
+/** One crew member — the CLICK TARGET for a teammate (Phase 3, R3). The roster
+ *  row above stays ONE button (a nested button is invalid HTML and breaks the
+ *  roster's keyboard contract), so the hierarchy is honest: the row opens the
+ *  TEAM, and this list opens a MEMBER.
+ *
+ *  The row is a wrapper `div` holding two siblings — the open button (which owns
+ *  the list's roving tab stop) and the destructive remove action — for the same
+ *  no-nested-buttons reason. Arrows move between members; Tab steps past the
+ *  list. */
 function MemberRow({
   team,
   member,
   onOpen,
+  active,
 }: {
   team: Team
   member: TeamMember
   onOpen?: (m: TeamMember) => void
+  /** This member is the one open in the pane. */
+  active?: boolean
 }) {
   const st = statusWord(member.status)
   const tasks = tasksForMember(team, member)
   const openTasks = tasks.filter((t) => t.status !== 'completed').length
+  // The roster's keyboard contract for a list of peers (build spec §Phase 3):
+  // ONE tab stop, arrows choose the member. Keyed by `agent_id`, the same stable
+  // identity the selection and the API use.
+  const roving = useRovingItem(member.agent_id)
+  // Pulled out before the JSX: passing the roving handle straight into `ref=`
+  // makes the compiler lint read every sibling property as a ref access.
+  const rovingRef = roving.ref
+  const setRowRef = React.useCallback(
+    (el: HTMLButtonElement | null) => rovingRef(el),
+    [rovingRef],
+  )
   const body = (
     <>
       <SessionMark
@@ -178,21 +359,92 @@ function MemberRow({
       </span>
     </>
   )
-  const cls =
-    'flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5'
-  if (!onOpen) return <div className={cls}>{body}</div>
   return (
-    <button
-      type="button"
-      data-vr="team-member"
-      onClick={() => onOpen(member)}
+    <div
       className={cn(
-        cls,
-        'text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'flex w-full items-center gap-1 rounded-xl border border-border bg-card pr-1.5 transition-colors',
+        active && 'border-primary/50 bg-accent/30',
       )}
+      data-vr="team-member-row"
     >
-      {body}
-    </button>
+      {onOpen ? (
+        <button
+          type="button"
+          ref={setRowRef}
+          tabIndex={roving.tabIndex}
+          onFocus={roving.onFocus}
+          onKeyDown={roving.onKeyDown}
+          data-vr="team-member"
+          aria-current={active || undefined}
+          aria-label={`${member.name} — ${st.word}`}
+          onClick={() => onOpen(member)}
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-l-xl px-3 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5">{body}</div>
+      )}
+      {/* Remove / kill this teammate — destructive, armed-confirm, in place. */}
+      <RemoveMemberButton team={team} member={member} tabIndex={roving.tabIndex} />
+    </div>
+  )
+}
+
+/** The Activity tab (Phase 4a) — THE TEAM BOARD. `board_sync.rs` already
+ *  registers and mirrors a `kind='team'` board per team, so this is pure
+ *  wiring: find the board, list it inline, and open the full `<IssueSurface>`
+ *  for the detail. NO board ⇒ one calm line, never an empty surface. */
+function ActivityTab({ team }: { team: Team }) {
+  const { boards } = useBoards()
+  const teamBoardId = React.useMemo(
+    () => boards.find((b) => b.kind === 'team' && b.team_name === team.team_name)?.id,
+    [boards, team.team_name],
+  )
+  const [issuesOpen, setIssuesOpen] = React.useState(false)
+  const [openIssueId, setOpenIssueId] = React.useState<string | null>(null)
+
+  if (!teamBoardId) {
+    return (
+      <Field label="Team board" hint="The crew's shared issue board.">
+        <p className="text-[13px] text-muted-foreground" data-vr="team-no-board">
+          No board yet for {team.team_name}. One appears here as soon as the crew files
+          its first task — supermux mirrors the team's own task files, it never
+          creates them.
+        </p>
+      </Field>
+    )
+  }
+
+  return (
+    <Field label="Team board" hint="The crew's shared issue board, mirrored from its task files.">
+      <div className="flex flex-col gap-2" data-vr="team-board">
+        <IssueList
+          boardId={teamBoardId}
+          onOpen={(issue) => {
+            setOpenIssueId(issue.id)
+            setIssuesOpen(true)
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            setOpenIssueId(null)
+            setIssuesOpen(true)
+          }}
+          className="self-start rounded-md px-1 py-1 text-xs text-primary hover:underline"
+        >
+          Open the team board →
+        </button>
+      </div>
+      <IssueSurface
+        open={issuesOpen}
+        onOpenChange={setIssuesOpen}
+        initialIssueId={openIssueId}
+        boardId={teamBoardId}
+        title={team.team_name}
+      />
+    </Field>
   )
 }
 
@@ -201,12 +453,23 @@ function OverviewTab({
   lead,
   leadSession,
   onOpenMember,
+  activeMemberId,
+  onDismissed,
 }: {
   team: Team
   lead: string | null
   leadSession: ApiSession | null
   onOpenMember?: (m: TeamMember) => void
+  /** `agent_id` of the member currently open in the pane, if any. */
+  activeMemberId?: string | null
+  onDismissed?: () => void
 }) {
+  // ONE tab stop for the crew list, arrows to choose the member — the roster's
+  // keyboard contract, keyed by the same stable `agent_id` the selection uses.
+  const rovingKeys = React.useMemo(
+    () => team.members.map((m) => m.agent_id),
+    [team.members],
+  )
   const needs = needsYouCount(team)
   const progress = taskProgress(team)
   const working = team.members.filter((m) => m.status === 'working').length
@@ -288,11 +551,19 @@ function OverviewTab({
         {team.members.length === 0 ? (
           <p className="text-[13px] text-muted-foreground">No teammates right now.</p>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            {team.members.map((m) => (
-              <MemberRow key={m.agent_id} team={team} member={m} onOpen={onOpenMember} />
-            ))}
-          </div>
+          <RovingListProvider keys={rovingKeys} orientation="vertical">
+            <div className="flex flex-col gap-1.5">
+              {team.members.map((m) => (
+                <MemberRow
+                  key={m.agent_id}
+                  team={team}
+                  member={m}
+                  onOpen={onOpenMember}
+                  active={activeMemberId === m.agent_id}
+                />
+              ))}
+            </div>
+          </RovingListProvider>
         )}
       </Field>
 
@@ -358,6 +629,12 @@ function OverviewTab({
           </p>
         )}
       </Field>
+
+      {/* The team's own destructive verb, at the Overview's floor (the roster
+          row's `⋯` is the same verb one level out). */}
+      <Field label="Dismiss">
+        <DismissTeamButton team={team} onDismissed={onDismissed} />
+      </Field>
     </div>
   )
 }
@@ -369,6 +646,8 @@ function TeamPanelBody({
   variant,
   onOpenThread,
   onOpenMember,
+  activeMemberId,
+  onDismissed,
   onNavigate,
   initialTab,
 }: {
@@ -376,6 +655,8 @@ function TeamPanelBody({
   variant: 'pane' | 'sheet'
   onOpenThread: () => void
   onOpenMember?: (m: TeamMember) => void
+  activeMemberId?: string | null
+  onDismissed?: () => void
   onNavigate: (name: string) => void
   initialTab?: TabKey
 }) {
@@ -502,6 +783,8 @@ function TeamPanelBody({
             lead={lead}
             leadSession={leadSession}
             onOpenMember={onOpenMember}
+            activeMemberId={activeMemberId}
+            onDismissed={onDismissed}
           />
         )}
         {tab === 'instructions' &&
@@ -526,17 +809,7 @@ function TeamPanelBody({
           ) : (
             <NoLead what="tools" />
           ))}
-        {tab === 'activity' && (
-          <Field label="Team board" hint="The crew's shared issue board.">
-            <p className="text-[13px] text-muted-foreground">
-              Coming in Phase 4 — the team board lands here, mirrored from
-              <code className="mx-1 rounded bg-muted/60 px-1 py-0.5 font-mono text-[11px]">
-                ~/.claude/tasks
-              </code>
-              by the server's board sync.
-            </p>
-          </Field>
-        )}
+        {tab === 'activity' && <ActivityTab team={team} />}
 
         {/* the escape hatch, on every tab's scroll floor — the lead's terminal */}
         {lead && (
@@ -575,10 +848,15 @@ export interface TeamPanelProps {
   team: Team
   /** Flip the roster's right pane back to the LEAD's live thread. */
   onOpenThread: () => void
-  /** Open one crew member's own surface. Phase 3 wires it (`MemberPane` +
-   *  the `{kind:'member'}` selection arm); until then the member list renders as
-   *  plain rows rather than buttons that go nowhere. */
+  /** Open one crew member's own surface — the roster answers with the
+   *  `{kind:'member'}` selection arm and mounts `<MemberPane>` (Phase 3). When
+   *  omitted the member list renders as plain rows rather than buttons that go
+   *  nowhere. */
   onOpenMember?: (m: TeamMember) => void
+  /** `agent_id` of the member the pane is showing, so its row reads as current. */
+  activeMemberId?: string | null
+  /** The team was dismissed — the roster clears its selection. */
+  onDismissed?: () => void
   /** Navigate to a session's focus route (the lead's terminal escape hatch). */
   onNavigate: (name: string) => void
   /** sheet only. */
@@ -593,6 +871,8 @@ export function TeamPanel({
   team,
   onOpenThread,
   onOpenMember,
+  activeMemberId,
+  onDismissed,
   onNavigate,
   open,
   onOpenChange,
@@ -618,6 +898,8 @@ export function TeamPanel({
               onOpenThread()
             }}
             onOpenMember={onOpenMember}
+            activeMemberId={activeMemberId}
+            onDismissed={onDismissed}
             onNavigate={(n) => {
               onOpenChange?.(false)
               onNavigate(n)
@@ -635,6 +917,8 @@ export function TeamPanel({
         variant="pane"
         onOpenThread={onOpenThread}
         onOpenMember={onOpenMember}
+        activeMemberId={activeMemberId}
+        onDismissed={onDismissed}
         onNavigate={onNavigate}
         initialTab={initialTab}
       />

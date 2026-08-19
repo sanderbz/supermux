@@ -20,9 +20,19 @@ import { teamsStartApi, SessionError } from '@/lib/api'
 // the Agent Teams env+settings only take effect at process launch — Claude has
 // to be restarted (fresh conversation) for the team flag to apply.
 //
-// (The from-scratch "Start a team" create flow + WherePicker morph were removed
-// with the New Session panel's Team toggle: teams are now formed by converting
-// an existing session, which is this sheet's sole entry.)
+// TWO MODES, ONE FORM (Phase 4b — "Hire a crew"):
+//   • `sessionName` GIVEN  → CONVERT that session in place
+//     (POST /api/teams/start-from-existing). This is every pre-existing call
+//     site (`focus/desktop.tsx`, `quick-peek-modal`, `stopped-session`,
+//     BotPanel's "Give this bot a crew") and its behaviour is unchanged.
+//   • `sessionName` OMITTED → HIRE A CREW FROM SCRATCH
+//     (POST /api/teams/start — the server boots a fresh `team-<suffix>` lead in
+//     the server home and it spawns its teammates). This is the grok roster's
+//     "Hire a crew" ghost row: the roster has no session to convert, so the
+//     honest verb is "hire", exactly as "Hire a new bot" beside it.
+// The fields are IDENTICAL in both modes (goal, teammate count, optional model);
+// only the title, the cost note and the submit verb differ, so the two share one
+// form rather than growing a second sheet.
 
 /** Bounds mirror the server clamp (teams/start.rs MIN/MAX_TEAMMATES). */
 const MIN_TEAMMATES = 1
@@ -33,11 +43,16 @@ const DEFAULT_TEAMMATES = 3
  *  restart-fact (the Agent Teams env+settings only take effect at process
  *  launch, so we MUST restart) so the user sees it up-front, not after the
  *  click. total processes = lead + teammates. */
-function costNote(teammates: number, name: string): string {
+function costNote(teammates: number, name?: string): string {
   const total = teammates + 1
   const runsLine = `Runs ${total} agents in parallel (1 lead + ${teammates} teammate${
     teammates === 1 ? '' : 's'
   }) — more agents, more tokens.`
+  if (!name) {
+    // From scratch: nothing is stopped and no conversation is replaced, so the
+    // convert-specific warning would be a lie. Say what actually happens.
+    return `Starts a NEW lead session and its crew. ${runsLine}`
+  }
   return `Stops ${name} and restarts it as the lead of a team — the conversation starts fresh in its directory. ${runsLine}`
 }
 
@@ -45,8 +60,9 @@ export interface StartTeamSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The existing session's name — read-only, rendered in the title `Take over
-   *  <name> as a team`; the conversion reuses this row (the name is unchanged). */
-  sessionName: string
+   *  <name> as a team`; the conversion reuses this row (the name is unchanged).
+   *  OMIT it to hire a crew from scratch (POST /api/teams/start) instead. */
+  sessionName?: string
   /** The existing session's dir — shown as a muted `In: <dir>` footnote (fixed;
    *  a conversion never moves the session). */
   sessionDir?: string
@@ -66,8 +82,12 @@ export function StartTeamSheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={`Take over ${sessionName} as a team`}
-      description="Restarts the session as the lead of a team — the current conversation is replaced."
+      title={sessionName ? `Take over ${sessionName} as a team` : 'Hire a crew'}
+      description={
+        sessionName
+          ? 'Restarts the session as the lead of a team — the current conversation is replaced.'
+          : 'Starts a new lead and the teammates it works with.'
+      }
     >
       {open && (
         <StartTeamForm
@@ -85,14 +105,15 @@ export function StartTeamSheet({
 }
 
 interface StartTeamFormProps {
-  sessionName: string
+  sessionName?: string
   sessionDir?: string
   onCancel: () => void
   onStarted: (name: string) => void
 }
 
-/** The convert/take-over form body — turns the passed-in session into a team
- *  lead in place via /api/teams/start-from-existing. */
+/** The team form body. With `sessionName` it converts that session in place via
+ *  /api/teams/start-from-existing; without one it hires a crew from scratch via
+ *  /api/teams/start. Same three fields either way. */
 function StartTeamForm({
   sessionName,
   sessionDir,
@@ -113,12 +134,18 @@ function StartTeamForm({
     setSubmitting(true)
     setError(null)
     try {
-      const result = await teamsStartApi.convert({
-        name: sessionName,
-        task: task.trim(),
-        teammates,
-        model: model.trim() || undefined,
-      })
+      const result = sessionName
+        ? await teamsStartApi.convert({
+            name: sessionName,
+            task: task.trim(),
+            teammates,
+            model: model.trim() || undefined,
+          })
+        : await teamsStartApi.start({
+            task: task.trim(),
+            teammates,
+            model: model.trim() || undefined,
+          })
       onStarted(result.lead.name)
     } catch (err) {
       if (err instanceof SessionError && err.status === 409) {
@@ -154,7 +181,11 @@ function StartTeamForm({
       <Field
         label="Goal"
         htmlFor="st-task"
-        hint="What should the team work on? The session restarts and starts fresh."
+        hint={
+          sessionName
+            ? 'What should the team work on? The session restarts and starts fresh.'
+            : 'What should the crew work on? The lead splits it up and hands it out.'
+        }
       >
         {/* NO autoFocus — same iOS-PWA Vaul keyboard-during-open race as the
             board-card-editor. The keyboard popping mid-slide-in makes Vaul
@@ -220,7 +251,13 @@ function StartTeamForm({
         </Button>
         <Button type="submit" className="flex-1" disabled={!canSubmit || submitting}>
           {submitting && <Loader2 className="animate-spin" />}
-          {submitting ? 'Taking over…' : 'Take over'}
+          {sessionName
+            ? submitting
+              ? 'Taking over…'
+              : 'Take over'
+            : submitting
+              ? 'Hiring…'
+              : 'Hire the crew'}
         </Button>
       </div>
     </form>
