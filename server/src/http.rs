@@ -44,6 +44,11 @@ pub fn router(state: AppState) -> Router {
         .merge(board::public_router_for(state.clone()))
         // WS pty stream — NO bearer layer; auth is in-band first-frame.
         .merge(ws::router_for(state.clone()))
+        // Shared-browser HUMAN TAKEOVER socket (`/ws/browser/{session}/takeover`)
+        // — same reason it sits outside the bearer layer as the pty stream: a
+        // browser `WebSocket` cannot send an `Authorization` header, so auth is
+        // the identical in-band first frame.
+        .merge(crate::connectors::browser::takeover::router_for(state.clone()))
         // Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Supermux-Hook-Token` validated in the handler.
         .merge(hooks::router_for(state.clone()))

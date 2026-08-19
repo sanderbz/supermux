@@ -18,10 +18,12 @@
 //! * **Phase 1 (here).** The process manager, the CDP client, the per-agent
 //!   context registry, the drive lock, leak safety. No HTTP routes, no MCP
 //!   tools — nothing outside this module calls it yet.
-//! * **Phase 2.** The takeover UI: a WS relay that publishes
-//!   [`context::ScreencastFrame`]s to an authenticated client and feeds its
-//!   taps back as [`lock::Actor::Human`] input, plus pausing the agent's pty
-//!   while [`lock::DriveMode::HumanDriving`].
+//! * **Phase 2 (shipped, [`takeover`]).** The takeover UI's data plane: a WS
+//!   relay that publishes [`context::ScreencastFrame`]s to an authenticated
+//!   client and feeds its taps back as [`lock::Actor::Human`] input. It does
+//!   NOT pause the agent's pty — the lock IS the pause (an agent browser call
+//!   is refused/parked while [`lock::DriveMode::HumanDriving`]), which leaves
+//!   the agent free to keep thinking about everything else.
 //! * **Phase 3.** The MCP tool server, whose every tool calls
 //!   [`lock::DriveLock::ensure_agent`] before touching a page.
 //!
@@ -53,6 +55,9 @@ pub mod context;
 pub mod error;
 pub mod launch;
 pub mod lock;
+/// Phase 2: the human takeover WebSocket — screencast out, input in, gated by
+/// the drive lock.
+pub mod takeover;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

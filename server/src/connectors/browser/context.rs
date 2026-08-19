@@ -56,6 +56,29 @@ pub struct ScreencastFrame {
     /// scrollOffsetY, timestamp}` — the transform a client needs to map a tap
     /// back to page coordinates (gotcha #6).
     pub metadata: Value,
+    /// The CDP `sessionId` this frame must be acked with, present only under
+    /// [`AckPolicy::Viewer`] — under [`AckPolicy::Immediate`] the pump already
+    /// acked and there is nothing for the consumer to do.
+    ///
+    /// Chromium counts *frames in flight* (max 2) and each ack is a decrement
+    /// carrying the screencast's — not the frame's — session id, so an ack is
+    /// fungible: a consumer that DROPS a frame still has to ack for it or the
+    /// counter saturates and the stream stalls forever. See
+    /// [`AgentContext::ack_frame`].
+    pub ack: Option<Value>,
+}
+
+/// Who is responsible for `Page.screencastFrameAck`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckPolicy {
+    /// The pump acks the moment it has fanned a frame out (phase-1 behaviour).
+    /// Chrome then renders/encodes at full speed regardless of the consumer.
+    Immediate,
+    /// The pump leaves the ack to the consumer, which acks only once the frame
+    /// has actually been handed to its viewer. Chrome's 2-frame in-flight
+    /// window then becomes REAL backpressure: a slow phone throttles the
+    /// encoder instead of burning a core on frames nobody sees.
+    Viewer,
 }
 
 /// Screencast tuning. Defaults are the spike's mobile-friendly recommendation:
@@ -70,6 +93,9 @@ pub struct ScreencastOptions {
     pub max_height: u32,
     #[serde(rename = "everyNthFrame")]
     pub every_nth_frame: u32,
+    /// Who acks (not part of the CDP payload — hence `skip`).
+    #[serde(skip)]
+    pub ack: AckPolicy,
 }
 
 impl Default for ScreencastOptions {
@@ -80,6 +106,7 @@ impl Default for ScreencastOptions {
             max_width: 512,
             max_height: 512,
             every_nth_frame: 1,
+            ack: AckPolicy::Immediate,
         }
     }
 }
@@ -561,6 +588,7 @@ impl AgentContext {
             let client = self.client.clone();
             let want = self.cdp_session_id.clone();
             let tx = tx.clone();
+            let policy = options.ack;
             tokio::spawn(async move {
                 loop {
                     let ev = match events.recv().await {
@@ -585,16 +613,25 @@ impl AgentContext {
                             .unwrap_or_default()
                             .to_string(),
                         metadata: ev.params.get("metadata").cloned().unwrap_or(json!({})),
+                        // Under `Viewer` the consumer owns the ack, so it needs
+                        // the token; under `Immediate` we ack below and hand it
+                        // `None` so a consumer cannot double-ack.
+                        ack: match policy {
+                            AckPolicy::Viewer => ack.clone(),
+                            AckPolicy::Immediate => None,
+                        },
                     };
                     let _ = tx.send(frame);
-                    if let Some(ack) = ack {
-                        if let Err(e) = client.notify(
-                            Some(&want),
-                            "Page.screencastFrameAck",
-                            json!({ "sessionId": ack }),
-                        ) {
-                            warn!(error = %e, "browser: screencast ack failed");
-                            break;
+                    if policy == AckPolicy::Immediate {
+                        if let Some(ack) = ack {
+                            if let Err(e) = client.notify(
+                                Some(&want),
+                                "Page.screencastFrameAck",
+                                json!({ "sessionId": ack }),
+                            ) {
+                                warn!(error = %e, "browser: screencast ack failed");
+                                break;
+                            }
                         }
                     }
                 }
@@ -625,6 +662,52 @@ impl AgentContext {
             self.session_call("Page.stopScreencast", json!({})).await?;
         }
         Ok(())
+    }
+
+    /// Ack one screencast frame under [`AckPolicy::Viewer`].
+    ///
+    /// Fire-and-forget (`notify`) on purpose: at up to 60 acks/s a round trip
+    /// per ack would add its own latency for a result that carries no
+    /// information. **Every** frame the consumer receives must be acked exactly
+    /// once — including frames it decided to DROP — because Chromium's ack is a
+    /// decrement of a 2-slot in-flight counter, not a per-frame receipt. Skip
+    /// one and the screencast silently stops.
+    pub fn ack_frame(&self, ack: &Value) -> Result<()> {
+        self.client.notify(
+            Some(&self.cdp_session_id),
+            "Page.screencastFrameAck",
+            json!({ "sessionId": ack }),
+        )
+    }
+
+    /// The methods [`dispatch_input`](Self::dispatch_input) will forward. An
+    /// allowlist, not a filter: the takeover socket builds CDP payloads from
+    /// untrusted client JSON, so the set of commands it can reach is pinned
+    /// here rather than wherever the next caller happens to be written.
+    pub const INPUT_METHODS: [&'static str; 4] = [
+        "Input.dispatchMouseEvent",
+        "Input.dispatchKeyEvent",
+        "Input.dispatchTouchEvent",
+        "Input.insertText",
+    ];
+
+    /// Forward one already-built `Input.*` payload to this context's page.
+    ///
+    /// The typed helpers above (`click`, `press_key`, …) are what a *tool call*
+    /// wants — one intention, several CDP events. A human at a takeover canvas
+    /// is the other shape: raw pointer/key events at ~60 Hz that must arrive
+    /// individually (a `mouseMoved` during a drag is not a click). This is that
+    /// seam, and it carries the same [`Actor`] gate as every other mutating
+    /// method — plus the [`INPUT_METHODS`](Self::INPUT_METHODS) allowlist.
+    pub async fn dispatch_input(&self, actor: Actor, method: &str, params: Value) -> Result<()> {
+        self.lock.gate(actor)?;
+        if !Self::INPUT_METHODS.contains(&method) {
+            return Err(BrowserError::Protocol {
+                method: method.to_string(),
+                message: "not an allowed input method".to_string(),
+            });
+        }
+        self.session_call(method, params).await.map(|_| ())
     }
 
     /// One-shot JPEG of the current page, base64. Needed because a static page

@@ -94,6 +94,14 @@ const DevPickers = import.meta.env.DEV
 const DevRendererThrash = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-renderer-thrash'))
   : null
+// Shared-browser TAKEOVER bench (connector phase 2): the canvas panel fed
+// either a live `/ws/browser/{name}/takeover` socket (`?session=NAME`) or an
+// authentic captured frame with no server at all (`?mock=1`). Phase 3 moves
+// this surface onto the connector card; it is dev-only until then, so the base
+// app is completely unaffected.
+const DevBrowserTakeover = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-browser-takeover'))
+  : null
 // Connector-store bench — the grid + bot-scoped sheet + inline connect-card, in
 // both themes and the [data-grok] skin, offline. The page the store shots come
 // from.
@@ -338,6 +346,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevComposerAttach />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevBrowserTakeover && (
+                <Route
+                  path="/dev/browser-takeover"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevBrowserTakeover />
                     </Suspense>
                   }
                 />
