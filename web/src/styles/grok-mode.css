@@ -2511,3 +2511,145 @@
   background-color: color-mix(in srgb, var(--sm-accent) 14%, transparent);
   color: var(--sm-text-primary);
 }
+
+/* ══ WS13 — DESKTOP CHROME PORT: FILES + SETTINGS RE-SKIN ══════════════════════
+   Files (`routes/files.tsx` `.gk-files`) and Settings (`routes/settings.tsx`
+   `.gk-settings`) shipped as PURE base app — the iOS-list / shadcn material, zero
+   [data-grok] rules — so next to the grok roster they read legacy. Both are a
+   RE-SKIN, not a rebuild: their structure already matches the grok grammar (Files
+   = list-rail + viewer-pane; Settings = a sectioned scroll of labelled Rows). The
+   high-leverage move is to REPOINT the shared shadcn/paper tokens the routes' own
+   Tailwind utilities already read (`bg-card`, `bg-background`, `border-border`,
+   `text-muted-foreground`, `bg-accent`, `bg-secondary`, `bg-primary`,
+   `border-hairline`, `.glass`) onto the grok `--sm-*` ladder — so every surface,
+   row and control re-materializes at once with NO structural change and NO base
+   token edits (grok values win by being defined on a closer ancestor; the base
+   `:root`/`.dark` values are untouched, so the firewall holds).
+
+   DESKTOP-ONLY, on purpose. Both routes exist at every breakpoint, but the scope
+   contract is "base app (grok off) AND mobile stay byte-identical". So the whole
+   re-skin lives inside `@media (min-width: 768px)`: under grok on a phone Files /
+   Settings keep the exact base iOS look; only the desktop surfaces (where the
+   grok rail + roster set the visual bar) are re-materialized. The class hooks
+   themselves are inert everywhere — a bare class name paints nothing. */
+@media (min-width: 768px) {
+  /* The token repoint. Applied to each route's root hook so it cascades to every
+     in-flow descendant (portalled overlays — the delete Dialog, sort/model
+     DropdownMenus — escape the subtree and keep the base material; they are
+     transient and out of the captured surfaces). */
+  [data-grok] .gk-files,
+  [data-grok] .gk-settings {
+    /* grounds & elevation → the grok ladder */
+    --background: var(--sm-bg-editor);
+    --card: var(--sm-bg-elevated);
+    --popover: var(--sm-bg-elevated);
+    --secondary: var(--sm-bg-tertiary);
+    --muted: var(--sm-bg-tertiary);
+    /* ink → grok text ramp (theme-swapped by the --sm-* source) */
+    --foreground: var(--sm-text-primary);
+    --muted-foreground: var(--sm-text-secondary);
+    /* selection / hover → WARM GREY (grok never accent-fills a chrome-select),
+       and the on-grey ink stays primary */
+    --accent: var(--sm-bg-active);
+    --accent-foreground: var(--sm-text-primary);
+    /* the one hairline — 0.5px grok border everywhere `border-border` /
+       `border-hairline` are used */
+    --border: var(--sm-border);
+    --sm-hairline: var(--sm-border);
+    --sm-hairline-soft: var(--sm-border);
+    /* accent (links/focus/toggle-on) → the grok single accent */
+    --primary: var(--sm-accent);
+    --destructive: var(--sm-tone-danger);
+    color: var(--sm-text-primary);
+    font-family: var(--sm-font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header glass → the grok TITLE recipe (a crisper, more saturated blur than the
+     shared `.glass` 72%/20px), so the toolbar reads as a grok surface rather than
+     a generic frosted bar. Targeted STRUCTURALLY off the `.gk-files` root (its
+     direct `<header>` toolbar + the viewer pane's own `<header>`) and the Settings
+     sticky nav bar, so only one class hook per route is needed. */
+  [data-grok] .gk-files > header,
+  [data-grok] .gk-files header,
+  [data-grok] .gk-settings > header {
+    background: var(--sm-title-fill);
+    -webkit-backdrop-filter: var(--sm-glass-title);
+    backdrop-filter: var(--sm-glass-title);
+  }
+
+  /* Files two-column split (the flex row after the toolbar): list rail on the warm
+     chrome ground, viewer pane on the editor ground, so they read as one grok
+     window rather than two flat base panes. */
+  [data-grok] .gk-files > div > div:first-child {
+    background: var(--sm-bg-chrome);
+  }
+  [data-grok] .gk-files > div > div:last-child {
+    background: var(--sm-bg-editor);
+  }
+  /* File rows — the roster row idiom: the selection plate (a `position:absolute`
+     span, the only `<span>` that is a direct child of a row `<li>`) becomes the
+     warm-grey selection with the grok list radius, never an accent fill. */
+  [data-grok] .gk-files li > span {
+    background: var(--sm-bg-active);
+    border-radius: var(--sm-r-sm);
+  }
+  /* Breadcrumb → grok mono meta, matching the roster pane-head crumb idiom. */
+  [data-grok] .gk-files > header nav {
+    font-family: var(--sm-font-mono);
+    font-size: 12px;
+  }
+
+  /* Settings — the sectioned scroll, re-materialized. The grouped `Section` card
+     (the only `rounded-2xl` box in this subtree) takes the grok large radius so
+     the cards read as grok panels; content, order and copy are unchanged. */
+  [data-grok] .gk-settings .rounded-2xl {
+    border-radius: var(--sm-r-lg);
+  }
+  /* The big scroll-crossfade title + the sticky bar label → grok display ink. */
+  [data-grok] .gk-settings h1,
+  [data-grok] .gk-settings header span {
+    color: var(--sm-text-primary);
+    letter-spacing: -0.02em;
+  }
+}
+
+/* ── Phase B — the thread pill's trailing actions ────────────────────────────
+   The verbs the retired `DesktopFocusHeader` used to carry (Detach ⌘D / Stop ⌘W /
+   Make it a team), re-homed as plain buttons in the chat pill's `trailing` slot
+   (`ThreadPillActions`, desktop-split.tsx). Styling lives here — not in Tailwind
+   class strings — to keep the tight main-app chunk lean. Rendered ONLY under
+   `chatActive`, which implies bot mode, so `[data-grok]` is always present.
+   NOT desktop-media-gated: this pane only exists on desktop, and the mobile focus
+   surface is a different file that never mounts these buttons. */
+[data-grok] [data-thread-actions] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+[data-grok] [data-thread-actions] button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--sm-r-pill);
+  border: 0.5px solid var(--sm-border);
+  color: var(--sm-text-tertiary);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+[data-grok] [data-thread-actions] button:hover {
+  color: var(--sm-text-primary);
+  background: var(--sm-bg-hover);
+}
+[data-grok] [data-thread-actions] button[data-stop]:hover {
+  color: var(--sm-tone-danger);
+  background: color-mix(in srgb, var(--sm-tone-danger) 12%, transparent);
+}
+[data-grok] [data-thread-actions] button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 55%, transparent);
+}

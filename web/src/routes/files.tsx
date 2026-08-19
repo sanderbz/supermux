@@ -179,7 +179,11 @@ export function Files() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    // `gk-files` — the Grok-skin hook (desktop-only re-skin in grok-mode.css,
+    // scoped `[data-grok]` + `@media(min-width:768px)`). Inert off grok and on
+    // mobile: the class name alone paints nothing, so the base app and every
+    // phone breakpoint stay byte-identical.
+    <div className="gk-files flex h-full min-h-0 flex-col overflow-hidden">
       {/* Toolbar — breadcrumb + controls. Hidden on mobile while a file is open.
           The shared mobile top bar was removed, so this header owns the
           safe-area top inset on mobile (≤md). ios-pwa: use the shared

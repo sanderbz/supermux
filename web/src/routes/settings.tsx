@@ -950,7 +950,13 @@ export function Settings() {
   }
 
   return (
-    <div ref={scrollRef} className="relative h-full overflow-y-auto">
+    // `gk-settings` — the Grok-skin hook (desktop-only re-materialization in
+    // grok-mode.css, scoped `[data-grok]` + `@media(min-width:768px)`). The
+    // class alone paints nothing, so base app (grok off) and every mobile
+    // breakpoint stay byte-identical; under grok on desktop it repoints the
+    // shared shadcn tokens the Section/Row/Switch/SegmentedControl primitives
+    // read, re-skinning every section at once.
+    <div ref={scrollRef} className="gk-settings relative h-full overflow-y-auto">
       {/* Floating glass nav bar — the only glass surface here; grouped cards
           below use the opaque iOS settings-list material. Fades in on scroll. */}
       {/* The shared mobile top bar was removed, so this sticky glass header

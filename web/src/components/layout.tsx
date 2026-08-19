@@ -59,6 +59,13 @@ interface NavItem {
    *  lets the user jump straight back to the last-focused session from any
    *  route. */
   desktopOnly?: boolean
+  /** Hide this item under the Grok skin (`[data-grok]`). Set on the Focus entry:
+   *  under grok the roster IS the way into a thread (roster row → thread-in-pane),
+   *  so the rail's Focus item — which redirects to the last-active session's
+   *  second /focus shell — is redundant. Base app (grok off) keeps it. Only the
+   *  desktop SideNav honours it; the mobile BottomNav already drops Focus via
+   *  `desktopOnly`, so mobile is untouched either way. */
+  grokHidden?: boolean
 }
 
 const NAV: NavItem[] = [
@@ -68,7 +75,7 @@ const NAV: NavItem[] = [
   // item stays highlighted while you're on any /focus/* sub-route. The
   // Terminal glyph (>_) matches the abstract-geometric rest of the rail and
   // names what focus mode IS — sitting inside a terminal session.
-  { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true },
+  { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true, grokHidden: true },
   { to: '/files', label: 'Files', icon: FolderClosed },
   // Hosts registry AND the scheduler both moved into Settings (rare-use config
   // doesn't need a primary-nav slot). `/hosts` → /settings#hosts and
@@ -110,9 +117,12 @@ function NavBadgeDot({ state }: { state: UpdateBadgeState }) {
   )
 }
 
-/** Desktop: 64px icon rail (≥md). Tooltip reveals each label. */
-function SideNav() {
+/** Desktop: 64px icon rail (≥md). Tooltip reveals each label. Under the Grok
+ *  skin the Focus item is filtered out (`grokHidden`) — the roster owns thread
+ *  entry, so the rail carries only Overview / Files / Settings. */
+function SideNav({ grok }: { grok: boolean }) {
   const { state: updateBadge } = useUpdateBadge()
+  const items = grok ? NAV.filter((item) => !item.grokHidden) : NAV
   return (
     <nav
       aria-label="Primary"
@@ -128,7 +138,7 @@ function SideNav() {
         <Logo className="h-7 w-auto" />
       </div>
       <div className="flex flex-1 flex-col items-center gap-1">
-        {NAV.map((item) => {
+        {items.map((item) => {
           const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
           return (
             <Tooltip key={item.to}>
@@ -421,7 +431,7 @@ export function Layout() {
       >
         Skip to content
       </a>
-      <SideNav />
+      <SideNav grok={grok} />
       {/* `data-shell-main` — the content-column wrapper, the rail's sibling. A
           WS2 (Grok-mode) hook, mirroring the `data-shell-*` convention: under
           `[data-grok]` it is lifted above the substrate pseudo (z:1) and rounds
