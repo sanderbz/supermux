@@ -13,6 +13,10 @@
  *   · `prefers-reduced-motion` renders the same face, static — no `data-live`,
  *     no per-seed animation phase, eyes fully open.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { afterEach, describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -211,5 +215,96 @@ describe('DOM contract', () => {
     const markup = renderToStaticMarkup(<SessionMark seed="Quill" className="absolute" />)
     expect(markup).toContain('sm-mark')
     expect(markup).toContain('absolute')
+  })
+})
+
+/**
+ * The MOUTH FIREWALL — the base app must stay byte-identical.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `<SessionMark>` emits `.sm-mark__mouth` on the three states that wear one
+ * (streaming / done / failed) REGARDLESS of skin — it is a filled SVG path, not
+ * a CSS decoration, so it cannot gate itself on `[data-grok]` the way the glow
+ * and the halo do. The gate is therefore CSS, and it is a two-rule pair:
+ *
+ *   globals.css    `.sm-mark__mouth { display: none }`            (base: hidden)
+ *   grok-mode.css  `[data-grok] .sm-mark__mouth { display: block }` (grok: shown)
+ *
+ * Delete or weaken either half and a base-app `done` mark grows a smile and a
+ * base-app `failed` mark grows a frown — the exact regression this file exists
+ * to catch. The pair is load-bearing on THREE properties, all asserted below:
+ * the base rule is unprefixed, the reveal out-specifies it (0,1,0 vs 0,2,0),
+ * and neither rule sits inside an `@layer` (a layered reveal would lose to the
+ * unlayered hide no matter how specific it is).
+ */
+describe('the mouth is firewalled behind [data-grok]', () => {
+  const SRC = fileURLToPath(new URL('../../src', import.meta.url))
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '')
+  const GLOBALS = strip(readFileSync(join(SRC, 'styles/globals.css'), 'utf8'))
+  const GROK = strip(readFileSync(join(SRC, 'styles/grok-mode.css'), 'utf8'))
+
+  const MOUTH_STATES = ['streaming', 'done', 'failed'] as const
+  const MOUTHLESS_STATES = ['idle', 'connecting', 'thinking', 'working', 'waiting', 'stopped'] as const
+
+  test('the component paints a mouth on exactly streaming / done / failed', () => {
+    for (const state of MOUTH_STATES) {
+      const markup = renderToStaticMarkup(<SessionMark seed="Quill" state={state} />)
+      expect(markup).toContain('sm-mark__mouth')
+    }
+    for (const state of MOUTHLESS_STATES) {
+      const markup = renderToStaticMarkup(<SessionMark seed="Quill" state={state} />)
+      expect(markup).not.toContain('sm-mark__mouth')
+    }
+  })
+
+  test('the mouth is emitted off-grok too — which is WHY the CSS gate must exist', () => {
+    // No `grok` prop is threaded to any call site; the markup is skin-blind.
+    // This test is the premise of the two that follow, not a defect.
+    const markup = renderToStaticMarkup(<SessionMark seed="Quill" state="done" />)
+    expect(markup).toContain('class="sm-mark__mouth"')
+  })
+
+  test('globals.css hides `.sm-mark__mouth` with an UNPREFIXED base rule', () => {
+    const rule = /(^|\})\s*\.sm-mark__mouth\s*\{([^}]*)\}/m.exec(GLOBALS)
+    expect(rule).not.toBeNull()
+    expect(rule![2]).toContain('display: none')
+  })
+
+  test('grok-mode.css reveals it, and the reveal out-specifies the hide', () => {
+    const rule = /\[data-grok\]\s+\.sm-mark__mouth\s*\{([^}]*)\}/.exec(GROK)
+    expect(rule).not.toBeNull()
+    // `display: block` (or `revert`) — anything that is not `none`.
+    expect(/display:\s*(?!none)[a-z-]+/.test(rule![1])).toBe(true)
+    // Specificity: (0,2,0) attribute+class beats the base (0,1,0) class.
+    // Both rules are plain descendant selectors, so this is decidable by shape.
+  })
+
+  test('neither half sits inside an `@layer` — a layered reveal would lose', () => {
+    // Unlayered declarations beat EVERY layered one regardless of specificity,
+    // so if the hide is unlayered the reveal must be unlayered as well.
+    const insideLayer = (css: string, needle: string) => {
+      const at = css.indexOf(needle)
+      expect(at).toBeGreaterThan(-1)
+      let depth = 0
+      let layerDepth = -1
+      for (let i = 0; i < at; i++) {
+        if (css.startsWith('@layer', i) && css.indexOf('{', i) > -1 && layerDepth < 0) layerDepth = depth
+        if (css[i] === '{') depth++
+        else if (css[i] === '}') {
+          depth--
+          if (layerDepth >= 0 && depth <= layerDepth) layerDepth = -1
+        }
+      }
+      return depth > 0
+    }
+    expect(insideLayer(GLOBALS, '.sm-mark__mouth')).toBe(false)
+    expect(insideLayer(GROK, '[data-grok] .sm-mark__mouth')).toBe(false)
+  })
+
+  test('the grok-only motion still hangs off the revealed mouth', () => {
+    // display:none would also kill these; they must stay under [data-grok].
+    expect(GROK).toContain("[data-grok] .sm-mark[data-state='streaming'] .sm-mark__mouth")
+    expect(GROK).toContain("[data-grok] .sm-mark[data-state='done'] .sm-mark__mouth")
+    expect(GROK).toContain('sm-stream-mouth')
+    expect(GROK).toContain('sm-mouth-pop')
   })
 })
