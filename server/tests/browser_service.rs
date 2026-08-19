@@ -16,8 +16,6 @@
 //! Coverage:
 //! 1. [`lifecycle_leaves_no_orphan_process_or_profile_dir`] — THE critical one.
 //! 2. [`two_contexts_are_cookie_and_localstorage_isolated`]
-//! 2b. [`a_recycled_session_name_never_inherits_the_previous_cookie_jar`] — the
-//!     credential-inheritance guarantee across a reused session name.
 //! 3. [`click_and_insert_text_mutate_the_page`]
 //! 4. [`human_takeover_refuses_agent_input_until_released`]
 //! 5. [`dropping_the_service_without_shutdown_still_kills_the_tree`] — the Drop backstop.
@@ -179,7 +177,7 @@ async fn lifecycle_leaves_no_orphan_process_or_profile_dir() {
         "constructing the service must spawn nothing"
     );
 
-    let ctx = svc.context_for("leak-test", "L1").await.expect("context");
+    let ctx = svc.context_for("leak-test").await.expect("context");
     ctx.navigate(Actor::Agent, "data:text/html,<h1 id=h>phase-1</h1>")
         .await
         .expect("navigate");
@@ -269,8 +267,8 @@ async fn two_contexts_are_cookie_and_localstorage_isolated() {
     let (url, server) = serve_page(PAGE).await;
     let svc = test_service();
 
-    let a = svc.context_for("agent-a", "L1").await.expect("context a");
-    let b = svc.context_for("agent-b", "L1").await.expect("context b");
+    let a = svc.context_for("agent-a").await.expect("context a");
+    let b = svc.context_for("agent-b").await.expect("context b");
     assert_ne!(
         a.browser_context_id(),
         b.browser_context_id(),
@@ -306,7 +304,7 @@ async fn two_contexts_are_cookie_and_localstorage_isolated() {
     assert_eq!(b_ls, serde_json::json!("AGENT_B"));
 
     // Idempotent lookup: same session ⇒ same context, not a second one.
-    let a_again = svc.context_for("agent-a", "L1").await.expect("context a again");
+    let a_again = svc.context_for("agent-a").await.expect("context a again");
     assert_eq!(a_again.browser_context_id(), a.browser_context_id());
     assert_eq!(svc.sessions().await, vec!["agent-a", "agent-b"]);
 
@@ -321,112 +319,12 @@ async fn two_contexts_are_cookie_and_localstorage_isolated() {
 
     // The max-contexts guard.
     for name in ["c", "d", "e"] {
-        let _ = svc.context_for(name, "L1").await;
+        let _ = svc.context_for(name).await;
     }
-    let err = svc.context_for("one-too-many", "L1").await.unwrap_err();
+    let err = svc.context_for("one-too-many").await.unwrap_err();
     assert!(
         matches!(err, BrowserError::TooManyContexts { max: 4 }),
         "got {err:?}"
-    );
-
-    svc.shutdown().await;
-    server.abort();
-}
-
-// ── 2b. a recycled session name is a NEW occupant ───────────────────────────
-
-/// **FINDING 1(c): cross-agent credential inheritance.**
-///
-/// supermux session names are recycled — delete `scraper`, create `scraper`
-/// again, and a different bot (possibly a different person's) now answers to the
-/// same name. The registry used to key contexts on the name alone, so the new
-/// bot silently inherited the old one's *logged-in* browser context: its
-/// cookies, its sessions, its saved auth.
-///
-/// The fix keys reuse on **name + launch id** (a digest of the session's
-/// per-launch hook secret). This test proves the two halves of that:
-///
-/// * a NEW launch under the SAME name gets a brand-new context and an EMPTY
-///   cookie jar — even with no teardown in between (the crashed-server case);
-/// * the same launch asking twice still gets the SAME context (the fix must not
-///   break idempotence, or every tool call would open a new page).
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the pinned chrome-headless-shell"]
-async fn a_recycled_session_name_never_inherits_the_previous_cookie_jar() {
-    if !chrome_present() {
-        return;
-    }
-    let (url, server) = serve_page(PAGE).await;
-    let svc = test_service();
-
-    // ── occupant #1 signs in ────────────────────────────────────────────────
-    let first = svc.context_for("scraper", "launch-1").await.expect("first");
-    first.navigate(Actor::Agent, &url).await.expect("nav 1");
-    first
-        .evaluate("document.cookie='sid=THE-HUMANS-SESSION;path=/'; localStorage.setItem('sid','THE-HUMANS-SESSION'); 1")
-        .await
-        .expect("sign in");
-    let jar = first.evaluate("document.cookie").await.expect("jar 1");
-    assert_eq!(
-        jar,
-        serde_json::json!("sid=THE-HUMANS-SESSION"),
-        "occupant #1 really is logged in"
-    );
-    let first_id = first.browser_context_id().to_string();
-
-    // Same launch asking again ⇒ the SAME context (idempotence preserved).
-    let again = svc.context_for("scraper", "launch-1").await.expect("same launch");
-    assert_eq!(again.browser_context_id(), first_id);
-    assert_eq!(svc.context_count().await, 1);
-
-    // ── the name is recycled by occupant #2, with NO teardown in between ────
-    // (a crashed server, a `kill -9`, a teardown path nobody wired: the launch
-    // id has to hold on its own).
-    let second = svc.context_for("scraper", "launch-2").await.expect("second");
-    assert_ne!(
-        second.browser_context_id(),
-        first_id,
-        "a new launch under a recycled name must get a NEW browser context"
-    );
-    assert_eq!(
-        svc.context_count().await,
-        1,
-        "and the stale one is disposed, not leaked into the cap"
-    );
-
-    second.navigate(Actor::Agent, &url).await.expect("nav 2");
-    let jar = second.evaluate("document.cookie").await.expect("jar 2");
-    let ls = second
-        .evaluate("localStorage.getItem('sid')")
-        .await
-        .expect("ls 2");
-    eprintln!("[recycled-name] occupant #2: cookie={jar} ls={ls}");
-    assert_eq!(
-        jar,
-        serde_json::json!(""),
-        "CREDENTIAL INHERITANCE: occupant #2 can see occupant #1's cookies"
-    );
-    assert_eq!(
-        ls,
-        serde_json::Value::Null,
-        "CREDENTIAL INHERITANCE: occupant #2 can see occupant #1's localStorage"
-    );
-
-    // ── and the dispose-on-session-end path gives the same isolation ────────
-    second
-        .evaluate("document.cookie='sid=SECOND;path=/'; 1")
-        .await
-        .expect("sign in 2");
-    svc.close_context("scraper").await.expect("session end");
-    assert_eq!(svc.context_count().await, 0, "session end disposes the context");
-
-    let third = svc.context_for("scraper", "launch-3").await.expect("third");
-    third.navigate(Actor::Agent, &url).await.expect("nav 3");
-    let jar = third.evaluate("document.cookie").await.expect("jar 3");
-    assert_eq!(
-        jar,
-        serde_json::json!(""),
-        "a fresh jar after a session end too"
     );
 
     svc.shutdown().await;
@@ -443,7 +341,7 @@ async fn click_and_insert_text_mutate_the_page() {
     }
     let (url, server) = serve_page(PAGE).await;
     let svc = test_service();
-    let ctx = svc.context_for("typist", "L1").await.expect("context");
+    let ctx = svc.context_for("typist").await.expect("context");
     ctx.navigate(Actor::Agent, &url).await.expect("navigate");
 
     let before = ctx
@@ -536,7 +434,7 @@ async fn human_takeover_refuses_agent_input_until_released() {
     }
     let (url, server) = serve_page(PAGE).await;
     let svc = test_service();
-    let ctx = svc.context_for("shared", "L1").await.expect("context");
+    let ctx = svc.context_for("shared").await.expect("context");
     ctx.navigate(Actor::Agent, &url).await.expect("navigate");
     assert_eq!(svc.mode("shared").await.unwrap(), DriveMode::AgentDriving);
 
@@ -622,7 +520,7 @@ async fn dropping_the_service_without_shutdown_still_kills_the_tree() {
     }
     let (pid, profile) = {
         let svc = test_service();
-        let ctx = svc.context_for("dropped", "L1").await.expect("context");
+        let ctx = svc.context_for("dropped").await.expect("context");
         ctx.navigate(Actor::Agent, "data:text/html,<b>drop me</b>")
             .await
             .expect("navigate");

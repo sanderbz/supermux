@@ -51,7 +51,7 @@ use crate::state::AppState;
 
 use super::context::AgentContext;
 use super::error::BrowserError;
-use super::lock::{Actor, DriveLock, HandOff};
+use super::lock::{Actor, HandOff};
 use super::mcp::BROWSER_ID;
 
 /// Default / ceiling for a `request_human_takeover` park. The hand-back wakes the
@@ -91,11 +91,8 @@ async fn tool_handler(
     LenientJson(body): LenientJson<ToolBody>,
 ) -> Result<Json<Value>, AppError> {
     // 1. Identity: the session's own hook token, constant-time (401 on any miss,
-    //    including an unknown session — no existence oracle). The verified token
-    //    doubles as this session's LAUNCH identity: `lifecycle::start` mints a
-    //    fresh one on every (re)start, so its fingerprint changes the moment a
-    //    recycled name is a different occupant.
-    let launch_secret = crate::hooks::verify_hook_token(&state, &body.session, &headers).await?;
+    //    including an unknown session — no existence oracle).
+    crate::hooks::verify_hook_token(&state, &body.session, &headers).await?;
     if !crate::sessions::valid_name(&body.session) {
         return Err(AppError::BadRequest("invalid session name".into()));
     }
@@ -107,13 +104,10 @@ async fn tool_handler(
         )));
     }
 
-    // Lazily spawns the ONE chrome on first use by any granted session. Keyed
-    // on session + launch: a recycled session name never inherits the previous
-    // occupant's logged-in context (see `BrowserService::context_for`).
-    let launch = super::launch_id(&launch_secret);
+    // Lazily spawns the ONE chrome on first use by any granted session.
     let ctx = state
         .browser
-        .context_for(&body.session, &launch)
+        .context_for(&body.session)
         .await
         .map_err(browser_err)?;
 
@@ -179,22 +173,6 @@ fn clip(s: &str, max: usize) -> (String, bool) {
         return (s.to_string(), false);
     }
     (s.chars().take(max).collect(), true)
-}
-
-/// **Close the read/screenshot TOCTOU.**
-///
-/// `ensure_agent` before a CDP round-trip proves the human was not driving when
-/// the call STARTED. A `Runtime.evaluate` / `Page.captureScreenshot` takes tens
-/// of milliseconds, and a takeover landing inside that window is exactly the
-/// interesting case: the human grabs the wheel to type a password, and an
-/// in-flight agent read returns with a frame of the page they now own. Re-check
-/// after the call and DROP the payload if the wheel moved — the agent gets the
-/// same refusal the gate would have given it, never the bytes.
-///
-/// Cheap enough to be unconditional: the check is a lock-free watch read.
-fn only_if_still_agent<T>(lock: &DriveLock, value: T) -> Result<T, BrowserError> {
-    lock.ensure_agent()?;
-    Ok(value)
 }
 
 /// The result a parked `request_human_takeover` reports once the wheel comes
@@ -306,8 +284,7 @@ async fn read(ctx: &AgentContext, args: &Value) -> Result<Value, BrowserError> {
         "(() => {{ const el = {target}; return {{url: location.href, title: document.title, \
          found: !!el, text: el ? (el.{field} || '') : ''}}; }})()"
     );
-    // The CDP round-trip: the window in which a human takeover can land.
-    let out = only_if_still_agent(ctx.lock(), ctx.evaluate(&expr).await?)?;
+    let out = ctx.evaluate(&expr).await?;
     if !out.get("found").and_then(Value::as_bool).unwrap_or(false) {
         if let Some(sel) = selector {
             return Err(BrowserError::Evaluate(format!(
@@ -330,9 +307,7 @@ async fn screenshot(ctx: &AgentContext, _args: &Value) -> Result<Value, BrowserE
     // Gated for the same reason as `read`: a screenshot mid-takeover is a photo
     // of the human's login form.
     ctx.lock().ensure_agent()?;
-    // Re-checked after the capture: a takeover landing mid-`captureScreenshot`
-    // would otherwise hand the agent a photo of the human's login form.
-    let data = only_if_still_agent(ctx.lock(), ctx.screenshot().await?)?;
+    let data = ctx.screenshot().await?;
     let url = ctx.current_url().await.unwrap_or_default();
     Ok(json!({
         "data": data,
@@ -414,6 +389,7 @@ async fn takeover(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::lock::DriveLock;
     use crate::config::Config;
     use crate::db;
     use axum::body::Body;
@@ -631,35 +607,6 @@ mod tests {
         let v = handback_result(lock.last_handoff(), "u", "r");
         assert_eq!(v["handed_back"], json!(false));
         assert_eq!(v["human_disconnected"], json!(true));
-    }
-
-    // ── FINDING 3: the read/screenshot TOCTOU ───────────────────────────────
-
-    #[test]
-    fn a_takeover_landing_mid_call_drops_the_result() {
-        let lock = DriveLock::new("driver");
-        // The gate passes: the agent is driving when the call starts.
-        assert!(lock.ensure_agent().is_ok());
-
-        // …the CDP round-trip runs, and the human grabs the wheel inside it.
-        let page_text = "password: hunter2".to_string();
-        lock.request_human_takeover();
-
-        // The bytes must never reach the agent: same refusal the gate gives.
-        let err = only_if_still_agent(&lock, page_text)
-            .expect_err("a result captured across a takeover must be dropped");
-        match err {
-            BrowserError::HumanDriving { session } => assert_eq!(session, "driver"),
-            other => panic!("wrong refusal: {other:?}"),
-        }
-        assert!(
-            matches!(browser_err(BrowserError::HumanDriving { session: "driver".into() }), AppError::Conflict(_)),
-            "and it reaches the MCP server as the same 409 the gate returns"
-        );
-
-        // Nothing changed → the value passes straight through.
-        lock.release_to_agent(HandOff::Explicit);
-        assert_eq!(only_if_still_agent(&lock, 42).unwrap(), 42);
     }
 
     // ── real-chrome end-to-end (phase 3's whole claim) ──────────────────────
@@ -936,64 +883,6 @@ mod tests {
         open_page(&state, "oldname", "tok-oldname").await;
         state.rename_session("oldname", "newname");
         assert_disposed(&state, "rename_session").await;
-
-        state.browser.shutdown().await;
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// REAL-CHROME (FINDING 3). The TOCTOU is a *timing* claim, so prove it
-    /// against a real CDP round-trip: make the page's own `querySelector` block
-    /// for ~400 ms, start a `read`, take the wheel 100 ms in, and assert the
-    /// agent is refused rather than handed the page the human now owns.
-    #[tokio::test]
-    #[ignore = "spawns a real chrome-headless-shell; run with --ignored on a box that has the pinned binary"]
-    async fn real_chrome_a_takeover_mid_read_refuses_instead_of_leaking_the_page() {
-        let (state, dir) = test_state().await;
-        seed_session(&state, "racer", "tok-racer", true).await;
-
-        let (st, v) = call(&state, "racer", "tok-racer", "navigate", json!({ "url": tool_page() })).await;
-        assert_eq!(st, StatusCode::OK, "navigate: {v}");
-        let ctx = state.browser.context("racer").await.expect("context");
-
-        // Make the very call `read` issues take ~400 ms INSIDE the page, so the
-        // CDP round-trip is genuinely outstanding while the takeover lands.
-        ctx.evaluate(
-            "(() => { const orig = document.querySelector.bind(document); \
-              document.querySelector = (s) => { const t = Date.now() + 400; \
-              while (Date.now() < t) {} return orig(s); }; return true; })()",
-        )
-        .await
-        .expect("install the in-page blocker");
-
-        let flipper = {
-            let ctx = ctx.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                ctx.lock().request_human_takeover();
-            })
-        };
-
-        let started = tokio::time::Instant::now();
-        let out = super::read(&ctx, &json!({ "selector": "#h" })).await;
-        let elapsed = started.elapsed();
-        flipper.await.unwrap();
-
-        assert!(
-            elapsed >= Duration::from_millis(300),
-            "the read must really have been in flight across the takeover ({elapsed:?})"
-        );
-        match out {
-            Err(BrowserError::HumanDriving { session }) => assert_eq!(session, "racer"),
-            other => panic!(
-                "a read that returned after the takeover must be DROPPED, got {other:?} after {elapsed:?}"
-            ),
-        }
-        // Screenshot takes the same door.
-        let out = super::screenshot(&ctx, &json!({})).await;
-        assert!(
-            matches!(out, Err(BrowserError::HumanDriving { .. })),
-            "and the gate still refuses outright once the human holds the wheel: {out:?}"
-        );
 
         state.browser.shutdown().await;
         std::fs::remove_dir_all(&dir).ok();

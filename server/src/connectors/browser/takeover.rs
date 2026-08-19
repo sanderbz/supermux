@@ -978,7 +978,7 @@ input{position:fixed;left:0;top:0;width:400px;height:60px;font-size:24px}</style
         }
 
         let svc = BrowserService::new(BrowserConfig::default());
-        let ctx = svc.context_for("takeover", "launch-1").await.expect("context");
+        let ctx = svc.context_for("takeover").await.expect("context");
         let pid = svc.chrome_pid().await.expect("a chrome pid");
         let udd = svc.user_data_dir().await.expect("a user-data-dir");
         ctx.navigate(Actor::Agent, &takeover_page())
