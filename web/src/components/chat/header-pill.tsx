@@ -87,8 +87,14 @@ const BAR_MIN_H = 64
  * the width of `0`, which in this face is 11px against an average glyph's 9.1px,
  * so a `14ch` floor reserves ~17 characters' worth and pushes the switch off the
  * card at 390 — measured, not assumed.
+ *
+ * SINGLE-ROW REVISION: with the trailing cluster now INLINE (one row, not a
+ * stacked column), the name is the member that yields so the row stays one line
+ * — a wide reconnecting chip + the renderer toggle beside a hard 112px floor
+ * would have overflowed the card, so the floor drops to a small, still-legible
+ * stub (a couple of characters + ellipsis) and the name truncates the rest.
  */
-const NAME_MIN = 112
+const NAME_MIN = 56
 
 /**
  * The permission mode, as a chip. Extracted so the phone can STACK it over the
@@ -359,35 +365,28 @@ export function SessionHeaderPill({
                 <WarningChip text={session.limit_warning} />
               )}
               {!session?.blocked && <UsageChip session={session} />}
-              {/* THE TRAILING CLUSTER — two tiers on the phone (mobile polish #1).
-                  The old layout stacked the mode chip, the connection chip AND
-                  the renderer switch into one column — three rows high, jammed
-                  against the card's edge, with the presence dot floating alone
-                  back by the name. Now the QUIET STATUS BITS (the presence dot,
-                  the mode chip, the connection chip) sit together on one tidy row
-                  that wraps if it must, and the renderer TOGGLE gets its own clear
-                  place on the row below. On the desktop nothing moves: the chip
-                  keeps its `ml-auto`, then the connection chip, then the toggle —
-                  the same order the bundled node produced. */}
+              {/* THE TRAILING CLUSTER — ONE ROW on the phone (single-row header).
+                  It used to be a flex-COLUMN: the grouped status bits (presence,
+                  mode, connection) on tier 1 and the renderer TOGGLE on tier 2.
+                  Two tiers make the card two rows tall the moment a connection
+                  chip appears (the reconnecting money-shot: a 60px card grew to
+                  ~80px, the name floating in a half-empty top). A phone header is
+                  a single iOS-style bar, so the status bits and the toggle now sit
+                  INLINE on the one row, right-aligned; the name (flex-1) is the
+                  member that yields and truncates when the row is tight. `flex-none`
+                  so the cluster keeps its intrinsic width and the name gives first.
+                  On the desktop nothing moves: the chip keeps its `ml-auto`, then
+                  the connection chip, then the toggle. */}
               {phone ? (
                 (presence || mode || connection || trailing) && (
-                  // `shrink`, not `flex-none`: below ~370px the name has hit its
-                  // floor and something must give — and it is this, by design.
-                  <div className="flex min-w-0 shrink flex-col items-end gap-1">
-                    {(presence || mode || connection) && (
-                      // The grouped status bits — dot + bypass + version — on one
-                      // quiet line, right-aligned, wrapping only in the rare case
-                      // both chips are present on a narrow screen.
-                      <div className="flex flex-wrap items-center justify-end gap-1.5">
-                        {mode && (
-                          <ModeChip className="px-[7px] py-0 text-[11px] leading-[17px]">
-                            {mode}
-                          </ModeChip>
-                        )}
-                        {connection}
-                        {presence}
-                      </div>
+                  <div className="flex flex-none items-center justify-end gap-1.5">
+                    {mode && (
+                      <ModeChip className="px-[7px] py-0 text-[11px] leading-[17px]">
+                        {mode}
+                      </ModeChip>
                     )}
+                    {connection}
+                    {presence}
                     {trailing}
                   </div>
                 )

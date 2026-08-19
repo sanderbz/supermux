@@ -157,6 +157,13 @@
   --sm-shadow-window: 0 14px 40px #00000029, 0 0 0 0.5px #0000000d;
   --sm-shadow-popover: 0 1px 2px #0000000f, 0 14px 36px -10px #00000047;
   --sm-shadow-overlay: 0 20px 52px -16px #00000059;
+  /* The floating phone tab-bar's own lift (light). A layered soft shadow — a
+     tight contact shadow + two progressively softer ambient layers — so the
+     capsule reads as an object hovering above the surface, not a strip welded to
+     the edge. `--sm-shadow-popover` (its previous shadow) was near-invisible on a
+     phone; this is the deliberate exception the design bar asks for. */
+  --sm-nav-shadow: 0 1px 2px #0000000f, 0 8px 20px -6px #00000024,
+    0 20px 44px -14px #0000002e;
 
   /* per-agent hue (spec §2.2) — DEFAULTS only. The focused session's identity
      colour is written as INLINE custom properties on the shell root at runtime
@@ -251,6 +258,11 @@
 
   /* needs-you halo, lifted for the dark ground (overview.md §4). */
   --sm-halo: rgba(255, 128, 150, 0.24);
+
+  /* Floating tab-bar lift, deepened for the dark ground: dark elevation needs
+     more spread and alpha to read at all against a near-black substrate. */
+  --sm-nav-shadow: 0 1px 2px #00000052, 0 10px 24px -6px #00000073,
+    0 24px 52px -14px #00000082;
 }
 
 /* ── Core token block — LIGHT subtree re-assertion (theme parity) ──────────────
@@ -308,6 +320,9 @@
   --sm-glass-title: blur(28px) saturate(165%);
 
   --sm-halo: rgba(197, 56, 79, 0.22);
+
+  --sm-nav-shadow: 0 1px 2px #0000000f, 0 8px 20px -6px #00000024,
+    0 20px 44px -14px #0000002e;
 }
 
 /* ══ WS2 — SHELL & NAV CHROME (foundation for every route) ════════════════════
@@ -606,10 +621,17 @@
        better with the 22px overlay radius than with `--sm-r-pill` (design §6.3). */
     border: 0.5px solid var(--sm-sidebar-separator);
     border-radius: var(--sm-r-overlay);
-    background: var(--sm-sidebar-tint);
+    /* A raised glass FILL, not the flat sidebar tint: the capsule floats over
+       scrolling content, so it needs enough body to read as its own surface
+       (the bare sidebar tint at ~0.28α vanished into the ground). `--sm-raised-fill`
+       is the elevated-surface glass the popovers use; the backdrop-blur behind it
+       still carries the blurred content through. */
+    background: var(--sm-raised-fill);
     -webkit-backdrop-filter: var(--sm-glass-raised);
     backdrop-filter: var(--sm-glass-raised);
-    box-shadow: var(--sm-shadow-popover);
+    /* The deliberate lift (design bar): a layered soft drop shadow so the bar
+       hovers above the surface instead of reading as a welded strip. */
+    box-shadow: var(--sm-nav-shadow);
   }
   /* The top-only hairline (:458) becomes the capsule's full hairline RING above. */
   [data-grok] [data-shell-tabs]::after {

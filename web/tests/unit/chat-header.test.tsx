@@ -325,31 +325,38 @@ describe('the phone header gives its width to the name (QA #6)', () => {
     )
 
   test('the name carries a floor on the phone, and none on the desktop', () => {
-    expect(phone(session({ display_name: 'Release Train' }))).toContain('min-width:112px')
+    // The floor dropped to a small legible stub (56px) when the trailing cluster
+    // went INLINE (single row): a wide reconnecting chip + the renderer toggle
+    // beside a hard 112px floor overflowed the card, so the name yields first and
+    // truncates the rest. The floor still exists — it just guards a stub, not a
+    // full name.
+    expect(phone(session({ display_name: 'Release Train' }))).toContain('min-width:56px')
     expect(pill(session({ display_name: 'Release Train' }))).not.toContain('min-width')
   })
 
-  test('the mode chip stacks over the trailing slot instead of beside it', () => {
-    // `ipc` in bypass mode was the worst case: chip + switch took 187px of a
-    // 342px row. Stacked, the pair costs the WIDER of the two, not their sum.
+  test('the trailing cluster is ONE inline row, not a stacked column', () => {
+    // The header is a single iOS-style bar: the status bits (mode, connection,
+    // presence) and the renderer toggle sit INLINE on the one row, so a
+    // connection chip no longer grows the card to a second tier (the reconnecting
+    // money-shot: a 60px card that had ballooned to ~80px with the name floating
+    // in a half-empty top). `flex-none` keeps the cluster's intrinsic width and
+    // the name gives first.
     const out = phone(session({ display_name: 'ipc', mode: 'bypass' }))
-    expect(out).toContain('flex-col')
+    expect(out).not.toContain('flex-col')
+    expect(out).toContain('flex-none')
     expect(text(out)).toContain('ipc')
     expect(text(out)).toContain('Bypass')
-    // …and the cluster can still give way when even that is not enough.
-    expect(out).toContain('shrink')
   })
 
-  test('the presence dot joins the grouped status cluster on the phone (mobile polish #1)', () => {
+  test('the presence dot joins the inline status cluster on the phone (mobile polish #1)', () => {
     // The dot used to float alone on the name row, mid-header; it now sits in the
     // trailing status cluster with the mode/connection chips, so the "status bits
-    // (bypass, version, dot)" read as one quiet group and the toggle keeps its
-    // own place. A bare idle session (no mode, no trailing) therefore DOES grow a
+    // (bypass, version, dot)" read as one quiet group beside the toggle on the one
+    // row. A bare idle session (no mode, no trailing) therefore DOES grow a
     // cluster — but only for the dot, which is meaningful, not empty.
     const out = renderToStaticMarkup(
       <SessionHeaderPill name={FOCUS} session={session()} surface="phone" />,
     )
-    expect(out).toContain('flex-col')
     expect(out).toContain('bg-status-ready')
   })
 
