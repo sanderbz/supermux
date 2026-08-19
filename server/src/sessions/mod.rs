@@ -26,6 +26,7 @@ pub mod elicitation;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod login;
+pub mod memory;
 pub mod pty;
 pub mod pty_state;
 pub mod recall;
@@ -96,6 +97,20 @@ pub fn router_for(state: AppState) -> Router {
             get(login_state_handler).post(login_action_handler),
         )
         .route("/api/sessions/{name}/recall", get(recall::handler))
+        // ── the bot's ARCHIVAL memory (read-only browse + search) ──
+        // The CORE notes ride on the session row (`config` PATCH above); these
+        // three read the on-disk store the bot writes itself, unioning its
+        // private tier with its role's shared one exactly as the recall hook
+        // does — and searching with that same scorer, so the Memory panel shows
+        // what the bot would actually recall. Registered `/memory/search` and
+        // `/memory/notes` BEFORE `/memory/notes/{slug}` so the literal segments
+        // are never captured as a slug.
+        .route("/api/sessions/{name}/memory/notes", get(memory::list_handler))
+        .route("/api/sessions/{name}/memory/search", get(memory::search_handler))
+        .route(
+            "/api/sessions/{name}/memory/notes/{slug}",
+            get(memory::note_handler),
+        )
         // ── the per-session harness-event feed ──
         // Replayable provenance for everything the harness did TO or FROM this
         // session (delegations, renames, schedule fires). SSE only says "look

@@ -71,6 +71,7 @@ fn create_input(name: &str, dir: &std::path::Path) -> CreateInput {
         // Native + local: no tmux/pty is actually launched by `create`; it only
         // inserts the row and spawns the in-memory detector/steering loops.
         runtime: Some("native".to_string()),
+        model: None,
     }
 }
 

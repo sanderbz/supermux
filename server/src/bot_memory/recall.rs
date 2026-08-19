@@ -34,11 +34,15 @@ pub const TOKEN_BUDGET: usize = 1200;
 const CANDIDATE_LOAD_CAP: usize = 12;
 
 /// A scored, loaded candidate.
-struct Scored {
-    note: Note,
-    score: f64,
+///
+/// Public because the archival browse/search HTTP routes
+/// ([`crate::sessions::memory`]) rank with the SAME scorer the hook uses — what
+/// the owner sees in the Memory panel is what the bot would actually recall.
+pub struct Scored {
+    pub note: Note,
+    pub score: f64,
     /// Bot-private sorts before role-shared on a tie.
-    bot_private: bool,
+    pub bot_private: bool,
 }
 
 /// Run recall for one prompt. `bot` and `role` are the tier dirs (role may be
@@ -49,9 +53,10 @@ pub fn recall(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str, now: DateTi
     render(&selected, now)
 }
 
-/// The selection core, split out for testing: union → score → rank → budget.
-fn select(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str) -> Vec<Scored> {
-    // Union the two indexes, bot-private winning a slug collision.
+/// The two tier indexes unioned, bot-private winning a slug collision
+/// (specific over general). The one place that union rule lives — recall's
+/// selection, the browse list and the search route all go through it.
+fn union_index(bot_dir: &Path, role_dir: Option<&Path>) -> Vec<(bool, IndexEntry)> {
     let mut candidates: Vec<(bool, IndexEntry)> = Vec::new();
     for e in store::read_index(bot_dir) {
         candidates.push((true, e));
@@ -64,6 +69,73 @@ fn select(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str) -> Vec<Scored> 
             candidates.push((false, e));
         }
     }
+    candidates
+}
+
+/// Every note visible to a bot — the union above, loaded and freshness-ordered,
+/// with NO query narrowing and no token budget. The browse list's data source;
+/// `cap` bounds how many files one request reads.
+pub fn visible_notes(bot_dir: &Path, role_dir: Option<&Path>, cap: usize) -> Vec<Scored> {
+    let mut out: Vec<Scored> = Vec::new();
+    for (bot_private, entry) in union_index(bot_dir, role_dir).into_iter().take(cap) {
+        let dir = tier_of(bot_dir, role_dir, bot_private);
+        let Some(note) = store::load_note(dir, &entry.slug) else {
+            continue;
+        };
+        out.push(Scored { note, score: 0.0, bot_private });
+    }
+    out.sort_by(|a, b| {
+        b.note
+            .modified
+            .cmp(&a.note.modified)
+            .then(b.bot_private.cmp(&a.bot_private))
+    });
+    out
+}
+
+/// Which tier dir a candidate came from.
+fn tier_of<'a>(bot_dir: &'a Path, role_dir: Option<&'a Path>, bot_private: bool) -> &'a Path {
+    if bot_private {
+        bot_dir
+    } else {
+        role_dir.unwrap_or(bot_dir)
+    }
+}
+
+/// The selection core, split out for testing: union → score → rank → budget.
+fn select(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str) -> Vec<Scored> {
+    let mut scored = rank(bot_dir, role_dir, prompt, CANDIDATE_LOAD_CAP);
+
+    // Apply top-k + token budget.
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for s in scored.drain(..) {
+        if out.len() >= TOP_K {
+            break;
+        }
+        let cost = est_tokens(&s.note.body);
+        if !out.is_empty() && used + cost > TOKEN_BUDGET {
+            continue; // skip an over-budget note but keep trying smaller ones
+        }
+        used += cost;
+        out.push(s);
+    }
+    out
+}
+
+/// Union → lexical score → type weight → rank, WITHOUT the hook's top-k/token
+/// budget. Shared by the recall hook (which then applies those caps) and the
+/// HTTP search route (which does not), so the owner's search results are ranked
+/// by exactly what the bot itself would recall. `load_cap` bounds the per-call
+/// file reads. An empty query ranks by freshness — the same baseline the
+/// `SessionStart` prime falls back to.
+pub fn rank(
+    bot_dir: &Path,
+    role_dir: Option<&Path>,
+    prompt: &str,
+    load_cap: usize,
+) -> Vec<Scored> {
+    let candidates = union_index(bot_dir, role_dir);
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -86,16 +158,12 @@ fn select(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str) -> Vec<Scored> 
         .collect();
     // Highest lexical base first; keep only enough to load.
     prelim.sort_by(|a, b| b.2.cmp(&a.2));
-    prelim.truncate(CANDIDATE_LOAD_CAP);
+    prelim.truncate(load_cap);
 
     // Load the surviving notes and apply type weighting.
     let mut scored: Vec<Scored> = Vec::new();
     for (bot_private, entry, base) in prelim {
-        let dir = if bot_private {
-            bot_dir
-        } else {
-            role_dir.unwrap_or(bot_dir)
-        };
+        let dir = tier_of(bot_dir, role_dir, bot_private);
         let Some(note) = store::load_note(dir, &entry.slug) else {
             continue;
         };
@@ -125,22 +193,7 @@ fn select(bot_dir: &Path, role_dir: Option<&Path>, prompt: &str) -> Vec<Scored> 
                 .then(b.note.modified.cmp(&a.note.modified))
         });
     }
-
-    // Apply top-k + token budget.
-    let mut out = Vec::new();
-    let mut used = 0usize;
-    for s in scored {
-        if out.len() >= TOP_K {
-            break;
-        }
-        let cost = est_tokens(&s.note.body);
-        if !out.is_empty() && used + cost > TOKEN_BUDGET {
-            continue; // skip an over-budget note but keep trying smaller ones
-        }
-        used += cost;
-        out.push(s);
-    }
-    out
+    scored
 }
 
 /// Render the selected notes into the hook's stdout injection. Empty selection →

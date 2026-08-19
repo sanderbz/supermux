@@ -71,6 +71,7 @@ fn new_session(name: &str, dir: &std::path::Path) -> db::sessions::NewSession {
         worktree_repo: String::new(),
         host_id: None,
         runtime: "native".to_string(),
+        model: String::new(),
     }
 }
 

@@ -123,6 +123,7 @@ async fn make_session(h: &Harness, name: &str, provider: &str, host_id: Option<i
             worktree_repo: String::new(),
             host_id,
             runtime: "native".to_string(),
+            model: String::new(),
         },
     )
     .await

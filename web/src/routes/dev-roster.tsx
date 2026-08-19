@@ -69,6 +69,7 @@ import { TeamRow } from '@/components/roster/grok-roster'
 import { MOCK_TEAMS } from './dev-teams.fixture'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import type { ApiSession } from '@/lib/api'
+import type { NotesResponse } from '@/lib/api/memory'
 
 /* ── the bot panel bench (ASK 3) ─────────────────────────────────────────────
    The per-bot settings page needs a live session row, so the bench SEEDS the
@@ -124,6 +125,72 @@ BENCH_QC.setQueryData<ApiSession[]>(SESSIONS_KEY, [MOCK_BOT])
 // offline bench shows its real "No schedules" empty state instead of crashing on
 // a non-array offline response.
 BENCH_QC.setQueryData(['schedules'], [])
+// The Memory tab's ARCHIVAL list (`learned-notes.tsx`) reads the bot-memory HTTP
+// routes; seed the empty-query (browse) result plus one opened note so the bench
+// reviews the POPULATED panel offline — tier chips, type dots, ages, an expanded
+// Markdown body — instead of only its empty state. Shapes mirror
+// `lib/api/memory.ts` exactly, so a drift in the wire type breaks `tsc`, here.
+BENCH_QC.setQueryData<NotesResponse>(['learned-notes', BOT_PANEL_BENCH_NAME, ''], {
+  bot_count: 2,
+  role_count: 1,
+  role: 'implementer',
+  notes: [
+    {
+      slug: 'build-gate-is-build-perf',
+      description: 'the build gate is bun run build:perf, never a bare vite build',
+      tier: 'bot',
+      note_type: 'decision',
+      modified: new Date(1_799_900_000_000).toISOString(),
+      snippet:
+        'Why: the bare build skips the size budgets, so an entry-chunk regression lands unnoticed. How: run bun run build:perf before claiming done.',
+    },
+    {
+      slug: 'never-edit-server-migrations',
+      description: 'never edit a file under server/migrations — sqlx checksums them',
+      tier: 'bot',
+      note_type: 'bugfix',
+      modified: new Date(1_799_000_000_000).toISOString(),
+      snippet:
+        'Why: a VersionMismatch bricks every deployed install, even for a comment-only edit. How: add a new numbered migration instead.',
+    },
+    {
+      slug: 'the-owner-reviews-every-merge',
+      description: 'the owner reviews every merge — open a PR, never self-merge',
+      tier: 'role',
+      note_type: 'feedback',
+      modified: new Date(1_796_000_000_000).toISOString(),
+      snippet: 'Why: main is protected and the owner reads the diff. How: open the PR and hand off.',
+    },
+  ],
+})
+BENCH_QC.setQueryData(['learned-note', BOT_PANEL_BENCH_NAME, 'bot', 'build-gate-is-build-perf'], {
+  slug: 'build-gate-is-build-perf',
+  description: 'the build gate is bun run build:perf, never a bare vite build',
+  tier: 'bot',
+  note_type: 'decision',
+  modified: new Date(1_799_900_000_000).toISOString(),
+  body:
+    '**Why:** a bare `vite build` skips `scripts/size-budget.mjs`, so an entry-chunk regression lands unnoticed and only shows up as a slow first paint on a phone.\n\n**How to apply:** run `bun run build:perf` from `web/` before claiming done. If a budget is genuinely forced up, ratchet the ceiling AND say so in the PR body.\n\nSee also [[never-edit-server-migrations]].',
+})
+// One SEARCH result too, so the bench shows the ranked state (and its score-
+// ordered list) offline rather than only the browse list and the empty state.
+BENCH_QC.setQueryData<NotesResponse>(['learned-notes', BOT_PANEL_BENCH_NAME, 'migrations'], {
+  bot_count: 1,
+  role_count: 0,
+  role: 'implementer',
+  notes: [
+    {
+      slug: 'never-edit-server-migrations',
+      description: 'never edit a file under server/migrations — sqlx checksums them',
+      tier: 'bot',
+      note_type: 'bugfix',
+      modified: new Date(1_799_000_000_000).toISOString(),
+      snippet:
+        'Why: a VersionMismatch bricks every deployed install, even for a comment-only edit. How: add a new numbered migration instead.',
+      score: 2.5,
+    },
+  ],
+})
 
 /** Backstop so an offline query hiccup in one tab degrades to a message rather
  *  than taking down the shared /dev/roster route. */
