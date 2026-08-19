@@ -140,8 +140,9 @@ export default function ChatPanel({
    */
   actions?: ChatComposerActions
 }) {
-  // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
-  // lives in `use-chat-turn.ts` — this component is wiring only.
+  // The turn state machine (anchor, supersede gate, teardown, the turn's
+  // edge-scheduled thresholds) lives in `use-chat-turn.ts` — this component is
+  // wiring only.
   const { entries, items, turnStart, endTurn, showProvisional, overlay, tail, backlog } =
     useChatTurn(name, session)
   // THE RECONCILED LIVE TURN. Everything that presents "a turn is running" — the
@@ -160,7 +161,11 @@ export default function ChatPanel({
   // full-screen curtain down, because a curtain over the transcript makes that
   // documented promise false in exactly the scenario the reconnect specs test.
   React.useEffect(() => claimChatSurface(), [])
-  // One pass over the ring per render (the ticker re-renders us every second).
+  // One pass over the ring per render — and this panel no longer renders on a
+  // clock (the 1s live-layer ticker is gone, `use-chat-turn.ts`), so the footer's
+  // hook→UI p50 refreshes on real hook samples and the renders they already
+  // cause. The p50 barely moves between samples; the pass no longer runs 60× a
+  // minute over a turn that produced nothing to measure.
   const latency = latencySummary()
 
   // A name in prose becomes a mention chip only when it names a session that
@@ -217,10 +222,12 @@ export default function ChatPanel({
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.
   const labels = React.useMemo(() => entryLabels(entries), [entries])
-  // Relative divider labels recompute on the existing 1s live-layer ticker
-  // (`use-chat-turn`), never on an interval of their own. The clock is bucketed
-  // to 30s so a ticking turn does not re-shape the whole transcript once a
-  // second for labels that change once a minute — and it is the SERVER's clock,
+  // Relative divider labels recompute on `use-chat-turn`'s 30s bucket wake-up,
+  // never on an interval of their own. The clock is bucketed to 30s so a running
+  // turn does not re-shape the whole transcript for labels that change once a
+  // minute — and that bucket is now also the wake-up's period, so the panel
+  // renders when the labels can actually change and not before. It is the
+  // SERVER's clock,
   // like every other time comparison on this surface, because the timestamps it
   // is subtracted from are server-stamped (`latency.ts`).
   const nowBucketMs = Math.floor(serverNowMs() / 30_000) * 30_000

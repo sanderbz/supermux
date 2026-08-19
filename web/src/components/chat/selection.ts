@@ -65,20 +65,29 @@ export function selectionInside(root: Element | null | undefined): boolean {
  * the two SCROLL writers from ending a selection — the mechanism the iOS fix
  * (150df7d) documented. But WebKit (iOS AND desktop Safari — same engine) loses
  * a selection a SECOND way the scroll guard never touched: replacing the DOM
- * node the selection is anchored in. The chat's live band re-renders once a
- * second forever while a turn runs — the working row's elapsed clock ticks
- * `5s → 6s`, the overlay receipts' running line reprints its clock — and each
- * tick swaps the text node at the end of a selection that reaches into that
- * band. Chromium re-clamps the range to the surviving text; WebKit collapses it
+ * node the selection is anchored in. The chat's live band used to re-render once
+ * a second forever while a turn ran — the working row's elapsed clock ticking
+ * `5s → 6s`, the overlay receipts' running line reprinting its clock — and each
+ * tick swapped the text node at the end of a selection that reached into that
+ * band. Chromium re-clamped the range to the surviving text; WebKit collapsed it
  * outright, so the reader's highlight vanished "within a second" and copy-paste
- * was impossible. (Confirmed in the offline Chromium rig as a truncation, which
- * is the same node swap the owner's Safari turns into a full collapse.)
+ * was impossible.
  *
- * So the per-second cosmetic tickers ask this before they re-render: while the
- * reader holds a selection anywhere in a track, the elapsed clock STANDS DOWN —
- * exactly the trade the scroll pin already makes (keep the selection, at the
- * cost of a cosmetic clock frozen for the few seconds a copy takes). It resumes,
- * reading the true elapsed off the server clock, the moment the selection clears.
+ * THAT CAUSE IS GONE. Both clocks are now `LiveElapsed` leaves
+ * (`live-elapsed.tsx`): memoised, rendering one constant string, advancing by
+ * mutating their own Text node in place. No render on this surface reprints a
+ * clock any more, and the panel-wide 1s ticker that used to drive them has been
+ * replaced by edge-scheduled thresholds (`use-chat-turn.ts`).
+ *
+ * WHAT IS LEFT FOR THIS PREDICATE, and its one remaining caller: a `nodeValue`
+ * write is `replaceData(0, length, …)` per the DOM spec, so a Range boundary
+ * that sits INSIDE the digits is still clamped to offset 0 by it (measured
+ * offline as a 741 → 738 char selection, once). So `LiveElapsed` asks this
+ * before each write and STANDS DOWN while a selection is held anywhere in a
+ * track — the same trade the scroll pin makes (keep the selection, at the cost
+ * of a cosmetic clock frozen for the few seconds a copy takes). It resumes,
+ * reading the true elapsed off the server clock, the moment the selection
+ * clears. The cost is now one skipped assignment, not a skipped render.
  *
  * Scoped to `[data-chat-track]` (chat-surface.tsx's own attribute), NOT
  * document-wide: a selection in the composer or the roster is not a reason to

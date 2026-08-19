@@ -1,8 +1,16 @@
 // The turn state machine, lifted verbatim out of `chat-panel.tsx` (fase A3 T1)
 // and re-pointed at the A2 socket. This is BEHAVIOUR, not presentation: the
 // turn anchor and its priority rule, the supersede gate, the bounded teardown
-// and the 1s live-layer ticker. Nothing here decides what anything looks
+// and the turn's time thresholds. Nothing here decides what anything looks
 // like — `chat-panel.tsx` / `chat-surface.tsx` own that.
+//
+// NO TICKER. This hook is called at the TOP of `ChatPanel`, so anything that
+// re-renders it re-renders the whole panel — and it used to do exactly that once
+// a second, forever, for as long as a turn was live. Every clock on this surface
+// is now a `LiveElapsed` leaf that advances by mutating its own text node, so
+// nothing DISPLAYED needs the cadence; what is left are four time thresholds,
+// each of which flips exactly once, and each of which is now woken by its own
+// `setTimeout` at the moment it is crossed (`useWakeAt`).
 //
 // Data plane: `use-chat-ws` (the A2 chat WebSocket). The A1 `/recall?chat=true`
 // poll it replaced also had a zero-debounce refetch on the turn-end edge; a
@@ -22,7 +30,6 @@ import * as React from 'react'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
-import { selectionInChatTrack } from './selection'
 import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
@@ -113,6 +120,27 @@ export interface ChatTurn {
   /** Pages BELOW the socket's window, and the affordance state for them
    *  (daily-driver QA #3). */
   backlog: ChatBacklog
+}
+
+/** How far past a threshold to wake, so a `>` comparison is already true when
+ *  the re-render reads it (rather than costing a second wake 50ms later). */
+const EDGE_SLACK_MS = 50
+
+/**
+ * Re-render ONCE when the server clock reaches `atMs`; `null` disarms.
+ *
+ * The edge-scheduled replacement for a polling tick: the caller passes the
+ * instant its threshold flips and stops passing it once it has flipped, so the
+ * timeout arms exactly once per crossing and cleans itself up. A floor keeps a
+ * deadline that is already in the past (a clock-skew sample landing between
+ * render and effect) from spinning.
+ */
+function useWakeAt(atMs: number | null, wake: () => void): void {
+  React.useEffect(() => {
+    if (atMs == null) return
+    const id = window.setTimeout(wake, Math.max(50, atMs + EDGE_SLACK_MS - serverNowMs()))
+    return () => window.clearTimeout(id)
+  }, [atMs, wake])
 }
 
 export function useChatTurn(name: string, session: TileSession | null): ChatTurn {
@@ -218,31 +246,8 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // stuck-`active` one stays cleared.
   const endTurn = React.useCallback(() => setTurnStart(null), [])
 
-  // 1s live-layer ticker: a prose-only turn produces NO deltas and NO
-  // refetches, so every time-gated piece below (showProvisional, elapsed,
-  // footer stats) must re-render on its own clock or it never appears.
-  //
-  // It STANDS DOWN while the reader holds a selection in a chat track. This tick
-  // re-renders the whole panel — the transcript above is memoised and does not
-  // move, but the live band below it (the working row's elapsed clock, the
-  // overlay receipts' running line) reprints once a second, and swapping a text
-  // node under a held selection collapses it on WebKit (desktop Safari as well
-  // as iOS — `selection.ts::selectionInChatTrack`). The thresholds this clock
-  // advances (showProvisional at 5s, the idle settle at 6s, teardown) are all
-  // re-evaluated on the next real event — an SSE frame, a status flip — and on
-  // the very next tick once the selection clears, so pausing it for the few
-  // seconds a copy takes changes nothing a reader can perceive but the frozen
-  // clock, which is the same trade the follow-bottom pin already makes.
   const liveLayerUp = active || turnStart != null
-  const [, tick] = React.useReducer((n: number) => n + 1, 0)
-  React.useEffect(() => {
-    if (!liveLayerUp) return
-    const id = window.setInterval(() => {
-      if (selectionInChatTrack()) return
-      tick()
-    }, 1000)
-    return () => window.clearInterval(id)
-  }, [liveLayerUp])
+  const [, wake] = React.useReducer((n: number) => n + 1, 0)
 
   const overlay = useReceiptOverlay(session, turnStart, lastConfirmedTs)
 
@@ -253,6 +258,45 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
     liveLayerUp &&
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
+
+  // ── the four edges that used to be a per-second poll ──────────────────────
+  //
+  // Each of these is a one-way flip at a known instant, so it is scheduled for
+  // that instant instead of re-checked 1× per second until it happens. A turn
+  // that runs two minutes cost ~120 whole-panel renders and now costs at most
+  // four (plus one per 30s label bucket). All of them are ALSO re-evaluated on
+  // every real event — an SSE frame, a socket entry, a status flip — exactly as
+  // they were before; the timeout is only what covers a prose-only turn that
+  // produces no events at all.
+  useWakeAt(
+    // The provisional tail appears once the transcript is PROVISIONAL_LAG_MS
+    // behind the live turn.
+    liveLayerUp && turnStart != null && !showProvisional ? lastConfirmedMs + PROVISIONAL_LAG_MS : null,
+    wake,
+  )
+  useWakeAt(
+    // The confirm bridge closes IDLE_SETTLE_MS after the session left `active`.
+    turnStart != null && !active && leftActiveAt != null && !idleSettled
+      ? leftActiveAt + IDLE_SETTLE_MS
+      : null,
+    wake,
+  )
+  useWakeAt(
+    // The absolute stranded-turn ceiling.
+    turnStart != null && !turnStranded ? turnStart + TURN_CONFIRM_TIMEOUT_MS : null,
+    wake,
+  )
+  useWakeAt(
+    // THE 30s LABEL BUCKET. `chat-panel.tsx` derives `nowBucketMs` (relative
+    // divider labels, and the connection chip's staleness ceiling) from the
+    // server clock rounded to 30s — deliberately coarse, so a running turn does
+    // not re-shape the transcript for labels that change once a minute. It was
+    // the 1s ticker that carried it over each boundary; this is the same
+    // boundary, woken directly. One render per 30s while a turn is live, which
+    // is the granularity those readings already had.
+    liveLayerUp ? (Math.floor(serverNowMs() / 30_000) + 1) * 30_000 : null,
+    wake,
+  )
 
   return { entries, items, turnStart, liveLayerUp, endTurn, showProvisional, overlay, tail, backlog }
 }
