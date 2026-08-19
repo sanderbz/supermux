@@ -461,7 +461,29 @@ const BUDGET_ENTRY_JS = 160 * KB
 // identical: ceil(measured) = 277, the rule every fase since B3 has used. The
 // `[data-msg-actions]` grok skin (~0.1 KB) lands in the CSS budget (29.50/30,
 // 98%), not here.
-const BUDGET_APP_JS = 277 * KB
+// 278 at the DESKTOP CHROME PORT (WS13 — grok-skin Files/Settings, retire the
+// redundant `/focus` chrome under chat, drop the rail Focus item): measured
+// 277.11 against 276.89 for feat/grok-mode at fcc2cbd — a +0.22 KB fase, and the
+// same ceil(measured) rule every fase since B3 has used. The bulk of the port is
+// CSS (the Files/Settings token re-skin is a `[data-grok]` repoint that lands in
+// the CSS budget, 29.83/30, not here); the JS is small and all Bot-mode-gated:
+//   +~0.11 KB  `focus-mode/desktop-split.tsx` — Phase B. Three `{!chatActive &&}`
+//              gates that retire the redundant desktop focus chrome (the
+//              `DesktopFocusHeader`, the Auto|Chat|Terminal switch bar, the
+//              `DesktopDock`) once the thread owns the pane, plus the pill's two
+//              trailing Detach/Stop buttons (re-homing the retired header's verbs;
+//              their styling is in grok-mode.css, not class strings here). Every
+//              gate keys on `chatActive`, which implies Bot mode, so the base app
+//              renders the full header + dock exactly as today — byte-identical.
+//   +~0.11 KB  the `[data-grok]` class hooks + rail `grokHidden` filter across
+//              `layout.tsx` / `routes/files.tsx` / `routes/settings.tsx` (a
+//              compression-context nudge more than raw bytes — the hooks are a
+//              handful of characters each; the skin they unlock is the CSS above).
+// The ENTRY (hero-path) gate — the one that actually guards first paint — is
+// UNMOVED and green at 151.25/160 (95%): none of this lands on the cold path (the
+// focus split is lazy; Files/Settings are their own routes). Base app off grok is
+// byte-identical, so this ceiling only ever describes the Bot-mode surface.
+const BUDGET_APP_JS = 278 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

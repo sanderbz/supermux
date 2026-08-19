@@ -16,7 +16,12 @@
 
 import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Eye, EyeOff } from 'lucide-react'
+// Icon set kept lean for the 277 KB main-app budget (0.11 KB headroom): Minimize2
+// / Square / Users are ALREADY bundled by `focus-header.tsx` (same focus-mode
+// chunk), so re-using them for the retired header's verbs adds no icon weight, and
+// the trailing actions are plain buttons (no DropdownMenu import) for the same
+// reason.
+import { Eye, EyeOff, Minimize2, Square } from 'lucide-react'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
@@ -714,35 +719,48 @@ export function DesktopSplit({
           <TeammatePane team={selectedTeam!} member={selectedMember!} />
         ) : (
         <>
-        <DesktopFocusHeader
-          name={name}
-          provider={current?.provider}
-          title={title}
-          status={status}
-          activity={current?.activity}
-          subagents={current?.subagents}
-          error={current?.error}
-          blocked={current?.blocked ?? undefined}
-          rateLimits={current?.rate_limits ?? undefined}
-          onDetach={onDetach}
-          onStop={onStop}
-          // Manual resync — re-pull a clean screen on the live handle. Omitted
-          // for a stopped session (no live WS to resync) so the control hides.
-          onRefresh={
-            status === 'stopped'
-              ? undefined
-              : () => termRef.current?.resync()
-          }
-          onMakeTeam={onMakeTeam}
-          // Open only — Radix closes the popover on outside-click / Escape, so a
-          // toggle here would race its onOpenChange(false) and re-open it.
-          onTitleClick={() => setInfoOpen(true)}
-          titleRef={titleRef}
-          hasLastSend={!!current}
-          lastSendOpen={lastSendOpen}
-          onToggleLastSend={toggleLastSend}
-          lastSendButtonRef={lastSendButtonRef}
-        />
+        {/* THE FOCUS HEADER — retired under chat (Phase B, #3). With the thread in
+            the pane it owns its own floating `SessionHeaderPill` (session name +
+            status) + composer, so this top bar is a redundant SECOND session
+            header. Its unique verbs move to the pill's trailing actions
+            (`ThreadPillActions`, injected below); its keyboard shortcuts
+            (⌘D/⌘W/⌘G/⌘1-9) never lived here — they stay on `useKeyboardCapture`.
+            KEPT for the terminal path (`!chatActive`: ineligible bots, the
+            terminal escape, a stopped session), which genuinely needs a top bar
+            for Detach/Stop/tools and has no pill of its own. `chatActive` implies
+            bot mode, so the base app (bot off) always renders the header exactly
+            as today — byte-identical. */}
+        {!chatActive && (
+          <DesktopFocusHeader
+            name={name}
+            provider={current?.provider}
+            title={title}
+            status={status}
+            activity={current?.activity}
+            subagents={current?.subagents}
+            error={current?.error}
+            blocked={current?.blocked ?? undefined}
+            rateLimits={current?.rate_limits ?? undefined}
+            onDetach={onDetach}
+            onStop={onStop}
+            // Manual resync — re-pull a clean screen on the live handle. Omitted
+            // for a stopped session (no live WS to resync) so the control hides.
+            onRefresh={
+              status === 'stopped'
+                ? undefined
+                : () => termRef.current?.resync()
+            }
+            onMakeTeam={onMakeTeam}
+            // Open only — Radix closes the popover on outside-click / Escape, so a
+            // toggle here would race its onOpenChange(false) and re-open it.
+            onTitleClick={() => setInfoOpen(true)}
+            titleRef={titleRef}
+            hasLastSend={!!current}
+            lastSendOpen={lastSendOpen}
+            onToggleLastSend={toggleLastSend}
+            lastSendButtonRef={lastSendButtonRef}
+          />
+        )}
 
         {/* feat-last-prompt — the auto-show glass strip. Re-keys on `name` so
             switching sessions resets the show-then-fade cycle, matching the
@@ -776,7 +794,13 @@ export function DesktopSplit({
             the terminal). The Dropzone (whose overlay stays pointer-events-none,
             so xterm mouse selection is NOT regressed) reveals a drop affordance
             and hands dropped files to the same upload+inject engine. */}
-        {chatOn && (
+        {/* THE Auto|Chat|Terminal SWITCH BAR — retired under chat (Phase B, #4).
+            While a chat is active the standalone 32px bar is redundant: the
+            escape to the terminal is the ChatPanel's own `onOpenTerminal`
+            affordance (+ the ⌘/T hotkey via `useKeyboardCapture`). KEPT while the
+            terminal shows and chat is merely eligible (`chatOn && !chatActive`),
+            where it is the way INTO the thread. */}
+        {chatOn && !chatActive && (
           <div className="flex h-8 shrink-0 items-center justify-end border-b border-border/60 px-3">
             <RendererSwitch
               value={rendererPref}
@@ -847,6 +871,30 @@ export function DesktopSplit({
                       // "I had to escape to the terminal" is a preference, and
                       // it should still be true after a reload.
                       onOpenTerminal={() => setRenderer('terminal')}
+                      // Phase B — the retired focus header's verbs, re-homed in
+                      // the pill's trailing slot (Detach ⌘D / Stop ⌘W / Make it a
+                      // team). Injected here so hiding `DesktopFocusHeader` under
+                      // chat loses no clickable path (the shortcuts stay live
+                      // regardless). Mirrors the roster's `headerTrailing`
+                      // settings-toggle injection.
+                      // Phase B — the retired focus header's verbs (Detach ⌘D /
+                      // Stop ⌘W), re-homed as plain buttons in the pill's trailing
+                      // slot so hiding `DesktopFocusHeader` under chat loses no
+                      // clickable path (shortcuts stay live regardless). Styling is
+                      // in grok-mode.css (`[data-thread-actions]`) to keep the tight
+                      // main-app chunk lean; it renders only under `chatActive`
+                      // (⟹ bot mode ⟹ `data-grok`), so the scoped rules apply.
+                      // Recall/Make-team are not re-homed — see the report.
+                      headerTrailing={
+                        <div data-thread-actions="">
+                          <button type="button" onClick={onDetach} aria-label="Detach (⌘D)">
+                            <Minimize2 className="size-4" aria-hidden />
+                          </button>
+                          <button type="button" onClick={onStop} data-stop="" aria-label="Stop session (⌘W)">
+                            <Square className="size-4" aria-hidden />
+                          </button>
+                        </div>
+                      }
                     />
                   </React.Suspense>
                 }
@@ -886,10 +934,15 @@ export function DesktopSplit({
           </div>
         )}
 
-        {/* Chat is read-only (A1): every dock control writes into the pty via
-            `termRef`, which is null without a mounted terminal — hide it
-            rather than let taps silently no-op. The chat panel's own footer
-            says "switch to Terminal to type". */}
+        {/* THE DOCK — retired ENTIRELY under chat (Phase B, #7). Its raw-keys row
+            was already `!chatActive`-gated, but the rest (snippets, attach,
+            palette, Detach, Stop) still drew a full 56px bar under the chat
+            composer. Under chat those all have homes: attach + snippets + palette
+            in the composer's `+` add-menu, Detach/Stop in the pill's
+            `ThreadPillActions`. KEPT as-is for the terminal path (`!chatActive`),
+            whose raw keys have no composer equivalent. Base app (bot off) →
+            `chatActive` false → dock renders exactly as today. */}
+        {!chatActive && (
         <DesktopDock
           // Raw keys stay on the terminal ref: the accessory strip's names
           // (`EscEsc`, `Newline`, `Ctrl-G`, …) are `keyToBytes` names with no
@@ -929,6 +982,7 @@ export function DesktopSplit({
           onDetach={onDetach}
           onStop={onStop}
         />
+        )}
         </>
         )}
       </main>
@@ -975,7 +1029,12 @@ export function DesktopSplit({
           shortcut all flip the same state above. Gated on `current` (not on
           `lastSend`) so the anchor refs don't fight an unmounted button while
           still opening for a session whose history predates supermux. */}
-      {current && (
+      {/* `!chatActive`: under chat the anchor button lives in the retired focus
+          header, so its ref is null — and recall is redundant there anyway (the
+          transcript shows every prompt as a permanent bubble, the same reason the
+          recall strip is `!chatActive`-gated). ⌘G still toggles the state under
+          chat, but with nothing mounted it is an inert no-op. */}
+      {current && !chatActive && (
         <LastSendPopover
           open={lastSendOpen}
           onOpenChange={setLastSendOpen}
