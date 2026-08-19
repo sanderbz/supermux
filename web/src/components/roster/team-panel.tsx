@@ -169,7 +169,9 @@ function RemoveMemberButton({
   const qc = useQueryClient()
   const { toast } = useToast()
   const [pending, setPending] = React.useState(false)
-  const verb = member.tmux_pane_id ? 'Kill & remove' : 'Remove'
+  // `End pane & remove` for a live teammate (calmer than `Kill & remove`, same
+  // two-step confirm) — jury R1 MANAGEMENT note; matches `kill-teammate-button`.
+  const verb = member.tmux_pane_id ? 'End pane & remove' : 'Remove'
   const run = React.useCallback(() => {
     setPending(true)
     void teamsApi
@@ -883,7 +885,7 @@ export function TeamPanel({
       <ResponsiveSheet
         open={open ?? false}
         onOpenChange={onOpenChange ?? (() => {})}
-        title="Team"
+        title="Crew"
         description={team.team_name}
         className="max-w-2xl"
       >

@@ -52,6 +52,7 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewSessionAction } from '@/stores/new-session-store'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
+import { TeamCrewChip } from '@/components/team/team-crew-chip'
 import { SessionMark } from '@/brand/marks'
 import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
@@ -1117,17 +1118,14 @@ export default function GrokRoster() {
                   input={threadInput ?? undefined}
                   surface="desktop"
                   onOpenTerminal={openInFocus}
+                  // THE CREW SIGNAL (jury R1 TEAM_THREAD fix). The bare people
+                  // icon read as "one bot"; the crew chip carries the teammates'
+                  // faces with their live status, an `N bots` count and a
+                  // needs/working glance, so the lead's thread and its crew read
+                  // as ONE surface. Same tap target as before — it opens
+                  // TeamPanel (the `pane-team-toggle` VR the roster e2e drives).
                   headerTrailing={
-                    <button
-                      type="button"
-                      onClick={openSettings}
-                      data-vr="pane-team-toggle"
-                      aria-label="Team details"
-                      title="Team details"
-                      className="grid size-8 shrink-0 place-items-center rounded-full border-[0.5px] border-hairline text-ink-3 transition-colors hover:bg-fill-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Users className="size-4" aria-hidden />
-                    </button>
+                    <TeamCrewChip team={selectedTeam} onOpen={openSettings} vr="pane-team-toggle" />
                   }
                 />
               </div>

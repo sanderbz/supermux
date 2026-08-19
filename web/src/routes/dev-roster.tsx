@@ -67,6 +67,7 @@ import {
 import { BotPanel } from '@/components/roster/bot-panel'
 import { TeamRow } from '@/components/roster/grok-roster'
 import { MOCK_TEAMS } from './dev-teams.fixture'
+import { rosteredTeams } from '@/lib/team-attention'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import type { ApiSession } from '@/lib/api'
 import type { NotesResponse } from '@/lib/api/memory'
@@ -256,16 +257,23 @@ function BotPanelBench({ theme }: { theme: BenchTheme }) {
    onOpen is a no-op — this is a design bench, not a router. */
 function TeamRowBench() {
   let i = 0
+  // Count and render from the SAME `rosteredTeams` filter the live header and
+  // sections pass through: a 0-member team (`solo`) is never a row (TeamRow
+  // returns null) and must never be counted, or the bench header reads `3` over
+  // 2 rendered rows — the exact count drift the design jury flagged (R1 POLISH).
+  // The noun is `Crew`, matching `N crews` / `Hire a crew` / the panel's `Crew`
+  // section — one primary word for the object across every surface.
+  const crews = rosteredTeams(MOCK_TEAMS)
   return (
     <div data-grok data-vr="grok-team-rows">
       <div className="grok-roster">
         <div className="gr-list" data-density="comfortable">
           <div className="gr-grp">
-            <span className="lbl">Teams</span>
-            <span className="ct">{MOCK_TEAMS.length}</span>
+            <span className="lbl">Crew</span>
+            <span className="ct">{crews.length}</span>
             <span className="ln" />
           </div>
-          {MOCK_TEAMS.map((t) => (
+          {crews.map((t) => (
             <TeamRow key={t.team_name} team={t} onOpen={() => {}} index={i++} />
           ))}
         </div>

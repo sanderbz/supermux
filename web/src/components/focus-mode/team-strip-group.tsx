@@ -231,7 +231,7 @@ function TeammateStripRow({
             </span>
           )
         )}
-        {/* Remove trash (state-aware: "Kill & remove" for a live teammate,
+        {/* Remove trash (state-aware: "End pane & remove" for a live teammate,
             "Remove" for an offline one). Swallows the click so it never selects
             the teammate row. */}
         <KillTeammateButton team={team} member={member} />

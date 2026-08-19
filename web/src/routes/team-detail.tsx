@@ -19,7 +19,6 @@
  */
 import * as React from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Users } from 'lucide-react'
 
 import { useUI } from '@/stores/ui-store'
 import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
@@ -29,6 +28,7 @@ import { useSessions } from '@/hooks/use-sessions'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import { restSessionInput } from '@/lib/session-input'
 import { BackIcon } from '@/components/chat/ui'
+import { TeamCrewChip } from '@/components/team/team-crew-chip'
 import type { TileSession } from '@/components/session-tile/types'
 import type { ApiSession } from '@/lib/api'
 
@@ -145,16 +145,11 @@ export function TeamDetail() {
                 <BackIcon />
               </button>
             }
+            // THE CREW SIGNAL (jury R1 TEAM_THREAD fix) — the crew's faces +
+            // live status + `N bots`, one tap to the crew sheet, so the phone
+            // lead thread reads as a crew and not a lone bot.
             headerTrailing={
-              <button
-                type="button"
-                onClick={() => setSheetOpen(true)}
-                aria-label="Team details"
-                title="Team details"
-                className={HDR_BTN}
-              >
-                <Users className="size-4" aria-hidden />
-              </button>
+              <TeamCrewChip team={team} onOpen={() => setSheetOpen(true)} />
             }
           />
         </React.Suspense>

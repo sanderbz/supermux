@@ -5,7 +5,7 @@
 // State-aware:
 //   • LIVE teammate (has a tmux pane this tick) → the server kills the pane THEN
 //     records the dismissal, so the chip disappears at once instead of lingering
-//     as a dead/offline chip. Confirm label + tooltip: "Kill & remove".
+//     as a dead/offline chip. Confirm label + tooltip: "End pane & remove".
 //   • DEAD/offline teammate (no pane) → the server just records the dismissal.
 //     Confirm label + tooltip: "Remove".
 //
@@ -52,7 +52,12 @@ export function KillTeammateButton({
   // "Live" = has a validated pane this tick. Drives the verb: killing the pane
   // is only relevant when there IS one; an offline teammate is just removed.
   const isLive = Boolean(member.tmux_pane_id)
-  const verb = isLive ? 'Kill & remove' : 'Remove'
+  // The live verb is `End pane & remove`, not `Kill & remove`: the two-step
+  // confirm already carries the weight, and the surrounding management copy is
+  // deliberately calm ("Claude's own roster on disk is untouched"). A softer,
+  // literal verb matches that voice without hiding what happens (jury R1
+  // MANAGEMENT note). An offline teammate has no pane to end — just `Remove`.
+  const verb = isLive ? 'End pane & remove' : 'Remove'
   const qc = useQueryClient()
   const { toast } = useToast()
   const reduce = useReducedMotion()

@@ -109,7 +109,7 @@ export function TeammateCard({
             </span>
           )
         )}
-        {/* Remove trash (state-aware: "Kill & remove" for a live teammate,
+        {/* Remove trash (state-aware: "End pane & remove" for a live teammate,
             "Remove" for an offline one). */}
         <KillTeammateButton team={team} member={member} className="-mt-0.5" />
       </div>
