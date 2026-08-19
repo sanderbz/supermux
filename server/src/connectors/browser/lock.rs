@@ -30,6 +30,7 @@
 //!
 //! Both of those hang off this type; the state machine itself is complete here.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,57 @@ impl std::fmt::Display for DriveMode {
     }
 }
 
+/// **How** the wheel came back to the agent.
+///
+/// The mode alone cannot answer the only question a parked agent actually cares
+/// about — *did the human finish?* Releasing the lock is unconditional (a human
+/// who is gone must never wedge the context), so the same `AgentDriving` state
+/// is reached by a deliberate hand-back and by a phone that lost signal
+/// mid-login. Reporting both as "the human finished" is a lie the agent then
+/// acts on, on a half-filled form. This enum is that missing bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandOff {
+    /// The human pressed **Hand back** — an explicit control frame. The only
+    /// value that may be reported to the agent as a completed hand-off.
+    Explicit,
+    /// The takeover socket went away WITHOUT a hand-back frame: a clean close, a
+    /// tab close, a ping timeout, a network flap, a send error. The human is
+    /// gone; whether they finished is unknown and must be reported as unknown.
+    Disconnected,
+    /// Nobody ever took the wheel (or nobody was attached when the agent's park
+    /// budget expired) and the service handed it back rather than leaving the
+    /// context wedged under a human who never arrived.
+    Abandoned,
+}
+
+impl HandOff {
+    /// Was this a deliberate "I'm done, carry on" from the human?
+    pub fn is_explicit(self) -> bool {
+        matches!(self, HandOff::Explicit)
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            HandOff::Explicit => 1,
+            HandOff::Disconnected => 2,
+            HandOff::Abandoned => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(HandOff::Explicit),
+            2 => Some(HandOff::Disconnected),
+            3 => Some(HandOff::Abandoned),
+            _ => None,
+        }
+    }
+}
+
+/// `handoff` while a takeover is live / has never happened.
+const HANDOFF_PENDING: u8 = 0;
+
 /// Who is attempting an action. Distinguishing these is the whole point: the
 /// same [`super::context::AgentContext`] method serves the agent's tool call
 /// and the human's takeover click, and only one of them is gated.
@@ -80,6 +132,11 @@ pub enum Actor {
 pub struct DriveLock {
     session: String,
     tx: watch::Sender<DriveMode>,
+    /// How the LAST takeover ended ([`HandOff`], or `HANDOFF_PENDING` while one
+    /// is live / before the first). Separate from the watch value on purpose:
+    /// the mode is the interlock every hot path reads, the provenance is only
+    /// read by whoever is reporting the hand-off to the agent.
+    handoff: AtomicU8,
 }
 
 impl DriveLock {
@@ -89,6 +146,7 @@ impl DriveLock {
         Self {
             session: session.into(),
             tx,
+            handoff: AtomicU8::new(HANDOFF_PENDING),
         }
     }
 
@@ -111,18 +169,36 @@ impl DriveLock {
     /// caller can tell a real takeover from a redundant click. Idempotent.
     pub fn request_human_takeover(&self) -> DriveMode {
         let previous = self.mode();
+        // A new takeover invalidates the previous one's provenance: without this
+        // reset a stale `Explicit` from the last round would be read as "this
+        // human finished" by whoever parks on THIS one.
+        self.handoff.store(HANDOFF_PENDING, Ordering::Release);
         // `send_replace` fires watchers even when the value is unchanged only
         // if it differs; either way the stored value ends up HumanDriving.
         self.tx.send_replace(DriveMode::HumanDriving);
         previous
     }
 
-    /// **The human hands the wheel back.** Returns the mode it replaced.
-    /// Idempotent.
-    pub fn release_to_agent(&self) -> DriveMode {
+    /// **The wheel goes back to the agent**, recording *how* — see [`HandOff`].
+    /// Returns the mode it replaced. Idempotent.
+    ///
+    /// The provenance is recorded only when this call is the one that actually
+    /// took the wheel back (previous mode `HumanDriving`). That is what makes
+    /// the takeover socket's unconditional teardown release safe to call after
+    /// an explicit hand-back frame already landed: the redundant
+    /// `Disconnected` release cannot overwrite the truthful `Explicit`.
+    pub fn release_to_agent(&self, handoff: HandOff) -> DriveMode {
         let previous = self.mode();
+        if previous == DriveMode::HumanDriving {
+            self.handoff.store(handoff.as_u8(), Ordering::Release);
+        }
         self.tx.send_replace(DriveMode::AgentDriving);
         previous
+    }
+
+    /// How the last takeover ended, or `None` if one is live / never happened.
+    pub fn last_handoff(&self) -> Option<HandOff> {
+        HandOff::from_u8(self.handoff.load(Ordering::Acquire))
     }
 
     /// The gate every agent-initiated action must pass.
@@ -200,7 +276,7 @@ mod tests {
             other => panic!("wrong error: {other:?}"),
         }
 
-        let prev = lock.release_to_agent();
+        let prev = lock.release_to_agent(HandOff::Explicit);
         assert_eq!(prev, DriveMode::HumanDriving);
         assert!(lock.ensure_agent().is_ok());
     }
@@ -219,8 +295,11 @@ mod tests {
         lock.request_human_takeover();
         assert_eq!(lock.request_human_takeover(), DriveMode::HumanDriving);
         assert_eq!(lock.mode(), DriveMode::HumanDriving);
-        lock.release_to_agent();
-        assert_eq!(lock.release_to_agent(), DriveMode::AgentDriving);
+        lock.release_to_agent(HandOff::Explicit);
+        assert_eq!(
+            lock.release_to_agent(HandOff::Explicit),
+            DriveMode::AgentDriving
+        );
         assert_eq!(lock.mode(), DriveMode::AgentDriving);
     }
 
@@ -240,7 +319,7 @@ mod tests {
             let lock = lock.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(30)).await;
-                lock.release_to_agent();
+                lock.release_to_agent(HandOff::Explicit);
             })
         };
         lock.await_agent(Duration::from_secs(2))
@@ -262,6 +341,58 @@ mod tests {
             matches!(err, BrowserError::TakeoverWait { .. }),
             "got {err:?}"
         );
+    }
+
+    // ── hand-off provenance (FINDING 2) ─────────────────────────────────────
+
+    #[test]
+    fn an_explicit_hand_back_and_a_dropped_socket_are_distinguishable() {
+        let lock = DriveLock::new("alice");
+        assert_eq!(lock.last_handoff(), None, "no takeover has happened yet");
+
+        lock.request_human_takeover();
+        assert_eq!(lock.last_handoff(), None, "pending while the human drives");
+        lock.release_to_agent(HandOff::Explicit);
+        assert_eq!(lock.last_handoff(), Some(HandOff::Explicit));
+        assert!(lock.last_handoff().unwrap().is_explicit());
+
+        // The next takeover ends by the phone losing signal.
+        lock.request_human_takeover();
+        assert_eq!(
+            lock.last_handoff(),
+            None,
+            "a new takeover must not inherit the previous hand-off"
+        );
+        lock.release_to_agent(HandOff::Disconnected);
+        assert_eq!(lock.last_handoff(), Some(HandOff::Disconnected));
+        assert!(!lock.last_handoff().unwrap().is_explicit());
+    }
+
+    /// The takeover socket releases UNCONDITIONALLY on teardown, and that
+    /// teardown happens after an explicit `hand_back` frame too (the socket
+    /// stays open, watching, until the tab closes). That second, redundant
+    /// release must not rewrite the truthful `Explicit` into `Disconnected`.
+    #[test]
+    fn a_redundant_release_cannot_overwrite_the_truth() {
+        let lock = DriveLock::new("alice");
+        lock.request_human_takeover();
+        lock.release_to_agent(HandOff::Explicit);
+        // …later the socket drops; teardown releases again.
+        lock.release_to_agent(HandOff::Disconnected);
+        assert_eq!(
+            lock.last_handoff(),
+            Some(HandOff::Explicit),
+            "the release that did NOT take the wheel back must not relabel it"
+        );
+    }
+
+    #[test]
+    fn nobody_came_is_its_own_reason() {
+        let lock = DriveLock::new("alice");
+        lock.request_human_takeover();
+        lock.release_to_agent(HandOff::Abandoned);
+        assert_eq!(lock.last_handoff(), Some(HandOff::Abandoned));
+        assert!(!lock.last_handoff().unwrap().is_explicit());
     }
 
     #[test]

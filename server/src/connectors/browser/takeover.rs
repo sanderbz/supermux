@@ -23,6 +23,12 @@
 //! connection cannot wedge a context in `HumanDriving`… except by staying
 //! attached, which is exactly what it means.
 //!
+//! Releasing on ANY socket exit is correct — a human who is gone must not hold
+//! the wheel — but "the socket closed" is not "the human finished". The release
+//! therefore carries a [`HandOff`](super::lock::HandOff): only the explicit
+//! `hand_back` frame is `Explicit`; every transport exit is `Disconnected`, and
+//! a parked agent is told so instead of being told the login succeeded.
+//!
 //! # Frames and backpressure
 //!
 //! Chromium keeps at most **2 screencast frames in flight** and only produces
@@ -73,7 +79,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use super::context::{AckPolicy, AgentContext, ScreencastOptions};
-use super::lock::{Actor, DriveMode};
+use super::lock::{Actor, DriveMode, HandOff};
 use crate::state::AppState;
 use crate::ws::{
     close, origin_allowed, verify_auth_frame, AUTH_TIMEOUT, PING_EVERY, PONG_DEADLINE,
@@ -555,7 +561,15 @@ async fn takeover_socket(
     if let Err(e) = ctx.stop_screencast(Actor::Human).await {
         debug!(session = %session, error = %e, "browser takeover: stopScreencast");
     }
-    ctx.lock().release_to_agent();
+    // **Truthfully.** EVERY way out of `drive` is the socket going away — a tab
+    // close, a dead mobile link, a ping timeout, an error — and none of them is
+    // the human saying "I'm done". The one explicit hand-back is the
+    // `ClientMsg::HandBack` frame, which already released the wheel (as
+    // `Explicit`) inside the loop; this redundant release cannot overwrite that
+    // label, because `release_to_agent` only records the release that actually
+    // took the wheel back. So a parked agent is told the truth in both cases —
+    // see `tools::handback_result`.
+    ctx.lock().release_to_agent(HandOff::Disconnected);
     info!(session = %session, ?outcome, "browser takeover: detached, released to AGENT");
 }
 
@@ -660,7 +674,10 @@ async fn drive(socket: &mut WebSocket, session: &str, ctx: &AgentContext) -> Out
                         };
                         match msg {
                             ClientMsg::HandBack => {
-                                ctx.lock().release_to_agent();
+                                // THE explicit hand-off: the human pressed the
+                                // button. The only exit that may be reported to
+                                // a parked agent as "the human finished".
+                                ctx.lock().release_to_agent(HandOff::Explicit);
                                 continue;
                             }
                             ClientMsg::TakeOver => {
@@ -961,7 +978,7 @@ input{position:fixed;left:0;top:0;width:400px;height:60px;font-size:24px}</style
         }
 
         let svc = BrowserService::new(BrowserConfig::default());
-        let ctx = svc.context_for("takeover").await.expect("context");
+        let ctx = svc.context_for("takeover", "launch-1").await.expect("context");
         let pid = svc.chrome_pid().await.expect("a chrome pid");
         let udd = svc.user_data_dir().await.expect("a user-data-dir");
         ctx.navigate(Actor::Agent, &takeover_page())
@@ -1051,7 +1068,10 @@ input{position:fixed;left:0;top:0;width:400px;height:60px;font-size:24px}</style
         assert_eq!(still, json!("hallo human"), "the agent's input LANDED anyway");
 
         // ── 4. hand back: the relay gate closes, the agent is served again ──
-        assert_eq!(ctx.lock().release_to_agent(), DriveMode::HumanDriving);
+        assert_eq!(
+            ctx.lock().release_to_agent(HandOff::Explicit),
+            DriveMode::HumanDriving
+        );
         assert!(
             !human_may_drive(ctx.mode()),
             "after hand_back the socket must stop forwarding"

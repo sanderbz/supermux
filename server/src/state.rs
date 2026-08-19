@@ -1312,6 +1312,14 @@ impl AppState {
             }
         }
         self.pty.forget(name);
+        // The shared-browser context is per-session state too — and the most
+        // dangerous kind to leave behind, because it holds whatever the agent
+        // logged into. A deleted/archived name can be created again minutes
+        // later; the next occupant must never find this one's cookie jar. (The
+        // launch-id keying in `BrowserService::context_for` is the second lock
+        // on that same door.) Fire-and-forget: a session that never browsed is
+        // a silent no-op.
+        crate::connectors::browser::dispose_on_teardown(&self.browser, name);
     }
 
     /// Evict a teammate PANE stream keyed by its stream key
@@ -1387,6 +1395,13 @@ impl AppState {
         self.session_runtimes.remove(old);
         self.session_runtimes.remove(new);
         crate::sessions::native::forget(old);
+        // The browser registry is keyed by session NAME, so a rename would
+        // strand the live context under the old key: invisible to the renamed
+        // session (which would open a second one), never reaped (the map never
+        // empties), and — worst — waiting under a name someone else can create.
+        // Disposing it is the honest move: the agent loses a page it can
+        // trivially reopen, and no authenticated context outlives its name.
+        crate::connectors::browser::dispose_on_teardown(&self.browser, old);
         // Carry the debounce handle across the rename: a rename mid-debounce
         // would otherwise leak the handle under `old` and never fire (the
         // task's own re-read uses the captured task_name, which is the old

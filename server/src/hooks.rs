@@ -60,11 +60,17 @@ pub fn router_for(state: AppState) -> Router {
 /// point: session A's token authenticates ONLY session A, because B's row holds
 /// a different secret (regression: `hook_auth_scope`). A missing session row is
 /// a 401, not a 404 — no existence oracle.
+///
+/// Returns the VERIFIED token on success. It is the session's per-launch secret
+/// (minted fresh by `lifecycle::start` on every (re)start), which the browser
+/// connector fingerprints into a launch id so a recycled session name cannot
+/// inherit the previous occupant's browser context — see
+/// [`crate::connectors::browser::launch_id`].
 pub(crate) async fn verify_hook_token(
     state: &AppState,
     session: &str,
     headers: &HeaderMap,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let expected = db::sessions::runtime(&state.pool, session)
         .await?
         .map(|rt| rt.hook_token)
@@ -80,7 +86,7 @@ pub(crate) async fn verify_hook_token(
     {
         return Err(AppError::Unauthorized);
     }
-    Ok(())
+    Ok(expected)
 }
 
 #[derive(Debug, Deserialize)]
@@ -517,6 +523,12 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
             state.reset_turn_state(session);
+            // The agent is gone, so its shared-browser context must go with it:
+            // otherwise the page (and its authenticated cookie jar) outlives the
+            // agent, the max-contexts cap becomes a lifetime budget, and the idle
+            // reaper — which only fires on an EMPTY context map — never fires
+            // again. Fire-and-forget; a session that never browsed is a no-op.
+            crate::connectors::browser::dispose_on_teardown(&state.browser, session);
             force_stopped(state, session);
             act_changed || sub_changed || perm_changed
         }

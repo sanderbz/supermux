@@ -1620,6 +1620,17 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     let _guard = lock.lock().await;
 
     let s = require_session(state, name).await?;
+
+    // Drop the session's shared-browser context (connectors::browser) — BEFORE
+    // the early-out below, because an already-dead runtime still leaves the
+    // context registered. The agent that owned the page is going away; leaving
+    // it keeps a logged-in cookie jar alive, holds a slot against
+    // `max_contexts` forever, and — since the idle reaper only fires on an
+    // EMPTY context map — keeps chrome running for the life of the process.
+    // Fire-and-forget so a wedged browser cannot slow a Stop down; silent for
+    // the overwhelmingly common session that never opened a browser at all.
+    crate::connectors::browser::dispose_on_teardown(&state.browser, name);
+
     // Runtime seam — the graceful-exit nudge, the liveness/dead poll, the PID
     // hard-kill and the definitive teardown are all backend-agnostic.
     let rt = state.runtime_for(name).await?;

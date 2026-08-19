@@ -76,7 +76,7 @@ use cdp::CdpClient;
 use context::AgentContext;
 use error::{BrowserError, Result};
 use launch::ChromeProcess;
-use lock::DriveMode;
+use lock::{DriveMode, HandOff};
 
 pub use error::BrowserError as Error;
 
@@ -97,6 +97,10 @@ const CONTEXT_DRAIN_BUDGET: Duration = Duration::from_secs(3);
 
 /// Budget for the graceful CDP `Browser.close`. Spike measured 81–101 ms.
 const BROWSER_CLOSE_BUDGET: Duration = Duration::from_secs(2);
+
+/// Budget for the one context disposal a session-teardown path fires. A wedged
+/// browser must never be able to hold up a session Stop/delete.
+const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
 
 /// Env override: max simultaneous per-agent contexts.
 pub const ENV_MAX_CONTEXTS: &str = "SUPERMUX_BROWSER_MAX_CONTEXTS";
@@ -152,13 +156,57 @@ impl BrowserConfig {
     }
 }
 
+/// One live per-agent context plus the **launch** it belongs to.
+///
+/// The launch id is what stops a *recycled session name* from inheriting the
+/// previous occupant's logged-in cookie jar — see [`BrowserService::context_for`].
+struct ContextEntry {
+    launch: String,
+    ctx: Arc<AgentContext>,
+}
+
 /// Everything that exists only while chrome is running.
 struct Running {
     chrome: ChromeProcess,
     client: Arc<CdpClient>,
-    contexts: HashMap<String, Arc<AgentContext>>,
+    contexts: HashMap<String, ContextEntry>,
     /// When the context map last became empty (`None` while non-empty).
     idle_since: Option<Instant>,
+}
+
+/// What [`BrowserService::context_for`] should do with whatever is already
+/// registered under a session name. Split out so the decision — the part that
+/// carries the credential-inheritance guarantee — is unit-testable without a
+/// browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reuse {
+    /// Same session, same launch → hand back the SAME context (idempotent).
+    Same,
+    /// Same NAME, different launch: a recycled name, or a restarted session.
+    /// The old context (and its cookie jar) is disposed and a fresh one created.
+    Stale,
+    /// Nothing registered → create.
+    Absent,
+}
+
+fn reuse_decision(existing: Option<&str>, launch: &str) -> Reuse {
+    match existing {
+        None => Reuse::Absent,
+        Some(had) if had == launch => Reuse::Same,
+        Some(_) => Reuse::Stale,
+    }
+}
+
+/// Fingerprint a per-launch secret into the non-secret id the registry keys on.
+///
+/// The caller passes the session's **hook token** — a fresh random secret minted
+/// by `lifecycle::start` on every (re)start, i.e. exactly a per-launch nonce, and
+/// the very secret that authenticated the tool call. We store a one-way digest
+/// rather than the token itself so a `Debug`/log of the browser registry can
+/// never leak a live credential.
+pub fn launch_id(secret: &str) -> String {
+    let digest = openssl::sha::sha256(secret.as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The server-held browser service. One per process, in
@@ -232,9 +280,33 @@ impl BrowserService {
     // ── the registry ────────────────────────────────────────────────────────
 
     /// Get (or create) `session`'s isolated browser context, starting chrome on
-    /// first use. **Idempotent**: a second call for the same session returns
-    /// the same `Arc`, it does not create a second context.
-    pub async fn context_for(self: &Arc<Self>, session: &str) -> Result<Arc<AgentContext>> {
+    /// first use.
+    ///
+    /// **Idempotent within one launch**: a second call for the same session AND
+    /// the same `launch` returns the same `Arc`, it does not create a second
+    /// context.
+    ///
+    /// # Why the launch id (credential inheritance)
+    ///
+    /// supermux session names are recycled — delete `scraper`, create `scraper`
+    /// again, and the name is identical while the *occupant* is a completely
+    /// different bot run by (potentially) a different person. Keying only on the
+    /// name means the new bot silently inherits the previous one's browser
+    /// context: its cookies, its logged-in sessions, its saved auth. So the
+    /// registry keys on **name + launch**, where the launch id is
+    /// [`launch_id`]'s digest of the session's per-launch hook secret. A
+    /// mismatch is a different occupant of the same name: the stale context is
+    /// disposed browser-side and a **fresh cookie jar** is created.
+    ///
+    /// This is belt-and-braces with the teardown wiring
+    /// ([`dispose_on_teardown`]): teardown gets rid of the context when the
+    /// session ends, and this makes a missed teardown (a crashed server, a kill
+    /// -9, a path nobody wired) non-exploitable rather than merely unlikely.
+    pub async fn context_for(
+        self: &Arc<Self>,
+        session: &str,
+        launch: &str,
+    ) -> Result<Arc<AgentContext>> {
         let mut guard = self.running.lock().await;
 
         // Relaunch if a previous chrome died under us.
@@ -252,9 +324,29 @@ impl BrowserService {
         }
         let running = guard.as_mut().expect("just started");
 
-        if let Some(existing) = running.contexts.get(session) {
-            return Ok(existing.clone());
+        let decision = reuse_decision(
+            running.contexts.get(session).map(|e| e.launch.as_str()),
+            launch,
+        );
+        let stale = match decision {
+            Reuse::Same => {
+                return Ok(running.contexts[session].ctx.clone());
+            }
+            // Evict FIRST, so the disposal happens before the replacement is
+            // created and the cap below counts only live contexts.
+            Reuse::Stale => running.contexts.remove(session).map(|e| e.ctx),
+            Reuse::Absent => None,
+        };
+        if let Some(old) = stale {
+            warn!(
+                session,
+                browser_context = %old.browser_context_id(),
+                "browser: session name reused by a new launch — disposing the previous context"
+            );
+            // Bounded: a wedged browser must not block the new launch forever.
+            let _ = tokio::time::timeout(TEARDOWN_BUDGET, old.close()).await;
         }
+
         if running.contexts.len() >= self.cfg.max_contexts {
             return Err(BrowserError::TooManyContexts {
                 max: self.cfg.max_contexts,
@@ -272,10 +364,17 @@ impl BrowserService {
         );
         info!(
             session,
+            launch,
             browser_context = %ctx.browser_context_id(),
             "browser: context created"
         );
-        running.contexts.insert(session.to_string(), ctx.clone());
+        running.contexts.insert(
+            session.to_string(),
+            ContextEntry {
+                launch: launch.to_string(),
+                ctx: ctx.clone(),
+            },
+        );
         running.idle_since = None;
         Ok(ctx)
     }
@@ -287,7 +386,32 @@ impl BrowserService {
             .lock()
             .await
             .as_ref()
-            .and_then(|r| r.contexts.get(session).cloned())
+            .and_then(|r| r.contexts.get(session).map(|e| e.ctx.clone()))
+    }
+
+    /// How many contexts are live right now. This is the number
+    /// [`BrowserConfig::max_contexts`] caps, so a teardown path that forgets to
+    /// call [`close_context`](Self::close_context) shows up here as a count that
+    /// only ever grows.
+    pub async fn context_count(&self) -> usize {
+        self.running
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.contexts.len())
+            .unwrap_or(0)
+    }
+
+    /// Is the idle reaper's clock armed (zero contexts, waiting to time out)?
+    /// The reaper can only fire while this is true, so it is the observable
+    /// behind "the reaper is not defeated".
+    pub async fn idle_armed(&self) -> bool {
+        self.running
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.idle_since.is_some() && r.contexts.is_empty())
+            .unwrap_or(false)
     }
 
     /// Close one session's context and dispose it browser-side. Disposing one
@@ -297,14 +421,14 @@ impl BrowserService {
         let Some(running) = guard.as_mut() else {
             return Err(BrowserError::NoSuchContext(session.to_string()));
         };
-        let Some(ctx) = running.contexts.remove(session) else {
+        let Some(entry) = running.contexts.remove(session) else {
             return Err(BrowserError::NoSuchContext(session.to_string()));
         };
         if running.contexts.is_empty() {
             running.idle_since = Some(Instant::now());
         }
         drop(guard);
-        ctx.close().await;
+        entry.ctx.close().await;
         info!(session, "browser: context closed");
         Ok(())
     }
@@ -325,13 +449,14 @@ impl BrowserService {
         Ok(previous)
     }
 
-    /// **The human hands the wheel back.** Returns the previous mode.
-    pub async fn release_to_agent(&self, session: &str) -> Result<DriveMode> {
+    /// **The wheel goes back to the agent**, recording how (see
+    /// [`HandOff`]). Returns the previous mode.
+    pub async fn release_to_agent(&self, session: &str, handoff: HandOff) -> Result<DriveMode> {
         let ctx = self
             .context(session)
             .await
             .ok_or_else(|| BrowserError::NoSuchContext(session.to_string()))?;
-        let previous = ctx.lock().release_to_agent();
+        let previous = ctx.lock().release_to_agent(handoff);
         info!(session, %previous, "browser: released to AGENT");
         Ok(previous)
     }
@@ -388,7 +513,7 @@ impl BrowserService {
         let pid = running.chrome.pid();
 
         // 1. Best-effort per-context disposal, bounded.
-        let contexts: Vec<Arc<AgentContext>> = running.contexts.drain().map(|(_, c)| c).collect();
+        let contexts: Vec<Arc<AgentContext>> = running.contexts.drain().map(|(_, e)| e.ctx).collect();
         let _ = tokio::time::timeout(CONTEXT_DRAIN_BUDGET, async {
             for ctx in contexts {
                 ctx.close().await;
@@ -425,6 +550,45 @@ impl Drop for BrowserService {
             }
         }
     }
+}
+
+/// **Drop `session`'s browser context because the session is going away.**
+///
+/// Wired into EVERY session-teardown path (`SessionEnd` hook, `lifecycle::stop`,
+/// delete/archive via `AppState::forget_session`, and rename). Without it a
+/// context created on an agent's first tool call lived until the process exited,
+/// which is three bugs at once:
+///
+/// 1. **DoS.** [`BrowserConfig::max_contexts`] counts live contexts; nothing
+///    ever decremented it, so the cap was effectively a *lifetime* budget and
+///    the 9th distinct granted session was refused forever.
+/// 2. **The idle reaper was defeated.** It only fires while the context map is
+///    empty; a map that never shrinks never becomes empty again, so chrome — and
+///    every dead agent's authenticated cookie jar — lived forever.
+/// 3. **Credential inheritance.** A recycled session name found the dead
+///    session's still-logged-in context. (Also independently blocked by the
+///    launch id in [`BrowserService::context_for`].)
+///
+/// Fire-and-forget and bounded: teardown must never block on CDP, and a session
+/// that never used the browser is the common case — its `NoSuchContext` is
+/// silent, not an error. Returns the spawned task so a test can await the
+/// disposal it just triggered; `None` only outside a tokio runtime.
+pub fn dispose_on_teardown(
+    browser: &Arc<BrowserService>,
+    session: &str,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    let browser = browser.clone();
+    let session = session.to_string();
+    Some(handle.spawn(async move {
+        match tokio::time::timeout(TEARDOWN_BUDGET, browser.close_context(&session)).await {
+            // The common case: this session never opened a browser.
+            Ok(Err(BrowserError::NoSuchContext(_))) => {}
+            Ok(Err(e)) => warn!(session, error = %e, "browser: teardown disposal failed"),
+            Ok(Ok(())) => info!(session, "browser: context disposed on session teardown"),
+            Err(_) => warn!(session, "browser: teardown disposal timed out"),
+        }
+    }))
 }
 
 /// SIGTERM/SIGINT → tear the browser down, then exit.
@@ -533,7 +697,7 @@ mod tests {
             executable: PathBuf::from("/nonexistent/chrome-headless-shell"),
             ..BrowserConfig::default()
         });
-        let err = svc.context_for("alice").await.unwrap_err();
+        let err = svc.context_for("alice", "launch-1").await.unwrap_err();
         assert!(matches!(err, BrowserError::ChromeMissing(_)), "got {err:?}");
         assert!(!svc.is_running().await);
     }
@@ -557,6 +721,118 @@ mod tests {
         assert_eq!((cfg.width, cfg.height), (1024, 768));
     }
 
+    // ── FINDING 1: the registry's lifetime contract ─────────────────────────
+
+    #[test]
+    fn a_recycled_session_name_is_not_the_same_occupant() {
+        // The whole credential-inheritance guarantee, as a decision table.
+        assert_eq!(reuse_decision(None, "L1"), Reuse::Absent);
+        assert_eq!(
+            reuse_decision(Some("L1"), "L1"),
+            Reuse::Same,
+            "the same bot asking twice must get the SAME context"
+        );
+        assert_eq!(
+            reuse_decision(Some("L1"), "L2"),
+            Reuse::Stale,
+            "same name, new launch = a new occupant: it must NOT inherit the context"
+        );
+    }
+
+    #[test]
+    fn the_launch_id_is_a_one_way_digest_of_the_launch_secret() {
+        let a = launch_id("hook-token-aaaa");
+        let b = launch_id("hook-token-bbbb");
+        assert_eq!(a, launch_id("hook-token-aaaa"), "stable for one launch");
+        assert_ne!(a, b, "a new launch mints a new secret → a new id");
+        assert!(
+            !a.contains("hook-token"),
+            "the stored id must never be the secret itself: {a}"
+        );
+        assert_eq!(a.len(), 16, "compact but collision-free in practice");
+    }
+
+    #[tokio::test]
+    async fn closing_an_unknown_context_is_a_typed_error_not_a_panic() {
+        // The teardown path fires for EVERY session, and almost none of them
+        // ever opened a browser — that must be a quiet no-op.
+        let svc = BrowserService::new(BrowserConfig::default());
+        let err = svc.close_context("never-browsed").await.unwrap_err();
+        assert!(matches!(err, BrowserError::NoSuchContext(_)), "got {err:?}");
+        assert_eq!(svc.context_count().await, 0);
+    }
+
+    /// REAL-CHROME (FINDING 1). Two claims that only a live browser can settle:
+    ///
+    /// 1. **Disposal on session end.** `close_context` drops the live count and
+    ///    RE-ARMS the idle reaper (which only fires on an empty map — the map
+    ///    never emptying is what defeated it).
+    /// 2. **No lifetime exhaustion.** With `max_contexts = 3`, nine sessions
+    ///    that come and go all get a context; before the teardown wiring the 4th
+    ///    distinct session was refused forever. The cap still holds for
+    ///    SIMULTANEOUS contexts, which is what it is actually for.
+    ///
+    /// The third consequence — credential inheritance across a recycled name —
+    /// needs a real origin to hold a cookie, so it lives in
+    /// `tests/browser_service.rs`
+    /// (`a_recycled_session_name_never_inherits_the_previous_cookie_jar`).
+    #[tokio::test]
+    #[ignore = "spawns a real chrome-headless-shell; run with --ignored on a box that has the pinned binary"]
+    async fn real_chrome_contexts_are_disposed_and_the_cap_is_not_a_lifetime_budget() {
+        fn pid_alive(pid: u32) -> bool {
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+        }
+
+        let svc = BrowserService::new(BrowserConfig {
+            max_contexts: 3,
+            ..BrowserConfig::default()
+        });
+
+        // ── 1. a context is disposed on session end ─────────────────────────
+        svc.context_for("alice", "launch-a").await.expect("alice");
+        let pid = svc.chrome_pid().await.expect("a chrome pid");
+        assert_eq!(svc.context_count().await, 1);
+        assert!(!svc.idle_armed().await, "a live context disarms the reaper");
+
+        svc.close_context("alice").await.expect("dispose alice");
+        assert_eq!(svc.context_count().await, 0, "the live count must DROP");
+        assert!(svc.sessions().await.is_empty());
+        assert!(
+            svc.idle_armed().await,
+            "the idle reaper must be re-armed once the last context goes"
+        );
+
+        // ── 2. nine sessions come and go under a cap of three ───────────────
+        for i in 0..9 {
+            let name = format!("bot-{i}");
+            svc.context_for(&name, "launch-x")
+                .await
+                .unwrap_or_else(|e| panic!("session #{i} was refused a context: {e}"));
+            assert_eq!(svc.context_count().await, 1, "one at a time, by construction");
+            svc.close_context(&name).await.expect("dispose");
+        }
+        // …and the cap is still a REAL cap on SIMULTANEOUS contexts.
+        for i in 0..3 {
+            svc.context_for(&format!("sim-{i}"), "launch-y")
+                .await
+                .expect("under the cap");
+        }
+        let err = svc.context_for("sim-3", "launch-y").await.unwrap_err();
+        assert!(
+            matches!(err, BrowserError::TooManyContexts { max: 3 }),
+            "got {err:?}"
+        );
+
+        svc.shutdown().await;
+        for _ in 0..50 {
+            if !pid_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!pid_alive(pid), "LEAK: chrome pid {pid} still alive after shutdown");
+    }
+
     /// REAL-CHROME end-to-end leak test (spec §13; this box has had chrome/rig
     /// leaks, so the persistent-shell service must prove clean teardown). Ignored
     /// by default — it spawns the pinned `chrome-headless-shell`. Run on a box that
@@ -573,7 +849,7 @@ mod tests {
 
         let svc = BrowserService::new(BrowserConfig::default());
         // First context lazily spawns the single shell.
-        svc.context_for("alice").await.expect("spawn + context alice");
+        svc.context_for("alice", "launch-1").await.expect("spawn + context alice");
         assert!(svc.is_running().await, "chrome should be running after context_for");
         let pid = svc.chrome_pid().await.expect("a chrome pid");
         let udd = svc.user_data_dir().await.expect("a user-data-dir");
@@ -581,7 +857,7 @@ mod tests {
         assert!(udd.exists(), "user-data-dir must exist while running");
 
         // A second context reuses the SAME shell (one process, isolated contexts).
-        svc.context_for("bob").await.expect("context bob");
+        svc.context_for("bob", "launch-1").await.expect("context bob");
         assert_eq!(svc.chrome_pid().await, Some(pid), "second context must reuse the one shell");
         let mut names = svc.sessions().await;
         names.sort();
@@ -597,7 +873,7 @@ mod tests {
         );
         assert_eq!(svc.mode("alice").await.unwrap(), DriveMode::HumanDriving, "now HUMAN driving");
         assert_eq!(
-            svc.release_to_agent("alice").await.unwrap(),
+            svc.release_to_agent("alice", HandOff::Explicit).await.unwrap(),
             DriveMode::HumanDriving,
             "release returns the previous (human) mode"
         );
