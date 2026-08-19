@@ -13,32 +13,11 @@ import * as React from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { TeamCard } from '@/components/team'
-import type { ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { TEAMS_KEY } from '@/hooks/use-teams'
 
-import { MOCK_TEAMS } from './dev-teams.fixture'
+import { MOCK_LEAD_SESSIONS, MOCK_TEAMS } from './dev-teams.fixture'
 
-const MOCK_LEAD_SESSIONS: ApiSession[] = [
-  {
-    name: 'supermux-feature-x',
-    status: 'active',
-    dir: '/work/feature-x',
-    provider: 'claude',
-    preview_lines: ['$ claude', 'Coordinating 4 teammates…', '✎ planning the split'],
-    updated_at: new Date().toISOString(),
-    task_summary: 'feature-x team lead',
-  } as ApiSession,
-  {
-    name: 'supermux-solo-lead',
-    status: 'idle',
-    dir: '/work/solo',
-    provider: 'claude',
-    preview_lines: ['$ claude', 'Idle — waiting for next prompt'],
-    updated_at: new Date().toISOString(),
-    task_summary: 'solo team (no teammates yet)',
-  } as ApiSession,
-]
 
 export default function DevTeams() {
   const qc = useQueryClient()

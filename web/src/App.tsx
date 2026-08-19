@@ -1,5 +1,12 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import {
+  BrowserRouter,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ThemeProvider } from '@/components/theme-provider'
@@ -127,6 +134,30 @@ function RendererPrefsSync() {
   return null
 }
 
+/**
+ * PHASE 0.2 — dev-bench skin wrapper. `?grok=1` on any `/dev/*` route stamps
+ * `data-grok` + `data-grok-root`, the two attributes `<Layout>` stamps on the
+ * real shell, so a bench renders under the REAL skin (`styles/grok-mode.css`,
+ * every rule scoped `[data-grok]`) instead of needing the harness to inject
+ * them. `data-grok-root` is the ground marker the structural rules key off
+ * (`[data-grok][data-grok-root]`), so the wrapper must be a real, full-size box
+ * — which is exactly why it is NOT rendered without the param: no param, no
+ * element, no layout change for any existing bench.
+ *
+ * DEV-only in practice: every child route here is `import.meta.env.DEV &&`, so
+ * in production this parent has no matching child and never renders.
+ */
+function DevSkin() {
+  const { search } = useLocation()
+  const grok = new URLSearchParams(search).get('grok') === '1'
+  if (!grok) return <Outlet />
+  return (
+    <div data-grok="" data-grok-root="" className="min-h-dvh w-full bg-background">
+      <Outlet />
+    </div>
+  )
+}
+
 export default function App() {
   return (
     // basename uses BASE_URL so the Capacitor `capacitor://localhost` origin
@@ -220,6 +251,16 @@ export default function App() {
                   }
                 />
               </Route>
+              {/* PHASE 0.2 — the DEV BENCH SKIN GATE (`?grok=1`).
+                  The /dev/* benches mount OUTSIDE <Layout>, which is the only
+                  place `data-grok` / `data-grok-root` are stamped — so a bench
+                  could only ever be reviewed in the BASE skin, and every grok
+                  screenshot needed the attribute injected by the capture
+                  harness. This pathless parent route stamps the same two
+                  attributes when the URL carries `?grok=1`.
+                  Without the param it renders a BARE <Outlet/> — zero extra DOM,
+                  so every existing bench is byte-identical. */}
+              <Route element={import.meta.env.DEV ? <DevSkin /> : <Outlet />}>
               {DevStore && (
                 <Route
                   path="/dev/store"
@@ -370,6 +411,7 @@ export default function App() {
                   }
                 />
               )}
+              </Route>
             </Routes>
             </ConfirmDialogProvider>
             </ToastProvider>

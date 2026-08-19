@@ -87,6 +87,23 @@ pub(crate) async fn verify_hook_token(
 struct HookBody {
     /// The supermux session name (`$SUPERMUX_SESSION`); scopes the token check.
     session: String,
+    /// The tmux pane the hook fired from (`$TMUX_PANE`, e.g. `"%17"`) — the
+    /// WITHIN-session discriminator (S2, §R2.2).
+    ///
+    /// A session name is NOT enough on a team host: Claude Agent Teams spawns
+    /// teammates as sibling panes and tmux applies the SESSION environment to
+    /// every pane, so a teammate's hook carries the LEAD's `$SUPERMUX_SESSION`
+    /// and `$SUPERMUX_HOOK_TOKEN` with the TEAMMATE's own conversation id
+    /// (measured live — `~/team-gap/PHASE0-PROBE.md`). `$TMUX_PANE` is the only
+    /// field that separates them, and tmux gives it to us for free.
+    ///
+    /// `#[serde(default)]` → empty string, for the two cases that legitimately
+    /// have no pane: a session whose `settings.json` still holds the previous
+    /// hook command (self-heals at the next session start, since `install_hooks`
+    /// runs per start and the MARKER replaces the entry in place), and a
+    /// non-tmux (native) session, which has no panes at all.
+    #[serde(default)]
+    pane: String,
     /// The Claude event kind, as installed by [`crate::claude_config`]:
     /// `user_prompt` | `pre_tool` | `post_tool` | `post_tool_failure` |
     /// `permission_request` | `notification` | `stop` | `subagent_start` |
@@ -185,7 +202,7 @@ async fn hook_handler(
             .get("session_id")
             .or_else(|| raw_payload.get("sessionId"))
             .and_then(Value::as_str);
-        track_conversation_pointer(&state, &body.session, id).await;
+        track_conversation_pointer(&state, &body.session, &body.pane, id).await;
     }
 
     // Re-tick the detector now so the status (e.g. Notification → waiting,
@@ -230,7 +247,61 @@ fn is_pointer_event(event: &str) -> bool {
 /// without this check anything holding `$SUPERMUX_HOOK_TOKEN` could point a
 /// session at `../../../somewhere/private` and have the dashboard stream it
 /// back. A refused id leaves the previous pointer in place.
-async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<&str>) {
+///
+/// **Pane-attributed since S2 (§R2.2).** On a session that HOSTS A REAL TEAM the
+/// adoption is no longer unconditional: teammate panes inherit the lead's
+/// `$SUPERMUX_SESSION` + `$SUPERMUX_HOOK_TOKEN` from the tmux session
+/// environment, so a teammate's `SessionStart` authenticates as the lead and
+/// used to repoint it at the teammate's transcript (measured live —
+/// `~/team-gap/PHASE0-PROBE.md`; it corrupted `claude --resume` for leads too).
+/// The hook now carries `$TMUX_PANE` and only the LEAD's own pane may move the
+/// pointer; anything else is filed in the pane map ([`attribute_pointer`] holds
+/// the truth table). Sessions that do not host a team are untouched by this.
+async fn track_conversation_pointer(
+    state: &AppState,
+    session: &str,
+    pane: &str,
+    id: Option<&str>,
+) {
+    // ── S2: pane attribution, TEAM HOSTS ONLY (§R2.2) ───────────────────────
+    //
+    // The resolve is the ONLY I/O this adds, and a session that does not host a
+    // real team never pays it: `is_team_host` is one DB row plus (only if the
+    // polluted `team_name` column is set) one `config.json` read, and it runs on
+    // the two pointer events alone — never per hook. A non-team session
+    // therefore takes exactly the pre-wave path: base-app parity by
+    // construction.
+    let host = if crate::sessions::teams::is_team_host(state, session).await {
+        Some(TeamHost {
+            lead_pane: crate::sessions::teams::resolve_lead_pane(state, session).await,
+            tmux_runtime: state.is_tmux_runtime(session).await,
+        })
+    } else {
+        None
+    };
+    track_pointer_attributed(state, session, pane, id, host.as_ref()).await;
+}
+
+/// What the caller learned about a team host this tick. `None` at the call site
+/// means "not a team host" — the historical, unattributed path.
+#[derive(Debug, Clone)]
+struct TeamHost {
+    /// [`crate::sessions::teams::resolve_lead_pane`]'s answer.
+    lead_pane: Option<String>,
+    /// Is the HOST session itself a tmux session? (A native host owns no pane.)
+    tmux_runtime: bool,
+}
+
+/// The pointer decision + its effects, with the tmux/fs lookups already done and
+/// passed in — so every branch of the S2 truth table is exercisable in a unit
+/// test without a tmux server or a team on disk.
+async fn track_pointer_attributed(
+    state: &AppState,
+    session: &str,
+    pane: &str,
+    id: Option<&str>,
+    host: Option<&TeamHost>,
+) {
     let Some(id) = id.filter(|i| !i.is_empty()) else {
         return;
     };
@@ -240,6 +311,24 @@ async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<
             "hook carried a conversation id outside the Claude id charset; pointer left alone"
         );
         return;
+    }
+    if let Some(host) = host {
+        // Learn `pane → conversation` either way (§R2.3): the map is pure
+        // write-side today and wants the LEAD's pane in it too, so a later
+        // merged feed can key every ring the same way.
+        state.record_pane_conversation(session, pane, id);
+        if attribute_pointer(pane, host.lead_pane.as_deref(), host.tmux_runtime)
+            == PointerAction::RecordOnly
+        {
+            tracing::debug!(
+                session = %session,
+                pane = %pane,
+                lead_pane = ?host.lead_pane,
+                "hook from a non-lead/unattributable pane on a team host; \
+                 the lead's conversation pointer is left alone"
+            );
+            return;
+        }
     }
     if db::sessions::track_cc_conversation_id(&state.pool, session, id)
         .await
@@ -251,6 +340,60 @@ async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<
         // file it merely noticed, and this hook-carried id is the one
         // authoritative adoption signal.
         state.wake_chat_pointer(session);
+    }
+}
+
+/// What a pointer-carrying hook is allowed to do to a TEAM HOST's pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerAction {
+    /// Move `sessions.cc_conversation_id` — the historical behaviour.
+    Adopt,
+    /// Leave the lead's pointer alone; file the id under its pane instead
+    /// (§R2.3). NEVER an error: a teammate's conversation is real, it just is
+    /// not the lead's.
+    RecordOnly,
+}
+
+/// The S2 truth table, as a pure function (the tmux/fs I/O lives in the caller,
+/// so the DECISION is unit-testable without a tmux server or a team on disk).
+///
+/// Reached ONLY for a session that hosts a real team.
+///
+/// * `pane` — `$TMUX_PANE` from the hook body; `""` when the firing process is
+///   not inside tmux, or when an old hook command is still installed.
+/// * `lead_pane` — [`crate::sessions::teams::resolve_lead_pane`]: the one live
+///   pane of the lead's window that no team config claims as a teammate. `None`
+///   for a native session (no panes at all) and whenever the discrimination is
+///   ambiguous this tick.
+/// * `tmux_runtime` — is the HOST session a tmux session? A native host has no
+///   pane of its own, which is what makes an empty pane meaningful there.
+///
+/// The fail-safe direction is always "keep the lead's own conversation": a
+/// stale-but-own pointer is honest (the tailer surfaces it as
+/// `Reconnecting`/`NoHooks` via `classify_pointer`) and self-heals at the next
+/// start, whereas adopting a teammate's conversation silently shows the wrong
+/// transcript — and corrupts `claude --resume` for the lead besides.
+fn attribute_pointer(pane: &str, lead_pane: Option<&str>, tmux_runtime: bool) -> PointerAction {
+    if pane.is_empty() {
+        // No pane on a NATIVE host: the host itself has no tmux pane, while
+        // Claude spawns every teammate as a tmux pane (they carry a `%id`, and
+        // may even live on a different tmux server — measured). So an empty pane
+        // on a native team host can only be the lead's own process. Adopting
+        // keeps a native lead's pointer live; refusing would freeze the pointer
+        // of exactly the lead this wave makes chattable.
+        //
+        // On a TMUX host an empty pane is unattributable (a pre-upgrade hook
+        // command): do not move the pointer. It self-heals at the next session
+        // start, when `install_hooks` rewrites the marked entry.
+        return if tmux_runtime { PointerAction::RecordOnly } else { PointerAction::Adopt };
+    }
+    match lead_pane {
+        // The lead's own pane: adopt, exactly as before this wave.
+        Some(lead) if lead == pane => PointerAction::Adopt,
+        // A teammate pane — or a pane we cannot attribute this tick (churn,
+        // ambiguous layout, a host that resolves no lead pane). Either way it is
+        // NOT provably the lead, so the pointer does not move.
+        _ => PointerAction::RecordOnly,
     }
 }
 
@@ -1360,13 +1503,13 @@ mod tests {
         let s = "ptr-1";
         db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
 
-        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        track_conversation_pointer(&state, s, "", Some("conv-a")).await;
         assert!(woke(&state, s).await, "the first id is a change — the tailer must re-resolve");
         let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
         assert_eq!(row.cc_conversation_id, "conv-a");
 
         // A terminal-side `--resume` / `/clear`: the id MOVED.
-        track_conversation_pointer(&state, s, Some("conv-b")).await;
+        track_conversation_pointer(&state, s, "", Some("conv-b")).await;
         assert!(woke(&state, s).await, "a moved pointer must wake the tailer");
         let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
         assert_eq!(row.cc_conversation_id, "conv-b");
@@ -1383,16 +1526,16 @@ mod tests {
         let s = "ptr-2";
         db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
 
-        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        track_conversation_pointer(&state, s, "", Some("conv-a")).await;
         assert!(woke(&state, s).await);
         for _ in 0..3 {
-            track_conversation_pointer(&state, s, Some("conv-a")).await;
+            track_conversation_pointer(&state, s, "", Some("conv-a")).await;
         }
         assert!(!woke(&state, s).await, "an unchanged id must not wake the tailer");
 
         // A missing / empty id is a no-op, not a pointer reset.
-        track_conversation_pointer(&state, s, None).await;
-        track_conversation_pointer(&state, s, Some("")).await;
+        track_conversation_pointer(&state, s, "", None).await;
+        track_conversation_pointer(&state, s, "", Some("")).await;
         assert!(!woke(&state, s).await);
         let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
         assert_eq!(row.cc_conversation_id, "conv-a", "the pointer must survive");
@@ -1412,7 +1555,7 @@ mod tests {
         let (state, dir) = test_state().await;
         let s = "ptr-3";
         db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
-        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        track_conversation_pointer(&state, s, "", Some("conv-a")).await;
         assert!(woke(&state, s).await);
 
         for bad in [
@@ -1424,7 +1567,7 @@ mod tests {
             "conv$(id)",
             &"x".repeat(129),
         ] {
-            track_conversation_pointer(&state, s, Some(bad)).await;
+            track_conversation_pointer(&state, s, "", Some(bad)).await;
             let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
             assert_eq!(
                 row.cc_conversation_id, "conv-a",
@@ -1434,9 +1577,151 @@ mod tests {
         }
 
         // …and the real shapes still land.
-        track_conversation_pointer(&state, s, Some("550e8400-e29b-41d4-a716-446655440000")).await;
+        track_conversation_pointer(&state, s, "", Some("550e8400-e29b-41d4-a716-446655440000")).await;
         let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
         assert_eq!(row.cc_conversation_id, "550e8400-e29b-41d4-a716-446655440000");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── S2: pane-attributed pointer adoption (§R2.2) ────────────────────────
+
+    /// The truth table, pure. Every branch's fail-safe direction is "keep the
+    /// lead's OWN conversation" — never adopt a foreign one.
+    #[test]
+    fn pane_attribution_only_lets_the_lead_pane_move_a_team_hosts_pointer() {
+        use PointerAction::*;
+        // A tmux lead firing from its own pane: adopt, exactly as pre-wave.
+        assert_eq!(attribute_pointer("%3", Some("%3"), true), Adopt);
+        // A teammate pane on the same host: NEVER moves the lead's pointer.
+        assert_eq!(attribute_pointer("%7", Some("%3"), true), RecordOnly);
+        // Lead pane unresolvable this tick (pane churn / ambiguous layout):
+        // a pane we cannot prove is the lead does not get to move the pointer.
+        assert_eq!(attribute_pointer("%7", None, true), RecordOnly);
+        // Empty pane on a TMUX host = a pre-upgrade hook command, unattributable.
+        // Freeze rather than guess; the next session start rewrites the hook.
+        assert_eq!(attribute_pointer("", Some("%3"), true), RecordOnly);
+        assert_eq!(attribute_pointer("", None, true), RecordOnly);
+        // Empty pane on a NATIVE host = the lead itself: a native session has no
+        // pane at all, while every teammate is a tmux pane carrying a `%id`.
+        // Adopting here is what keeps a native lead's thread live (the live box's
+        // shape — see ~/team-gap/PHASE0-PROBE.md).
+        assert_eq!(attribute_pointer("", None, false), Adopt);
+        // …and a teammate `%id` reaching a native host is still not the lead.
+        assert_eq!(attribute_pointer("%7", None, false), RecordOnly);
+    }
+
+    #[tokio::test]
+    async fn a_teammate_pane_never_repoints_the_lead_but_is_recorded() {
+        let (state, dir) = test_state().await;
+        let s = "team-lead-1";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+        let host = TeamHost { lead_pane: Some("%3".into()), tmux_runtime: true };
+
+        // The lead's own pane adopts, as always.
+        track_pointer_attributed(&state, s, "%3", Some("lead-conv"), Some(&host)).await;
+        assert!(woke(&state, s).await);
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "lead-conv");
+
+        // A teammate's SessionStart: same session name, same hook token, its OWN
+        // conversation id. This is the measured live bug (H1). The pointer must
+        // not move…
+        track_pointer_attributed(&state, s, "%7", Some("mate-conv"), Some(&host)).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(
+            row.cc_conversation_id, "lead-conv",
+            "a teammate pane must never repoint the lead"
+        );
+        assert!(!woke(&state, s).await, "…and must not wake the lead's tailer either");
+
+        // …and must instead be LEARNED as `pane → conversation` (§R2.3), which is
+        // what makes a real teammate thread buildable later.
+        assert_eq!(state.pane_conversation(s, "%7").as_deref(), Some("mate-conv"));
+        assert_eq!(
+            state.pane_conversation(s, "%3").as_deref(),
+            Some("lead-conv"),
+            "the lead's own pane is in the map too, so the map is total"
+        );
+
+        // An unattributable (empty) pane on a TMUX team host: also frozen —
+        // strictly better than adopting whichever pane happened to fire.
+        track_pointer_attributed(&state, s, "", Some("legacy-conv"), Some(&host)).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "lead-conv");
+        assert!(
+            state.pane_conversation(s, "").is_none(),
+            "an empty pane identifies nothing and must not become a map key"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_native_team_host_still_adopts_its_own_paneless_hook() {
+        // The live box's shape: the lead runs native (no tmux pane of its own)
+        // while Claude spawns its teammates as tmux panes — on a separate tmux
+        // server, even. Refusing an empty pane here would freeze the pointer of
+        // exactly the lead S1 just made chattable.
+        let (state, dir) = test_state().await;
+        let s = "team-lead-native";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+        let host = TeamHost { lead_pane: None, tmux_runtime: false };
+
+        track_pointer_attributed(&state, s, "", Some("lead-conv"), Some(&host)).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "lead-conv", "a native lead must keep adopting");
+
+        // A teammate pane reaching that native host is still refused + recorded.
+        track_pointer_attributed(&state, s, "%12", Some("mate-conv"), Some(&host)).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "lead-conv");
+        assert_eq!(state.pane_conversation(s, "%12").as_deref(), Some("mate-conv"));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_non_team_session_adopts_from_any_pane_exactly_as_before() {
+        // BASE-APP PARITY. `host = None` is what `track_conversation_pointer`
+        // passes for every session that does not host a real team — i.e. all of
+        // them, in the base app. No pane is consulted, nothing is recorded, the
+        // pointer follows the hook as it always has.
+        let (state, dir) = test_state().await;
+        let s = "plain-1";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+
+        // Empty pane (native session, or a pre-upgrade hook command): adopts.
+        track_pointer_attributed(&state, s, "", Some("conv-a"), None).await;
+        assert!(woke(&state, s).await);
+        assert_eq!(
+            db::sessions::get(&state.pool, s).await.unwrap().unwrap().cc_conversation_id,
+            "conv-a"
+        );
+        // A pane id (an ordinary tmux session): also adopts — the guard is
+        // team-host-scoped, so a plain session is never pane-discriminated.
+        track_pointer_attributed(&state, s, "%4", Some("conv-b"), None).await;
+        assert!(woke(&state, s).await);
+        assert_eq!(
+            db::sessions::get(&state.pool, s).await.unwrap().unwrap().cc_conversation_id,
+            "conv-b"
+        );
+        assert!(
+            state.pane_conversation(s, "%4").is_none(),
+            "a non-team session must not even populate the pane map"
+        );
+
+        // And end-to-end through the real entry point (which resolves
+        // `is_team_host` itself — false here, since `team_name` is NULL).
+        track_conversation_pointer(&state, s, "%9", Some("conv-c")).await;
+        assert_eq!(
+            db::sessions::get(&state.pool, s).await.unwrap().unwrap().cc_conversation_id,
+            "conv-c",
+            "the un-teamed path must be byte-identical to pre-wave behaviour"
+        );
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

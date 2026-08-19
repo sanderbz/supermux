@@ -208,12 +208,13 @@ pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
         //
         // A ROSTERLESS team is never backlinked, and an existing backlink to
         // one is REMOVED. It is hidden from the sidebar anyway (`drop_rosterless`),
-        // but the row it wrote is not cosmetic: `team_name` is what
-        // `sessions::chat::ws::chat_eligible` reads to refuse the chat data
-        // plane for a lead window — so an implicit solo "team" silently 404s
-        // chat history + the chat WS for a perfectly ordinary Claude session,
-        // and the surface mounts on a conversation that can never arrive.
-        // Measured on this host: 17 of 38 live sessions carried such a backlink.
+        // but the row it wrote is not cosmetic: `team_name` is the column every
+        // team-shaped decision keys off (it used to make `chat_eligible` 404 the
+        // chat plane for an ordinary Claude session — measured: 17 of 38 live
+        // sessions on this host; that refusal is gone since S1, but the column
+        // now gates the pane-attributed pointer guard
+        // (`hooks::track_conversation_pointer`), so a phantom backlink would put
+        // an ordinary session on the team path for nothing).
         // What is lost by not writing it: `lifecycle::archive` no longer parks
         // that team dir under `.archived/` — a dir holding nothing but the
         // lead's own record, invisible in the UI either way.
@@ -618,9 +619,10 @@ async fn reconcile_deregistrations(
 /// [`clear_rosterless_backlink`] heals a session whose team is still THERE and
 /// merely empty; this is the other half — the team dir is gone (deleted,
 /// renamed, archived by hand) and nothing will ever scan it again, so no other
-/// pass can reach the row. The backlink then sits there forever, and
-/// `sessions::chat::ws::chat_eligible` reads it as "this is a team lead window"
-/// and refuses the chat data plane for good.
+/// pass can reach the row. The backlink then sits there forever, and every
+/// consumer reads it as "this is a team lead window" — today that means the
+/// pane-attributed pointer guard (`hooks::track_conversation_pointer`) treats an
+/// ordinary session as a team host for good.
 ///
 /// Same conservatism as [`reconcile_deregistrations`], and for the same reason:
 /// a dropped FS event or a half-written `config.json` makes a live team blink
@@ -1057,12 +1059,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The chat data plane's blocker: Claude Code writes a
+    /// The implicit-solo-team pollution: Claude Code writes a
     /// `~/.claude/teams/session-<id>/` for EVERY session once agent teams are
     /// enabled, whose only record is the lead's own row. `scan` strips that row,
     /// so the team arrives here ROSTERLESS — and the backlink it used to write
     /// made `chat_eligible` refuse chat history + the chat WS for an ordinary
     /// solo Claude session (measured: 17 of 38 live sessions on the dev host).
+    /// The refusal is gone (S1), but the column still selects the team path, so
+    /// the hygiene this proves is still load-bearing.
     ///
     /// Proves both halves: a rosterless team never writes a backlink, and an
     /// EXISTING one is cleared — while a backlink to a DIFFERENT (real) team is

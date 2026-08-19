@@ -258,6 +258,19 @@ pub struct AppState {
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `SUPERMUX_HOOK_TOKEN`. The `/api/_internal/hook` route reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
+    /// `(session, pane) → Claude conversation id` — the PANE MAP (§R2.3).
+    ///
+    /// Memory-only and purely WRITE-side for now: every pointer-carrying hook
+    /// that arrives from a team host's pane records the pane it came from and
+    /// the conversation id it carried
+    /// ([`AppState::record_pane_conversation`], called from
+    /// [`crate::hooks::track_conversation_pointer`]). Its reason to exist is
+    /// that a teammate is NOT an `/api/sessions` row and therefore has no other
+    /// handle on its transcript: with this map a teammate pane becomes
+    /// addressable as a real conversation (a teammate chat thread, a merged team
+    /// feed) using the tailer/store/WS that already exist. Rebuilt from hooks, so
+    /// a restart simply relearns it — never persisted, never authoritative.
+    pub pane_conversations: Arc<DashMap<(String, String), String>>,
     /// Per-session TURN STATE (the "busy while thinking" fix). Written by
     /// `/api/_internal/hook` (folding each Claude `SettingsHook` event into the
     /// matching per-type timestamp via [`TurnState::apply`]); read by the status
@@ -497,6 +510,7 @@ impl AppState {
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
+            pane_conversations: Arc::new(DashMap::new()),
             last_hook: Arc::new(DashMap::new()),
             hooks_live: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
@@ -932,6 +946,29 @@ impl AppState {
         self.hooks_live.entry(name.to_string()).or_insert(());
     }
 
+    /// Record `pane` of `session` as carrying Claude conversation `conv_id`
+    /// (§R2.3, the pane map). Idempotent, last-write-wins: a pane that restarts
+    /// its Claude process gets a new conversation id and the map follows it.
+    ///
+    /// An EMPTY pane is not recorded: it identifies nothing (a non-tmux session,
+    /// or a pane whose hook command predates the `pane` field), and a `("s","")`
+    /// key would collide across every such hook. Same for an empty id.
+    pub fn record_pane_conversation(&self, session: &str, pane: &str, conv_id: &str) {
+        if pane.is_empty() || conv_id.is_empty() {
+            return;
+        }
+        self.pane_conversations
+            .insert((session.to_string(), pane.to_string()), conv_id.to_string());
+    }
+
+    /// The conversation id last seen from `session`'s `pane`, if any (§R2.3).
+    /// `None` means "not learned this process lifetime" — never "no such pane".
+    pub fn pane_conversation(&self, session: &str, pane: &str) -> Option<String> {
+        self.pane_conversations
+            .get(&(session.to_string(), pane.to_string()))
+            .map(|v| v.clone())
+    }
+
     /// Does `name` have LIVE Claude hooks (we have seen ≥1 hook POST from it)?
     /// Read by the status detector to decide whether the heartbeat `Active`
     /// fallback applies. A never-hooked session (shell / codex / claude whose
@@ -1266,6 +1303,9 @@ impl AppState {
         self.session_locks.remove(name);
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
+        // The pane map is keyed by (session, pane): retain-scan it so a deleted
+        // session leaves no pane rows behind for a later session reusing the name.
+        self.pane_conversations.retain(|(s, _), _| s != name);
         self.last_hook.remove(name);
         self.hooks_live.remove(name);
         self.detector_wake.remove(name);
@@ -1348,6 +1388,18 @@ impl AppState {
         }
         if let Some((_, v)) = self.hook_tokens.remove(old) {
             self.hook_tokens.insert(new.to_string(), v);
+        }
+        // Re-key the pane map's (session, pane) pairs onto the new name so a
+        // rename doesn't orphan a team host's learned teammate conversations.
+        let moved: Vec<(String, String)> = self
+            .pane_conversations
+            .iter()
+            .filter(|e| e.key().0 == old)
+            .map(|e| (e.key().1.clone(), e.value().clone()))
+            .collect();
+        for (pane, conv) in moved {
+            self.pane_conversations.remove(&(old.to_string(), pane.clone()));
+            self.pane_conversations.insert((new.to_string(), pane), conv);
         }
         if let Some((_, v)) = self.last_hook.remove(old) {
             self.last_hook.insert(new.to_string(), v);

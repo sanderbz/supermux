@@ -2,9 +2,18 @@
 //!
 //! Claude Code writes these files under `~/.claude` REGARDLESS of supermux —
 //! they are the authoritative source of truth for a team's membership, tasks,
-//! and per-member liveness (teammate panes are spawned by Claude Code's
-//! `split-window`, so they have NO supermux hook token / DB row and could never
-//! authenticate a hook). supermux reads these files, never writes them.
+//! and per-member liveness. supermux reads these files, never writes them.
+//!
+//! **Correction (measured 2026-08-19, `~/team-gap/PHASE0-PROBE.md`).** This
+//! module used to claim that teammate panes "have NO supermux hook token / DB
+//! row and could never authenticate a hook". The DB row half is true; the hook
+//! half is FALSE. Claude spawns a teammate with `split-window`, and tmux applies
+//! the SESSION environment to every pane it later creates — so a teammate pane
+//! inherits the LEAD's `$SUPERMUX_SESSION` and `$SUPERMUX_HOOK_TOKEN` verbatim
+//! and its hooks authenticate as the lead (verified on three live teammate panes
+//! via `/proc/<pid>/environ`, and end-to-end: a teammate-shaped POST moved the
+//! lead's `cc_conversation_id`). The discriminator is `$TMUX_PANE`, which the
+//! hook now carries; see [`crate::hooks::track_conversation_pointer`].
 //!
 //! **Defensive by construction.** Every deserialized struct uses `serde`
 //! defaults so a partial/old/forward-drifted file parses into a best-effort

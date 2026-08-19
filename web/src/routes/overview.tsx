@@ -20,7 +20,7 @@ import {
 
 import { springs } from '@/lib/springs'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
-import { useTeams } from '@/hooks/use-teams'
+import { useTeams, TEAMS_KEY } from '@/hooks/use-teams'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
 import { TeamCard } from '@/components/team'
 import { useArchivedSessions } from '@/hooks/use-archived-sessions'
@@ -1081,8 +1081,23 @@ function useDevMockSeed() {
     if (!import.meta.env.DEV) return
     if (!new URLSearchParams(window.location.search).has('mock')) return
     let alive = true
-    void import('@/components/session-tile/mock').then(({ MOCK_TILES }) => {
-      if (alive) qc.setQueryData(SESSIONS_KEY, MOCK_TILES as ApiSession[])
+    // Both caches, from one dynamic import pair so neither mock module can end
+    // up in a production chunk. TEAMS is seeded alongside SESSIONS (Phase 0.2)
+    // because a roster with no teams cannot show the surface this wave is
+    // about: `/?mock` is the offline bench for the grok roster, and a team row
+    // only exists if `['teams']` has data AND the team's lead is in
+    // `['sessions']` (an unmapped lead renders as the honest "no live lead"
+    // case, which the fixture also carries deliberately).
+    void Promise.all([
+      import('@/components/session-tile/mock'),
+      import('@/routes/dev-teams.fixture'),
+    ]).then(([{ MOCK_TILES }, { MOCK_TEAMS, MOCK_LEAD_SESSIONS }]) => {
+      if (!alive) return
+      qc.setQueryData(SESSIONS_KEY, [
+        ...(MOCK_TILES as ApiSession[]),
+        ...MOCK_LEAD_SESSIONS,
+      ])
+      qc.setQueryData(TEAMS_KEY, MOCK_TEAMS)
     })
     return () => {
       alive = false

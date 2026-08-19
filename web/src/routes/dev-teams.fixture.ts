@@ -7,6 +7,7 @@
 // Coverage baked in: a full 5-teammate team with every MemberStatus
 // (needs_you / working / idle / offline), a null pane, and a 7-row task ledger;
 // a 0-teammate solo team; and an unmapped lead (no supermux session this tick).
+import type { ApiSession } from '@/lib/api'
 import type { Team } from '@/lib/api/teams'
 
 export const MOCK_TEAMS: Team[] = [
@@ -96,3 +97,36 @@ export const MOCK_TEAMS: Team[] = [
     tasks: [{ id: '1', subject: 'Do thing', description: '', status: 'completed', assigned_to: 'helper', blocks: [], blocked_by: [] }],
   },
 ]
+
+/// The supermux session rows the two mapped fixtures' leads point at
+/// (`lead_supermux_session`). Lives here rather than in `/dev/teams` because
+/// the `/?mock` seed (`routes/overview.tsx useDevMockSeed`) needs the same
+/// rows: a team row whose lead has no session is the "unmapped lead" case, and
+/// seeding teams WITHOUT their leads would make every mock team look unmapped.
+export const MOCK_LEAD_SESSIONS: ApiSession[] = [
+  {
+    name: 'supermux-feature-x',
+    status: 'active',
+    dir: '/work/feature-x',
+    provider: 'claude',
+    preview_lines: ['$ claude', 'Coordinating 4 teammates…', '✎ planning the split'],
+    updated_at: new Date().toISOString(),
+    task_summary: 'feature-x team lead',
+  } as ApiSession,
+  {
+    name: 'supermux-solo-lead',
+    status: 'idle',
+    dir: '/work/solo',
+    provider: 'claude',
+    preview_lines: ['$ claude', 'Idle — waiting for next prompt'],
+    updated_at: new Date().toISOString(),
+    task_summary: 'solo team (no teammates yet)',
+  } as ApiSession,
+]
+
+/// The full 5-teammate team, re-pointed at `lead` — for the FOCUS benches,
+/// which map a team onto one of the mock TILES (their lead names are the tile
+/// names, not the fixture's own). One team, so the strip stays reviewable.
+export function mockTeamsForLead(lead: string): Team[] {
+  return [{ ...MOCK_TEAMS[0], lead_supermux_session: lead }]
+}
