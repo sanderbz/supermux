@@ -445,6 +445,18 @@ pub struct AppState {
     /// SAME cache + registry (a `/start` writer + `/progress` subscriber must
     /// rendezvous on one channel — see `crate::updates`).
     pub updates: crate::updates::UpdatesState,
+    /// **Shared-Browser connector** service (phase 1). One long-lived
+    /// `chrome-headless-shell` with an isolated CDP browser context per agent
+    /// session and an AGENT/HUMAN drive lock per context.
+    ///
+    /// **Lazily started — constructing it spawns nothing.** Chrome is launched
+    /// on the FIRST [`crate::connectors::browser::BrowserService::context_for`]
+    /// call, so an install with no browser grants never runs a browser and its
+    /// launch stays byte-identical to a build without the module. Teardown is
+    /// owned by the service itself (process-group kill + temp-profile removal +
+    /// a SIGTERM/SIGINT hook installed only once chrome is really running), so
+    /// nothing here or in `main.rs` has to remember to stop it.
+    pub browser: Arc<crate::connectors::browser::BrowserService>,
 }
 
 impl AppState {
@@ -494,6 +506,10 @@ impl AppState {
             statuslines: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
+            // Cheap: a config struct. No process, no I/O — see the field docs.
+            browser: crate::connectors::browser::BrowserService::new(
+                crate::connectors::browser::BrowserConfig::from_env(),
+            ),
         }
     }
 
