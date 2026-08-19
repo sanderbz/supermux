@@ -250,6 +250,10 @@ describe('coverage: every state the surface can be in', () => {
   test('every other state leaves the composer to A3’s read-only shell', () => {
     const live = states.filter((s) => s.composer)
     expect(live.map((s) => s.id)).toEqual([
+      // The daily-driver worst-case header (bypass + not-up-to-date + toggle at
+      // 390px) carries the REST composer too, so one capture proves both the
+      // header fits AND the placeholder is centred.
+      'busy-header',
       'stopping',
       'queueing',
       'composing',

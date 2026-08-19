@@ -678,6 +678,26 @@ export function liveStates(nowMs: number): LiveState[] {
       entries: release,
     },
     {
+      // The daily-driver WORST CASE for the phone header (owner's real device,
+      // IMG_2348): a short name flanked by a Bypass mode chip, a "Not up to
+      // date" connection chip, the presence dot AND the A/Chat/⌘ segmented
+      // toggle — the widest realistic trailing cluster, at 390px. The simple
+      // one-name header the older bench drew never reproduced the overflow.
+      id: 'busy-header',
+      title: 'Busy header — bypass + not-up-to-date + toggle, at 390px',
+      board: 'mobile-*.png (widest realistic header)',
+      session: session({
+        name: 'ipc',
+        display_name: 'ipc',
+        status: 'idle',
+        mode: 'bypass',
+      }),
+      entries: release,
+      // The rest composer (empty draft, idle → the mic), so the same capture
+      // proves the placeholder is vertically centred with the + and the mic.
+      composer: { draft: '' },
+    },
+    {
       id: 'working',
       title: 'Mid-turn — hook receipts + the working row',
       board: 'board-light.png (live layer)',
@@ -1463,6 +1483,7 @@ export const MENTIONABLE: readonly MentionableSession[] = [
 /** Every state id, for the picker and for the coverage test. */
 export const STATE_IDS = [
   'idle',
+  'busy-header',
   'working',
   'provisional',
   'permission',

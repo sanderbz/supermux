@@ -1384,6 +1384,16 @@
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
+  /* An empty editable div collapses to a zero-height content box (there is no
+     implicit textarea line box), and the composer row is `items-end` so the
+     side discs bottom-anchor as the field grows up. Together those two sat the
+     EMPTY field's placeholder on the pill's bottom edge — visibly BELOW the
+     centred + and mic (owner's IMG_2348: "Message ipc" riding low). A one-line
+     floor gives the empty field the same box a single typed line has, so it
+     bottom-anchors as one centred line instead of a collapsed sliver; `relative`
+     anchors the placeholder below. */
+  position: relative;
+  min-height: 1.4em;
 }
 .sm-plain-editable[data-empty]::before {
   content: attr(data-placeholder);
@@ -1391,8 +1401,17 @@
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
-  display: block;
-  /* Zero-height so the placeholder never adds to the measured `scrollHeight`
-     the auto-grow reads — an empty composer must be exactly one line tall. */
-  height: 0;
+  /* Out of flow and CENTRED in the field box, so the placeholder sits exactly
+     where the first typed character will — vertically centred with the + and
+     the mic — and never adds to the `scrollHeight` the auto-grow reads (an
+     empty composer stays exactly one line tall). One line, ellipsised, so a
+     long "Message <name>" cannot wrap and inflate that measurement either. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

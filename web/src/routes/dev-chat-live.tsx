@@ -179,6 +179,7 @@ export function Surface({
   showActions = false,
   headerLeading,
   headerTrailing,
+  headerStatus,
 }: {
   state: LiveState
   nowMs: number
@@ -193,6 +194,11 @@ export function Surface({
   offline?: boolean
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
+  /** The data-plane chip ("Not up to date"), in the header's own STATUS slot —
+   *  the SAME seam `chat-panel.tsx` uses (`headerStatus`), so the bench groups
+   *  it with the mode chip and presence dot exactly as the app does, not bundled
+   *  onto the renderer toggle. */
+  headerStatus?: React.ReactNode
 }) {
   const items = React.useMemo(() => toDisplayList(state.entries), [state.entries])
   const labels = React.useMemo(() => entryLabels(state.entries), [state.entries])
@@ -268,6 +274,7 @@ export function Surface({
       onReserveGrew={onReserveGrew}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}
+      headerStatus={headerStatus}
       offline={offline}
       // A GONE POINTER or an OFFLINE PLANE gates the composer even where the
       // fixture supplies no composer spec: the shipped panel always mounts a
@@ -469,12 +476,37 @@ function PhoneFrame({ state, nowMs, conn, gone, showActions = false }: {
   gone: ChatGone | null
   showActions?: boolean
 }) {
+  const [params] = useSearchParams()
+  // `&device=1` reproduces the REAL iOS geometry the shipped app renders in,
+  // which the fake 54px topbar below deliberately does NOT: in the app the
+  // chat surface is a `position:fixed` full-bleed sheet from y=0 and the
+  // status-bar region is reserved by `env(safe-area-inset-top)` (—-safe-top),
+  // not by a chrome band that pushes the surface down. So `device` (a) forces
+  // `--safe-top` to a real notched value the headless `env()`=0 hides, and (b)
+  // makes the status bar an ABSOLUTE overlay so the surface — and its floating
+  // header card at `--safe-top + 12` — sit exactly where the phone puts them.
+  // `&safe=NN` overrides the inset (default 59, an iPhone Dynamic-Island top).
+  const device = params.has('device')
+  const safe = params.get('safe')
+  const safeTop = safe != null ? Number(safe) : 59
   return (
-    <div className="relative mx-auto flex h-full w-full max-w-[390px] flex-col bg-paper-raised">
+    <div
+      className="relative mx-auto flex h-full w-full max-w-[390px] flex-col bg-paper-raised"
+      style={device ? ({ ['--safe-top' as string]: `${safeTop}px` } as React.CSSProperties) : undefined}
+    >
       {/* Device chrome, not ours: the status bar and the notch `mobile-*.png`
           draws above the surface. Held at the phone's own 54px so the floating
-          header card lands exactly where the board puts it. */}
-      <div style={{ height: PHONE.topbar }} className="relative z-[5] flex-none bg-paper-raised">
+          header card lands exactly where the board puts it. In `device` mode it
+          is an ABSOLUTE overlay (it must not push the surface down — the real
+          app reserves the notch with `--safe-top`, not a flow band). */}
+      <div
+        style={device ? undefined : { height: PHONE.topbar }}
+        className={
+          device
+            ? 'pointer-events-none absolute inset-x-0 top-0 z-[6] h-[54px]'
+            : 'relative z-[5] flex-none bg-paper-raised'
+        }
+      >
         <div className="absolute left-1/2 top-3 h-[30px] w-[110px] -translate-x-1/2 rounded-full bg-[#0d0c0b] shadow-[0_0_0_0.5px_var(--sm-hairline)]" />
         <div className="absolute inset-x-[26px] top-5 flex h-4 items-center justify-between text-[13px] font-semibold tracking-[-0.1px] text-ink">
           <span className="tabular-nums">2:06</span>
@@ -510,11 +542,14 @@ function PhoneFrame({ state, nowMs, conn, gone, showActions = false }: {
               <BackIcon />
             </span>
           }
+          // The data-plane chip rides the header's STATUS slot (grouped with the
+          // mode chip + presence dot), and the renderer toggle rides TRAILING on
+          // its own — exactly how `chat-panel.tsx` splits them, so the bench
+          // reproduces the real 390px overflow instead of hiding it by bundling
+          // both onto the toggle.
+          headerStatus={conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} compact /> : undefined}
           headerTrailing={
-            <>
-              {conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : null}
-              <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
-            </>
+            <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
           }
         />
       </div>

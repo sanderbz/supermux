@@ -260,10 +260,8 @@ export default function ChatPanel({
   // and the app-wide link aggregate, so the two cannot disagree.
   // …and a TERMINAL close always speaks, fresh or not: "this session no longer
   // exists" is not the calm empty state, it is the end of one.
-  const connectionNote =
-    tail.fresh && tail.gone === null ? null : (
-      <ConnectionNote state={connection} onRetry={tail.redial} gone={tail.gone} />
-    )
+  // (The node itself is built below, once `phone` is known — it condenses on the
+  // phone so the header's toggle can never be shoved off the right edge.)
 
   // ── one identity per session, across both surfaces (fase A6 T4.3) ──────────
   //
@@ -280,6 +278,22 @@ export default function ChatPanel({
   // still runs either way, because a hook may not be conditional.
   const viewportPhone = useMediaQuery(PHONE_QUERY)
   const phone = surface ? surface === 'phone' : viewportPhone
+
+  // The data-plane chip ("Not up to date" / "Offline"), for the header's STATUS
+  // slot. COMPACT on the phone: at 390px the header must keep the essentials —
+  // back, the name, and the Chat/⌨ toggle — on-screen and reachable, so the chip
+  // condenses to an icon-only dot there rather than pushing the toggle off the
+  // right edge (owner's IMG_2348). Desktop keeps the words. Built here, once
+  // `phone` is known.
+  const connectionNote =
+    tail.fresh && tail.gone === null ? null : (
+      <ConnectionNote
+        state={connection}
+        onRetry={tail.redial}
+        gone={tail.gone}
+        compact={phone}
+      />
+    )
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)

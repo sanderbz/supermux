@@ -37,13 +37,26 @@ export interface ConnectionNoteProps {
    * both. Neither can be retried, and only one of them is an outage.
    */
   gone?: ChatGone | null
+  /**
+   * DROP THE WORDS, KEEP THE SIGNAL (mobile header overflow). At 390px the phone
+   * header must always hold the essentials — back, the name and the Chat/⌨
+   * toggle — on-screen and reachable. A full-text "Not up to date" chip (~95px)
+   * beside a "Bypass" mode chip and a three-cell segmented toggle whose touch
+   * cells are floored at 44px each pushed the toggle clean off the right edge
+   * (owner's IMG_2348). Compact renders the SAME state as an icon-only dot-pill:
+   * no label, but the full sentence stays on `aria-label` and every `data-*`
+   * hook is unchanged, so the state is condensed on screen without being lost to
+   * assistive tech or the VR rig. Off-phone (desktop) it is not passed and the
+   * chip keeps its words.
+   */
+  compact?: boolean
 }
 
 /**
  * Renders nothing while `live` — the healthy case must cost no pixels and no
  * announcement, or the honest state becomes wallpaper.
  */
-export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNoteProps) {
+export function ConnectionNote({ state, onRetry, gone = null, compact = false }: ConnectionNoteProps) {
   // OWNERSHIP (fase B6 — live-region ownership). While this chip is actually
   // saying something, the global `ReconnectBanner` must not say the same thing
   // in a second polite region — before this claim a dropped socket was
@@ -77,12 +90,27 @@ export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNotePr
   // looks unmistakably not-healthy. `chat-unavailable` is `alarming:false` and
   // stays calm: a session with no chat plane is not a fault.
   const alarming = terminal?.alarming ?? false
-  const className = cn(
-    'flex-none rounded-full border-[0.5px] px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px]',
-    alarming
-      ? 'border-status-error/30 bg-status-error/10 text-status-error-ink'
-      : 'border-hairline-soft bg-fill-soft text-ink-2',
-  )
+  // COMPACT (phone header): drop the words for a small dot the size of a status
+  // dot, so the toggle this chip used to shove off the right edge stays
+  // on-screen. The dot's own colour — amber when alarming, else the neutral
+  // "not-live" grey — carries what the label said; the full sentence stays on
+  // the wrapper's `aria-label`. Off-phone the chip keeps its words.
+  const className = compact
+    ? // `inline-block`, not `flex-none`: this chip is wrapped in the `role=status`
+      // live-region span (below), so it is NOT a direct flex child and an inline
+      // box would ignore `size-2` and collapse to 0×0. `inline-block` makes the
+      // dot honour its own width/height wherever the wrapper sits.
+      cn('inline-block size-2 shrink-0 rounded-full align-middle', alarming ? 'bg-status-error' : 'bg-ink-2')
+    : cn(
+        'flex-none rounded-full border-[0.5px] px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px]',
+        alarming
+          ? 'border-status-error/30 bg-status-error/10 text-status-error-ink'
+          : 'border-hairline-soft bg-fill-soft text-ink-2',
+      )
+
+  // Compact IS the dot (colour on the chip itself); the worded chip carries its
+  // label. Both the static chip and the retry button render this same inner.
+  const inner = compact ? null : copy.label
 
   // One live region, `polite`, holding one short sentence. It is the STATE
   // that is announced, not the transcript — G1's streaming announcements are a
@@ -94,7 +122,7 @@ export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNotePr
       data-vr="chat-connection"
       className={className}
     >
-      {copy.label}
+      {inner}
     </span>
   )
 
@@ -114,7 +142,7 @@ export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNotePr
           data-gone={gone ?? undefined}
           data-vr="chat-connection"
         >
-          {copy.label}
+          {inner}
         </button>
       ) : (
         body

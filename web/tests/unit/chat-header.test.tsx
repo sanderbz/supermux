@@ -345,7 +345,14 @@ describe('the phone header gives its width to the name (QA #6)', () => {
     expect(out).not.toContain('flex-col')
     expect(out).toContain('flex-none')
     expect(text(out)).toContain('ipc')
-    expect(text(out)).toContain('Bypass')
+    // The mode CONDENSES to an icon-only chip on the phone (owner's IMG_2348: a
+    // worded "Bypass" chip + a "Not up to date" chip + the three-cell toggle
+    // overran 390px and shoved the toggle off the right edge). The word now
+    // rides the chip's `title`/`aria-label`, so the state still reaches
+    // assistive tech and the VR rig while the glyph keeps the row narrow enough
+    // for the toggle to stay on-screen — never a bare, unlabelled dot.
+    expect(out).toContain('Bypass mode')
+    expect(text(out)).not.toContain('Bypass')
   })
 
   test('the presence dot joins the inline status cluster on the phone (mobile polish #1)', () => {
