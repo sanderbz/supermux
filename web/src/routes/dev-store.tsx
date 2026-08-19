@@ -11,13 +11,14 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { StoreView } from '@/components/store/store-view'
 import { CURATED_FALLBACK } from '@/components/store/catalog'
 import { ConnectCard } from '@/components/chat/ui/connect-card'
+import { TakeoverCard } from '@/components/chat/ui/takeover-card'
 import type { ConnectorCard } from '@/lib/api/connectors'
 
 const BENCH_QC = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: Infinity } },
 })
 
-const GRANTED = { bot: ['pmcp-github'], all: ['builtin-browser'] }
+const GRANTED = { bot: ['pmcp-github'], all: ['shared-browser'] }
 
 const OAUTH_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'pmcp-notion')!
 const KEY_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'icloud-mail')!
@@ -81,6 +82,20 @@ function Slab({
               }}
               sessionName="Ada"
               card={KEY_CARD}
+            />
+          </div>
+        </div>
+
+        {/* the inline TAKE-THE-WHEEL card (the Shared Browser's human moment) */}
+        <div className="mx-auto w-full max-w-[640px]">
+          <h2 className="mb-3 text-sm font-medium text-foreground">Inline takeover card</h2>
+          <div data-vr={`takeover-card-${theme}${grok ? '-grok' : ''}`}>
+            <TakeoverCard
+              ask={{
+                session: 'Ada',
+                reason: 'sign in to bank.example and approve the 2FA push on your phone',
+              }}
+              botName="Ada"
             />
           </div>
         </div>

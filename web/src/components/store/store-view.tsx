@@ -233,7 +233,7 @@ export function StoreView({
 
 function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <div className="relative flex w-full max-w-[280px] items-center">
+    <div className="cs-search relative flex w-full max-w-[280px] items-center">
       <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" aria-hidden />
       <input
         type="search"
@@ -341,7 +341,7 @@ function FeaturedCard({
           {heroHook(card)}
         </p>
         <button type="button" onClick={onOpen} className="pointer-events-auto relative z-10 shrink-0" tabIndex={-1}>
-          <StateChip kind={chip} count={card.tools?.length || card.tool_count || 0} />
+          <StateChip kind={chip} />
         </button>
       </div>
     </div>

@@ -41,6 +41,17 @@ export function ConnectorIcon({
   const [broken, setBroken] = React.useState(false)
   const showImg = src && !broken
   const radius = Math.round(size * 0.29)
+  const brand = brandMark(card)
+  // ONE tile recipe, shared by the asset and the brand-mark branch. A mirrored
+  // asset used to sit on `var(--card)` — invisible against the card behind it,
+  // so a stroke-only SVG (the built-in browser's) floated with no tile at all
+  // in dark (jury STORE_CARD #3). Now every icon wears the same App-Store tile.
+  const tile = brand
+    ? {
+        background: `color-mix(in srgb, ${brand.hex} 9%, #ffffff)`,
+        boxShadow: `inset 0 0 0 0.5px color-mix(in srgb, ${brand.hex} 26%, transparent)`,
+      }
+    : { background: 'var(--muted)', boxShadow: 'inset 0 0 0 0.5px var(--border)' }
 
   // 1) A real mirrored asset always wins.
   if (showImg) {
@@ -48,7 +59,7 @@ export function ConnectorIcon({
       <span
         aria-hidden
         className={cn('cs-icon relative grid shrink-0 place-items-center overflow-hidden', className)}
-        style={{ width: size, height: size, borderRadius: radius, background: 'var(--card)' }}
+        style={{ width: size, height: size, borderRadius: radius, ...tile }}
       >
         <img
           src={src!}
@@ -64,7 +75,6 @@ export function ConnectorIcon({
   }
 
   // 2) A recognised brand → its real mark on an App-Store-style tile.
-  const brand = brandMark(card)
   if (brand) {
     return (
       <span
@@ -73,14 +83,7 @@ export function ConnectorIcon({
           'cs-icon cs-brand relative grid shrink-0 place-items-center overflow-hidden',
           className,
         )}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: radius,
-          color: brand.hex,
-          background: `color-mix(in srgb, ${brand.hex} 9%, #ffffff)`,
-          boxShadow: `inset 0 0 0 0.5px color-mix(in srgb, ${brand.hex} 26%, transparent)`,
-        }}
+        style={{ width: size, height: size, borderRadius: radius, color: brand.hex, ...tile }}
       >
         {brand.path ? (
           <svg

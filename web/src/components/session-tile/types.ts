@@ -1,6 +1,11 @@
 import type { SessionSummary } from '@/lib/api'
 import type { ElicitationAsk } from '@/components/chat/elicitation'
-import type { ChatTail, ConnectRequestInfo, PermissionRequestInfo } from '@/lib/api/sessions'
+import type {
+  BrowserTakeoverInfo,
+  ChatTail,
+  ConnectRequestInfo,
+  PermissionRequestInfo,
+} from '@/lib/api/sessions'
 import type { RateLimits } from '@/lib/rate-limits'
 
 /** Display fields the hero tile layers on top of the canonical `SessionSummary`.
@@ -57,6 +62,8 @@ export interface TileSession extends SessionSummary {
   /** A bot's `connect(service)` tool is parked waiting for a human — supermux
    *  renders the inline Connect card. Same delta, same `null`-clears rule. */
   connect_request?: ConnectRequestInfo | null
+  /** The live shared-browser takeover ask — a bot needs a human on its page. */
+  browser_takeover?: BrowserTakeoverInfo | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number

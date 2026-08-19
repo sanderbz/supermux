@@ -32,6 +32,9 @@ pub mod pty_state;
 pub mod recall;
 pub mod resumable;
 pub mod status;
+/// The Shared Browser connector's `request_human_takeover(reason)` detector —
+/// the `PreToolUse` payload that raises the in-chat "take the wheel" card.
+pub mod takeover_ask;
 pub mod steering;
 pub mod teams;
 pub mod tmux;
@@ -324,6 +327,17 @@ pub struct SessionView {
     /// is asking, so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_request: Option<connect_ask::ConnectAsk>,
+    /// **The live browser takeover ask**: a granted bot called the Shared
+    /// Browser's `request_human_takeover(reason)` and is waiting for a human to
+    /// finish a login / 2FA / CAPTCHA on its page. Carries the agent's own
+    /// sentence and the session whose browser context the takeover panel must
+    /// attach to. Raised by the `PreToolUse` detector
+    /// ([`takeover_ask::parse`]) AND by the tool endpoint when the call really
+    /// runs; cleared by the same "something after it happened" events as
+    /// [`connect_request`](Self::connect_request). Omitted when nothing is
+    /// asking, so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_takeover: Option<takeover_ask::TakeoverAsk>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -555,6 +569,7 @@ fn view(
         }),
         elicitation: act.as_ref().and_then(|a| a.elicitation.clone()),
         connect_request: act.as_ref().and_then(|a| a.connect_request.clone()),
+        browser_takeover: act.as_ref().and_then(|a| a.browser_takeover.clone()),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,

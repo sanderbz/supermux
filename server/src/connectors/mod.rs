@@ -18,6 +18,9 @@
 //! dir. This module only records grants (`session_connectors`) + secrets.
 
 pub mod api;
+/// Shared-Browser connector: the leak-safe persistent chrome service, the
+/// per-agent CDP contexts, and the AGENT/HUMAN drive lock (phase 1).
+pub mod browser;
 pub mod catalog;
 pub mod connect_server;
 pub mod icloud;

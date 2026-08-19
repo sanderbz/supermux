@@ -58,6 +58,7 @@ import {
   ConnectCard,
   DelegationPill,
   FormCard,
+  TakeoverCard,
   InlineCode,
   MARK_SIZE,
   MessageRow,
@@ -322,7 +323,18 @@ export function LiveLayer({
           the turn does not end, no banner is drawn, and every other signal on
           this surface reads Idle. The peek lens cannot help here (the form is
           not a numbered dialog), so the hook IS the authority. */}
-      {session?.connect_request ? (
+      {session?.browser_takeover ? (
+        // A TAKEOVER ASK OUTRANKS EVEN THE CONNECT CARD — the agent is not
+        // asking for a credential, it is asking for a HUMAN on a page it has
+        // already reached and cannot pass (a login, a 2FA prompt, a CAPTCHA).
+        // The card opens the takeover panel; the drive lock is what actually
+        // pauses the agent while the human is on it.
+        <TakeoverCard
+          key={session.browser_takeover.id ?? `${session.browser_takeover.session}/${session.browser_takeover.reason}`}
+          ask={session.browser_takeover}
+          botName={name}
+        />
+      ) : session?.connect_request ? (
         // A CONNECT ASK IS THE MOST SPECIFIC HUMAN-IN-THE-LOOP THERE IS — a bot's
         // `connect(service)` tool that stopped for a credential. It renders the
         // supermux-native Connect card (secure paste / sign-in → straight to the

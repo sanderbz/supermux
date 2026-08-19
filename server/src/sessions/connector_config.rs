@@ -189,6 +189,35 @@ impl SessionConfig {
         }
     }
 
+    // ── shared-browser seam ───────────────────────────────────────────────────
+    /// Wire the built-in **Shared Browser** connector into this bot's launch
+    /// (phase 3): add the browser MCP server to the SAME inline `--mcp-config`
+    /// (under `--strict-mcp-config`) and allow-list `mcp__browser__*` so its five
+    /// tools auto-approve — except `request_human_takeover`, whose descriptor
+    /// carries the `requiresUserInteraction` marker and therefore always reaches
+    /// the human regardless of any allow rule.
+    ///
+    /// Called ONLY for a session holding an enabled `shared-browser` grant, so an
+    /// ungranted bot gets no server, no tools, and no browser. The server key is
+    /// `browser` (not the `shared-browser` connector id): Claude names tools
+    /// `mcp__<key>__<tool>`, and a hyphen there would read badly and would not
+    /// match the detector.
+    ///
+    /// `emit` is [`crate::connectors::browser::mcp::emit`] — `${VAR}` references
+    /// only (the session name, its per-session hook token, the callback URL); no
+    /// credential exists for this connector at all.
+    pub fn apply_browser_connector(&mut self, emit: Value) {
+        self.active = true;
+        self.mcp_servers.insert(
+            crate::connectors::browser::mcp::SERVER_KEY.to_string(),
+            emit,
+        );
+        let rule = Value::String(crate::connectors::browser::mcp::ALLOW_RULE.to_string());
+        if !self.allow_rules.contains(&rule) {
+            self.allow_rules.push(rule);
+        }
+    }
+
     /// True once any tier has contributed — the launch will carry the overlay.
     pub fn is_active(&self) -> bool {
         self.active
@@ -339,6 +368,10 @@ pub struct FinishedConfig {
 /// launch — a broken connector must not brick a session's start.
 pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<FinishedConfig>> {
     let mut cfg = SessionConfig::new(&state.config.data_dir, session_name);
+    // Set when this session holds an enabled `shared-browser` grant — the ONE
+    // connector whose MCP server is built from the binary rather than a stored
+    // emit block (see the loop below).
+    let mut wants_browser = false;
 
     // ── connector tier ─────────────────────────────────────────────────────────
     let grants = connectors::grants_for_session(&state.pool, session_name).await?;
@@ -363,6 +396,16 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 tracing::warn!(connector = %g.connector_id, "connector launch: grant references a missing connector; skipping");
                 continue;
             };
+            // THE BUILT-IN SHARED BROWSER is not a stored-emit connector: its MCP
+            // server is materialized from the binary at launch (so a shipped
+            // update lands) and its server key / allow rule differ from the
+            // id-derived defaults. Flag it here and wire it below.
+            if connector.kind == crate::connectors::manifest::KIND_BUILTIN_BROWSER
+                || g.connector_id == crate::connectors::browser::mcp::BROWSER_ID
+            {
+                wants_browser = true;
+                continue;
+            }
             let emit: Value =
                 serde_json::from_str(&connector.emit_json).unwrap_or_else(|_| json!({}));
             let secrets = resolve_secret(state, vault.as_ref(), g).await;
@@ -373,6 +416,16 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
             });
         }
         cfg.apply_connectors(&resolved);
+    }
+
+    // ── shared-browser tier ────────────────────────────────────────────────────
+    // A granted bot gets the browser MCP server (five tools, lock-gated through
+    // the local endpoint). An UNGRANTED bot never reaches this line, so its
+    // launch carries no browser server, no browser tools, and spawns no chrome.
+    if wants_browser {
+        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+            cfg.apply_browser_connector(crate::connectors::browser::mcp::emit(&path));
+        }
     }
 
     // ── memory tier ─────────────────────────────────────────────────────────────
@@ -465,6 +518,170 @@ mod tests {
             emit: json!({ "command": "python", "args": ["s.py"], "env": { "K": "${K}" } }),
             secrets,
         }
+    }
+
+    // ── the shared-browser grant, end to end through `assemble` ──────────────
+
+    async fn browser_state() -> (crate::state::AppState, PathBuf) {
+        let dir = temp_dir();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (crate::state::AppState::new(pool, config), dir)
+    }
+
+    /// Seed the `shared-browser` card the way boot does.
+    async fn seed_browser_card(state: &crate::state::AppState) {
+        let m = crate::connectors::browser::mcp::manifest("/tmp/server.py");
+        let cols = m.to_columns();
+        connectors::upsert(
+            &state.pool,
+            &m.id,
+            &m.kind,
+            &m.display_name,
+            &m.icon,
+            &m.description,
+            &cols.tools_json,
+            &cols.credentials_json,
+            &cols.emit_json,
+            "{}",
+        )
+        .await
+        .unwrap();
+    }
+
+    fn mcp_config_json(fin: &FinishedConfig) -> Value {
+        let i = fin
+            .launch_flags
+            .iter()
+            .position(|w| w == "--mcp-config")
+            .expect("--mcp-config present");
+        serde_json::from_str(&fin.launch_flags[i + 1]).unwrap()
+    }
+
+    /// GRANTED: the launch carries the browser MCP server + its allow rule, with
+    /// `${VAR}` scope references and no secret.
+    #[tokio::test]
+    async fn a_granted_session_launches_with_the_browser_mcp_server() {
+        let (state, dir) = browser_state().await;
+        seed_browser_card(&state).await;
+        crate::db::sessions::insert_minimal(&state.pool, "alice", "/tmp", "claude")
+            .await
+            .unwrap();
+        connectors::grant(&state.pool, "alice", "shared-browser", None, true)
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "alice")
+            .await
+            .unwrap()
+            .expect("a granted session has an active config");
+
+        // The server rides the SAME strict inline config as every other grant,
+        // under the `browser` key (so tools are `mcp__browser__*`).
+        let cfg = mcp_config_json(&fin);
+        let entry = &cfg["mcpServers"]["browser"];
+        assert_eq!(entry["command"], json!("python3"));
+        assert!(
+            entry["args"][0].as_str().unwrap().ends_with("shared-browser/server.py"),
+            "materialized from the binary: {entry}"
+        );
+        assert_eq!(entry["env"]["SUPERMUX_HOOK_TOKEN"], json!("${SUPERMUX_HOOK_TOKEN}"));
+        assert_eq!(entry["env"]["SUPERMUX_SESSION"], json!("${SUPERMUX_SESSION}"));
+        // The connector id is NOT used as a server key (no `mcp__shared-browser__*`).
+        assert!(cfg["mcpServers"].get("shared-browser").is_none());
+        assert!(fin.launch_flags.iter().any(|w| w == "--strict-mcp-config"));
+
+        // …and the tools are allow-listed in the overlay.
+        let settings: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("session-config/alice/settings.json")).unwrap(),
+        )
+        .unwrap();
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+        assert!(
+            allow.contains(&json!("mcp__browser__*")),
+            "browser tools auto-approve: {allow:?}"
+        );
+
+        // The script really is on disk where the emit points.
+        let path = crate::connectors::browser::mcp::server_path(&dir);
+        assert!(path.exists(), "the embedded server was materialized");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// UNGRANTED: byte-identical launch — no config at all, no browser server,
+    /// and nothing materialized.
+    #[tokio::test]
+    async fn an_ungranted_session_gets_no_browser_server_at_all() {
+        let (state, dir) = browser_state().await;
+        seed_browser_card(&state).await;
+        crate::db::sessions::insert_minimal(&state.pool, "bob", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "bob").await.unwrap();
+        assert!(
+            fin.is_none(),
+            "a plain pane with no grants and no memory stays byte-identical"
+        );
+        assert!(!dir.join("session-config").exists(), "nothing written");
+        assert!(
+            !crate::connectors::browser::mcp::server_path(&dir).exists(),
+            "the browser server is not even materialized for an ungranted session"
+        );
+        assert!(
+            !state.browser.is_running().await,
+            "assembling a launch must never spawn chrome"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A DIFFERENT connector's grant must not smuggle the browser in.
+    #[tokio::test]
+    async fn another_connectors_grant_does_not_carry_the_browser() {
+        let (state, dir) = browser_state().await;
+        seed_browser_card(&state).await;
+        crate::db::sessions::insert_minimal(&state.pool, "carol", "/tmp", "claude")
+            .await
+            .unwrap();
+        connectors::upsert(
+            &state.pool,
+            "pmcp-notion",
+            "mcp_catalog",
+            "Notion",
+            "",
+            "",
+            "[]",
+            "[]",
+            &json!({ "command": "npx", "args": ["notion"] }).to_string(),
+            "{}",
+        )
+        .await
+        .unwrap();
+        connectors::grant(&state.pool, "carol", "pmcp-notion", None, true)
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "carol").await.unwrap().expect("active");
+        let cfg = mcp_config_json(&fin);
+        assert!(cfg["mcpServers"]["pmcp-notion"].is_object());
+        assert!(
+            cfg["mcpServers"].get("browser").is_none(),
+            "no browser server without the shared-browser grant"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

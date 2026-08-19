@@ -89,6 +89,16 @@ pub struct SessionActivity {
     /// no hook reports the credential outcome (it never touches this plane; the
     /// card POSTs it straight to the vault). In-memory only.
     pub connect_request: Option<ConnectAsk>,
+    /// **The live browser takeover ask** (`connectors.browser`): a granted bot
+    /// called the Shared Browser's `request_human_takeover(reason)` — a login,
+    /// a 2FA prompt, a CAPTCHA — and needs a human to finish it on the page.
+    /// Set by the `PreToolUse` hook when it recognises the affordance
+    /// ([`crate::sessions::takeover_ask::parse`]) AND by the tool endpoint when
+    /// the call actually runs (that path also parks the agent on the drive
+    /// lock), and cleared by the same "something after it happened" events as
+    /// [`connect_request`](Self::connect_request), plus explicitly by the
+    /// endpoint the moment the human hands the wheel back. In-memory only.
+    pub browser_takeover: Option<crate::sessions::takeover_ask::TakeoverAsk>,
 }
 
 impl SessionActivity {
@@ -103,6 +113,7 @@ impl SessionActivity {
             && self.permission.is_none()
             && self.elicitation.is_none()
             && self.connect_request.is_none()
+            && self.browser_takeover.is_none()
     }
 }
 
@@ -445,6 +456,18 @@ pub struct AppState {
     /// SAME cache + registry (a `/start` writer + `/progress` subscriber must
     /// rendezvous on one channel — see `crate::updates`).
     pub updates: crate::updates::UpdatesState,
+    /// **Shared-Browser connector** service (phase 1). One long-lived
+    /// `chrome-headless-shell` with an isolated CDP browser context per agent
+    /// session and an AGENT/HUMAN drive lock per context.
+    ///
+    /// **Lazily started — constructing it spawns nothing.** Chrome is launched
+    /// on the FIRST [`crate::connectors::browser::BrowserService::context_for`]
+    /// call, so an install with no browser grants never runs a browser and its
+    /// launch stays byte-identical to a build without the module. Teardown is
+    /// owned by the service itself (process-group kill + temp-profile removal +
+    /// a SIGTERM/SIGINT hook installed only once chrome is really running), so
+    /// nothing here or in `main.rs` has to remember to stop it.
+    pub browser: Arc<crate::connectors::browser::BrowserService>,
 }
 
 impl AppState {
@@ -494,6 +517,10 @@ impl AppState {
             statuslines: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
+            // Cheap: a config struct. No process, no I/O — see the field docs.
+            browser: crate::connectors::browser::BrowserService::new(
+                crate::connectors::browser::BrowserConfig::from_env(),
+            ),
         }
     }
 
@@ -940,7 +967,8 @@ impl AppState {
             || entry.subagents != before.subagents
             || entry.permission != before.permission
             || entry.elicitation != before.elicitation
-            || entry.connect_request != before.connect_request;
+            || entry.connect_request != before.connect_request
+            || entry.browser_takeover != before.browser_takeover;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -1064,6 +1092,28 @@ impl AppState {
     pub fn clear_connect_request(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.connect_request = None;
+        })
+    }
+
+    /// Set `name`'s live browser takeover ask — a granted bot asked a human to
+    /// take the wheel of its page. Returns whether it changed (a re-fired
+    /// identical ask broadcasts nothing).
+    pub fn set_browser_takeover(
+        &self,
+        name: &str,
+        ask: crate::sessions::takeover_ask::TakeoverAsk,
+    ) -> bool {
+        self.mutate_activity(name, |a| {
+            a.browser_takeover = Some(ask);
+        })
+    }
+
+    /// Clear `name`'s live browser takeover ask — the human handed the wheel
+    /// back, the park timed out, or the tool call otherwise moved on. Returns
+    /// whether it changed.
+    pub fn clear_browser_takeover(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.browser_takeover = None;
         })
     }
 
@@ -1262,6 +1312,14 @@ impl AppState {
             }
         }
         self.pty.forget(name);
+        // The shared-browser context is per-session state too — and the most
+        // dangerous kind to leave behind, because it holds whatever the agent
+        // logged into. A deleted/archived name can be created again minutes
+        // later; the next occupant must never find this one's cookie jar. (The
+        // launch-id keying in `BrowserService::context_for` is the second lock
+        // on that same door.) Fire-and-forget: a session that never browsed is
+        // a silent no-op.
+        crate::connectors::browser::dispose_on_teardown(&self.browser, name);
     }
 
     /// Evict a teammate PANE stream keyed by its stream key
@@ -1337,6 +1395,13 @@ impl AppState {
         self.session_runtimes.remove(old);
         self.session_runtimes.remove(new);
         crate::sessions::native::forget(old);
+        // The browser registry is keyed by session NAME, so a rename would
+        // strand the live context under the old key: invisible to the renamed
+        // session (which would open a second one), never reaped (the map never
+        // empties), and — worst — waiting under a name someone else can create.
+        // Disposing it is the honest move: the agent loses a page it can
+        // trivially reopen, and no authenticated context outlives its name.
+        crate::connectors::browser::dispose_on_teardown(&self.browser, old);
         // Carry the debounce handle across the rename: a rename mid-debounce
         // would otherwise leak the handle under `old` and never fire (the
         // task's own re-read uses the captured task_name, which is the old

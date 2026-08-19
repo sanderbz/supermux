@@ -273,13 +273,19 @@ export function connectorToolCount(card: ConnectorCard): number | null {
   return null
 }
 
-/** "14 tools" / "1 tool" / "built-in" / "" — the App-Store trust pill copy. */
+/** "14 tools" / "1 tool" / "" — the App-Store trust pill copy.
+ *
+ *  A built-in card gets the SAME count as every other card (jury STORE_CARD #2:
+ *  the Shared Browser answered "built-in" where Playwright answered "15 tools",
+ *  so the built-in was the one card in the grid that never stated what it can
+ *  do). Provenance is a separate chip — see `isBuiltin` — not a substitute for
+ *  the count. */
 export function toolCountLabel(card: ConnectorCard): string {
-  if (card.kind === 'builtin_browser') return 'built-in'
   const n = connectorToolCount(card)
   if (n === null) return ''
   return n === 1 ? '1 tool' : `${n} tools`
 }
+
 
 /** Services that offer a branded OAuth sign-in (the "Sign in with {service}"
  *  primary). The set is intentionally explicit: an OAuth lead is a trust promise,
