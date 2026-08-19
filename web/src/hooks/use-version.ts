@@ -436,7 +436,9 @@ export function useVersion(): UseVersion {
     current: snapshot?.current ?? null,
     latest: snapshot?.latest ?? null,
     updateAvailable: snapshot?.update_available ?? false,
-    blockedReasons: snapshot?.blocked_reasons ?? [],
+    blockedReasons: Array.isArray(snapshot?.blocked_reasons)
+      ? snapshot.blocked_reasons
+      : [],
     installMode: snapshot?.install_mode ?? null,
     manageable: snapshot?.manageable ?? false,
     fetchError,

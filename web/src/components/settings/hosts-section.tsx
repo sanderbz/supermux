@@ -118,7 +118,9 @@ export function HostsSection() {
 
   const sortedHosts = React.useMemo<Host[]>(
     () =>
-      (hosts ?? [])
+      // Array.isArray, not `?? []`: a non-array body from an offline / errored
+      // endpoint must not reach `.slice()` / the `.map` below and crash.
+      (Array.isArray(hosts) ? hosts : [])
         .slice()
         .sort((a, b) => a.name.localeCompare(b.name)),
     [hosts],

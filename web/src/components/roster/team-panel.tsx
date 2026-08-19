@@ -31,7 +31,7 @@
  */
 import * as React from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, Trash2, Users } from 'lucide-react'
+import { ArrowRight, MoreHorizontal, Trash2, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { SessionMark } from '@/brand/marks'
@@ -161,10 +161,14 @@ function RemoveMemberButton({
   team,
   member,
   tabIndex,
+  onResolve,
 }: {
   team: Team
   member: TeamMember
   tabIndex?: number
+  /** Fired when the action settles (cancelled, or removal finished/failed), so
+   *  a touch row that revealed this control can collapse back to its overflow. */
+  onResolve?: () => void
 }) {
   const qc = useQueryClient()
   const { toast } = useToast()
@@ -183,8 +187,11 @@ function RemoveMemberButton({
         void qc.invalidateQueries({ queryKey: TEAMS_KEY })
       })
       .catch(() => toast({ message: `Couldn't remove ${member.name}`, tone: 'error' }))
-      .finally(() => setPending(false))
-  }, [qc, toast, team.team_name, member.agent_id, member.name])
+      .finally(() => {
+        setPending(false)
+        onResolve?.()
+      })
+  }, [qc, toast, team.team_name, member.agent_id, member.name, onResolve])
   const confirming = useArmedConfirm({ onConfirm: run })
 
   if (confirming.armed) {
@@ -192,7 +199,10 @@ function RemoveMemberButton({
       <span className="flex shrink-0 items-center gap-1" data-vr="member-remove-confirm">
         <button
           type="button"
-          onClick={confirming.cancel}
+          onClick={() => {
+            confirming.cancel()
+            onResolve?.()
+          }}
           disabled={pending}
           className="rounded-md px-2 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
@@ -327,6 +337,13 @@ function MemberRow({
   // ONE tab stop, arrows choose the member. Keyed by `agent_id`, the same stable
   // identity the selection and the API use.
   const roving = useRovingItem(member.agent_id)
+  // Reveal-on-demand for the destructive remove action (§1/§6.3). A resting row
+  // is clean — mark + name + status + tasks, no trash shouting. On a fine
+  // pointer the trash appears on row hover / focus-within (pure CSS, below); on
+  // a coarse pointer there is no hover, so a QUIET neutral `⋯` overflow reveals
+  // it on tap. `managing` is that touch reveal; it collapses again once the
+  // action settles (RemoveMemberButton's `onResolve`).
+  const [managing, setManaging] = React.useState(false)
   // Pulled out before the JSX: passing the roving handle straight into `ref=`
   // makes the compiler lint read every sibling property as a ref access.
   const rovingRef = roving.ref
@@ -364,7 +381,7 @@ function MemberRow({
   return (
     <div
       className={cn(
-        'flex w-full items-center gap-1 rounded-xl border border-border bg-card pr-1.5 transition-colors',
+        'group flex w-full items-center gap-1 rounded-xl border border-border bg-card pr-1.5 transition-colors',
         active && 'border-primary/50 bg-accent/30',
       )}
       data-vr="team-member-row"
@@ -387,8 +404,44 @@ function MemberRow({
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5">{body}</div>
       )}
-      {/* Remove / kill this teammate — destructive, armed-confirm, in place. */}
-      <RemoveMemberButton team={team} member={member} tabIndex={roving.tabIndex} />
+      {/* Remove / kill this teammate — destructive, armed-confirm, REVEALED on
+          demand so the resting row stays calm (§1/§6.3). */}
+      <div className="flex shrink-0 items-center" data-vr="team-member-manage">
+        {/* Coarse-pointer (touch) overflow: a quiet neutral `⋯` — never a
+            persistent trash — that reveals the destructive control on tap.
+            Hidden on fine pointers, where hover/focus does the revealing. */}
+        {!managing && (
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label={`Manage ${member.name}`}
+            data-vr="team-member-overflow"
+            onClick={() => setManaging(true)}
+            className="hidden size-9 shrink-0 place-items-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:grid"
+          >
+            <MoreHorizontal className="size-4" aria-hidden />
+          </button>
+        )}
+        <div
+          className={cn(
+            'transition-opacity',
+            // Engaged (touch tapped the overflow, or an armed confirm is up):
+            // pin visible in both pointer worlds.
+            managing
+              ? 'opacity-100'
+              : // Resting: hidden. Fine pointer reveals on row hover / focus;
+                // coarse pointer hides it entirely (the overflow stands in).
+                'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:hidden',
+          )}
+        >
+          <RemoveMemberButton
+            team={team}
+            member={member}
+            tabIndex={roving.tabIndex}
+            onResolve={() => setManaging(false)}
+          />
+        </div>
+      </div>
     </div>
   )
 }

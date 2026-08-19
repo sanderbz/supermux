@@ -115,7 +115,9 @@ export function AuditLog() {
     )
   }
 
-  const rows = data ?? []
+  // `?? []` only guards null/undefined — coerce a non-array body to [] so a
+  // bad endpoint can't crash `rows.map` with "list.map is not a function".
+  const rows = Array.isArray(data) ? data : []
   if (rows.length === 0) {
     return (
       <EmptyStatePlaceholder

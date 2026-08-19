@@ -182,7 +182,10 @@ export function SchedulesSection() {
     }
   }, [])
 
-  const list = schedules.data ?? []
+  // Guard against a non-array body from an offline / errored endpoint: `?? []`
+  // only defends null/undefined, so a non-array `data` would slip through to
+  // `list.map` below and throw "list.map is not a function".
+  const list = Array.isArray(schedules.data) ? schedules.data : []
   const selected = selectedId ? (list.find((s) => s.id === selectedId) ?? null) : null
   const mode = creating ? 'create' : selected ? 'edit' : null
 

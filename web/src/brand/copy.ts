@@ -321,6 +321,13 @@ export const ONBOARDING = {
     n === 1
       ? 'Welcome back. Your session is here.'
       : `Welcome back. Your ${n} sessions are here.`,
+  /** Grok/bot-mode twin of `welcomeBack`. Same message, the roster's noun
+   *  ("bots") — so the banner never says "sessions" while the header beside it
+   *  reads "N bots · M need you". Base app (grok off) keeps `welcomeBack`. */
+  welcomeBackBots: (n: number) =>
+    n === 1
+      ? 'Welcome back. Your bot is here.'
+      : `Welcome back. Your ${n} bots are here.`,
   welcomeBackHint: 'Take the 30-second tour of what moved.',
   tourStart: 'Take the tour',
   tourSkip: 'Skip',

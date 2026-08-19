@@ -86,7 +86,9 @@ export function WelcomeBanner({
         >
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-semibold leading-snug text-foreground">
-              {ONBOARDING.welcomeBack(sessionCount)}
+              {(grok ? ONBOARDING.welcomeBackBots : ONBOARDING.welcomeBack)(
+                sessionCount,
+              )}
             </p>
             <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
               {ONBOARDING.welcomeBackHint}

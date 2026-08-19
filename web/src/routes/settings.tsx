@@ -497,7 +497,11 @@ function ClaudeToolsSection() {
 function ConnectorsSection() {
   const navigate = useNavigate()
   const { data: connectors } = useConnectors()
-  const installed = (connectors ?? []).filter((c) => c.source === 'local').length
+  // Defensive: a non-array body from an offline / errored endpoint must not
+  // crash the row — coerce before `.filter`.
+  const installed = (Array.isArray(connectors) ? connectors : []).filter(
+    (c) => c.source === 'local',
+  ).length
   return (
     <Section
       title="Connectors"
@@ -743,7 +747,10 @@ function NotificationsSection() {
   const refreshActivity = React.useCallback(async () => {
     try {
       const rows = await pushApi.getAttempts()
-      setActivity(rows)
+      // Defensive: an offline / errored endpoint can resolve with a non-array
+      // body. Coerce to [] so `activity.map` below never throws
+      // "list.map is not a function" — the panel renders its empty state instead.
+      setActivity(Array.isArray(rows) ? rows : [])
     } catch {
       /* best-effort; the panel renders an empty-state if this fails */
     }
@@ -889,7 +896,9 @@ function NotificationsSection() {
                   Nothing yet. Send a test or wait for an agent to ping you.
                 </p>
               ) : (
-                activity.map((a, i) => <ActivityRow key={`${a.at}-${i}`} a={a} />)
+                (Array.isArray(activity) ? activity : []).map((a, i) => (
+                  <ActivityRow key={`${a.at}-${i}`} a={a} />
+                ))
               )}
             </div>
           </Row>
