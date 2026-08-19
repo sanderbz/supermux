@@ -546,4 +546,65 @@ mod tests {
         assert!(cfg.idle_timeout >= Duration::from_secs(60));
         assert_eq!((cfg.width, cfg.height), (1024, 768));
     }
+
+    /// REAL-CHROME end-to-end leak test (spec §13; this box has had chrome/rig
+    /// leaks, so the persistent-shell service must prove clean teardown). Ignored
+    /// by default — it spawns the pinned `chrome-headless-shell`. Run on a box that
+    /// has it with: `cargo test -- --ignored real_chrome`. Proves the whole Phase-1
+    /// contract against a live browser: one shell backs many isolated contexts, the
+    /// lock flips + restores, and `shutdown()` leaves NO orphan process and removes
+    /// the temporary user-data-dir.
+    #[tokio::test]
+    #[ignore = "spawns a real chrome-headless-shell; run with --ignored on a box that has the pinned binary"]
+    async fn real_chrome_spawns_shares_and_tears_down_without_leak() {
+        fn pid_alive(pid: u32) -> bool {
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+        }
+
+        let svc = BrowserService::new(BrowserConfig::default());
+        // First context lazily spawns the single shell.
+        svc.context_for("alice").await.expect("spawn + context alice");
+        assert!(svc.is_running().await, "chrome should be running after context_for");
+        let pid = svc.chrome_pid().await.expect("a chrome pid");
+        let udd = svc.user_data_dir().await.expect("a user-data-dir");
+        assert!(pid_alive(pid), "chrome pid {pid} must be alive while running");
+        assert!(udd.exists(), "user-data-dir must exist while running");
+
+        // A second context reuses the SAME shell (one process, isolated contexts).
+        svc.context_for("bob").await.expect("context bob");
+        assert_eq!(svc.chrome_pid().await, Some(pid), "second context must reuse the one shell");
+        let mut names = svc.sessions().await;
+        names.sort();
+        assert_eq!(names, vec!["alice".to_string(), "bob".to_string()]);
+
+        // The AGENT/HUMAN lock flips and restores. Each call returns the mode it
+        // REPLACED (so a caller can tell a real takeover from a redundant click);
+        // the resulting live mode is what we assert.
+        assert_eq!(
+            svc.request_human_takeover("alice").await.unwrap(),
+            DriveMode::AgentDriving,
+            "takeover returns the previous (resting) mode"
+        );
+        assert_eq!(svc.mode("alice").await.unwrap(), DriveMode::HumanDriving, "now HUMAN driving");
+        assert_eq!(
+            svc.release_to_agent("alice").await.unwrap(),
+            DriveMode::HumanDriving,
+            "release returns the previous (human) mode"
+        );
+        assert_eq!(svc.mode("alice").await.unwrap(), DriveMode::AgentDriving, "back to AGENT");
+
+        // Teardown must leave nothing behind.
+        svc.shutdown().await;
+        assert!(!svc.is_running().await);
+        assert_eq!(svc.chrome_pid().await, None);
+        // Give the OS a beat to reap the process group, then assert it is truly gone.
+        for _ in 0..50 {
+            if !pid_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!pid_alive(pid), "LEAK: chrome pid {pid} still alive after shutdown");
+        assert!(!udd.exists(), "LEAK: user-data-dir {udd:?} must be removed on shutdown");
+    }
 }
