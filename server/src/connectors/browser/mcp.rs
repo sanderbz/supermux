@@ -53,10 +53,10 @@ pub const SERVER_PY: &str = include_str!("mcp_server.py");
 /// stroke, same posture as the iCloud card's envelope.
 const ICON: &str = "data:image/svg+xml;utf8,\
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' \
-stroke='%2338bdf8' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>\
+stroke='%230284c7' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>\
 <rect x='2.5' y='4' width='19' height='16' rx='2.5'/><path d='M2.5 9h19'/>\
-<circle cx='6' cy='6.5' r='.7' fill='%2338bdf8' stroke='none'/>\
-<circle cx='8.6' cy='6.5' r='.7' fill='%2338bdf8' stroke='none'/>\
+<circle cx='6' cy='6.5' r='.7' fill='%230284c7' stroke='none'/>\
+<circle cx='8.6' cy='6.5' r='.7' fill='%230284c7' stroke='none'/>\
 <path d='M8 13.5h8M8 16.5h5'/></svg>";
 
 /// The five tools the server exposes (the card's tool list + count).

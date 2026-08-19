@@ -12,9 +12,14 @@
 //                  pill and the hand-back button can be driven offline.
 //   ?mode=agent    start the mock in AGENT_DRIVING (the read-only state).
 //   ?theme=dark    force the dark slab (the rig shoots both).
+//   ?overlay=1     render the in-chat TAKEOVER CARD with its overlay already
+//                  open on the mock socket — the LIVE driving surface (status
+//                  pill, trust line, one hand-back), which the bare panel bench
+//                  cannot show because it has no host chrome around it.
 import * as React from 'react'
 
 import { TakeoverPanel } from '@/components/browser/takeover-panel'
+import { TakeoverCard } from '@/components/chat/ui/takeover-card'
 import type { TakeoverOptions } from '@/lib/browser/takeover-socket'
 
 export default function DevBrowserTakeover() {
@@ -25,6 +30,7 @@ export default function DevBrowserTakeover() {
   const mock = params.get('mock') === '1'
   const agent = params.get('mode') === 'agent'
   const dark = params.get('theme') === 'dark'
+  const overlay = params.get('overlay') === '1'
 
   const [options, setOptions] = React.useState<TakeoverOptions | undefined>(undefined)
   const [ready, setReady] = React.useState(!mock)
@@ -55,11 +61,25 @@ export default function DevBrowserTakeover() {
         </h1>
         <div
           data-vr={`takeover-${dark ? 'dark' : 'light'}${agent ? '-agent' : ''}`}
-          className="h-[520px] overflow-hidden rounded-2xl border border-border shadow-[var(--sm-card-shadow)]"
+          className={
+            overlay
+              ? ''
+              : 'h-[520px] overflow-hidden rounded-2xl border border-border shadow-[var(--sm-card-shadow)]'
+          }
         >
-          {ready ? (
+          {!ready ? null : overlay ? (
+            <TakeoverCard
+              ask={{
+                session,
+                reason: 'sign in to bank.example and approve the 2FA push on your phone',
+              }}
+              botName="Ada"
+              panelOptions={options}
+              defaultOpen
+            />
+          ) : (
             <TakeoverPanel session={session} options={options} className="h-full" />
-          ) : null}
+          )}
         </div>
       </div>
     </div>

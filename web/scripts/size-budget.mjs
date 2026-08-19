@@ -523,7 +523,35 @@ const BUDGET_ENTRY_JS = 160 * KB
 // panel is not on the cold path at all. And the whole surface is Bot-mode: a
 // session with no `shared-browser` grant never receives a `browser_takeover` ask,
 // so the base app renders exactly as before.
-const BUDGET_APP_JS = 283 * KB
+// 284 at the SHARED BROWSER DESIGN PASS (the design jury's six blocking findings
+// on the store card, the take-the-wheel card and the live takeover panel):
+// measured 283.05 against 283.00, ceil(measured) = 284 — the same rule every fase
+// since B3 has used, and the ratchet the paragraph above said the next additive
+// fase on this surface would be forced into (0.11 KB of headroom does not hold a
+// design pass). It is +0.16 KB, and every byte is a jury finding:
+//   ~+70 B   the LIVE overlay's trust boundary — a designed driving PILL (dot +
+//            tinted container) where a plain eyebrow caption was, plus the
+//            persistent "{bot} can't see this page while you drive." line. The
+//            reassurance existed only on the offer card; the jury's HONESTY axis
+//            docked it for being absent from the one screen where a human is
+//            actually typing a password.
+//   ~+50 B   `TakeoverPanel`'s `embedded` prop and the host's pass-through: while
+//            the human drives, the panel no longer draws its own mode badge and
+//            its own "Take over" beside the overlay's "Hand back" — one state,
+//            one control (jury TAKEOVER_PANEL #2, the ambiguity this surface may
+//            not have).
+//   ~+40 B   the store card's `built-in` + "N tools" chip pair and the shared
+//            App-Store icon tile, MINUS the `count` prop and the `Added · N`
+//            branch they replace (the built-in card now answers "how many tools"
+//            exactly like the catalog card beside it).
+// The double-clear-✕ fix and the dark-grey contrast lifts are pure CSS/class
+// changes and land in the CSS budget (30.72/31, 99%), not here.
+// The ENTRY (hero-path) gate — the one that guards first paint — stays GREEN and
+// effectively unmoved at 151.99/160 (95%): the takeover panel and the store are
+// both lazy, so none of this is on the cold path. And the whole surface is
+// Bot-mode + the store route: a session with no `shared-browser` grant never
+// receives a `browser_takeover` ask, so the base app renders exactly as before.
+const BUDGET_APP_JS = 284 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

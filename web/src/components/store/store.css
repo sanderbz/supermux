@@ -20,6 +20,24 @@
   display: none;
 }
 
+/* ONE clear affordance, never two (jury STORE_CARD #1 — the dark shot rendered
+ * two ✕ glyphs after a query). `input[type=search]` draws its OWN cancel pseudo
+ * in WebKit/Blink as soon as the field has a value; ours is the styled button
+ * sitting in the same right-hand slot, so the native one is switched off. Scoped
+ * to `.cs-search`, so every other search field in the app is untouched. */
+.cs-search input[type='search'] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.cs-search input[type='search']::-webkit-search-cancel-button,
+.cs-search input[type='search']::-webkit-search-decoration,
+.cs-search input[type='search']::-webkit-search-results-button,
+.cs-search input[type='search']::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 /* Header stays legible over the scrolling grid without a hard seam. */
 .cs-header {
   background: color-mix(in oklab, var(--background) 88%, transparent);

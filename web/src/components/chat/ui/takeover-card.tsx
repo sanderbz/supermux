@@ -34,6 +34,7 @@
 import * as React from 'react'
 
 import type { BrowserTakeoverInfo } from '../../../lib/api/sessions'
+import type { TakeoverOptions } from '../../../lib/browser/takeover-socket'
 import { cn } from '../../../lib/utils'
 
 import { DialogShell } from './choice-card'
@@ -77,9 +78,19 @@ export interface TakeoverCardProps {
   onDismiss?: () => void
   /** Test seam: render with the panel already open. */
   defaultOpen?: boolean
+  /** Bench seam: a fake takeover socket, so the offline rig can shoot the LIVE
+   *  driving overlay instead of its connecting skeleton. Production passes
+   *  nothing and the panel opens the real socket. */
+  panelOptions?: TakeoverOptions
 }
 
-export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverCardProps) {
+export function TakeoverCard({
+  ask,
+  botName,
+  onDismiss,
+  defaultOpen,
+  panelOptions,
+}: TakeoverCardProps) {
   const [open, setOpen] = React.useState(defaultOpen ?? false)
   const [dismissed, setDismissed] = React.useState(false)
   const who = botName?.trim() || ask.session
@@ -100,7 +111,7 @@ export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverC
   return (
     <>
       <DialogShell
-        eyebrow="Shared browser"
+        eyebrow={<span className="text-ink-2">Shared browser</span>}
         question={`${who} needs you to take the wheel`}
         detail={<AgentSays who={who}>{ask.reason}</AgentSays>}
         why="You drive the agent's own page. It can't see or act on it until you hand back."
@@ -110,7 +121,17 @@ export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverC
             type="button"
             data-testid="takeover-open"
             onClick={() => setOpen(true)}
-            className={cn(PILL, 'bg-fill-soft-2 font-semibold')}
+            className={cn(
+              PILL,
+              // THE primary. A soft fill read as a peer of the outline "Not now"
+              // (jury TAKEOVER_CARD): same value, same weight of border, so the
+              // eye had to read both to find the action. The inverted
+              // bubble-user pair is the app's own monochrome high-contrast fill
+              // — no brand colour introduced, and it flips correctly with the
+              // theme (near-black on light, near-white on dark).
+              'border-transparent bg-bubble-user font-semibold text-bubble-user-ink',
+              'shadow-[0_1px_2px_rgba(0,0,0,0.16),0_4px_12px_-6px_rgba(0,0,0,0.35)]',
+            )}
           >
             Take the wheel
           </button>
@@ -120,7 +141,7 @@ export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverC
               setDismissed(true)
               onDismiss?.()
             }}
-            className={cn(PILL, 'bg-transparent font-medium hover:bg-fill-soft')}
+            className={cn(PILL, 'bg-transparent font-medium text-ink-2 hover:bg-fill-soft')}
           >
             Not now
           </button>
@@ -140,10 +161,31 @@ export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverC
               where the chat scope's tokens are not in force. */}
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11.5px] font-medium uppercase tracking-[0.5px] text-muted-foreground">
-                You are driving · {who}
+              {/* THE STATE, AS A CONTROL — not a caption. Who is driving is the
+                  one thing this surface may never leave ambiguous, so it is a
+                  designed pill (live dot + tinted container), the same grammar
+                  the panel's own mode badge uses. */}
+              <div
+                data-testid="takeover-driving-pill"
+                className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[11.5px] font-semibold uppercase tracking-[0.4px] text-foreground ring-1 ring-inset ring-border"
+              >
+                <span
+                  aria-hidden
+                  className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none"
+                />
+                You are driving
               </div>
-              <div className="truncate text-[13px] text-muted-foreground">{ask.reason}</div>
+              <div className="mt-1 truncate text-[13px] text-muted-foreground">{ask.reason}</div>
+              {/* THE BOUNDARY, RESTATED WHERE IT MATTERS. The card promised the
+                  agent cannot watch; this is the screen the human types a
+                  password into, so the promise is repeated here rather than
+                  left three scrolls up the transcript. */}
+              <div
+                data-testid="takeover-trust-line"
+                className="mt-0.5 truncate text-[12px] text-muted-foreground"
+              >
+                {who} can’t see this page while you drive.
+              </div>
             </div>
             <button
               type="button"
@@ -166,7 +208,16 @@ export function TakeoverCard({ ask, botName, onDismiss, defaultOpen }: TakeoverC
                 </div>
               }
             >
-              <TakeoverPanel session={ask.session} className="h-full" />
+              {/* `embedded`: the overlay owns the driving state AND the single
+                  hand-back. Without it the panel drew its own mode badge and a
+                  ghost "Take over" beside our "Hand back" — two controls for one
+                  state (jury TAKEOVER_PANEL #2). */}
+              <TakeoverPanel
+                session={ask.session}
+                options={panelOptions}
+                embedded
+                className="h-full"
+              />
             </React.Suspense>
           </div>
         </div>

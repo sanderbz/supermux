@@ -63,10 +63,16 @@ export interface TakeoverPanelProps {
   session: string
   /** Injected for tests/benches; production passes nothing. */
   options?: TakeoverOptions
+  /** The panel is hosted inside a surface that ALREADY states who is driving and
+   *  already offers the single hand-back (the in-chat takeover overlay). Then
+   *  this header must not draw its own mode badge and its own mode-flipping
+   *  button beside the host's — one state, one control (jury TAKEOVER_PANEL #2).
+   *  Standalone (the /dev bench, a future full-page route) keeps both. */
+  embedded?: boolean
   className?: string
 }
 
-export function TakeoverPanel({ session, options, className }: TakeoverPanelProps) {
+export function TakeoverPanel({ session, options, embedded, className }: TakeoverPanelProps) {
   const [snap, setSnap] = React.useState<TakeoverSnapshot>(EMPTY_SNAPSHOT)
   const boxRef = React.useRef<HTMLDivElement | null>(null)
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null)
@@ -238,7 +244,7 @@ export function TakeoverPanel({ session, options, className }: TakeoverPanelProp
       data-takeover={session}
     >
       <header className="flex items-center gap-2 border-b border-hairline bg-surface px-3 py-2">
-        <ModePill mode={snap.mode} state={snap.state} />
+        {!embedded && <ModePill mode={snap.mode} state={snap.state} />}
         <span
           className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-2"
           title={snap.url}
@@ -246,7 +252,7 @@ export function TakeoverPanel({ session, options, className }: TakeoverPanelProp
         >
           {snap.url || '—'}
         </span>
-        {driving ? (
+        {embedded ? null : driving ? (
           <button
             type="button"
             onClick={() => socketRef.current?.handBack()}
@@ -259,7 +265,7 @@ export function TakeoverPanel({ session, options, className }: TakeoverPanelProp
             type="button"
             onClick={() => socketRef.current?.takeOver()}
             disabled={snap.state !== 'live'}
-            className="shrink-0 rounded-full border border-hairline bg-fill-soft px-3 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-fill-soft-2 disabled:opacity-40 motion-reduce:transition-none"
+            className="shrink-0 rounded-full border border-hairline bg-fill-soft px-3 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-fill-soft-2 disabled:opacity-60 motion-reduce:transition-none"
           >
             Take over
           </button>

@@ -44,7 +44,15 @@ export function ConnectorCard({
 }) {
   const chip = chipFor(installed, granted, botScope)
   const tools = toolCountLabel(card)
-  const n = card.tools?.length || card.tool_count || 0
+  // The provenance chip and the count chip, once — the same pair in both
+  // layouts, so the built-in card answers "how many tools" exactly like the
+  // catalog card beside it (jury STORE_CARD #2).
+  const chips = (
+    <>
+      {card.kind === 'builtin_browser' && <ToolPill>built-in</ToolPill>}
+      {tools && <ToolPill>{tools}</ToolPill>}
+    </>
+  )
 
   if (layout === 'row') {
     return (
@@ -58,11 +66,11 @@ export function ConnectorCard({
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex items-center gap-2">
             <span className="truncate text-[14px] font-medium text-foreground">{card.display_name}</span>
-            {tools && <ToolPill>{tools}</ToolPill>}
+            {chips}
           </span>
           <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
         </span>
-        <StateChip kind={chip} count={n} />
+        <StateChip kind={chip} />
       </button>
     )
   }
@@ -84,11 +92,7 @@ export function ConnectorCard({
           <div className="flex items-center gap-1.5">
             <h3 className="truncate text-[15px] font-medium leading-tight text-foreground">{card.display_name}</h3>
           </div>
-          {tools && (
-            <div className="mt-1.5">
-              <ToolPill>{tools}</ToolPill>
-            </div>
-          )}
+          {tools && <div className="mt-1.5 flex flex-wrap items-center gap-1.5">{chips}</div>}
         </div>
         {onMenu && (
           <button
@@ -119,7 +123,7 @@ export function ConnectorCard({
           className="pointer-events-auto"
           tabIndex={-1}
         >
-          <StateChip kind={chip} count={n} />
+          <StateChip kind={chip} />
         </button>
       </div>
     </div>
@@ -128,18 +132,21 @@ export function ConnectorCard({
 
 function ToolPill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11.5px] font-medium tabular-nums text-muted-foreground">
+    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11.5px] font-medium tabular-nums text-foreground/75">
       {children}
     </span>
   )
 }
 
-export function StateChip({ kind, count }: { kind: ChipKind; count: number }) {
+export function StateChip({ kind }: { kind: ChipKind }) {
   if (kind === 'added') {
+    // "Added" and nothing else. The trailing "· 5" read as five agents / five
+    // grants as readily as five tools (jury STORE_CARD #2) — the count belongs
+    // on the tool chip, which now carries it for every card alike.
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-status-ready/15 px-3 py-1.5 text-[12.5px] font-medium text-status-ready-ink">
         <Check className="size-3.5" aria-hidden />
-        Added{count ? ` · ${count}` : ''}
+        Added
       </span>
     )
   }
