@@ -243,12 +243,8 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // Same three gates as the desktop seam, same pure decision
   // (`components/chat/seam.ts`), same kill-switch. Declared HERE, above the
   // input plane and the tap gate, because both of them fork on `chatActive`.
-  const isTeamLead = React.useMemo(
-    () => teams.some((t) => t.lead_supermux_session === name),
-    [teams, name],
-  )
   const chatSetting = useUI((s) => s.botMode)
-  const chatOn = useChatRenderer(row, isTeamLead)
+  const chatOn = useChatRenderer(row)
   // The ONLY state is the user's manual tap, keyed by session name so it resets
   // on navigation and cannot be stomped by a late flag/eligibility resolve.
   // Fase A5 T1/T2: a PERSISTED pin, not `React.useState`. `row != null` (not

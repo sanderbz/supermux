@@ -551,7 +551,50 @@ const BUDGET_ENTRY_JS = 160 * KB
 // both lazy, so none of this is on the cold path. And the whole surface is
 // Bot-mode + the store route: a session with no `shared-browser` grant never
 // receives a `browser_takeover` ask, so the base app renders exactly as before.
-const BUDGET_APP_JS = 284 * KB
+// 294 at TEAMS-in-Bot-mode PHASE 2 (the team detail pane): measured 288.00
+// against 283.83 for Phase 1 — a +4.17 KB phase. It is a genuinely FORCED
+// ratchet, not a pre-emptive lift: Phase 1 left 0.17 KB of headroom, so any new
+// surface at all was going to move this number, and this phase's whole
+// deliverable IS a new surface.
+//
+// THE CEILING IS THE STATED POLICY, NOT ceil(measured). The "220 as of
+// fix/perf-a11y-net" entry above wrote down why: `ceil(measured)` is not a
+// budget, it is a tripwire one byte above the floor, and it has repeatedly
+// turned 0.2 KB fixes into deferred work. ceil(measured) here would be 288 —
+// which this phase already sits ON (288.00/288.00, 100%), i.e. a zero-byte
+// ceiling for Phase 3 (MemberPane), Phase 4 (the board tab), Phase 5 and Phase
+// 6 (the /team/* route), every one of which is a planned, specified follow-up
+// on this same surface. So the arithmetic is the documented one:
+//
+//   measured on this branch   288.00 KB
+//   documented policy         measured × 1.02
+//   ceiling                   288.00 × 1.02 = 293.76 -> 294 KB
+//
+// The bytes, by module contribution:
+//   ~3.89 KB  `roster/team-panel.tsx` — the entire per-TEAM page (its own lazy
+//             chunk, measured directly as `team-panel-*.js`). It is the crew
+//             half of "talk to the lead": the facepile header, the crew list
+//             with per-member status + task counts, the task ledger, the
+//             lead's cost/context/dir glance, and the tab frame. It is already
+//             the CHEAP construction — `Field`, `WorkingDirRow` and two whole
+//             tabs (`InstructionsTab`, `ToolsTab`) are IMPORTED from
+//             `bot-panel.tsx` rather than copied, which is what keeps a second
+//             850-line panel down to under 4 KB.
+//   ~0.27 KB  `grok-roster.tsx` — the discriminated selection type (`bot` /
+//             `team` / `member`), the team branch of the right pane, and the
+//             team row's `data-active` highlight, NET of what 2a deleted.
+//   −0.04 KB  `chat/flag.ts` + its five call sites: the `isTeamLead` parameter
+//             and the two `useTeams()`-backed memos it forced on the focus
+//             seams are GONE (a lead is a first-class bot now). This is the one
+//             line of the phase that gives bytes back, and it lands on the
+//             ENTRY chunk.
+// The ENTRY (hero-path) gate — the one that actually guards first paint, and the
+// one this ratchet does NOT touch — MOVED DOWN: 151.96/160 (95%) against Phase
+// 1's 152.00. TeamPanel is lazy, mounted
+// only once a team is opened in the grok roster, so it is not on the cold path;
+// and with Bot mode OFF the roster never loads at all, so the base app is
+// unchanged.
+const BUDGET_APP_JS = 294 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

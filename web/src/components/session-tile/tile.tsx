@@ -186,13 +186,6 @@ export interface SessionTileProps {
    *  Desktop-only: hidden on touch / narrow viewports. Undefined for tiles
    *  past 9 (no hint). */
   jumpIndex?: number
-  /** Fase A5 — is this session a team LEAD? Only `team-card.tsx` knows, and it
-   *  is the only caller that renders a lead's tile: everywhere else the grid
-   *  has already excluded leads (`splitTeamLeads`). A prop rather than a
-   *  `useTeams()` call because the overview renders dozens of tiles and a query
-   *  subscription per tile is a lot of listeners for one boolean. Feeds the
-   *  eligibility gate (`flag.ts`: a team lead never gets the chat renderer). */
-  isTeamLead?: boolean
   /** This session needs you — the attention tier's `needs` (fase B2 T5). Draws
    *  the 7px dot on the mark's shoulder; the ONLY glyph allowed on top of a
    *  silhouette (B0 contract C5). */
@@ -214,7 +207,6 @@ export function SessionTile({
   onRemove,
   sizeTier = MIN_OVERVIEW_SIZE,
   jumpIndex,
-  isTeamLead = false,
   attention,
 }: SessionTileProps) {
   const reduce = useReducedMotion()
@@ -253,7 +245,7 @@ export function SessionTile({
   // FASE A5 T5 — the chat preview, governed by the same `resolveRenderer` the
   // focus seams use. Declared beside the other preview-mode reads so the tile
   // has ONE place where "what does this tile show" is decided.
-  const tileRenderer = useSessionRenderer(session, isTeamLead)
+  const tileRenderer = useSessionRenderer(session)
   const chatPreview = session.chat_tail != null && tileRenderer === 'chat'
   const hoverPreview = useUI((s) => s.hoverPreview)
   // Master preview mode (Settings → "Overview preview"). `text` is a hard

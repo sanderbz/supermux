@@ -150,7 +150,11 @@ const ROLE_PRESETS: { label: string; text: string }[] = [
 
 /* ── section shell (Tailwind, portal-safe) ─────────────────────────────────── */
 
-function Field({
+/** Exported for `<TeamPanel>`, which copies BotPanel's FRAME (tabs, tablist,
+ *  scrolling body) but shares its section primitives rather than re-declaring
+ *  them — the panels must look like one family, and a second copy would drift.
+ *  BotPanel itself is NOT generalised: no `variant` prop crosses the two. */
+export function Field({
   label,
   hint,
   children,
@@ -289,7 +293,7 @@ function NotesEditor({
 
 /* ── working-dir row (mono + copy + Files link) ────────────────────────────── */
 
-function WorkingDirRow({ name, dir }: { name: string; dir: string }) {
+export function WorkingDirRow({ name, dir }: { name: string; dir: string }) {
   const [copied, setCopied] = React.useState(false)
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
@@ -439,7 +443,9 @@ function OverviewTab({ name, session }: { name: string; session: ApiSession | nu
   )
 }
 
-function InstructionsTab({
+/** The LEAD's instructions, verbatim, when `<TeamPanel>` mounts it — a crew is
+ *  steered by steering its lead, so there is exactly ONE instructions surface. */
+export function InstructionsTab({
   name,
   session,
   onRestartAdvised,
@@ -496,7 +502,10 @@ function InstructionsTab({
   )
 }
 
-function ToolsTab({ name, session }: { name: string; session: ApiSession | null }) {
+/** The lead's tools. `<TeamPanel>` mounts this too, labelled crew-scoped: a
+ *  teammate pane inherits the lead's env/config, so the lead's grants ARE the
+ *  crew's grants. */
+export function ToolsTab({ name, session }: { name: string; session: ApiSession | null }) {
   const mcp = session?.mcp?.trim() || ''
   return (
     <div className="flex flex-col gap-6">

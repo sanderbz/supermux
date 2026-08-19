@@ -2039,6 +2039,18 @@
   min-height: 0;
 }
 
+/* TEAM PANEL (Phase 2c) — the per-TEAM page in the same pane slot. Identical
+   contract to `.gr-botpane`: the panel owns its own header/tabs/padding
+   (Tailwind), so the `[data-grok]` surface is only the box it fills. Nothing new
+   is invented here — the tokens are `.gr-pane`'s. */
+[data-grok] .grok-roster .gr-teampane {
+  padding: 0;
+}
+[data-grok] .grok-roster .gr-teampane > div {
+  flex: 1;
+  min-height: 0;
+}
+
 /* THREAD-IN-PANE — the live conversation renderer mounted in the right pane
    (desktop grok). Mirrors `.gr-botpane`: the `.gr-pane` box stays a flex column
    and the reused `ChatSurface` (its single child) fills it, so the transcript

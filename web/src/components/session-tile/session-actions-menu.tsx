@@ -149,10 +149,10 @@ export function SessionActionsMenu({
   // decides nothing is worse than no control, and `resolveRenderer` would
   // overrule it anyway.
   const chatExperiment = useUI((st) => st.botMode)
-  const rendererEligible = useChatRenderer(
-    { provider: session.provider, host_id: session.host_id },
-    false,
-  )
+  const rendererEligible = useChatRenderer({
+    provider: session.provider,
+    host_id: session.host_id,
+  })
   const rendererState = useRendererState()
   const rendererPref = prefFor(rendererState, sessionName)
   const setRendererPref = useUI((st) => st.setRendererPref)

@@ -12,10 +12,7 @@ import {
   type ChatEligibleSession,
 } from './flag'
 
-export function useChatRenderer(
-  s: ChatEligibleSession | null,
-  isTeamLead: boolean,
-): boolean {
+export function useChatRenderer(s: ChatEligibleSession | null): boolean {
   const botOn = useUI((st) => st.botMode)
   let killMaster: string | null = null
   let killChat: string | null = null
@@ -25,5 +22,5 @@ export function useChatRenderer(
   } catch {
     /* private mode / quota — treat as no kill-switch */
   }
-  return chatRendererOn(botOn, killMaster, killChat, s, isTeamLead)
+  return chatRendererOn(botOn, killMaster, killChat, s)
 }
