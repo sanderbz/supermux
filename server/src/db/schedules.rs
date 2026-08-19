@@ -541,3 +541,21 @@ pub async fn claim_run_key(
     .await?;
     Ok(res.rows_affected() > 0)
 }
+
+/// The `fired_at` (unix seconds) of an existing fire-key, or `None` when the
+/// tuple was never claimed. A lost claim only tells the caller SOMEONE holds the
+/// key; the age tells it whether that holder can still be alive: a run whose
+/// process died leaves the key behind with `next_run` unadvanced.
+pub async fn run_key_fired_at(
+    pool: &SqlitePool,
+    schedule_id: &str,
+    scheduled_for_ts: i64,
+) -> sqlx::Result<Option<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT fired_at FROM schedule_run_keys WHERE schedule_id = ? AND scheduled_for_ts = ?",
+    )
+    .bind(schedule_id)
+    .bind(scheduled_for_ts)
+    .fetch_optional(pool)
+    .await
+}

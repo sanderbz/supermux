@@ -6,7 +6,10 @@
 //! Skip drops missed ticks; the next scheduled tick runs normally. Each tick
 //! selects due schedules; for any whose window was missed by >60s it logs a
 //! `skipped` run and advances `next_run` WITHOUT firing; the rest dispatch via
-//! [`runner::run`] (which idempotency-gates on the fire-key).
+//! [`runner::run`] (which idempotency-gates on the fire-key). A fire-key left
+//! behind by a run whose process died would keep a schedule permanently due (the
+//! key blocks the claim, and only its dead holder would advance `next_run`), so a
+//! key older than [`STALE_FIRE_KEY`] is swept instead of waited on.
 //!
 //! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it under the shared bearer-auth layer.
@@ -38,6 +41,11 @@ use runner::Trigger;
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 /// Past-due tolerance: beyond this, the window is treated as missed.
 const MISSED_WINDOW: chrono::Duration = chrono::Duration::seconds(60);
+/// Fire-key age past which the claiming run is presumed dead. The longest a
+/// legitimate run can hold its key is the shell kind's 600s cap
+/// ([`parser::SHELL_TIMEOUT`]); boot and tmux kinds finish in seconds. 900s
+/// clears that ceiling with margin, so anything older cannot be in flight.
+const STALE_FIRE_KEY: chrono::Duration = chrono::Duration::seconds(900);
 /// Grace window for a *one-shot* (`sched_type == 'once'`): a single-fire job that
 /// is past due by less than this is still FIRED rather than silently discarded.
 /// A one-shot created while the server was down — or one whose first
@@ -105,35 +113,56 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
                 // fire-key first so this only catches GENUINELY missed windows
                 // (server downtime); an in-flight long-running job already holds
                 // the key, so we leave its next_run for `record_fire` and skip.
+                // A key too old to belong to a running job is swept instead.
                 match db::schedules::claim_run_key(&state.pool, &sched.id, scheduled_for_ts).await {
                     Ok(true) => {
-                        let _ = db::schedules::insert_run(
+                        skip_and_advance(state, &sched, now, "missed window").await;
+                        tracing::info!(schedule = %sched.id, "advanced past missed schedule window (not fired)");
+                    }
+                    Ok(false) => {
+                        // The claim lost, so some run holds the key. A LIVE
+                        // holder advances `next_run` in `record_fire` and this
+                        // tick must not touch it. A holder whose process died
+                        // never will, leaving the schedule due on every tick
+                        // forever (the key outlives restarts). Age decides which
+                        // one it is; on any uncertainty we leave it alone.
+                        match db::schedules::run_key_fired_at(
                             &state.pool,
                             &sched.id,
-                            now.timestamp(),
-                            "skipped",
-                            "missed window",
+                            scheduled_for_ts,
                         )
-                        .await;
-                        let next = runner::recompute_next(&sched, now);
-                        let _ = db::schedules::advance_next(&state.pool, &sched.id, next).await;
-                        tracing::info!(schedule = %sched.id, "advanced past missed schedule window (not fired)");
-                        // Surface a stranded/skipped schedule to clients
-                        // — previously this path was log-only and invisible.
-                        let _ = state.sse_tx.send(SseEvent {
-                            event: "alerts".to_string(),
-                            payload: json!({
-                                "level": "info",
-                                "source": "scheduler",
-                                "schedule": sched.id,
-                                "detail": format!(
-                                    "Skipped schedule '{}' — fire window missed by >6h",
-                                    sched.title
-                                ),
-                            }),
-                        });
+                        .await
+                        {
+                            Ok(Some(fired_at))
+                                if chrono::Duration::seconds(now.timestamp() - fired_at)
+                                    > STALE_FIRE_KEY =>
+                            {
+                                skip_and_advance(
+                                    state,
+                                    &sched,
+                                    now,
+                                    "stale fire-key from dead run",
+                                )
+                                .await;
+                                tracing::warn!(
+                                    schedule = %sched.id,
+                                    fired_at,
+                                    "swept a stale fire-key: its run never advanced next_run",
+                                );
+                            }
+                            // Young key: a run is in flight, `record_fire` advances.
+                            Ok(Some(_)) => {}
+                            Ok(None) => tracing::warn!(
+                                schedule = %sched.id,
+                                "fire-key claim lost but no key row found",
+                            ),
+                            Err(e) => tracing::warn!(
+                                schedule = %sched.id,
+                                error = %e,
+                                "fire-key age lookup failed",
+                            ),
+                        }
                     }
-                    Ok(false) => {} // already handled/in-flight — leave to record_fire
                     Err(e) => tracing::warn!(schedule = %sched.id, error = %e, "missed-window claim failed"),
                 }
                 continue;
@@ -151,6 +180,27 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Record a `skipped` run for a window the tick will not fire, advance the
+/// cadence past it, and surface it over SSE (a stranded schedule must not be
+/// log-only, or it is invisible to clients). Shared by the two missed-window
+/// exits: a genuinely missed window, and one wedged behind a stale fire-key.
+/// `note` is both the run-ledger note and the client-visible reason.
+async fn skip_and_advance(state: &AppState, sched: &Schedule, now: DateTime<Utc>, note: &str) {
+    let _ =
+        db::schedules::insert_run(&state.pool, &sched.id, now.timestamp(), "skipped", note).await;
+    let next = runner::recompute_next(sched, now);
+    let _ = db::schedules::advance_next(&state.pool, &sched.id, next).await;
+    let _ = state.sse_tx.send(SseEvent {
+        event: "alerts".to_string(),
+        payload: json!({
+            "level": "info",
+            "source": "scheduler",
+            "schedule": sched.id,
+            "detail": format!("Skipped schedule '{}': {note}", sched.title),
+        }),
+    });
 }
 
 // ── HTTP router ───────────────────────────────────────────────────────────────
