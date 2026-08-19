@@ -77,7 +77,7 @@ jobs:
       - name: build tarball (release binary + etc/ + VERSION)
         run: bash tests/install/build-local-tarball.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: supermux-local-tarball
           path: tests/install/.cache/supermux-local.tar.gz
