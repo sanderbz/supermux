@@ -92,17 +92,27 @@ pub const SEED_WARMUP: Duration = Duration::from_millis(1_500);
 /// * `provider == "claude"` — nothing else writes a Claude Code transcript.
 /// * `host_id is None` — a remote session's transcript is on the remote box, so
 ///   the tailer would silently read a local file that is not this conversation.
-/// * not a team lead — a lead's window is multiplexed across teammate panes,
-///   which the A2 single-conversation data plane does not model.
-pub fn chat_eligible(provider: &str, host_id: Option<i64>, team_name: Option<&str>) -> bool {
-    // `team_name` alone is NOT a team signal: with the global agent-teams pref
-    // on, CC ≥2.1.178 writes an implicit solo team for every plain session and
-    // the watcher stamps the column — refusing on the column made the chat
-    // plane 4404-unreachable on real sessions (found live). Only a lead with an
-    // ACTUAL roster (≥1 teammate besides the lead) is refused.
-    provider == "claude"
-        && host_id.is_none()
-        && !team_name.is_some_and(crate::teams::scan::real_team)
+///
+/// **A team LEAD is eligible** (it used to be refused). The refusal's stated
+/// reason — "a lead's window is multiplexed across teammate panes" — does not
+/// hold at the file level: a teammate is a `split-window` pane running its OWN
+/// Claude process with its OWN `sessionId`, so it writes its OWN
+/// `<project>/<uuid>.jsonl`. It is NOT a subagent of the lead (those live under
+/// `<project>/<conv-id>/subagents/` and the tailer already merges them). The
+/// lead's `<project>/<cc_conversation_id>.jsonl` is therefore already exactly
+/// "the lead's own conversation" — the tailer needs no filtering and no new
+/// scope to serve a lead.
+///
+/// What WAS multiplexed is one level down: the POINTER. Teammate panes inherit
+/// `$SUPERMUX_SESSION` + `$SUPERMUX_HOOK_TOKEN` from the tmux session env
+/// (measured live — see `~/team-gap/PHASE0-PROBE.md`), so a teammate's
+/// `SessionStart` used to repoint the LEAD's `cc_conversation_id` at the
+/// teammate's transcript. That is fixed at the source by the pane-attributed
+/// adoption guard in [`crate::hooks::track_conversation_pointer`] (S2), which is
+/// what makes serving a lead here safe. Remote (`host_id`) and non-Claude
+/// refusals are unchanged.
+pub fn chat_eligible(provider: &str, host_id: Option<i64>) -> bool {
+    provider == "claude" && host_id.is_none()
 }
 
 /// Load `name`'s row and refuse anything the chat data plane does not serve.
@@ -115,7 +125,7 @@ async fn eligible_row(state: &AppState, name: &str) -> Result<db::sessions::Sess
     let row = db::sessions::get(&state.pool, name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session {name}")))?;
-    if !chat_eligible(&row.provider, row.host_id, row.team_name.as_deref()) {
+    if !chat_eligible(&row.provider, row.host_id) {
         return Err(AppError::NotFound(format!("chat is unavailable for session {name}")));
     }
     Ok(row)
@@ -685,7 +695,7 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
             return;
         }
     };
-    if !chat_eligible(&row.provider, row.host_id, row.team_name.as_deref()) {
+    if !chat_eligible(&row.provider, row.host_id) {
         tracing::debug!(session = %name, provider = %row.provider, "chat ws refused: ineligible");
         close(&mut socket, CLOSE_NOT_RUNNING, CLOSE_REASON_INELIGIBLE).await;
         return;
@@ -955,29 +965,41 @@ mod tests {
     #[test]
     fn chat_eligibility_matches_the_client_guard() {
         // web/src/components/chat/flag.ts: `provider === 'claude' && host_id ==
-        // null && !isTeamLead`. The client guard hides the UI; THIS one is what
-        // makes it a guard — a hand-rolled socket cannot tail a codex session,
-        // a remote host's transcript, or a team lead's spliced pane.
-        assert!(chat_eligible("claude", None, None));
-        assert!(!chat_eligible("codex", None, None), "provider must be claude");
+        // null`. The client guard hides the UI; THIS one is what makes it a
+        // guard — a hand-rolled socket cannot tail a codex session or a remote
+        // host's transcript.
+        assert!(chat_eligible("claude", None));
+        assert!(!chat_eligible("codex", None), "provider must be claude");
         // A legacy row carrying a provider supermux no longer ships must be
         // handled as "not eligible", never as an unknown that falls through.
-        assert!(!chat_eligible("a-retired-provider", None, None));
-        assert!(!chat_eligible("shell", None, None));
+        assert!(!chat_eligible("a-retired-provider", None));
+        assert!(!chat_eligible("shell", None));
         assert!(
-            !chat_eligible("claude", Some(3), None),
+            !chat_eligible("claude", Some(3)),
             "a remote host's transcript is not on this filesystem"
         );
-        // `Some(team_name)` alone no longer refuses: the column is polluted by
-        // CC's implicit solo teams (one per plain session with agent-teams on).
-        // With no on-disk roster for "squad", it's not a real team → eligible.
+    }
+
+    /// S1 (§R2.2): a team LEAD is a first-class chat thread. The old rule
+    /// refused any session whose `team_name` resolved to a real on-disk roster;
+    /// the parameter is gone entirely, so no team shape can refuse — while the
+    /// two refusals that are about the DATA PLANE (not the team model) stay.
+    #[test]
+    fn a_team_lead_is_chat_eligible_but_codex_and_remote_still_are_not() {
+        // The lead of a real, multi-member team: eligible. Its own
+        // `<project>/<cc_conversation_id>.jsonl` is exactly the file the tailer
+        // already serves; the pointer is kept honest by the pane-attributed
+        // adoption guard in `hooks::track_conversation_pointer`.
         assert!(
-            chat_eligible("claude", None, Some("squad")),
-            "a rosterless team_name (the solo-implicit pollution) must stay eligible"
+            chat_eligible("claude", None),
+            "a team lead must be a first-class bot thread (S1)"
         );
-        // A REAL team (roster with a teammate) still refuses — proven at the
-        // path-parameterized level in teams::scan::tests (real_team_in); the
-        // fs-backed default resolver is exercised here only for the None path.
+        // …and lifting the refusal must not lift the other two.
+        assert!(!chat_eligible("codex", None), "a codex lead has no Claude transcript");
+        assert!(
+            !chat_eligible("claude", Some(7)),
+            "a remote lead's transcript lives on the remote box"
+        );
     }
 
     // ── the history cursor ──────────────────────────────────────────────────

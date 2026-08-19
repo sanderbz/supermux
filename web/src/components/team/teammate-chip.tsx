@@ -138,7 +138,7 @@ export function TeammateChip({
 
       {/* Trailing (tabular). needs_you → the ONE loud blue pill (tile waiting-pill
           geometry). Else → muted task-count. Then the remove trash (state-aware:
-          "Kill & remove" for a live teammate, "Remove" for an offline one). */}
+          "End pane & remove" for a live teammate, "Remove" for an offline one). */}
       <div className="relative z-20 flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="shrink-0 rounded-full bg-status-waiting-ink px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">

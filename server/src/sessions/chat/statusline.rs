@@ -121,7 +121,7 @@ fn tap_prelude() -> String {
          curl -fsS -o /dev/null --max-time 1 -X POST \
          -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
-         \"$SUPERMUX_URL/api/_internal/statusline?session=$SUPERMUX_SESSION\" \
+         \"$SUPERMUX_URL/api/_internal/statusline?session=$SUPERMUX_SESSION&pane=$TMUX_PANE\" \
          --data-binary @- >/dev/null 2>&1 "
     )
 }
@@ -566,6 +566,38 @@ pub async fn uninstall_handler(
 #[derive(Debug, Deserialize)]
 pub struct IngestQuery {
     session: String,
+    /// `$TMUX_PANE` of the pane the tap fired in (S3). Empty outside tmux, and
+    /// empty for a hook command older than this field — both keep today's
+    /// session-keyed behaviour. On a team host it discriminates the LEAD pane
+    /// from a teammate pane so a teammate's line never clobbers the lead's gauge.
+    #[serde(default)]
+    pane: String,
+}
+
+/// The statuslines-map key a tap should write to (S3 — pane attribution).
+///
+/// Today's behaviour — the session name — for every non-team session and for the
+/// lead's own pane. A teammate pane on a team host writes to a MEMBER-scoped key
+/// `"{session}\u{1f}{pane}"` instead: a teammate inherits the LEAD's
+/// `$SUPERMUX_SESSION`, so an un-attributed store would let a teammate's
+/// statusline overwrite the lead's cost/context gauge. Fail-safe: when the lead
+/// pane can't be uniquely discriminated we keep the session key — a stale-but-own
+/// line beats a foreign one, exactly the S2 pointer-guard direction.
+///
+/// `is_team_host` is the cheap pre-check (one DB row); only a real team host ever
+/// forks `tmux list-panes`, so the base app's ingest path is byte-identical.
+async fn statusline_store_key(state: &AppState, session: &str, pane: &str) -> String {
+    if pane.is_empty() {
+        return session.to_string();
+    }
+    if !crate::sessions::teams::is_team_host(state, session).await {
+        return session.to_string();
+    }
+    match crate::sessions::teams::resolve_lead_pane(state, session).await {
+        Some(lead) if lead == pane => session.to_string(),
+        Some(_) => format!("{session}\u{1f}{pane}"),
+        None => session.to_string(),
+    }
 }
 
 /// `POST /api/_internal/statusline?session=<name>` — the tap's inbound side.
@@ -587,11 +619,17 @@ pub async fn ingest_handler(
         .as_ref()
         .and_then(Statusline::from_payload)
     {
+        // S3 — attribute the line to the pane it fired in before storing it, so a
+        // teammate's line lands on a member-scoped key rather than the lead's row.
+        let key = statusline_store_key(&state, &q.session, &q.pane).await;
+        let is_own = key == q.session;
         // Change-gated: an unchanged line (the common case — the model and
         // version don't move between turns) must not fan a `sessions` delta out
-        // to every connected client once per turn per session.
-        let payload = json!({ "delta": [{ "name": q.session, "statusline": next.clone() }] });
-        if state.set_statusline(&q.session, next) {
+        // to every connected client once per turn per session. And ONLY the
+        // lead/own session is an `/api/sessions` row, so only its change fans a
+        // `sessions` delta out — a member key names no row to broadcast.
+        if state.set_statusline(&key, next.clone()) && is_own {
+            let payload = json!({ "delta": [{ "name": q.session, "statusline": next }] });
             let _ = state.sse_tx.send(crate::state::SseEvent {
                 event: "sessions".to_string(),
                 payload,
@@ -851,6 +889,10 @@ mod tests {
             "must NOT leak the dashboard bearer into settings.json"
         );
         assert!(cmd.contains("/api/_internal/statusline?session=$SUPERMUX_SESSION"));
+        assert!(
+            cmd.contains("session=$SUPERMUX_SESSION&pane=$TMUX_PANE"),
+            "must attribute the tap to its pane (S3) so a teammate line can't clobber the lead"
+        );
         assert!(cmd.contains("--max-time 1"), "must bound curl");
         assert!(cmd.contains("head -c 16384"), "must size-cap the payload");
     }

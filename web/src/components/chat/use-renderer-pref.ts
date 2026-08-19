@@ -81,20 +81,17 @@ export function useRenderer(
  * The resolved renderer for a session on a NON-focus surface (the overview
  * tiles, the quick-peek).
  *
- * `isTeamLead` is a PROP rather than a `useTeams()` call on purpose: the
- * overview renders dozens of tiles, and a query subscription per tile would add
- * dozens of SSE listeners for a fact exactly one caller knows
- * (`team-card.tsx`, which renders the lead's tile). Everywhere else the grid
- * has already excluded leads (`splitTeamLeads`), so `false` is correct.
+ * There is no team-lead argument any more: a lead is a first-class chat bot
+ * (TEAMS-in-Bot-mode Phase 2a — see `flag.ts`), so a tile decides purely on the
+ * session in front of it.
  *
  * `sessionKnown` is `true` by construction: a tile only exists because its row
  * does. The undecided frame is a focus-route concern.
  */
 export function useSessionRenderer(
   s: (ChatEligibleSession & { name: string }) | null,
-  isTeamLead = false,
 ): Renderer | null {
-  const chatOn = useChatRenderer(s, isTeamLead)
+  const chatOn = useChatRenderer(s)
   const st = useRendererState()
   return s ? resolveRenderer(st, s.name, chatOn, true) : null
 }

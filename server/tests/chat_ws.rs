@@ -292,25 +292,8 @@ async fn ineligible_session_is_refused() {
         .await
         .expect("host");
     make_session(&h, "chat-remote", "claude", Some(host.id)).await;
-    // A team lead — with a REAL on-disk roster: eligibility no longer trusts
-    // the (pollution-prone) team_name column alone, it demands an actual
-    // teammate in the roster. The harness already points CLAUDE_CONFIG_DIR at
-    // its private `claude_dir`, so the fixture lands there, never in ~/.claude.
-    let squad = h.claude_dir.join("teams").join("squad");
-    std::fs::create_dir_all(&squad).unwrap();
-    std::fs::write(
-        squad.join("config.json"),
-        r#"{"name":"squad","leadAgentId":"team-lead@squad","members":[
-            {"agentId":"team-lead@squad","name":"team-lead","agentType":"team-lead"},
-            {"agentId":"worker@squad","name":"worker","agentType":"claude"}]}"#,
-    )
-    .unwrap();
-    make_session(&h, "chat-lead", "claude", None).await;
-    db::sessions::set_team_name(&h.state.pool, "chat-lead", Some("squad"))
-        .await
-        .unwrap();
     // …and a session that does not exist at all.
-    for name in ["chat-codex", "chat-remote", "chat-lead", "chat-ghost"] {
+    for name in ["chat-codex", "chat-remote", "chat-ghost"] {
         let mut ws = connect_authed(h.addr, name).await;
         assert_eq!(
             read_close_code(&mut ws, Duration::from_secs(4)).await,
@@ -323,8 +306,65 @@ async fn ineligible_session_is_refused() {
     // The REST backlog routes are gated by the same guard.
     let (status, _) = get(&h.app, "/api/sessions/chat-codex/chat/history").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = get(&h.app, "/api/sessions/chat-lead/chat/entry/u1").await;
+    let (status, _) = get(&h.app, "/api/sessions/chat-remote/chat/entry/u1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    h.cleanup();
+}
+
+/// S1 (§R2.2) — a TEAM LEAD is a first-class chat thread, end to end.
+///
+/// This test used to assert the opposite (`chat-lead` → 4404). The refusal's
+/// premise was that a lead's window is multiplexed across teammate panes, but a
+/// teammate is its own Claude process writing its own transcript: the lead's
+/// `<project>/<cc_conversation_id>.jsonl` already IS "the lead's own
+/// conversation", so the tailer serves it with no new model. What was genuinely
+/// multiplexed — the conversation POINTER — is fixed at the source by the
+/// pane-attributed adoption guard (`hooks::track_conversation_pointer`).
+#[tokio::test]
+async fn a_team_lead_gets_a_real_chat_thread() {
+    let _g = ENV_LOCK.lock().await;
+    let h = spawn_harness().await;
+
+    // A lead with a REAL on-disk roster (a teammate besides the lead entry) —
+    // the exact shape the old guard refused. The harness points
+    // CLAUDE_CONFIG_DIR at its private `claude_dir`, so this fixture never
+    // touches ~/.claude.
+    let squad = h.claude_dir.join("teams").join("squad");
+    std::fs::create_dir_all(&squad).unwrap();
+    std::fs::write(
+        squad.join("config.json"),
+        r#"{"name":"squad","leadAgentId":"team-lead@squad","members":[
+            {"agentId":"team-lead@squad","name":"team-lead","agentType":"team-lead"},
+            {"agentId":"worker@squad","name":"worker","agentType":"claude","tmuxPaneId":"%9"}]}"#,
+    )
+    .unwrap();
+    make_session(&h, "chat-lead", "claude", None).await;
+    db::sessions::set_team_name(&h.state.pool, "chat-lead", Some("squad"))
+        .await
+        .unwrap();
+    // The lead's own conversation, on disk exactly like any bot's.
+    db::sessions::track_cc_conversation_id(&h.state.pool, "chat-lead", "conv-a")
+        .await
+        .unwrap();
+    write_transcript(
+        &h.project_dir(),
+        "conv-a",
+        &[user_line("u1", "lead: plan the split")],
+    );
+
+    // The WS: auth_ok (from the helper) THEN a seed — not a 4404 close.
+    let mut ws = connect_authed(h.addr, "chat-lead").await;
+    let seed = next_json(&mut ws).await.expect("a lead must be served a seed, not closed");
+    assert_eq!(
+        seed["type"],
+        json!("seed"),
+        "a team lead must get the same seed→live contract as any bot; got {seed}"
+    );
+
+    // …and the REST backlog route is open for the same reason.
+    let (status, _) = get(&h.app, "/api/sessions/chat-lead/chat/history").await;
+    assert_eq!(status, StatusCode::OK, "a lead's chat history must be 200, not 404");
 
     h.cleanup();
 }

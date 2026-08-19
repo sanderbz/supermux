@@ -1791,6 +1791,27 @@
 [data-grok] .grok-roster .gr-pile .p0 { left: 0; top: 1px; z-index: 1; }
 [data-grok] .grok-roster .gr-pile .p1 { right: 0; top: 0; z-index: 2; }
 [data-grok] .grok-roster .gr-pile .p2 { left: 9px; bottom: 0; z-index: 3; }
+/* The "+N" fourth pile slot (6b) — a crew bigger than the three-mark pile.
+   Sits in the bottom-right corner, on the same footprint a mark would, reading
+   as one more face in the stack rather than a separate badge. */
+[data-grok] .grok-roster .gr-pile .p3 {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--sm-bg-hover);
+  box-shadow: 0 0 0 2px var(--gr-bg);
+  color: var(--sm-text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
 
 /* ── the-one-human footer ──────────────────────────────────────────────────── */
 [data-grok] .grok-roster .gr-ft {
@@ -2057,6 +2078,18 @@
   padding: 0;
 }
 [data-grok] .grok-roster .gr-botpane > div {
+  flex: 1;
+  min-height: 0;
+}
+
+/* TEAM PANEL (Phase 2c) — the per-TEAM page in the same pane slot. Identical
+   contract to `.gr-botpane`: the panel owns its own header/tabs/padding
+   (Tailwind), so the `[data-grok]` surface is only the box it fills. Nothing new
+   is invented here — the tokens are `.gr-pane`'s. */
+[data-grok] .grok-roster .gr-teampane {
+  padding: 0;
+}
+[data-grok] .grok-roster .gr-teampane > div {
   flex: 1;
   min-height: 0;
 }

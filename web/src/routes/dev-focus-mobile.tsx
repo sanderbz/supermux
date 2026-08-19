@@ -33,6 +33,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 
 import { MobileFocus } from '@/routes/focus/mobile'
 import { MOCK_TILES } from '@/components/session-tile/mock'
+import { mockTeamsForLead } from '@/routes/dev-teams.fixture'
 import { useUI } from '@/stores/ui-store'
 import {
   DEFAULT_KEY_BAR_STATE,
@@ -60,6 +61,12 @@ try {
 const FOCUS_NAME =
   MOCK_TILES.find((t) => t.name === 'web-app')?.name ?? MOCK_TILES[0]?.name ?? ''
 
+// A mock team whose lead maps to the FIRST mock tile, exactly as /dev/focus
+// does (Phase 0.2). Without it the phone focus bench renders the teammate strip
+// empty, so the one surface that has to be reviewed at 390px — a lead WITH a
+// crew — was the one surface the bench could not show.
+const MOCK_FOCUS_TEAMS = mockTeamsForLead(MOCK_TILES[0]?.name ?? '')
+
 export default function DevFocusMobile() {
   const { name } = useParams()
   // `?chat=1` — seed the experiment ON for this review. Written during render on
@@ -75,7 +82,11 @@ export default function DevFocusMobile() {
   }
   return (
     <div className="h-dvh w-full">
-      <MobileFocus mockSessions={MOCK_TILES} mockName={name || FOCUS_NAME} />
+      <MobileFocus
+        mockSessions={MOCK_TILES}
+        mockTeams={MOCK_FOCUS_TEAMS}
+        mockName={name || FOCUS_NAME}
+      />
     </div>
   )
 }

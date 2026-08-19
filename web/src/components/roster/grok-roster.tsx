@@ -27,7 +27,19 @@
  */
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, Plus, Search, Settings, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import {
+  Archive,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Settings,
+  SlidersHorizontal,
+  Sparkles,
+  Terminal,
+  Trash2,
+  Users,
+} from 'lucide-react'
 
 import { useSessions } from '@/hooks/use-sessions'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
@@ -40,11 +52,28 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewSessionAction } from '@/stores/new-session-store'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
+import { TeamCrewChip } from '@/components/team/team-crew-chip'
 import { SessionMark } from '@/brand/marks'
 import { attentionFor, markStateForSession } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
+import { useArmedConfirm } from '@/hooks/use-armed-confirm'
+import { useToast } from '@/components/ui/use-toast'
+import { TEAMS_KEY } from '@/hooks/use-teams'
 import { displayLabel, type ApiSession } from '@/lib/api'
-import { needsYouCount, taskProgress, type Team } from '@/lib/api/teams'
+import {
+  needsYouCount,
+  taskProgress,
+  teamsApi,
+  type Team,
+  type TeamMember,
+} from '@/lib/api/teams'
+import {
+  groupSessions,
+  groupTeamsByTier,
+  rosteredTeams,
+  totalBotCount,
+  type LeadSignal,
+} from '@/lib/team-attention'
 
 // The per-bot settings page. Lazy — it only mounts once a bot is selected (a
 // detail pane on desktop), so its section bodies (issues, schedules, git,
@@ -59,6 +88,56 @@ const BotPanel = React.lazy(() =>
 // needs no xterm, and is lazy so the roster's first paint never pays for it — it
 // only arrives once a chat-eligible bot is opened.
 const ChatPanel = React.lazy(() => import('@/components/chat/chat-panel'))
+
+// The per-TEAM page — the crew half of "talk to the lead". Lazy for the same
+// reason BotPanel is: a roster with no team open must not pay for it.
+const TeamPanel = React.lazy(() =>
+  import('@/components/roster/team-panel').then((m) => ({ default: m.TeamPanel })),
+)
+
+// ONE TEAMMATE's own surface (Phase 3) — the read-only live pane of the member's
+// tmux split, under a grok header. Lazy for the same reason as the two panels
+// above: a roster with no member open must not pay for the terminal stack.
+const MemberPane = React.lazy(() =>
+  import('@/components/roster/member-pane').then((m) => ({ default: m.MemberPane })),
+)
+
+// "Hire a crew" (Phase 4b) — the EXISTING team sheet, in its from-scratch mode
+// (no `sessionName` ⇒ POST /api/teams/start). Lazy so the roster's first paint
+// never carries a form nobody has opened.
+const StartTeamSheet = React.lazy(() =>
+  import('@/components/session-tile/start-team-sheet').then((m) => ({
+    default: m.StartTeamSheet,
+  })),
+)
+
+/* ── what the right pane is looking at ──────────────────────────────────────
+   A roster row is no longer always a session: a TEAM is a row too, and (Phase 3)
+   so is one of its members. So the selection is a discriminated union rather
+   than a session name — `null` means "nothing open", and every arm carries the
+   identity that arm actually has (a team by its `team_name`, a member by the
+   `(team, agent_id)` pair that is already its React key; a teammate has no
+   `/api/sessions` row to name).
+   The `member` arm is Phase 3's — it is declared NOW so Phase 3 is additive
+   (a new pane branch), not another refactor of this file. */
+type Sel =
+  | { kind: 'bot'; name: string }
+  | { kind: 'team'; team: string }
+  | { kind: 'member'; team: string; agent: string }
+  | null
+
+/** The pane's SUBJECT as a stable string — what the "reset the pane to the
+ *  thread" guard compares across renders (objects never compare equal).
+ *
+ *  A member deliberately keys to its TEAM: opening a teammate from the crew list
+ *  and pressing ESC must land back on the crew list you came from, not on the
+ *  lead's thread. Team → member → team is one subject with three faces, so the
+ *  pane-view reset does not fire inside it. */
+function selKey(sel: Sel): string {
+  if (!sel) return ''
+  if (sel.kind === 'bot') return `bot:${sel.name}`
+  return `team:${sel.team}`
+}
 
 /** Coerce the wire shape to the tile's `TileSession` (the panel wants a string
  *  `updated_at`; the API leaves it optional for partial deltas). Same shape
@@ -147,45 +226,6 @@ function stateWordFor(s: ApiSession, group: GroupKey): StateWord {
   if (s.status === 'stopped') return { word: 'stopped', cls: 'st-idle' }
   if (group === 'done') return { word: 'done', cls: 'st-done' }
   return { word: 'idle', cls: 'st-idle' }
-}
-
-function isSameDay(a: number, b: number): boolean {
-  const da = new Date(a)
-  const db = new Date(b)
-  return (
-    da.getFullYear() === db.getFullYear() &&
-    da.getMonth() === db.getMonth() &&
-    da.getDate() === db.getDate()
-  )
-}
-
-/** Bucket the sorted roster into the four attention-ordered sections. A plain
- *  module function so the `Date.now()` default lives OUTSIDE component render
- *  (the same shape `attention-tiers.ts` uses) — a `Date.now()` in a `useMemo`
- *  body reads as an impurity to `react-hooks/purity`, and rightly so. */
-function groupSessions(
-  sorted: readonly ApiSession[],
-  needNames: ReadonlySet<string>,
-  now: number = Date.now(),
-): Record<GroupKey, ApiSession[]> {
-  const buckets: Record<GroupKey, ApiSession[]> = { needs: [], active: [], done: [], idle: [] }
-  for (const s of sorted) {
-    if (needNames.has(s.name)) {
-      buckets.needs.push(s)
-      continue
-    }
-    if (s.status === 'active' || s.status === 'starting') {
-      buckets.active.push(s)
-      continue
-    }
-    const t = s.updated_at ? Date.parse(s.updated_at) : NaN
-    if (s.status === 'idle' && !Number.isNaN(t) && isSameDay(t, now)) {
-      buckets.done.push(s)
-      continue
-    }
-    buckets.idle.push(s)
-  }
-  return buckets
 }
 
 function matches(s: ApiSession, needle: string): boolean {
@@ -289,18 +329,170 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
   )
 })
 
+/* ── the TEAM ROW's overflow menu (Phase 4b) ──────────────────────────────────
+   The management verbs a team owns, reachable WITHOUT leaving grok: dismiss the
+   team (destructive, armed-confirm) and the honest terminal escape hatch.
+   The ROW STAYS ONE BUTTON — a nested button is invalid HTML and breaks the
+   roster's keyboard contract — so the kebab is an absolutely-positioned SIBLING
+   inside `.gr-rowwrap`, revealed on hover/focus. */
+function TeamRowMenu({
+  team,
+  onOpenTerminal,
+}: {
+  team: Team
+  onOpenTerminal?: (lead: string) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const wrapRef = React.useRef<HTMLSpanElement>(null)
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [pending, setPending] = React.useState(false)
+
+  const dismiss = React.useCallback(() => {
+    setPending(true)
+    void teamsApi
+      .dismiss(team.team_name)
+      .then(() => {
+        // Drop it from the shared cache at once; both reconcilers (the SSE
+        // snapshot and a reload GET) already exclude an archived dir.
+        qc.setQueryData<Team[]>(TEAMS_KEY, (prev) =>
+          (prev ?? []).filter((t) => t.team_name !== team.team_name),
+        )
+        toast({ message: `Dismissed ${team.team_name}` })
+      })
+      .catch(() => toast({ message: `Couldn't dismiss ${team.team_name}`, tone: 'error' }))
+      .finally(() => {
+        setPending(false)
+        setOpen(false)
+      })
+  }, [qc, toast, team.team_name])
+  const confirming = useArmedConfirm({ onConfirm: dismiss })
+
+  // Close on an outside press or ESC — a menu that outlives its context is a
+  // menu that fires on the wrong row.
+  React.useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        setOpen(false)
+        confirming.cancel()
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        confirming.cancel()
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, confirming])
+
+  const lead = team.lead_supermux_session
+
+  // Every visual below is the SHARED Tailwind/shadcn vocabulary the panels
+  // already use — deliberately not a new `[data-grok]` rule, because the CSS
+  // budget (31 KB gz) has ~0.2 KB of headroom and a menu is not worth it.
+  const item =
+    'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50'
+
+  return (
+    <span ref={wrapRef}>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Actions for ${team.team_name}`}
+        title="Team actions"
+        data-vr="team-row-more"
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        className={`absolute right-3 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground opacity-0 transition-opacity hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100${
+          open ? ' opacity-100' : ''
+        }`}
+      >
+        <MoreHorizontal size={16} aria-hidden />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          data-vr="team-row-menu"
+          className="absolute right-3 top-full z-30 -mt-2 flex min-w-48 flex-col gap-0.5 rounded-xl border border-border bg-popover p-1.5 shadow-lg"
+        >
+          {lead && onOpenTerminal && (
+            <button
+              type="button"
+              role="menuitem"
+              className={`${item} text-foreground`}
+              onClick={() => {
+                setOpen(false)
+                onOpenTerminal(lead)
+              }}
+            >
+              <Terminal size={15} aria-hidden />
+              Open the lead's terminal
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={pending}
+            data-vr="team-row-dismiss"
+            className={`${item} text-destructive`}
+            onClick={() => confirming.press()}
+          >
+            <Trash2 size={15} aria-hidden />
+            {confirming.armed ? `Confirm — dismiss ${team.team_name}` : 'Dismiss team'}
+          </button>
+          {confirming.armed && (
+            <p className="px-3 pb-1.5 pt-1 text-[11.5px] leading-snug text-muted-foreground">
+              Stops surfacing this crew. Claude's own roster on disk is untouched.
+            </p>
+          )}
+        </div>
+      )}
+    </span>
+  )
+}
+
 /* ── team facepile row (a team is just another row — 3 member marks) ─────────── */
 
 export function TeamRow({
   team,
   onOpen,
   index,
+  active,
+  onOpenTerminal,
+  withMenu,
 }: {
   team: Team
   onOpen: (t: Team) => void
   index: number
+  /** This team is the one open in the right pane — the same `data-active`
+   *  highlight a selected bot row wears (a team is just another row). */
+  active?: boolean
+  /** The kebab's terminal escape hatch (→ `/focus/<lead>`). */
+  onOpenTerminal?: (lead: string) => void
+  /** Render the `⋯` overflow menu beside the row (Phase 4b). Off by default so
+   *  the `/dev/roster` bench keeps rendering a bare row. */
+  withMenu?: boolean
 }) {
+  // NEVER render a rosterless row (6b) — belt-and-braces with the server's own
+  // `drop_rosterless` (watcher.rs). A team with no crew has no facepile to make
+  // it legible and nothing to open a member from, and `team-attention.ts` keeps
+  // it out of the counts too, so the header can't count a row nobody sees.
+  if (team.members.length === 0) return null
+
   const members = team.members.slice(0, 3)
+  // The count of crew NOT shown in the pile — the "+N" fourth slot (6b).
+  const overflow = team.members.length - members.length
+  const memberWord = team.members.length === 1 ? 'bot' : 'bots'
   // Reuse the two team roll-up helpers rather than re-deriving them here, for
   // parity with the bot row's L2 state-word + L3 muted glance (teams.ts owns the
   // definitions; the team card reads the same two).
@@ -310,13 +502,14 @@ export function TeamRow({
     team.members.find((m) => m.status === 'needs_you')?.name ??
     team.members[0]?.name ??
     ''
-  return (
+  const row = (
     <button
       type="button"
       className="gr-rowA grok-row-enter"
+      data-active={active || undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
       onClick={() => onOpen(team)}
-      aria-label={`${team.team_name} — ${team.members.length} bots`}
+      aria-label={`${team.team_name} — ${team.members.length} ${memberWord}`}
     >
       <span className="gr-top">
         <span className="gr-pile gr-mark" aria-hidden>
@@ -334,6 +527,9 @@ export function TeamRow({
               attention={m.status === 'needs_you' ? 'needs' : null}
             />
           ))}
+          {/* The fourth pile slot: "+N" for a crew bigger than the pile (6b),
+              positioned off the same `.p3` token the marks sit on. */}
+          {overflow > 0 && <span className="p3 gr-pile-more">+{overflow}</span>}
         </span>
         <span className="col">
           <span className="l1">
@@ -357,12 +553,22 @@ export function TeamRow({
           <span className="l3">
             <span className="prov">
               <span className="pd" />
-              {team.members.length} bots
+              {team.members.length} {memberWord}
             </span>
           </span>
         </span>
       </span>
     </button>
+  )
+  if (!withMenu) return row
+  // A positioning + hover context ONLY (`group` drives the kebab's reveal) — the
+  // row keeps its own hover, selection and focus visuals, and the kebab sits
+  // over it as a SIBLING, never nested inside the row button.
+  return (
+    <div className="group relative">
+      {row}
+      <TeamRowMenu team={team} onOpenTerminal={onOpenTerminal} />
+    </div>
   )
 }
 
@@ -384,8 +590,10 @@ export default function GrokRoster() {
   const [rawQuery, setRawQuery] = React.useState('')
   const [sort, setSort] = React.useState<'smart' | 'alpha'>('smart')
   const [density, setDensity] = React.useState<Density>(readDensity)
-  const [selected, setSelected] = React.useState<string | null>(null)
+  const [selected, setSelected] = React.useState<Sel>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
+  // "Hire a crew" (Phase 4b) — the team sheet in its from-scratch mode.
+  const [crewOpen, setCrewOpen] = React.useState(false)
   // Which face the right pane wears for the OPEN bot: the live conversation
   // ('thread', the default) or the per-bot settings page ('settings'). It resets
   // to 'thread' whenever the selection changes (the render-phase guard below) so
@@ -430,64 +638,117 @@ export default function GrokRoster() {
     [filtered, sort],
   )
 
-  // Group into the four attention-ordered sections (overview.md §6). Teams ride
-  // their own leading section (a team is a row; grouping it by a member tier is
-  // noise). The `needs` set comes from the app-wide provider's PRECOMPUTED
-  // rollup — the same list the header count and the red section read, so they
-  // can never disagree — rather than calling `attentionFor` per row in render
-  // (which would read `Date.now()` mid-render: an impurity the linter rightly
-  // flags, and the reason the rollup is memoised in the provider in the first
-  // place).
+  // Group into the four attention-ordered sections (overview.md §6). The `needs`
+  // set comes from the app-wide provider's PRECOMPUTED rollup — the same list the
+  // header count and the red section read, so they can never disagree — rather
+  // than calling `attentionFor` per row in render (which would read `Date.now()`
+  // mid-render: an impurity the linter rightly flags, and the reason the rollup
+  // is memoised in the provider in the first place).
   const needNames = React.useMemo(
     () => new Set(attention.needs.map((s) => s.name)),
     [attention.needs],
   )
   const groups = React.useMemo(() => groupSessions(sorted, needNames), [sorted, needNames])
 
-  const needCount = groups.needs.length
-  // The VISIBLE list is empty when neither a team nor any session survives the
-  // current filter — the honest trigger for the empty state (jury d). `totalBots`
-  // counts the UNFILTERED roster, so it cannot answer "did this search find
-  // nothing".
-  const listEmpty = filteredTeams.length === 0 && sorted.length === 0
+  // OD-2 = FOLD: a team is no longer a leading divider — it sorts into the SAME
+  // four sections as a bot, by its own derived attention (`team-attention.ts`).
+  // Each team's lead contributes two bits (does the lead itself need you / is it
+  // active), read off the unsplit roster + the same `needNames` rollup.
+  const teamGroups = React.useMemo(
+    () =>
+      groupTeamsByTier(filteredTeams, (t): LeadSignal | null => {
+        const leadName = t.lead_supermux_session
+        if (!leadName) return null
+        const lead = allSessions.find((s) => s.name === leadName)
+        if (!lead) return null
+        return {
+          needs: needNames.has(lead.name),
+          active: lead.status === 'active' || lead.status === 'starting',
+        }
+      }),
+    [filteredTeams, allSessions, needNames],
+  )
+
+  // The header's need count is the SUM over the rendered rows — bots in the needs
+  // section PLUS teams in the needs section — so the header can never disagree
+  // with what the sections show (the property the old two-ordering split
+  // violated: R7/R8).
+  const needCount = groups.needs.length + teamGroups.needs.length
+  // The VISIBLE list is empty when neither a (rostered) team nor any session
+  // survives the current filter — the honest trigger for the empty state (jury
+  // d). `totalBots` counts the UNFILTERED roster, so it cannot answer "did this
+  // search find nothing".
+  const listEmpty =
+    sorted.length === 0 && !filteredTeams.some((t) => t.members.length > 0)
 
   // Keep the selection valid by DERIVATION, not by an effect: a session that
   // left the list (archived, deleted, filtered out) resolves to `null` here, so
   // the detail pane closes on its own and the stale name is simply overwritten
   // by the next click — no setState-in-effect, no cascading render.
   const selectedSession = React.useMemo(
-    () => (selected ? sessions.find((s) => s.name === selected) ?? null : null),
+    () =>
+      selected?.kind === 'bot' ? sessions.find((s) => s.name === selected.name) ?? null : null,
     [selected, sessions],
+  )
+  // A team resolves the same way — by derivation, so a team that vanished from
+  // the SSE snapshot closes its own pane instead of stranding it.
+  const selectedTeam = React.useMemo(
+    () =>
+      selected && selected.kind !== 'bot'
+        ? teams.find((t) => t.team_name === selected.team) ?? null
+        : null,
+    [selected, teams],
+  )
+  // The lead's own row is NOT in `sessions` — `splitTeamLeads` pulls leads out
+  // so a lead never renders twice — so resolve it against the unsplit roster.
+  const leadName = selectedTeam?.lead_supermux_session ?? null
+  const leadRow = React.useMemo(
+    () => (leadName ? allSessions.find((s) => s.name === leadName) ?? null : null),
+    [allSessions, leadName],
+  )
+  // A MEMBER resolves by derivation too, off the SAME live team object — a
+  // teammate that left the roster (removed, or its team vanished) closes its own
+  // pane instead of stranding it. `(team_name, agent_id)` is the pair a teammate
+  // actually has: there is no `/api/sessions` row to name it by.
+  const selectedMember = React.useMemo<TeamMember | null>(
+    () =>
+      selected?.kind === 'member' && selectedTeam
+        ? selectedTeam.members.find((m) => m.agent_id === selected.agent) ?? null
+        : null,
+    [selected, selectedTeam],
   )
 
   // Reset the pane to the thread whenever the SELECTION changes — React's
   // "adjust state while rendering" pattern (a previous-value in state, not an
   // effect): React re-renders immediately with the corrected value and no
   // cascading commit. Re-clicking the SAME row is handled in `openSession`.
-  const [paneSelSeen, setPaneSelSeen] = React.useState(selected)
-  if (paneSelSeen !== selected) {
-    setPaneSelSeen(selected)
+  const selectionKey = selKey(selected)
+  const [paneSelSeen, setPaneSelSeen] = React.useState(selectionKey)
+  if (paneSelSeen !== selectionKey) {
+    setPaneSelSeen(selectionKey)
     if (paneView !== 'thread') setPaneView('thread')
   }
 
+  // ONE thread target for the pane: the selected bot, or — for a team — its
+  // LEAD (OD-1 = A, "talk to the lead": the lead's conversation IS the team's
+  // thread, and its crew is legible in the panel beside it).
+  const threadRow = selectedTeam ? leadRow : selectedSession
+  const threadName = threadRow?.name ?? null
   // The one hard constraint on thread-in-pane: chat eligibility. `useChatRenderer`
   // is the SAME three-gate decision the focus seam uses (bot mode on + kill-switch
-  // + local-Claude-non-lead). A bot that fails it — Codex, shell, a remote host,
-  // a team lead — cannot be a chat surface, so the pane falls back to its settings
-  // page with an honest "Open terminal →" escape to /focus (Phase 1).
-  const isTeamLead = React.useMemo(
-    () => (selected ? teams.some((t) => t.lead_supermux_session === selected) : false),
-    [teams, selected],
-  )
-  const threadEligible = useChatRenderer(selectedSession, isTeamLead)
+  // + local Claude). A bot that fails it — Codex, shell, a remote host — cannot be
+  // a chat surface, so the pane falls back to its settings page with an honest
+  // "Open terminal →" escape to /focus (Phase 1). A TEAM LEAD is no longer among
+  // the refusals (Phase 2a): it is a first-class bot.
+  const threadEligible = useChatRenderer(threadRow)
   // The panel's write plane, memoised by name so a roster re-render (the seconds
   // ticker, a sibling row's delta) doesn't hand the chat hooks a fresh input
   // object every frame. `ChatPanel` opens its own chat WS + peek from `name`; this
   // is only the RAW `/send`·`/paste`·`/keys` plane, exactly what the focus route
   // hands it (desktop-split.tsx).
   const threadInput = React.useMemo(
-    () => (selected ? restSessionInput(selected) : null),
-    [selected],
+    () => (threadName ? restSessionInput(threadName) : null),
+    [threadName],
   )
 
   // Mask-fade the list edges by whether it is scrolled (no shadows on glass).
@@ -512,7 +773,7 @@ export default function GrokRoster() {
         navigate(`/focus/${encodeURIComponent(s.name)}`)
         return
       }
-      setSelected(s.name)
+      setSelected({ kind: 'bot', name: s.name })
       // Re-opening the row you are already ON keeps `selected` unchanged, so the
       // render-phase reset never fires — flip back to the thread here too, so a
       // click always returns to the conversation.
@@ -520,12 +781,42 @@ export default function GrokRoster() {
     },
     [attention, navigate],
   )
+  // A TEAM STAYS IN THE ROSTER on desktop (build spec §2b): selecting it swaps the
+  // right pane in place — the lead's live thread, with the crew one toggle away —
+  // so opening a team never changes the URL. PHONE has no pane, so it routes to
+  // the dedicated `/team/<team>` detail surface (Phase 6a) — the same composition
+  // as this pane, full-screen — instead of the old /focus hop to the lead.
   const openTeam = React.useCallback(
     (t: Team) => {
-      if (t.lead_supermux_session) navigate(`/focus/${encodeURIComponent(t.lead_supermux_session)}`)
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+        navigate(`/team/${encodeURIComponent(t.team_name)}`)
+        return
+      }
+      setSelected({ kind: 'team', team: t.team_name })
+      setPaneView('thread')
     },
     [navigate],
   )
+  // A TEAMMATE IS A FIRST-CLASS ENTITY (Phase 3, R3). It is addressed by the
+  // `(team_name, agent_id)` pair — its React key — and opening it swaps the same
+  // right pane, so team → member is two clicks and never leaves grok. The click
+  // target is TeamPanel Overview's crew list (the row above stays ONE button).
+  const openMember = React.useCallback(
+    (t: Team, m: TeamMember) => {
+      setSelected({ kind: 'member', team: t.team_name, agent: m.agent_id })
+    },
+    [],
+  )
+  // ESC / the pane's back chevron — return to the team the member belongs to.
+  // `paneView` is untouched on purpose: a member keys to its team (see `selKey`),
+  // so the pane comes back to the crew list the member was opened from.
+  const backToTeam = React.useCallback(() => {
+    setSelected((prev) =>
+      prev?.kind === 'member' ? { kind: 'team', team: prev.team } : prev,
+    )
+  }, [])
+  // A dismissed team has no pane left to show.
+  const clearSelection = React.useCallback(() => setSelected(null), [])
   // DESKTOP: the pane swaps in place — no /focus hop, no second shell. The rail
   // keeps its scroll, its selection highlight and its entry animations (the Grok
   // inbox feel). BotPanel's "Open thread" and the thread's own settings toggle
@@ -536,11 +827,17 @@ export default function GrokRoster() {
   // roster for the still-present /focus route, which owns the live terminal (and
   // its keyboard capture). Phase 1 does not reproduce the terminal in the pane.
   const openInFocus = React.useCallback(() => {
-    if (selectedSession) navigate(`/focus/${encodeURIComponent(selectedSession.name)}`)
-  }, [navigate, selectedSession])
+    if (threadName) navigate(`/focus/${encodeURIComponent(threadName)}`)
+  }, [navigate, threadName])
 
-  const totalBots = sessions.length + teams.length
-  const hasDetail = !!selectedSession
+  // "N bots" counts every standalone session PLUS each rostered team's members
+  // and its (mapped) lead — the honest fleet size, not a row count. A rosterless
+  // team contributes nothing (it renders nowhere). From the UNFILTERED roster —
+  // the header is the fleet, not the current search.
+  const totalBots = totalBotCount(sessions.length, teams)
+  // The crew census the folded roster no longer says with a divider (OD-2).
+  const crewCount = rosteredTeams(teams).length
+  const hasDetail = !!selectedSession || !!selectedTeam
 
   const SECTIONS: { key: GroupKey; label: string }[] = [
     { key: 'needs', label: 'Needs you' },
@@ -560,6 +857,7 @@ export default function GrokRoster() {
         </span>
         <span className="gr-count">
           {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
+          {crewCount > 0 && ` · ${crewCount} ${crewCount === 1 ? 'crew' : 'crews'}`}
           {needCount > 0 && (
             <>
               {' · '}
@@ -650,8 +948,8 @@ export default function GrokRoster() {
             data-fade-top={fade.top ? '' : undefined}
             data-fade-bottom={fade.bottom ? '' : undefined}
           >
-            {/* Persistent HIRE affordance — a ghost row pinned above the Teams
-                divider. Dashed hairline + placeholder mark, always inviting the
+            {/* Persistent HIRE affordance — a ghost row pinned above the first
+                section. Dashed hairline + placeholder mark, always inviting the
                 next hire (not just the zero-bots hint). Hidden while searching
                 (it is a create verb, not a result) and, via CSS, in the compact
                 feed density. */}
@@ -672,35 +970,61 @@ export default function GrokRoster() {
               </button>
             )}
 
-            {filteredTeams.length > 0 && (
-              <>
-                <div className="gr-grp">
-                  <span className="lbl">Teams</span>
-                  <span className="ct">{filteredTeams.length}</span>
-                  <span className="ln" />
-                </div>
-                {filteredTeams.map((t) => (
-                  <TeamRow key={t.team_name} team={t} onOpen={openTeam} index={rowIndex++} />
-                ))}
-              </>
+            {/* …and the crew verb right beneath it, same visual grammar (Phase
+                4b). Starting a team was only reachable from the retiring focus
+                surfaces; here it is one row under "Hire a new bot", where the
+                other create verb already lives. */}
+            {!needle && (
+              <button
+                type="button"
+                className="gr-ghost grok-row-enter"
+                aria-label="Hire a crew"
+                data-vr="hire-crew"
+                onClick={() => setCrewOpen(true)}
+              >
+                <span className="gr-ghost-mark" aria-hidden>
+                  <Users size={18} aria-hidden />
+                </span>
+                <span className="gr-ghost-col">
+                  <span className="gr-ghost-t">Hire a crew</span>
+                  <span className="gr-ghost-s">A lead and the teammates it works with.</span>
+                </span>
+              </button>
             )}
 
+            {/* OD-2 = FOLD: no leading `Teams` divider. Each section renders its
+                team rows first (a crew is the heavier row) and then its bot rows,
+                and its count is the SUM of both — so a needs-you crew sits in the
+                red `Needs you` section like any other needs-you row, and the
+                header's count matches what the sections show. */}
             {SECTIONS.map(({ key, label }) => {
               const items = groups[key]
-              if (items.length === 0) return null
+              const teamItems = teamGroups[key]
+              if (items.length === 0 && teamItems.length === 0) return null
               return (
                 <React.Fragment key={key}>
                   <div className="gr-grp" data-need={key === 'needs' ? '' : undefined}>
                     <span className="lbl">{label}</span>
-                    <span className="ct">{items.length}</span>
+                    <span className="ct">{items.length + teamItems.length}</span>
                     <span className="ln" />
                   </div>
+                  {teamItems.map((t) => (
+                    <TeamRow
+                      key={t.team_name}
+                      team={t}
+                      onOpen={openTeam}
+                      index={rowIndex++}
+                      active={selectedTeam?.team_name === t.team_name}
+                      withMenu
+                      onOpenTerminal={(lead) => navigate(`/focus/${encodeURIComponent(lead)}`)}
+                    />
+                  ))}
                   {items.map((s) => (
                     <GrokRow
                       key={s.name}
                       session={s}
                       group={key}
-                      active={selected === s.name}
+                      active={selected?.kind === 'bot' && selected.name === s.name}
                       onOpen={openSession}
                       index={rowIndex++}
                     />
@@ -769,7 +1093,56 @@ export default function GrokRoster() {
           </footer>
         </div>
 
-        {hasDetail ? (
+        {selectedTeam && selectedMember ? (
+          // A TEAMMATE, IN THE SAME PANE (Phase 3). Read-only by construction —
+          // the teammate WS drops input — and the pane says so with a pill, not
+          // with a composer that cannot be typed into.
+          <React.Suspense
+            fallback={<div className="gr-pane" data-shell-pane aria-hidden />}
+          >
+            <MemberPane team={selectedTeam} member={selectedMember} onBack={backToTeam} />
+          </React.Suspense>
+        ) : selectedTeam ? (
+          // A TEAM, IN PLACE. Same contract as a bot, one level up: the pane's
+          // 'thread' face is the LEAD's real conversation (OD-1 = A) and its
+          // other face is the crew. A team whose lead isn't mapped this tick has
+          // no thread at all, so it opens straight on TeamPanel, which says so.
+          paneView === 'thread' && threadEligible && threadRow ? (
+            <React.Suspense
+              fallback={<div className="gr-pane gr-threadpane" data-shell-pane aria-hidden />}
+            >
+              <div className="gr-pane gr-threadpane" data-shell-pane>
+                <ChatPanel
+                  name={threadRow.name}
+                  session={toTile(threadRow)}
+                  input={threadInput ?? undefined}
+                  surface="desktop"
+                  onOpenTerminal={openInFocus}
+                  // THE CREW SIGNAL (jury R1 TEAM_THREAD fix). The bare people
+                  // icon read as "one bot"; the crew chip carries the teammates'
+                  // faces with their live status, an `N bots` count and a
+                  // needs/working glance, so the lead's thread and its crew read
+                  // as ONE surface. Same tap target as before — it opens
+                  // TeamPanel (the `pane-team-toggle` VR the roster e2e drives).
+                  headerTrailing={
+                    <TeamCrewChip team={selectedTeam} onOpen={openSettings} vr="pane-team-toggle" />
+                  }
+                />
+              </div>
+            </React.Suspense>
+          ) : (
+            <React.Suspense fallback={<div className="gr-pane" data-shell-pane aria-hidden />}>
+              <TeamPanel
+                variant="pane"
+                team={selectedTeam}
+                onOpenThread={openThread}
+                onOpenMember={(m) => openMember(selectedTeam, m)}
+                onDismissed={clearSelection}
+                onNavigate={(n) => navigate(`/focus/${encodeURIComponent(n)}`)}
+              />
+            </React.Suspense>
+          )
+        ) : selectedSession ? (
           paneView === 'thread' && threadEligible ? (
             // THE LIVE THREAD in the right pane — the reused chat renderer, one
             // shell, one composer, no route change. The settings page is one tap
@@ -835,6 +1208,19 @@ export default function GrokRoster() {
         botVoiced
         onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
       />
+
+      {/* "Hire a crew" — the SAME sheet the convert flow uses, in its
+          from-scratch mode (no `sessionName`). Mounted only once opened so the
+          lazy chunk is never fetched for a roster nobody hired from. */}
+      {crewOpen && (
+        <React.Suspense fallback={null}>
+          <StartTeamSheet
+            open={crewOpen}
+            onOpenChange={setCrewOpen}
+            onStarted={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
+          />
+        </React.Suspense>
+      )}
     </div>
   )
 }

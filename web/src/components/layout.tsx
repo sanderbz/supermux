@@ -317,6 +317,14 @@ export function Layout() {
   const { pathname } = useLocation()
   const isFocus = pathname.startsWith('/focus/')
   const isOverview = pathname === '/'
+  // The phone `/team/*` detail (Phase 6a) is a full-bleed surface like focus — no
+  // top bar, no bottom nav, no `<main>` page-scroll. It is NOT a focus session,
+  // so it stays out of `isFocus` (which drives the `/focus/` slug + agent hue);
+  // `chromeless` is the shared "this route paints the whole window" gate. Base app
+  // never routes here (the route redirects when bot mode is off), so every
+  // existing path keeps `chromeless === isFocus` exactly.
+  const isTeamDetail = pathname.startsWith('/team/')
+  const chromeless = isFocus || isTeamDetail
   // Archived sheet open-state lives in a shared store so the ⌘K command and the
   // overview overflow item open the same shell-mounted instance (no permanent
   // estate — the sheet is only in the DOM as an overlay when opened).
@@ -438,7 +446,7 @@ export function Layout() {
           its outer-right corners into the desktop floating window. Inert with no
           styling attached in the default app — layout-neutral. */}
       <div data-shell-main="" className="flex h-full min-w-0 flex-1 flex-col">
-        {!isFocus && <MobileTopBar overview={isOverview} />}
+        {!chromeless && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
         {/* The content column. `data-shell-content` raises it one step off the
             paper under the substrate; it is also the host `<ShellOverlay>`
@@ -462,11 +470,11 @@ export function Layout() {
           // also covers pre-Safari-16 (where `overscroll-behavior` is a no-op).
           // Platform-neutral: on mobile the focus route's sheet is `position:
           // fixed` (out of `<main>`'s flow), so clipping `<main>` changes nothing.
-          className={cn('min-h-0 flex-1', isFocus ? 'overflow-hidden' : 'overflow-auto')}
+          className={cn('min-h-0 flex-1', chromeless ? 'overflow-hidden' : 'overflow-auto')}
         >
           <Outlet />
         </main>
-        {!isFocus && <BottomNav />}
+        {!chromeless && <BottomNav />}
       </div>
       {/* The global ⌘K command palette. Mounted ONCE at shell level so the
        *  shortcut works on EVERY route (overview, board, files, scheduler,

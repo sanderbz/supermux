@@ -514,6 +514,19 @@ fn supermux_entry(event_token: &str) -> Value {
 /// `hook_success` attachment, so without it every hook fire injected a noise
 /// line (measured: 832 of 3397 lines (~25%) of a live transcript).
 ///
+/// **Pane attribution.** The body also carries `"pane":"$TMUX_PANE"` — the ONE
+/// field that tells the server WHICH pane of a session fired the hook. It costs
+/// nothing (tmux exports it into every pane; it expands to the empty string
+/// outside tmux — native sessions and any odd shell) and it is what makes a team
+/// lead servable: teammate panes inherit `$SUPERMUX_SESSION` +
+/// `$SUPERMUX_HOOK_TOKEN` from the tmux SESSION environment, so without it a
+/// teammate's `SessionStart` is indistinguishable from the lead's and repoints
+/// the lead at the teammate's transcript (measured live —
+/// `~/team-gap/PHASE0-PROBE.md`). Consumed by
+/// [`crate::hooks::track_conversation_pointer`]. The MARKER-based idempotency
+/// replaces a marked entry IN PLACE and `install_hooks` runs per session start,
+/// so this upgrade lands on the next start of any session — no migration.
+///
 /// **Security.** Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT
 /// the dashboard `$SUPERMUX_TOKEN`) and `$SUPERMUX_URL` (so a reconfigured bind
 /// doesn't break hooks). The payload is held in-memory only server-side and is
@@ -532,7 +545,7 @@ fn hook_command(event_token: &str) -> String {
          -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          \"$SUPERMUX_URL/api/_internal/hook\" \
-         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"payload\\\":$D}}\" || true"
+         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"pane\\\":\\\"$TMUX_PANE\\\",\\\"payload\\\":$D}}\" || true"
     )
 }
 
@@ -779,6 +792,15 @@ mod tests {
             assert!(cmd.contains("head -c 16384"), "{event} must size-cap the payload");
             assert!(cmd.contains("D='{}'"), "{event} must default empty stdin to {{}}");
             assert!(cmd.contains("\\\"payload\\\":$D"), "{event} must splice the payload");
+            // S2 (§R2.2): the pane discriminator. `$TMUX_PANE` is exported by
+            // tmux into every pane and is EMPTY outside tmux, so this is the one
+            // field that separates a teammate's hook from the lead's on a team
+            // host. Without it the lead's conversation pointer is repointable by
+            // any teammate (measured — ~/team-gap/PHASE0-PROBE.md).
+            assert!(
+                cmd.contains("\\\"pane\\\":\\\"$TMUX_PANE\\\""),
+                "{event} must carry the pane discriminator"
+            );
             assert_eq!(arr[0]["hooks"][0]["blocking"], json!(false));
         }
     }

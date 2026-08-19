@@ -19,6 +19,10 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { useToast } from '@/components/ui/use-toast'
 import { useSessions } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import { useUI } from '@/stores/ui-store'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import {
   attentionCount,
   sessionFromPath,
@@ -56,6 +60,20 @@ export function PushBridge(): null {
   const navigate = useNavigate()
   const location = useLocation()
   const { sessions } = useSessions()
+  // SSE-live already (the shared `['teams']` cache), so this adds no request —
+  // it only makes the badge count a crew that needs you, not just bots.
+  const { teams } = useTeams()
+  // BASE-APP BADGE PARITY (jury R1 finding 5). Crews are a Bot-mode surface: with
+  // Bot mode OFF the app never routes to a team, so the icon badge must count
+  // exactly what base does — standalone bots, no crew term — byte-for-byte. The
+  // setting is reactive (a toggle re-badges); the kill switches are read once,
+  // the same reload-level read the skin itself uses (`bot-mode-flag.ts`).
+  const botMode = useUI((s) => s.botMode)
+  const [kill] = React.useState(() => ({
+    master: typeof localStorage === 'undefined' ? null : localStorage.getItem(BOT_KILL_SWITCH_KEY),
+    grok: typeof localStorage === 'undefined' ? null : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+  }))
+  const botOn = botModeOn(botMode, kill.master, kill.grok)
 
   // ── 1. the SW's forwarded payloads ────────────────────────────────────────
   // Re-subscribing when `toast`/`navigate` change is free (one listener swap)
@@ -79,7 +97,8 @@ export function PushBridge(): null {
   }, [toast, navigate])
 
   // ── 2. the badge, recomputed from what the app can see ────────────────────
-  const count = attentionCount(sessions)
+  // Crew term only under Bot mode (see `botOn` above) — off it, base parity.
+  const count = attentionCount(sessions, botOn ? teams : undefined)
   React.useEffect(() => {
     setBadge(count)
     tellServiceWorker({ type: 'badge', badge: count })

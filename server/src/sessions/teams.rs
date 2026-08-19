@@ -212,6 +212,29 @@ pub async fn resolve_member_pane(
     })
 }
 
+/// Does `session_name` actually HOST a Claude Agent Team (a lead with ≥1 real
+/// teammate)? The cheap pre-check in front of every pane-attributed decision:
+/// the DB row's `team_name` column (stamped by [`crate::teams::watcher`]) AND
+/// [`crate::teams::scan::real_team`], which requires an on-disk roster with a
+/// member that is not the lead entry.
+///
+/// **Why both.** With the global agent-teams pref on, Claude Code ≥2.1.178
+/// writes an implicit SOLO team for every plain session and the watcher stamps
+/// the column, so `team_name.is_some()` alone is not a team signal (the same
+/// pollution that made the old chat refusal 4404 ordinary sessions).
+///
+/// **Why it exists.** It keeps every team-shaped fork (a `tmux list-panes`, a
+/// `~/.claude/teams` walk) off the path of a NON-team session, so the base app's
+/// hook path is byte-identical to before this wave. Two file reads (one DB row +
+/// one `config.json`) for the two pointer events of a team host; nothing on any
+/// other event or session.
+pub async fn is_team_host(state: &AppState, session_name: &str) -> bool {
+    let Ok(Some(row)) = crate::db::sessions::get(&state.pool, session_name).await else {
+        return false;
+    };
+    row.team_name.as_deref().is_some_and(crate::teams::scan::real_team)
+}
+
 /// Resolve the LEAD pane of `session_name`'s tmux window when that session is
 /// hosting an Agent Team (multi-bug fix: "main pane shows teammate content" +
 /// "typing into lead doesn't reach").

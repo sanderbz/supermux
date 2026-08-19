@@ -1,5 +1,12 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import {
+  BrowserRouter,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ThemeProvider } from '@/components/theme-provider'
@@ -26,6 +33,12 @@ const Settings = lazy(() =>
 // cold hero path, and its catalog/card tree should not weigh the entry bundle.
 const Store = lazy(() =>
   import('@/routes/store').then((m) => ({ default: m.Store })),
+)
+// The phone team-detail surface (Phase 6a). Lazy so the 160 KB entry gate never
+// carries ChatPanel/TeamPanel/MemberPane for a route the roster only reaches on a
+// phone tap (and which redirects to /focus when bot mode is off).
+const TeamDetail = lazy(() =>
+  import('@/routes/team-detail').then((m) => ({ default: m.TeamDetail })),
 )
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
@@ -127,6 +140,30 @@ function RendererPrefsSync() {
   return null
 }
 
+/**
+ * PHASE 0.2 — dev-bench skin wrapper. `?grok=1` on any `/dev/*` route stamps
+ * `data-grok` + `data-grok-root`, the two attributes `<Layout>` stamps on the
+ * real shell, so a bench renders under the REAL skin (`styles/grok-mode.css`,
+ * every rule scoped `[data-grok]`) instead of needing the harness to inject
+ * them. `data-grok-root` is the ground marker the structural rules key off
+ * (`[data-grok][data-grok-root]`), so the wrapper must be a real, full-size box
+ * — which is exactly why it is NOT rendered without the param: no param, no
+ * element, no layout change for any existing bench.
+ *
+ * DEV-only in practice: every child route here is `import.meta.env.DEV &&`, so
+ * in production this parent has no matching child and never renders.
+ */
+function DevSkin() {
+  const { search } = useLocation()
+  const grok = new URLSearchParams(search).get('grok') === '1'
+  if (!grok) return <Outlet />
+  return (
+    <div data-grok="" data-grok-root="" className="min-h-dvh w-full bg-background">
+      <Outlet />
+    </div>
+  )
+}
+
 export default function App() {
   return (
     // basename uses BASE_URL so the Capacitor `capacitor://localhost` origin
@@ -219,7 +256,39 @@ export default function App() {
                     </Suspense>
                   }
                 />
+                {/* Phase 6a — the phone team-detail surface. Two arms (team /
+                    team+member); the component redirects to /focus/<lead> when
+                    bot mode is off, so the base app never renders it. Inside
+                    <Layout> so it inherits the grok skin + providers; Layout
+                    treats `/team/*` as a full-bleed route (no top/bottom nav),
+                    the same as /focus. */}
+                <Route
+                  path="/team/:teamName"
+                  element={
+                    <Suspense fallback={null}>
+                      <TeamDetail />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/team/:teamName/:agentId"
+                  element={
+                    <Suspense fallback={null}>
+                      <TeamDetail />
+                    </Suspense>
+                  }
+                />
               </Route>
+              {/* PHASE 0.2 — the DEV BENCH SKIN GATE (`?grok=1`).
+                  The /dev/* benches mount OUTSIDE <Layout>, which is the only
+                  place `data-grok` / `data-grok-root` are stamped — so a bench
+                  could only ever be reviewed in the BASE skin, and every grok
+                  screenshot needed the attribute injected by the capture
+                  harness. This pathless parent route stamps the same two
+                  attributes when the URL carries `?grok=1`.
+                  Without the param it renders a BARE <Outlet/> — zero extra DOM,
+                  so every existing bench is byte-identical. */}
+              <Route element={import.meta.env.DEV ? <DevSkin /> : <Outlet />}>
               {DevStore && (
                 <Route
                   path="/dev/store"
@@ -370,6 +439,7 @@ export default function App() {
                   }
                 />
               )}
+              </Route>
             </Routes>
             </ConfirmDialogProvider>
             </ToastProvider>

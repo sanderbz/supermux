@@ -15,6 +15,7 @@
 //     the noise this redesign exists to remove.
 
 import type { ToastTone } from '@/components/ui/use-toast'
+import { needsYouCount, type Team } from '@/lib/api/teams'
 
 /** The payload shape the server sends (server/src/notify.rs::PushPayload). */
 export interface PushPayload {
@@ -71,12 +72,27 @@ export interface BadgeSession {
  * error. The app recomputes it from the sessions snapshot it already holds so
  * the badge self-heals on every foreground, which is what covers the one case
  * the server cannot see — a dialog answered without any subsequent push.
+ *
+ * ── The team term, and its asymmetry (Phase 5c) ─────────────────────────────
+ * `teams` adds `Σ needsYouCount(t)` so the badge is honest about a crew that is
+ * waiting on you, not just standalone bots. It is deliberately NOT run through
+ * the seen-cursor machinery `use-attention.ts` owns: a teammate is not an
+ * `/api/sessions` row and has no per-device seen-cursor, and a team's `needs_you`
+ * comes straight off the inbox file — it is a LIVE demand, not an "unread since I
+ * last looked" signal. Marking a teammate read is meaningless, so nothing here
+ * tries to; the term clears the moment the crew stops needing you.
  */
-export function attentionCount(sessions: readonly BadgeSession[] | undefined): number {
-  if (!sessions) return 0
-  return sessions.filter(
-    (s) => Boolean(s.permission_request) || Boolean(s.notice) || Boolean(s.error),
-  ).length
+export function attentionCount(
+  sessions: readonly BadgeSession[] | undefined,
+  teams?: readonly Team[],
+): number {
+  const bots = sessions
+    ? sessions.filter(
+        (s) => Boolean(s.permission_request) || Boolean(s.notice) || Boolean(s.error),
+      ).length
+    : 0
+  const crew = teams ? teams.reduce((n, t) => n + needsYouCount(t), 0) : 0
+  return bots + crew
 }
 
 /** The coalescing slot for a session — must match `notify::tag_for`. */

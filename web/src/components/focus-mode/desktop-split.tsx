@@ -321,18 +321,16 @@ export function DesktopSplit({
 
   // Fase A1 chat renderer — the DESKTOP seam. The mobile one landed in A5
   // (routes/focus/mobile.tsx) and shares this file's decision verbatim, via
-  // components/chat/seam.ts. Guard: local Claude, not a team lead (Track A v1
-  // scope), flag + kill-switch in components/chat/flag.ts.
+  // components/chat/seam.ts. Guard: local Claude (Track A v1 scope), flag +
+  // kill-switch in components/chat/flag.ts. A TEAM LEAD is no longer refused
+  // (Phase 2a) — it is a first-class chat bot, so no `useTeams()` read is
+  // needed here at all.
   //
   // Declared HERE rather than next to `title` (where the rest of the render
   // prep lives) because `onPaste` below closes over `chatActive` AND lists it
   // as a useCallback dep — a later `const` would be in its TDZ.
-  const isTeamLead = React.useMemo(
-    () => teams.some((t) => t.lead_supermux_session === name),
-    [teams, name],
-  )
   const chatSetting = useUI((s) => s.botMode)
-  const chatOn = useChatRenderer(current ?? null, isTeamLead)
+  const chatOn = useChatRenderer(current ?? null)
   // renderer null = undecided. With the experiment ON we wait for the
   // sessions query (`current` is null on first paint) before choosing, so the
   // terminal never mounts→attaches→unmounts on every focus load (wasted pty
