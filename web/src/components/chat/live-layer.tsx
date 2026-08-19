@@ -47,9 +47,9 @@ import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
 import type { DialogCardView } from './dialog-answer'
-import { formatElapsed, stripEmojiPrefix } from './entries'
+import { stripEmojiPrefix } from './entries'
 import { toReceiptRows } from './grouping'
-import { serverNowMs } from './latency'
+import { ELAPSED_AFTER_MS, LiveElapsed, useElapsedShown } from './live-elapsed'
 import type { OverlayLine } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
 import {
@@ -259,7 +259,11 @@ export function LiveLayer({
     working && !target && overlay.length > 0
       ? {
           label: activity ? stripEmojiPrefix(activity) : overlay[overlay.length - 1].label,
-          status: liveStatus(turnStart, session?.subagents, surface),
+          // The STATIC half only — the subagent count, which changes on an SSE
+          // frame. The elapsed half is `turnStartMs` below: a node the running
+          // line renders itself, so a second passing re-renders nothing here.
+          status: liveStatus(session?.subagents, surface),
+          turnStartMs: turnStart,
         }
       : undefined
 
@@ -377,7 +381,7 @@ export function LiveLayer({
           // elapsed clock and the subagent count.
           live={
             liveRow
-              ? { label: liveRow.label, status: liveRow.status }
+              ? { label: liveRow.label, status: liveRow.status, turnStartMs: liveRow.turnStartMs }
               : undefined
           }
         />
@@ -830,24 +834,20 @@ function shortDir(dir: string): string {
 
 /* ── the hook receipts ───────────────────────────────────────────────────── */
 
-/** The elapsed clause the working row used to carry, on the same two rules: it
- *  counts from the SEND (server clock, not from mount) and it stays off screen
- *  for the first 5s, because a fast turn that prints 1s, 2s, 3s feels slow. */
-const ELAPSED_AFTER_MS = 5_000
-
-function liveStatus(
-  turnStartMs: number | null,
-  subagents?: number,
-  surface?: 'desktop' | 'phone',
-): string | undefined {
+/**
+ * The STATIC clause of the running line's status — everything that is NOT the
+ * clock. The elapsed half the working row used to carry is a `LiveElapsed` node
+ * now (`live-elapsed.tsx`), rendered beside this in the same `ml-auto` cell and
+ * advancing without a render; the two rules it kept are unchanged (it counts
+ * from the SEND on the server clock, and it stays off screen for the first 5s
+ * because a fast turn that prints 1s, 2s, 3s feels slow).
+ */
+function liveStatus(subagents?: number, surface?: 'desktop' | 'phone'): string | undefined {
   // The clock shares the line with the tool label now, and on the phone that
   // line has a 266px bubble to live in. `3 subagents` costs a third of it, and
   // WHAT is running matters more than how many helpers it has — so the count is
   // a desktop clause and the clock is everywhere.
-  const clause = surface !== 'phone' && subagents && subagents >= 2 ? `${subagents} subagents` : ''
-  const elapsedMs = turnStartMs == null ? 0 : serverNowMs() - turnStartMs
-  const elapsed = elapsedMs >= ELAPSED_AFTER_MS ? formatElapsed(elapsedMs) : ''
-  return [clause, elapsed].filter(Boolean).join(' · ') || undefined
+  return surface !== 'phone' && subagents && subagents >= 2 ? `${subagents} subagents` : undefined
 }
 
 /**
@@ -873,10 +873,14 @@ export function OverlayReceipts({
   pin?: MarkPin
   surface?: 'desktop' | 'phone'
   /** What the last (running) line is doing right now — the label as of this
-   *  frame, and the clock the working row used to carry (QA #7). Absent on a
-   *  group whose turn has ended, where nothing is running any more. */
-  live?: { label: string; status?: string }
+   *  frame, the static status clause, and the turn anchor the clock the working
+   *  row used to carry counts from (QA #7). Absent on a group whose turn has
+   *  ended, where nothing is running any more. */
+  live?: { label: string; status?: string; turnStartMs?: number | null }
 }) {
+  // The 5s rung is a LAYOUT decision (no cell, no gap, under it), so it is made
+  // here and flipped by one scheduled timeout — not by a per-second tick.
+  const showClock = useElapsedShown(live?.turnStartMs, ELAPSED_AFTER_MS)
   const rows = React.useMemo<Receipt[]>(() => {
     const labelled = lines.map((line, i) => ({
       uuid: `${line.at}-${i}`,
@@ -885,10 +889,21 @@ export function OverlayReceipts({
     const base = toReceiptRows(labelled)
     return base.map((row, i) =>
       i === base.length - 1
-        ? { ...row, state: 'running' as const, status: live?.status }
+        ? {
+            ...row,
+            state: 'running' as const,
+            status: live?.status,
+            // The clock as a NODE: `LiveElapsed` is memoised and mutates its own
+            // text node, so this group re-rendering (a new receipt, a new label)
+            // never disturbs it, and time passing never re-renders this group.
+            statusClock:
+              showClock && live?.turnStartMs != null ? (
+                <LiveElapsed turnStartMs={live.turnStartMs} afterMs={ELAPSED_AFTER_MS} />
+              ) : undefined,
+          }
         : row,
     )
-  }, [lines, live])
+  }, [lines, live, showClock])
   return (
     <MessageRow
       surface={surface}

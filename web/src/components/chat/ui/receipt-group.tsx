@@ -49,7 +49,7 @@ export interface Receipt {
    */
   failed?: boolean
   /**
-   * The live status of a `running` line — `8s`, `3 subagents · 8s`.
+   * The STATIC half of a `running` line's status — `3 subagents`.
    *
    * This is what makes the running receipt the turn's ONE live representation
    * (daily-driver QA #7): before it, the elapsed clock lived on a separate
@@ -57,8 +57,25 @@ export interface Receipt {
    * — `◌ notes.md` and `••• notes.md 5s`. The clock belongs to the line that is
    * running, and when that line stops running it resolves into a receipt in
    * place, with the outcome landing where the clock was.
+   *
+   * A STRING, and deliberately only the part that changes on real events: the
+   * elapsed half moved to `statusClock` because it changes on a clock, and the
+   * two must not share a node (see below).
    */
   status?: string
+  /**
+   * The LIVE half — the elapsed clock, as a NODE.
+   *
+   * Split out of `status` because of what a running line IS: it sits inside the
+   * reader-selectable chat track, and re-printing a string here once a second
+   * replaced the text node a drag-select was anchored in, which collapses the
+   * selection on WebKit. The DATA layer hands this slot a component that
+   * advances by mutating its own text node in place (`chat/live-elapsed.tsx`),
+   * so nothing in this group re-renders for time passing. This primitive stays
+   * pure: it decides that the clock shares the `ml-auto` cell with `status`,
+   * and imports no clock of its own.
+   */
+  statusClock?: React.ReactNode
 }
 
 export interface CoalescedReceipt extends Receipt {
@@ -221,7 +238,7 @@ function ReceiptLine({ line, phone }: { line: CoalescedReceipt; phone?: boolean 
       </span>
       {/* The running line's own clock, in the slot the outcome will take. It
           never competes with an outcome — a line that has one has finished. */}
-      {running && line.status && line.outcome === undefined && (
+      {running && (line.status || line.statusClock) && line.outcome === undefined && (
         <span
           data-testid="chat-receipt-status"
           // `ml-auto` as it always was: the clock sits on the bubble's right
@@ -230,6 +247,8 @@ function ReceiptLine({ line, phone }: { line: CoalescedReceipt; phone?: boolean 
           className="ml-auto flex-none whitespace-nowrap pt-[1px] tabular-nums text-[13px] text-ink-2"
         >
           {line.status}
+          {line.status && line.statusClock ? ' · ' : null}
+          {line.statusClock}
         </span>
       )}
     </>

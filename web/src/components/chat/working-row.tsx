@@ -18,19 +18,14 @@
 // Import rule: relative only (the unit runner resolves no `@/` paths) and
 // `components/chat/ui` is imported from here, never the reverse.
 
-import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
 import { motionOff, springs } from '../../lib/springs'
 
-import { formatElapsed, stripEmojiPrefix } from './entries'
-import { serverNowMs } from './latency'
-import { selectionInChatTrack } from './selection'
+import { stripEmojiPrefix } from './entries'
+import { ELAPSED_AFTER_MS, LiveElapsed, useElapsedShown } from './live-elapsed'
 import { WorkingRow as WorkingRowUi } from './ui'
-
-/** How long a turn runs before it is worth putting a number on. */
-const ELAPSED_AFTER_MS = 5_000
 
 export function WorkingRow({
   name,
@@ -49,30 +44,22 @@ export function WorkingRow({
    *  not from whenever this component happened to mount. */
   turnStartMs: number
 }) {
-  // 1s tick for the elapsed clause only.
-  //
-  // It STANDS DOWN while the reader holds a selection in a chat track: this tick
-  // reprints the row's text, and the row sits at the bottom of the live band a
-  // drag-select naturally reaches into — swapping the node under a held
-  // selection collapses it on WebKit (`selection.ts::selectionInChatTrack`). The
-  // clock is cosmetic; freezing it for the few seconds a copy takes is the same
-  // trade the follow-bottom pin already makes, and it resumes at the true
-  // elapsed (read off the server clock) the moment the selection clears.
-  const [, tick] = React.useReducer((n: number) => n + 1, 0)
-  React.useEffect(() => {
-    const id = window.setInterval(() => {
-      if (selectionInChatTrack()) return
-      tick()
-    }, 1000)
-    return () => window.clearInterval(id)
-  }, [])
+  // NO TICK HERE. The elapsed clause is a `LiveElapsed` leaf that advances by
+  // mutating its own text node (`live-elapsed.tsx`), so this row re-renders only
+  // when its REAL props change — an SSE status flip, a new hook label, a
+  // subagent count — and never because a second went by. That is what keeps a
+  // reader's drag-select alive: the row sits at the bottom of the live band a
+  // selection naturally reaches into, and nothing here replaces a node under it.
   const reduce = useReducedMotion() ?? false
+  // The 5s rung, as ONE scheduled flip rather than five ticks (`useElapsedShown`):
+  // under it the elapsed cell is not rendered at all, exactly as before, so the
+  // row's `gap`/`ml-auto` geometry is unchanged on the first rung.
+  const showElapsed = useElapsedShown(turnStartMs, ELAPSED_AFTER_MS)
 
   const clause = subagents && subagents >= 2 ? ` · ${subagents} subagents` : ''
   // The emoji taxonomy stays terminal/tile-only, so the label is stripped here
   // exactly as the confirmed receipt it will become is (`stripEmojiPrefix`).
   const label = (activity ? stripEmojiPrefix(activity) : 'Thinking…') + clause
-  const elapsedMs = serverNowMs() - turnStartMs
 
   return (
     <motion.div
@@ -88,7 +75,9 @@ export function WorkingRow({
         seed={name}
         pin={pin}
         label={label}
-        elapsed={elapsedMs >= ELAPSED_AFTER_MS ? formatElapsed(elapsedMs) : undefined}
+        elapsed={
+          showElapsed ? <LiveElapsed turnStartMs={turnStartMs} afterMs={ELAPSED_AFTER_MS} /> : undefined
+        }
       />
     </motion.div>
   )
