@@ -64,6 +64,25 @@ const HOOK_FRESH: Duration = Duration::from_secs(3);
 /// Once the newest hook is older than this, the detector behaves exactly as it
 /// did pre-fix: regex bank → PTY heartbeat → idle timeout.
 const TURN_SAFETY: Duration = Duration::from_secs(15 * 60);
+/// After the turn state machine still reads `Active` (a `turn_start` with no
+/// newer `Stop`), how long the PTY must be QUIET before a capture that plainly
+/// shows the session back at its idle composer is trusted to mean the turn was
+/// CANCELLED/INTERRUPTED without a `Stop` hook.
+///
+/// This is the server mirror of the chat client's idle-settle. A chat/Grok
+/// "Stop" (and a bare Esc in the composer) delivers a single `Escape` into the
+/// pty; Claude Code interrupts the turn and returns to the `❯` prompt but emits
+/// **no `Stop` hook**, so the turn machine — which outranks the capture bank —
+/// would otherwise pin `Active` for the whole [`TURN_SAFETY`] (15 min) window
+/// over a session the terminal shows at rest, leaving the roster tile + header
+/// dot busy. Reconciling the stale `Active` against the pty ground truth flips
+/// it back to `Idle`.
+///
+/// Bounded small so the dot is honest within a couple of ticks of a cancel, but
+/// non-zero so the sub-second gap at turn START (prompt submitted, spinner not
+/// yet drawn — pty bytes still flowing) can never flip a genuinely new turn to
+/// idle before its spinner appears.
+const CANCEL_SETTLE: Duration = Duration::from_secs(3);
 /// capture-pane skip optimization window.
 const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// Upper bound on how stale the live preview tail may get while we are skipping
@@ -624,6 +643,35 @@ impl StatusDetector {
         // `turn_start` only as part of "a turn is in progress" — a lone PostToolUse
         // older than any Stop yields Idle, not a pinned Active.)
         if let Some(s) = turn.classify() {
+            // ── 1b. CANCEL / INTERRUPT reconcile (the stuck-`active` fix) ─────
+            // A turn-machine `Active` means `turn_start > turn_end`: a turn began
+            // and no `Stop` hook has ended it. But a CANCEL — the chat/Grok "Stop"
+            // control, or a bare Esc in the composer — delivers a single `Escape`
+            // into the pty, and Claude Code interrupts the turn WITHOUT emitting a
+            // `Stop` hook. So `turn_end` never advances and this branch would pin
+            // `Active` for the whole TURN_SAFETY (15 min) window over a session the
+            // terminal shows back at its idle `❯` composer (the reported bug: the
+            // roster tile + header dot stay busy long after the pty went idle).
+            //
+            // Reconcile against the pty ground truth. When the captured tail shows
+            // NO active marker (no spinner / `esc to interrupt`) AND a definitive
+            // at-rest marker (a bare `❯`/`$` prompt, a completed spinner) AND the
+            // pty has settled quiet, the turn is genuinely over — return `Idle`.
+            //
+            // This CANNOT misfire on a real running turn (incl. a silent think
+            // between tool calls): Claude keeps its `esc to interrupt` spinner line
+            // in view the entire time it is interruptible, so ACTIVE_BANK matches
+            // and the reconcile is skipped — genuine active detection is preserved.
+            // The Esc-Esc rewind prompt is already handled earlier by
+            // INTERRUPT_MARKER (→ Waiting); this covers the single-Esc cancel,
+            // whose screen is an ordinary idle composer, not that prompt.
+            if s == Status::Active
+                && last_pty.elapsed() >= CANCEL_SETTLE
+                && !ACTIVE_BANK.is_match(capture)
+                && IDLE_BANK.is_match(capture)
+            {
+                return Status::Idle;
+            }
             return s;
         }
 
@@ -1186,6 +1234,88 @@ mod tests {
         turn.apply(Instant::now() - Duration::from_secs(30), HookEvent::PreToolUse);
         turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::Stop);
         assert_eq!(d.detect("plan mode", neutral_pty(), turn, true), Status::Idle);
+    }
+
+    /// The idle composer a single-Esc cancel leaves on screen: a `⎿ Interrupted`
+    /// line and the bare `❯` prompt, NO spinner / `esc to interrupt`. This is what
+    /// the chat/Grok "Stop" produces (it delivers one `Escape`), distinct from the
+    /// Esc-Esc rewind prompt handled by INTERRUPT_MARKER.
+    const CANCELLED_COMPOSER: &str = "\
+● Editing the configuration file.
+  ⎿ Interrupted by user
+╭──────────────────────────────────────────────╮
+│ >                                             │
+╰──────────────────────────────────────────────╯
+❯ ";
+
+    #[test]
+    fn cancelled_turn_settles_to_idle_when_pty_shows_idle_prompt() {
+        // THE server half of the stuck-`active` bug. A chat/Grok turn is cancelled
+        // via "Stop": a single Esc interrupts it, Claude Code emits NO `Stop` hook,
+        // so the turn machine still sees `turn_start > turn_end` and would pin
+        // Active for the full TURN_SAFETY window. But the pty is back at its idle
+        // composer and has gone quiet → reconcile to Idle so the roster dot + header
+        // are honest, mirroring the client's turnStart reconcile.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        // A turn is "in progress" per the hooks: PreToolUse fired, no Stop.
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(8));
+        // neutral_pty() is 10s quiet — well past CANCEL_SETTLE.
+        assert_eq!(
+            d.detect(CANCELLED_COMPOSER, neutral_pty(), turn, true),
+            Status::Idle,
+            "a cancelled turn (no Stop hook) over an idle composer must settle to Idle"
+        );
+    }
+
+    #[test]
+    fn fresh_turn_start_is_not_flipped_to_idle_before_spinner_draws() {
+        // The turn-START guard: right after UserPromptSubmit the composer may still
+        // be on screen for a sub-second gap before Claude draws its spinner, and the
+        // pty is actively echoing (fresh bytes). The CANCEL_SETTLE quiet-pty gate
+        // must keep such a brand-new turn Active — only a SETTLED-quiet pty is
+        // trusted to mean "cancelled".
+        let mut d = StatusDetector::new();
+        let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_millis(200));
+        assert_eq!(
+            d.detect(CANCELLED_COMPOSER, Instant::now(), turn, true),
+            Status::Active,
+            "a just-started turn with fresh pty bytes must not settle to Idle"
+        );
+    }
+
+    #[test]
+    fn running_turn_with_spinner_stays_active_despite_bare_prompt() {
+        // Genuine active detection is preserved: a real running turn keeps its
+        // `esc to interrupt` spinner line in view even though the composer's bare
+        // `❯` is ALSO on screen (which alone matches the IDLE bank). ACTIVE_BANK
+        // matches, so the cancel-reconcile is skipped and the turn stays Active —
+        // even with a long-quiet pty (a silent think).
+        let cap = "\
+✻ Thinking… (esc to interrupt · 3s · ↑ 1.2k tokens)
+╭──────────────────────────────────────────────╮
+│ >                                             │
+╰──────────────────────────────────────────────╯
+❯ ";
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(40));
+        assert_eq!(
+            d.detect(cap, neutral_pty(), turn, true),
+            Status::Active,
+            "a spinner in view (esc to interrupt) must keep a quiet-pty turn Active"
+        );
+    }
+
+    #[test]
+    fn silent_think_empty_capture_stays_active_after_settle() {
+        // A silent think with an EMPTY capture (nothing drawn yet) and a long-quiet
+        // pty must stay Active: the reconcile only downgrades on a POSITIVE idle
+        // marker, so an absent idle prompt (IDLE_BANK no-match) never triggers it —
+        // this is the headline "busy while thinking" behaviour, unchanged.
+        let mut d = StatusDetector::new();
+        let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_secs(20));
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Active);
     }
 
     #[test]
