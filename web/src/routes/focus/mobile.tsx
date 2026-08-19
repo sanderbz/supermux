@@ -187,6 +187,18 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // and a View Transition would fight the live drag transform.
   const navigateMorph = useNavigateMorph()
   const reduceMotion = useReducedMotion()
+  // Grok skin, read ONCE at mount (a skin flip is a reload-level change). Read
+  // up here (rather than only at the title-info fork below) because the teammate
+  // affordances branch on it: under grok a teammate opens the phone `/team/<team>/
+  // <agent>` route (Phase 6a); off grok it opens the shared <TeammateFocus>
+  // overlay, exactly as the base app always has — so the base app is untouched.
+  const [grok] = React.useState(() =>
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined' ? null : localStorage.getItem(BOT_KILL_SWITCH_KEY),
+      typeof localStorage === 'undefined' ? null : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
   const { sessions: liveSessions } = useSessions()
   // DEV-only override (the /dev/focus-mobile harness) — TileSession is a
   // superset-compatible shape (see session-tile/types.ts), so it slots in
@@ -472,9 +484,22 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   const focusMember: TeamMember | null = teammateFocus
     ? focusTeam?.members.find((m) => m.agent_id === teammateFocus.agentId) ?? null
     : null
-  const openTeammate = React.useCallback((team: Team, member: TeamMember) => {
-    setTeammateFocus({ teamName: team.team_name, agentId: member.agent_id })
-  }, [])
+  const openTeammate = React.useCallback(
+    (team: Team, member: TeamMember) => {
+      // Phase 6a — under grok a teammate is a first-class route, not an overlay:
+      // route to the phone `/team/<team>/<agent>` detail (MemberPane) instead of
+      // the retiring in-route <TeammateFocus>. Off grok the base app keeps the
+      // shared overlay exactly as before.
+      if (grok) {
+        navigate(
+          `/team/${encodeURIComponent(team.team_name)}/${encodeURIComponent(member.agent_id)}`,
+        )
+        return
+      }
+      setTeammateFocus({ teamName: team.team_name, agentId: member.agent_id })
+    },
+    [grok, navigate],
+  )
   // Seed teammateFocus from `/focus/<lead>?teammate=<agent_id>` — the overview
   // TEAM CARD navigates here for a teammate tap (single teammate-view surface,
   // no in-overview overlay). Strip the param after consuming so a later
@@ -486,12 +511,22 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
     const t = teams.find((x) => x.lead_supermux_session === name)
     const m = t?.members.find((x) => x.agent_id === teammateParam)
     if (!t || !m) return
+    // Phase 6a — the `?teammate=<agent>` deep link keeps working, but under grok
+    // it now REDIRECTS to the dedicated `/team/<team>/<agent>` route (the overlay
+    // path is retired for grok). Off grok it opens the shared overlay, unchanged.
+    if (grok) {
+      navigate(
+        `/team/${encodeURIComponent(t.team_name)}/${encodeURIComponent(m.agent_id)}`,
+        { replace: true },
+      )
+      return
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTeammateFocus({ teamName: t.team_name, agentId: m.agent_id })
     const next = new URLSearchParams(searchParams)
     next.delete('teammate')
     setSearchParams(next, { replace: true })
-  }, [teammateParam, teams, name, searchParams, setSearchParams])
+  }, [teammateParam, teams, name, searchParams, setSearchParams, grok, navigate])
   // Floating KeyBar (mobile-focus-keybar spec) — persisted open/keys state
   // (localStorage, `focus_key_bar` — independent of the legacy `quick_keys`
   // server pref). The dock's `···` icon now toggles `keyBar.open` instead of
@@ -559,16 +594,9 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
     termRef.current?.sendKey('Enter')
   }, [])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
+  // `grok` (read once at mount, above) also decides this: on ⇒ the tabbed
+  // BotPanel sheet; off ⇒ the flat SessionInfoPanel.
   const [infoOpen, setInfoOpen] = React.useState(false)
-  // Grok skin, read ONCE at mount (a skin flip is a reload-level change). When on,
-  // the title opens the tabbed BotPanel sheet; off, the flat SessionInfoPanel.
-  const [grok] = React.useState(() =>
-    botModeOn(
-      useUI.getState().botMode,
-      typeof localStorage === 'undefined' ? null : localStorage.getItem(BOT_KILL_SWITCH_KEY),
-      typeof localStorage === 'undefined' ? null : localStorage.getItem(GROK_KILL_SWITCH_KEY),
-    ),
-  )
   // feat-last-prompt — recall sheet for the user's last prompt. No auto-show
   // on mobile (the icon in the header is the only entry).
   const [lastSendOpen, setLastSendOpen] = React.useState(false)

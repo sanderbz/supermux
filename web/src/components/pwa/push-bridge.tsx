@@ -19,6 +19,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { useToast } from '@/components/ui/use-toast'
 import { useSessions } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
 import {
   attentionCount,
   sessionFromPath,
@@ -56,6 +57,9 @@ export function PushBridge(): null {
   const navigate = useNavigate()
   const location = useLocation()
   const { sessions } = useSessions()
+  // SSE-live already (the shared `['teams']` cache), so this adds no request —
+  // it only makes the badge count a crew that needs you, not just bots.
+  const { teams } = useTeams()
 
   // ── 1. the SW's forwarded payloads ────────────────────────────────────────
   // Re-subscribing when `toast`/`navigate` change is free (one listener swap)
@@ -79,7 +83,7 @@ export function PushBridge(): null {
   }, [toast, navigate])
 
   // ── 2. the badge, recomputed from what the app can see ────────────────────
-  const count = attentionCount(sessions)
+  const count = attentionCount(sessions, teams)
   React.useEffect(() => {
     setBadge(count)
     tellServiceWorker({ type: 'badge', badge: count })

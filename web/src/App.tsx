@@ -34,6 +34,12 @@ const Settings = lazy(() =>
 const Store = lazy(() =>
   import('@/routes/store').then((m) => ({ default: m.Store })),
 )
+// The phone team-detail surface (Phase 6a). Lazy so the 160 KB entry gate never
+// carries ChatPanel/TeamPanel/MemberPane for a route the roster only reaches on a
+// phone tap (and which redirects to /focus when bot mode is off).
+const TeamDetail = lazy(() =>
+  import('@/routes/team-detail').then((m) => ({ default: m.TeamDetail })),
+)
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
@@ -247,6 +253,28 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <Store />
+                    </Suspense>
+                  }
+                />
+                {/* Phase 6a — the phone team-detail surface. Two arms (team /
+                    team+member); the component redirects to /focus/<lead> when
+                    bot mode is off, so the base app never renders it. Inside
+                    <Layout> so it inherits the grok skin + providers; Layout
+                    treats `/team/*` as a full-bleed route (no top/bottom nav),
+                    the same as /focus. */}
+                <Route
+                  path="/team/:teamName"
+                  element={
+                    <Suspense fallback={null}>
+                      <TeamDetail />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/team/:teamName/:agentId"
+                  element={
+                    <Suspense fallback={null}>
+                      <TeamDetail />
                     </Suspense>
                   }
                 />

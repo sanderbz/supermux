@@ -66,6 +66,13 @@ import {
   type Team,
   type TeamMember,
 } from '@/lib/api/teams'
+import {
+  groupSessions,
+  groupTeamsByTier,
+  rosteredTeams,
+  totalBotCount,
+  type LeadSignal,
+} from '@/lib/team-attention'
 
 // The per-bot settings page. Lazy — it only mounts once a bot is selected (a
 // detail pane on desktop), so its section bodies (issues, schedules, git,
@@ -218,45 +225,6 @@ function stateWordFor(s: ApiSession, group: GroupKey): StateWord {
   if (s.status === 'stopped') return { word: 'stopped', cls: 'st-idle' }
   if (group === 'done') return { word: 'done', cls: 'st-done' }
   return { word: 'idle', cls: 'st-idle' }
-}
-
-function isSameDay(a: number, b: number): boolean {
-  const da = new Date(a)
-  const db = new Date(b)
-  return (
-    da.getFullYear() === db.getFullYear() &&
-    da.getMonth() === db.getMonth() &&
-    da.getDate() === db.getDate()
-  )
-}
-
-/** Bucket the sorted roster into the four attention-ordered sections. A plain
- *  module function so the `Date.now()` default lives OUTSIDE component render
- *  (the same shape `attention-tiers.ts` uses) — a `Date.now()` in a `useMemo`
- *  body reads as an impurity to `react-hooks/purity`, and rightly so. */
-function groupSessions(
-  sorted: readonly ApiSession[],
-  needNames: ReadonlySet<string>,
-  now: number = Date.now(),
-): Record<GroupKey, ApiSession[]> {
-  const buckets: Record<GroupKey, ApiSession[]> = { needs: [], active: [], done: [], idle: [] }
-  for (const s of sorted) {
-    if (needNames.has(s.name)) {
-      buckets.needs.push(s)
-      continue
-    }
-    if (s.status === 'active' || s.status === 'starting') {
-      buckets.active.push(s)
-      continue
-    }
-    const t = s.updated_at ? Date.parse(s.updated_at) : NaN
-    if (s.status === 'idle' && !Number.isNaN(t) && isSameDay(t, now)) {
-      buckets.done.push(s)
-      continue
-    }
-    buckets.idle.push(s)
-  }
-  return buckets
 }
 
 function matches(s: ApiSession, needle: string): boolean {
@@ -514,7 +482,16 @@ export function TeamRow({
    *  the `/dev/roster` bench keeps rendering a bare row. */
   withMenu?: boolean
 }) {
+  // NEVER render a rosterless row (6b) — belt-and-braces with the server's own
+  // `drop_rosterless` (watcher.rs). A team with no crew has no facepile to make
+  // it legible and nothing to open a member from, and `team-attention.ts` keeps
+  // it out of the counts too, so the header can't count a row nobody sees.
+  if (team.members.length === 0) return null
+
   const members = team.members.slice(0, 3)
+  // The count of crew NOT shown in the pile — the "+N" fourth slot (6b).
+  const overflow = team.members.length - members.length
+  const memberWord = team.members.length === 1 ? 'bot' : 'bots'
   // Reuse the two team roll-up helpers rather than re-deriving them here, for
   // parity with the bot row's L2 state-word + L3 muted glance (teams.ts owns the
   // definitions; the team card reads the same two).
@@ -531,7 +508,7 @@ export function TeamRow({
       data-active={active || undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
       onClick={() => onOpen(team)}
-      aria-label={`${team.team_name} — ${team.members.length} bots`}
+      aria-label={`${team.team_name} — ${team.members.length} ${memberWord}`}
     >
       <span className="gr-top">
         <span className="gr-pile gr-mark" aria-hidden>
@@ -549,6 +526,9 @@ export function TeamRow({
               attention={m.status === 'needs_you' ? 'needs' : null}
             />
           ))}
+          {/* The fourth pile slot: "+N" for a crew bigger than the pile (6b),
+              positioned off the same `.p3` token the marks sit on. */}
+          {overflow > 0 && <span className="p3 gr-pile-more">+{overflow}</span>}
         </span>
         <span className="col">
           <span className="l1">
@@ -572,7 +552,7 @@ export function TeamRow({
           <span className="l3">
             <span className="prov">
               <span className="pd" />
-              {team.members.length} bots
+              {team.members.length} {memberWord}
             </span>
           </span>
         </span>
@@ -657,26 +637,48 @@ export default function GrokRoster() {
     [filtered, sort],
   )
 
-  // Group into the four attention-ordered sections (overview.md §6). Teams ride
-  // their own leading section (a team is a row; grouping it by a member tier is
-  // noise). The `needs` set comes from the app-wide provider's PRECOMPUTED
-  // rollup — the same list the header count and the red section read, so they
-  // can never disagree — rather than calling `attentionFor` per row in render
-  // (which would read `Date.now()` mid-render: an impurity the linter rightly
-  // flags, and the reason the rollup is memoised in the provider in the first
-  // place).
+  // Group into the four attention-ordered sections (overview.md §6). The `needs`
+  // set comes from the app-wide provider's PRECOMPUTED rollup — the same list the
+  // header count and the red section read, so they can never disagree — rather
+  // than calling `attentionFor` per row in render (which would read `Date.now()`
+  // mid-render: an impurity the linter rightly flags, and the reason the rollup
+  // is memoised in the provider in the first place).
   const needNames = React.useMemo(
     () => new Set(attention.needs.map((s) => s.name)),
     [attention.needs],
   )
   const groups = React.useMemo(() => groupSessions(sorted, needNames), [sorted, needNames])
 
-  const needCount = groups.needs.length
-  // The VISIBLE list is empty when neither a team nor any session survives the
-  // current filter — the honest trigger for the empty state (jury d). `totalBots`
-  // counts the UNFILTERED roster, so it cannot answer "did this search find
-  // nothing".
-  const listEmpty = filteredTeams.length === 0 && sorted.length === 0
+  // OD-2 = FOLD: a team is no longer a leading divider — it sorts into the SAME
+  // four sections as a bot, by its own derived attention (`team-attention.ts`).
+  // Each team's lead contributes two bits (does the lead itself need you / is it
+  // active), read off the unsplit roster + the same `needNames` rollup.
+  const teamGroups = React.useMemo(
+    () =>
+      groupTeamsByTier(filteredTeams, (t): LeadSignal | null => {
+        const leadName = t.lead_supermux_session
+        if (!leadName) return null
+        const lead = allSessions.find((s) => s.name === leadName)
+        if (!lead) return null
+        return {
+          needs: needNames.has(lead.name),
+          active: lead.status === 'active' || lead.status === 'starting',
+        }
+      }),
+    [filteredTeams, allSessions, needNames],
+  )
+
+  // The header's need count is the SUM over the rendered rows — bots in the needs
+  // section PLUS teams in the needs section — so the header can never disagree
+  // with what the sections show (the property the old two-ordering split
+  // violated: R7/R8).
+  const needCount = groups.needs.length + teamGroups.needs.length
+  // The VISIBLE list is empty when neither a (rostered) team nor any session
+  // survives the current filter — the honest trigger for the empty state (jury
+  // d). `totalBots` counts the UNFILTERED roster, so it cannot answer "did this
+  // search find nothing".
+  const listEmpty =
+    sorted.length === 0 && !filteredTeams.some((t) => t.members.length > 0)
 
   // Keep the selection valid by DERIVATION, not by an effect: a session that
   // left the list (archived, deleted, filtered out) resolves to `null` here, so
@@ -778,17 +780,15 @@ export default function GrokRoster() {
     },
     [attention, navigate],
   )
-  // A TEAM STAYS IN THE ROSTER (build spec §2b). Desktop selects it and the right
-  // pane swaps in place — the lead's live thread, with the crew one toggle away —
-  // so opening a team never changes the URL. PHONE has no pane, and `/team/<team>`
-  // is Phase 6a, so until that route exists the phone keeps today's /focus hop to
-  // the lead (an honest hop, not a dead end).
+  // A TEAM STAYS IN THE ROSTER on desktop (build spec §2b): selecting it swaps the
+  // right pane in place — the lead's live thread, with the crew one toggle away —
+  // so opening a team never changes the URL. PHONE has no pane, so it routes to
+  // the dedicated `/team/<team>` detail surface (Phase 6a) — the same composition
+  // as this pane, full-screen — instead of the old /focus hop to the lead.
   const openTeam = React.useCallback(
     (t: Team) => {
       if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
-        if (t.lead_supermux_session) {
-          navigate(`/focus/${encodeURIComponent(t.lead_supermux_session)}`)
-        }
+        navigate(`/team/${encodeURIComponent(t.team_name)}`)
         return
       }
       setSelected({ kind: 'team', team: t.team_name })
@@ -829,7 +829,13 @@ export default function GrokRoster() {
     if (threadName) navigate(`/focus/${encodeURIComponent(threadName)}`)
   }, [navigate, threadName])
 
-  const totalBots = sessions.length + teams.length
+  // "N bots" counts every standalone session PLUS each rostered team's members
+  // and its (mapped) lead — the honest fleet size, not a row count. A rosterless
+  // team contributes nothing (it renders nowhere). From the UNFILTERED roster —
+  // the header is the fleet, not the current search.
+  const totalBots = totalBotCount(sessions.length, teams)
+  // The crew census the folded roster no longer says with a divider (OD-2).
+  const crewCount = rosteredTeams(teams).length
   const hasDetail = !!selectedSession || !!selectedTeam
 
   const SECTIONS: { key: GroupKey; label: string }[] = [
@@ -850,6 +856,7 @@ export default function GrokRoster() {
         </span>
         <span className="gr-count">
           {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
+          {crewCount > 0 && ` · ${crewCount} ${crewCount === 1 ? 'crew' : 'crews'}`}
           {needCount > 0 && (
             <>
               {' · '}
@@ -940,8 +947,8 @@ export default function GrokRoster() {
             data-fade-top={fade.top ? '' : undefined}
             data-fade-bottom={fade.bottom ? '' : undefined}
           >
-            {/* Persistent HIRE affordance — a ghost row pinned above the Teams
-                divider. Dashed hairline + placeholder mark, always inviting the
+            {/* Persistent HIRE affordance — a ghost row pinned above the first
+                section. Dashed hairline + placeholder mark, always inviting the
                 next hire (not just the zero-bots hint). Hidden while searching
                 (it is a create verb, not a result) and, via CSS, in the compact
                 feed density. */}
@@ -984,37 +991,33 @@ export default function GrokRoster() {
               </button>
             )}
 
-            {filteredTeams.length > 0 && (
-              <>
-                <div className="gr-grp">
-                  <span className="lbl">Teams</span>
-                  <span className="ct">{filteredTeams.length}</span>
-                  <span className="ln" />
-                </div>
-                {filteredTeams.map((t) => (
-                  <TeamRow
-                    key={t.team_name}
-                    team={t}
-                    onOpen={openTeam}
-                    index={rowIndex++}
-                    active={selectedTeam?.team_name === t.team_name}
-                    withMenu
-                    onOpenTerminal={(lead) => navigate(`/focus/${encodeURIComponent(lead)}`)}
-                  />
-                ))}
-              </>
-            )}
-
+            {/* OD-2 = FOLD: no leading `Teams` divider. Each section renders its
+                team rows first (a crew is the heavier row) and then its bot rows,
+                and its count is the SUM of both — so a needs-you crew sits in the
+                red `Needs you` section like any other needs-you row, and the
+                header's count matches what the sections show. */}
             {SECTIONS.map(({ key, label }) => {
               const items = groups[key]
-              if (items.length === 0) return null
+              const teamItems = teamGroups[key]
+              if (items.length === 0 && teamItems.length === 0) return null
               return (
                 <React.Fragment key={key}>
                   <div className="gr-grp" data-need={key === 'needs' ? '' : undefined}>
                     <span className="lbl">{label}</span>
-                    <span className="ct">{items.length}</span>
+                    <span className="ct">{items.length + teamItems.length}</span>
                     <span className="ln" />
                   </div>
+                  {teamItems.map((t) => (
+                    <TeamRow
+                      key={t.team_name}
+                      team={t}
+                      onOpen={openTeam}
+                      index={rowIndex++}
+                      active={selectedTeam?.team_name === t.team_name}
+                      withMenu
+                      onOpenTerminal={(lead) => navigate(`/focus/${encodeURIComponent(lead)}`)}
+                    />
+                  ))}
                   {items.map((s) => (
                     <GrokRow
                       key={s.name}

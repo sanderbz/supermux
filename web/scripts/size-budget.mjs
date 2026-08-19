@@ -594,7 +594,26 @@ const BUDGET_ENTRY_JS = 160 * KB
 // only once a team is opened in the grok roster, so it is not on the cold path;
 // and with Bot mode OFF the roster never loads at all, so the base app is
 // unchanged.
-const BUDGET_APP_JS = 294 * KB
+//
+// 295 at TEAMS-in-Bot-mode PHASE 5+6: measured 294.01 against 292.00 for Phase
+// 3+4 — a +2.01 KB phase that lands ~10 bytes past the 2 KB of headroom Phase 2
+// deliberately banked (288 × 1.02 → 294) to cover Phases 3-6. Phases 3+4 fit
+// (292.00); 5+6 is genuinely +2 KB and ceil(measured)=295, the same rule B3/A6
+// used. Every byte is a specified, FULLY-LAZY increment — the entry gate did NOT
+// move (153.36/160, 96%), and with Bot mode OFF nothing here loads:
+//   ~1.6 KB   `routes/team-detail.tsx` — the phone `/team/:teamName[/:agentId]`
+//             surface (6a, its own lazy chunk). It is the SAME composition as the
+//             desktop pane (ChatPanel surface="phone" + TeamPanel sheet +
+//             MemberPane), reusing all three lazy surfaces verbatim; the route
+//             redirects to /focus/<lead> when bot mode is off.
+//   ~0.4 KB   `grok-roster.tsx` + `lib/team-attention.ts` — the fold (OD-2): the
+//             `teamTier` truth table, the four-section team bucketing, and the
+//             honest `totalBotCount` / `needCount = Σ rendered rows` formulas
+//             that replace the leading Teams divider.
+//   ~0.05 KB  `pwa/push-bridge` — the badge's `Σ needsYouCount(t)` team term
+//             (5c). The one bit on the ALWAYS-loaded path; it makes the app badge
+//             honest about a crew that needs you.
+const BUDGET_APP_JS = 295 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
