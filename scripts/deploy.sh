@@ -1270,6 +1270,12 @@ scp "$UNIT_TMP" "$HOST:/tmp/supermux.service.rendered"
 scp "$DEPLOY_PATH_TMP" "$HOST:/tmp/supermux-deploy.path.rendered"
 scp "$DEPLOY_SVC_TMP" "$HOST:/tmp/supermux-deploy.service.rendered"
 scp "$DEPLOY_RUNNER_TMP" "$HOST:/tmp/supermux-deploy-runner.rendered"
+# OOM-protection drop-ins for the network + SSH daemons (static, no placeholders):
+# tailscaled/sshd must NEVER be picked by the kernel OOM-killer, or a memory
+# spike (build + agent fleet) can take the whole host off the tailnet + lock the
+# operator out — the 2026-08-20 outage. These are DURABLE (survive reboots).
+scp etc/systemd/tailscaled.service.d/10-supermux-oom.conf "$HOST:/tmp/supermux-oom-tailscaled.conf"
+scp etc/systemd/ssh.service.d/10-supermux-oom.conf "$HOST:/tmp/supermux-oom-ssh.conf"
 ssh "$HOST" "sudo bash -s" <<REMOTE_INSTALL
 set -euo pipefail
 
@@ -1322,6 +1328,39 @@ rm -f /tmp/supermux-deploy.path.rendered /tmp/supermux-deploy.service.rendered
 # behind. The path-unit trigger replaces it; a stale NOPASSWD sudoers rule +
 # setuid-reachable helper is needless attack surface.
 rm -f /etc/sudoers.d/supermux-deploy-self /usr/local/sbin/supermux-deploy-self
+
+# ── OOM-protect the network + SSH daemons (keep the box reachable, ALWAYS) ────
+# Install OOMScoreAdjust=-1000 drop-ins so the kernel OOM-killer NEVER targets
+# tailscaled/sshd. Under memory pressure it evicts a build/agent instead, so the
+# host stays on the tailnet + SSH-reachable no matter what. Only install for the
+# unit NAMES that exist on this host (ssh.service vs sshd.service vary by distro;
+# tailscaled is optional). Then APPLY to the already-running daemons via
+# /proc/<pid>/oom_score_adj so the protection is live immediately WITHOUT
+# restarting the network (a restart of tailscaled/sshd is exactly what we must
+# avoid). daemon-reload below picks up the drop-ins for future (re)starts/reboots.
+for _svc in tailscaled ssh sshd; do
+  if systemctl list-unit-files "\$_svc.service" >/dev/null 2>&1; then
+    case "\$_svc" in
+      tailscaled) _srcconf=/tmp/supermux-oom-tailscaled.conf ;;
+      *)          _srcconf=/tmp/supermux-oom-ssh.conf ;;
+    esac
+    install -d -m 0755 "/etc/systemd/system/\$_svc.service.d"
+    install -m 0644 -o root -g root "\$_srcconf" \
+      "/etc/systemd/system/\$_svc.service.d/10-supermux-oom.conf"
+    echo "[host] installed OOM-protection drop-in for \$_svc.service"
+    # Apply to the running instance(s) now, no restart.
+    _mp="\$(systemctl show -p MainPID --value "\$_svc.service" 2>/dev/null || true)"
+    if [ -n "\$_mp" ] && [ "\$_mp" != "0" ] && [ -w "/proc/\$_mp/oom_score_adj" ]; then
+      echo -1000 > "/proc/\$_mp/oom_score_adj" 2>/dev/null || true
+      echo "[host]   applied oom_score_adj=-1000 to \$_svc pid \$_mp (no restart)"
+    fi
+  fi
+done
+# Socket-activated / per-connection sshd: also protect every live daemon by name.
+for _pid in \$(pgrep -x tailscaled 2>/dev/null || true) \$(pgrep -x sshd 2>/dev/null || true); do
+  [ -w "/proc/\$_pid/oom_score_adj" ] && echo -1000 > "/proc/\$_pid/oom_score_adj" 2>/dev/null || true
+done
+rm -f /tmp/supermux-oom-tailscaled.conf /tmp/supermux-oom-ssh.conf
 
 systemctl daemon-reload
 systemctl enable supermux
