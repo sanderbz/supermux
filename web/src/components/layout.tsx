@@ -34,7 +34,6 @@ import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { ArchivedSheet } from '@/components/archived/archived-sheet'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
-import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 import { useSseStatus } from '@/hooks/use-sse'
 import { useSseConnectionLink } from '@/hooks/use-connection-link'
 import { useUpdateBadge, type UpdateBadgeState } from '@/hooks/use-update-badge'
@@ -447,51 +446,6 @@ export function Layout() {
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),
     ),
   )
-  // iOS keyboard-flush composer lift (ios-keyboard/CANONICAL.md §2 Formula A).
-  // A ref on the grok shell root so the effect below can write ONE inline CSS
-  // var (`--grok-kb-lift`) that grok-mode.css consumes as a `transform` on the
-  // composer's padding box — lifting PAINT and HIT-AREA together (a transform,
-  // never a shell-height reflow, so the leading 📎/@/🕐 stay clickable).
-  const shellRef = React.useRef<HTMLDivElement | null>(null)
-  React.useEffect(() => {
-    const el = shellRef.current
-    const v = typeof window !== 'undefined' ? window.visualViewport : undefined
-    // GATES: grok only, touch only. Desktop (fine pointer) → never set → the
-    // shell root carries no `--grok-kb-lift`, so the CSS rule never matches and
-    // the composer is byte-identical to today. Base app returns on `!grok`.
-    if (!grok || !el || !v || !window.matchMedia?.('(pointer: coarse)').matches)
-      return
-    // Reuses use-keyboard-viewport.ts's exported detector: the SAME dual-signal
-    // iOS/Android logic + KEYBOARD_OPEN_THRESHOLD the hook uses, so no new
-    // detection lands here. `inset` = innerHeight − vv.height − vv.offsetTop.
-    const detect = createKeyboardOpenDetector()
-    let raf = 0
-    const measure = () => {
-      raf = 0
-      const { inset, open } = detect(v)
-      // Set ONLY while the keyboard is OPEN. Closed / blurred → removeProperty →
-      // the var is ABSENT from the style attribute (a true binary, not `0px`),
-      // which is what makes the CSS rule inert at rest (keyboard-CLOSED stays
-      // byte-identical: no transform, resting pad kept). Writing inline (no
-      // setState) means a keyboard-animation resize burst never re-renders.
-      if (open) el.style.setProperty('--grok-kb-lift', `${inset}px`)
-      else el.style.removeProperty('--grok-kb-lift')
-    }
-    const schedule = () => {
-      if (!raf) raf = window.requestAnimationFrame(measure)
-    }
-    measure()
-    v.addEventListener('resize', schedule) // keyboard open AND dismiss
-    v.addEventListener('scroll', schedule) // offsetTop wobble during animation
-    document.addEventListener('focusout', schedule) // blur re-sync (clears var)
-    return () => {
-      if (raf) window.cancelAnimationFrame(raf)
-      v.removeEventListener('resize', schedule)
-      v.removeEventListener('scroll', schedule)
-      document.removeEventListener('focusout', schedule)
-      el.style.removeProperty('--grok-kb-lift')
-    }
-  }, [grok])
   // The shell-overlay host: the content column, published on context so any
   // route can raise a <ShellOverlay> without prop-drilling and without a
   // body-level portal (which could not be bounded by the column).
@@ -529,7 +483,6 @@ export function Layout() {
     <AttentionProvider value={attention}>
     <ShellOverlayProvider value={overlayHostValue}>
     <div
-      ref={shellRef}
       className="flex h-full w-full"
       // WS4 — the focused session's `--sm-agent-*` hue (empty off grok / off a
       // focus route, so no inline properties are set and the shell inherits the
