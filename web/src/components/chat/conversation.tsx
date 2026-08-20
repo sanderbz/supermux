@@ -464,7 +464,14 @@ export function ChatConversation({
       // The phone floats the header card below the notch; the reservation of
       // the iOS safe-area lives ONCE here as the overlay's top offset (see
       // `--safe-top`). Off-phone the card pins to the pane top.
-      headerOverlayInsetTop={phone ? 'calc(var(--safe-top, 0px) + 12px)' : undefined}
+      //
+      // The gap under the safe area is 6px, not 12: at 12 the card sat a visible
+      // ~17px clear of the iOS status bar and read as "floating too far down,
+      // empty above" (owner device feedback). 6px pulls it up snug against the
+      // top so it reads as anchored, while still clearing the notch. The grok
+      // transcript's own top mask (`grok-mode.css`) fades whatever scrolls into
+      // the remaining strip so nothing bleeds hard against the status bar.
+      headerOverlayInsetTop={phone ? 'calc(var(--safe-top, 0px) + 6px)' : undefined}
       header={
         <SessionHeaderPill
           name={name}
@@ -558,14 +565,13 @@ export function ChatConversation({
         style={{
           paddingBottom: reserve,
           // Phone: clear the FLOATING header card, which is notch-aware now.
-          // The old fixed `pt-[86px]` was budgeted for the env=0 card (~68px);
-          // on a real notch the card floats at `safe-top + 12` and is 60px tall,
-          // so its bottom sits at `safe-top + 72` and the first message scrolled
-          // UNDER the glass. Tracking `--safe-top` keeps the clearance honest on
-          // every device (and `+72px` at env=0 reproduces the old 86px budget's
-          // intent while sitting flush under the shorter card).
+          // The card floats at `safe-top + 6` and is ~62px tall, so its bottom
+          // sits at ~`safe-top + 68`; the pad tracks `--safe-top` and adds a
+          // ~18px breath so the first message lands just under the glass rather
+          // than scrolling behind it. (`+86px` at env=0 keeps the old budget's
+          // intent under the now higher-sitting card.)
           ...(phone
-            ? { paddingTop: 'calc(var(--safe-top, 0px) + 92px)' }
+            ? { paddingTop: 'calc(var(--safe-top, 0px) + 86px)' }
             : null),
         }}
       >

@@ -3241,3 +3241,33 @@
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 55%, transparent);
 }
+
+/* ══ PHONE — the transcript's top lip fades into the notch/status-bar zone ═════
+   The session header is a FLOATING glass card over the transcript (chat-surface
+   `headerOverlay`), sitting `--safe-top + 6px` down. Its own 80px backdrop-blur
+   softens whatever passes BEHIND it, but the strip ABOVE the card — the gap
+   between the iOS status bar and the card — showed sharp transcript text bleeding
+   up against the clock/battery, so the top of the screen read cluttered and the
+   card looked like it floated in a field of content ("header teveel naar beneden,
+   leeg/rommelig bovenin" — owner device feedback).
+
+   A mask fades the track's top lip to nothing across the safe area + the card's
+   own gap, so nothing renders hard against the status bar and the header reads as
+   anchored to the very top. A MASK, not a backdrop-filter, so grok-shell-chrome's
+   single-blur invariant holds; `[data-grok]` + phone-only, so the base app and
+   the desktop board are byte-for-byte untouched. Bottom stays owned by the
+   composer's own scrim (conversation.tsx `float`), so this is a top gradient. */
+@media (max-width: 767px) {
+  [data-grok] [data-surface='chat'] [data-chat-track] {
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 calc(var(--safe-top, 0px) + 58px)
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 calc(var(--safe-top, 0px) + 58px)
+    );
+  }
+}

@@ -131,7 +131,7 @@ describe('the slot cannot shift', () => {
   test('the phone card does NOT reserve the notch as internal padding', () => {
     // The floating card floats BELOW the safe area — the reservation is the
     // overlay wrapper's `top` offset (`chat-surface.tsx`,
-    // `calc(var(--safe-top) + 12px)`), NOT `pt-safe` inside the card. A
+    // `calc(var(--safe-top) + 6px)`), NOT `pt-safe` inside the card. A
     // `pt-safe` here painted ~47px of empty glass above the name and doubled the
     // card's height on a notched device (invisible in the env=0 review rig).
     const phone = renderToStaticMarkup(
