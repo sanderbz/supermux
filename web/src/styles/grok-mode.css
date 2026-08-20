@@ -428,6 +428,47 @@
   overflow: hidden;
 }
 
+/* THE OTHER HALF OF THE KEYBOARD-FLUSH FIX (ios-keyboard/CANONICAL.md §1b and
+   §"the pure-CSS :has() variant"). The `--grok-vvh` shell shrink above lands the
+   pane's `absolute bottom-0` composer's BOTTOM EDGE on the keyboard top — but the
+   composer still carries its resting home-indicator pad (composer-shell.tsx: the
+   desktop composition's `pb-[18px]`, the phone composition's
+   `pb-[max(env(safe-area-inset-bottom),14px)]`). That pad is CORRECT keyboard-DOWN
+   (it clears the home indicator), but `env(safe-area-inset-bottom)` does NOT
+   collapse to 0 while the soft keyboard overlays that region — WebKit keeps
+   reporting the ~34px hardware inset — and even the flat 18px never collapses, so
+   the pad stayed under the pill as dead space: the black band the owner still
+   circled (IMG_2405) AFTER the shell-shrink fix (IMG_2382) had correctly landed
+   the composer's bottom on the keyboard top.
+
+   So while an editable in the grok composer holds focus — i.e. the soft keyboard
+   is up — we drop that bottom pad to 0 and the pill sits FLUSH on the keys. `:has`
+   with a descendant `:focus` is the canonical zero-app-JS form of the fix (the
+   doc's §"pure-CSS fallback"); it is used here instead of the doc's preferred JS
+   `--kb-safe-bottom` var because the app-JS budget sat at 100.0% (295.99/296.00 KB
+   gz — ~10 bytes), so any real added JS fails `size-budget.mjs`. This rule adds no
+   app logic; it only perturbs the JS gzip by the ±~20 bytes vite's embedded CSS-
+   content-hash filename costs (see the +1 KB ratchet note in size-budget.mjs).
+   Correctness notes:
+     · `:focus` (NOT `:focus-visible`) — it clears the instant the field blurs,
+       which is exactly when the keyboard dismisses (Done, tap-away, route change),
+       so the resting pad returns with the keyboard and there is no persistence
+       lag the doc warns `:focus-visible` can have.
+     · `(pointer: coarse)` gates it to touch, so a mouse-desktop grok user who
+       clicks into the composer keeps the resting 18px pad — desktop is unchanged.
+     · Grok-scoped (`[data-grok][data-grok-root]`), so the base app is byte-
+       identical: with no `data-grok` ancestor the rule never matches.
+     · Selector specificity (0,6,0) beats the Tailwind `pb-*` utility (0,1,0), so
+       the zero wins while focused and yields back to the utility when not. */
+@media (pointer: coarse) {
+  [data-grok][data-grok-root]:has(
+      [data-testid='chat-composer'] :is(textarea, [contenteditable]):focus
+    )
+    [data-testid='chat-composer'] {
+    padding-bottom: 0;
+  }
+}
+
 /* The one substrate blur — a leaf pseudo, behind every column. `saturate(180%)`
    gives the tints life over supermux's flat ground (no wallpaper; tokens.md §13).
    -webkit- BEFORE standard so LightningCSS emits BOTH (globals.css:578 lesson).

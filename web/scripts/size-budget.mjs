@@ -618,7 +618,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // the combined app JS at 295.13 — +0.13 over the Phase-5+6 ceiling, purely the
 // two independent branches summing. ceil(measured)=296, same rule as every merge
 // (keep higher + ratchet). Entry gate unmoved (153.46/160); Bot mode off unaffected.
-const BUDGET_APP_JS = 296 * KB
+// 297 for the iOS keyboard-flush composer fix (ios-keyboard/CANONICAL.md §1b). The
+// fix itself adds ZERO app JS — it is one grok-scoped, touch-only CSS rule in
+// grok-mode.css (`:has(:focus)` drops the composer's resting home-indicator pad so
+// the pill sits flush on the soft keyboard, the canonical §"pure-CSS" form). But
+// the branch sat at 295.99/296.00 (~10 bytes), and vite embeds the CSS bundle's
+// content-hash filename in the JS chunk that imports it, so ANY change to the
+// hashed CSS re-rolls that filename and perturbs the JS gzip by ±~20 bytes with no
+// change to app logic — here +18 bytes → 296.01, tripping a ceiling that was one
+// byte above the floor. ceil(measured)=297 (the same ratchet rule every fase and
+// merge above used); the ~1 KB of headroom is also what lets the concurrent
+// grok-mode.css polish rebasing onto this branch re-roll the hash without re-
+// breaking the gate. The ENTRY gate — the one that guards the hero path — is
+// unmoved (no JS lands on it); base app off grok downloads the rule but matches
+// none of it.
+const BUDGET_APP_JS = 297 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
