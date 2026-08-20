@@ -20,6 +20,7 @@ import { parseAnsiLine } from '@/lib/ansi'
 import { SessionMark, type MarkPin } from '../../brand/marks'
 
 import { extractProvisionalTail } from './provisional'
+import { selectionInChatTrack } from './selection'
 import { Bubble, MARK_SIZE, MessageRow } from './ui'
 
 export function ProvisionalTail({
@@ -47,7 +48,20 @@ export function ProvisionalTail({
     const poll = async () => {
       try {
         const cap = await sessionsApi.peekAnsi(name, 30)
-        if (!dead) setLines(extractProvisionalTail(cap))
+        if (dead) return
+        // Held-selection stand-down (issue #38, same trade `LiveElapsed` makes).
+        // Committing a new frame replaces this block's text nodes; WebKit (iOS
+        // AND desktop Safari) collapses a Range anchored anywhere in the chat
+        // track when that happens, so a selection made to copy a settled message
+        // vanished on the very next 1s tick and copy was impossible. While the
+        // reader holds a selection in a `[data-chat-track]`, SKIP the setLines —
+        // the block keeps its current frame. This is a deferral, not a freeze:
+        // the poll keeps running on its 1s interval, so the moment the selection
+        // clears the next tick commits the true, current pty capture. When no
+        // selection is held (the normal live case) nothing changes — the frame
+        // swaps every tick exactly as before.
+        if (selectionInChatTrack()) return
+        setLines(extractProvisionalTail(cap))
       } catch {
         /* transient — keep the previous frame */
       }
