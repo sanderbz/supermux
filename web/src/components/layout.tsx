@@ -86,15 +86,6 @@ const NAV: NavItem[] = [
   // Terminal glyph (>_) matches the abstract-geometric rest of the rail and
   // names what focus mode IS — sitting inside a terminal session.
   { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true, grokHidden: true },
-  // Terminal — the GROK doorway back to the pty view (#21). The base Focus item
-  // above is `desktopOnly` (never on the phone) AND `grokHidden` (never on the
-  // grok rail), so under grok there was no primary-nav way to reach a terminal
-  // session from a phone — only the in-session renderer switch. This `grokOnly`
-  // twin restores that doorway on BOTH the grok rail and the grok phone nav,
-  // routing to /focus (→ last-active session, where the pty + chat⇄terminal
-  // switch live). Same Terminal glyph as the base Focus item. Not `desktopOnly`,
-  // so the phone renders it; `grokOnly`, so the base app never grows a 5th tab.
-  { to: '/focus', label: 'Terminal', icon: Terminal, grokOnly: true },
   // Connectors — the Connector-store entry (#22). The store is a fully built
   // route (/store) that had NO nav surface at all; this `grokOnly` item makes it
   // a first-class Grok destination on the rail and the phone nav (Plug glyph,
@@ -242,32 +233,80 @@ function MobileTopBar(_props: { overview: boolean }) {
 function BottomNav({ grok }: { grok: boolean }) {
   const { state: updateBadge } = useUpdateBadge()
   // Always drop `desktopOnly` (base Focus). Under grok, keep the `grokOnly`
-  // doorways (Terminal + Connectors) and drop `grokHidden`; under base, drop the
-  // `grokOnly` doorways so the default tab bar is byte-identical (Overview /
-  // Files / Settings + the Search control). The `data-tab-count` (route cells +
-  // the Search button) lets grok-mode.css keep the active chip inside the
-  // capsule corners as the cell count grows.
+  // doorway (Connectors) and drop `grokHidden`; under base, drop the `grokOnly`
+  // doorways so the default tab bar is byte-identical (Overview / Files /
+  // Settings + the Search control). The `data-tab-count` (route cells + the
+  // Search button) + `--nav-n` let grok-mode.css place the sliding pill.
   const items = NAV.filter(
     (item) => !item.desktopOnly && (grok ? !item.grokHidden : !item.grokOnly),
   )
+  // ── The sliding-pill driver (grok phone nav, "Liquid Rail") ────────────────
+  //  The active-indicator is ONE persistent pill (`data-nav-pill`, painted below
+  //  the cells) translated by whole cells via a single `--nav-i` custom prop and
+  //  a plain CSS `transform` transition — no framer-motion, no FLIP, no measure,
+  //  no ResizeObserver. `activeIndex` is the index of the matched ROUTE cell, or
+  //  -1 when the active route isn't in the bar (chromeful sub-route) — the pill
+  //  is hidden then. Same `end`/prefix rule react-router's NavLink uses, so the
+  //  pill parks under exactly the cell that shows `aria-current="page"`.
+  const { pathname } = useLocation()
+  const activeIndex = grok
+    ? items.findIndex((item) =>
+        item.end
+          ? pathname === item.to
+          : pathname === item.to || pathname.startsWith(`${item.to}/`),
+      )
+    : -1
+  // Tap-drive: on tap, set `--nav-i` on the live <nav> BEFORE react-router
+  // commits the route, so the pill starts gliding <100ms while the route
+  // transition runs underneath. The `style` prop below re-asserts the same value
+  // from `activeIndex` once the route commits (idempotent). Cheap haptic tick on
+  // supporting devices; silently absent on iOS Safari.
+  const navRef = React.useRef<HTMLElement | null>(null)
+  const onNavTap = React.useCallback(
+    (index: number) => {
+      if (!grok) return
+      navRef.current?.style.setProperty('--nav-i', String(index))
+      navigator.vibrate?.(8)
+    },
+    [grok],
+  )
   return (
     <nav
+      ref={navRef}
       aria-label="Primary"
       // Substrate hook — same contract as the desktop rail, hairline on top.
       data-shell-tabs=""
-      // grok-only hook so grok-mode.css can keep the active chip inside the
-      // capsule corners as the cell count grows. Omitted off grok (`undefined`
-      // drops the attribute) so the base tab bar's DOM is byte-identical.
+      // grok-only hooks. `data-tab-count` keeps the capsule geometry; `--nav-i`
+      // (active cell index) + `--nav-n` (cell count) drive the sliding pill in
+      // grok-mode.css. All omitted off grok (`undefined` drops the attribute /
+      // no style) so the base tab bar's DOM + render are byte-identical.
       data-tab-count={grok ? items.length + 1 : undefined}
+      style={
+        grok
+          ? ({
+              '--nav-i': activeIndex,
+              '--nav-n': items.length + 1,
+            } as React.CSSProperties)
+          : undefined
+      }
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
+      {/* THE HERO — one persistent pill for the whole bar (grok only). NOT a
+          view-transition element: it slides on the live DOM via a plain CSS
+          `transform` transition, which sidesteps the WebKit backdrop-filter
+          snapshot artifact that forced the old chip to cross-fade. Painted
+          BELOW the cells (z-0; cells are z-1 in grok CSS). Hidden when no route
+          cell is active (`activeIndex < 0`). */}
+      {grok && activeIndex >= 0 && <span data-nav-pill="" aria-hidden="true" />}
       {items.map((item) => {
         const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
+        const idx = items.indexOf(item)
         return (
           <MorphNavLink
             key={item.label}
             to={item.to}
             end={item.end}
+            onClick={() => onNavTap(idx)}
             aria-label={
               badge !== 'none' ? `${item.label} (update available)` : item.label
             }
@@ -276,6 +315,9 @@ function BottomNav({ grok }: { grok: boolean }) {
           >
             {({ isActive }) => (
               <>
+                {/* BASE active mark — the Material top-underline. Kept for the
+                    base render; grok-mode.css hides it (the sliding pill is the
+                    grok indicator) so it never double-draws. */}
                 {isActive && (
                   <span
                     data-nav-active=""
@@ -288,14 +330,23 @@ function BottomNav({ grok }: { grok: boolean }) {
                   />
                 )}
                 <span className="relative">
-                  <item.icon className="size-5" />
+                  {/* `data-active` (grok only) lets grok-mode.css apply the
+                      outline→filled tell + lift on the active glyph; base CSS
+                      ignores it and it is absent off grok (byte-identical). */}
+                  <item.icon
+                    className="size-5"
+                    data-active={grok && isActive ? '' : undefined}
+                  />
                   {/* Mobile: dot at the icon's top-right (the icon is the
                    *  positioning anchor; the label sits below it). */}
                   <span className="pointer-events-none absolute -right-1 -top-1">
                     <NavBadgeDot state={badge} />
                   </span>
                 </span>
-                <span className="text-[10px] font-medium leading-none">
+                <span
+                  data-nav-label={grok ? '' : undefined}
+                  className="text-[10px] font-medium leading-none"
+                >
                   {item.label}
                 </span>
               </>
@@ -309,7 +360,7 @@ function BottomNav({ grok }: { grok: boolean }) {
           returned nothing matching /palette|search|command|jump/ and the app's
           discovery spine could only be opened by a physical keyboard. Styled
           as a tab so the row stays one grammar; it carries no `aria-current`
-          because it goes nowhere. */}
+          because it goes nowhere — the pill never parks on it. */}
       <button
         type="button"
         aria-label="Search"
@@ -320,7 +371,12 @@ function BottomNav({ grok }: { grok: boolean }) {
         <span className="relative">
           <Search className="size-5" />
         </span>
-        <span className="text-[10px] font-medium leading-none">Search</span>
+        <span
+          data-nav-label={grok ? '' : undefined}
+          className="text-[10px] font-medium leading-none"
+        >
+          Search
+        </span>
       </button>
     </nav>
   )

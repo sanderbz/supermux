@@ -600,23 +600,24 @@
   color: var(--sm-sidebar-text-primary);
 }
 
-/* ── The mobile tab bar's active affordance (tabs) ────────────────────────────
-   The active indicator is a 1px×32px bar, not a full plate — too thin for a 12%
-   wash to register, and an active INDICATOR (like a focus ring) is one of the
-   sanctioned accent uses. Keep it accent at full strength; the label goes accent
-   too, replacing the default `text-primary`. */
+/* ── The mobile tab bar's active affordance (tabs) — "Liquid Rail" ────────────
+   The grok indicator is NOT the base Material top-underline; it is ONE persistent
+   glass pill (`[data-nav-pill]`) that physically SLIDES between tabs (see the
+   floated block below). Hide the base underline under grok so it never
+   double-draws behind the pill. Label colours below are the ink half of the
+   redundant, non-colour-only active tell (icon fill + weight + lift carry the
+   rest); they hold AA in both themes.
+
+   AA: active label `--sm-accent-fill` (light #006ceb ≈ 4.58:1 on the tab tint;
+   dark #64b5ff already high-contrast); inactive `--sm-sidebar-text-secondary`
+   (≈4.67:1 light, high on dark) — tertiary read only 2.47:1. Grok-scoped, so the
+   base tab bar is untouched. */
 [data-grok] [data-shell-tabs] [data-nav-active] {
-  background: var(--sm-accent);
+  display: none;
 }
-/* AA fix (overview minor): the active label at `--sm-accent` measured 3.28:1
-   light. `--sm-accent-fill` is the darker link-fill blue (light #006ceb ≈ 4.58:1
-   on the tab-bar tint; dark #64b5ff is unchanged and already high-contrast on the
-   dark ground). Grok-scoped — the base tab bar is untouched. */
 [data-grok] [data-shell-tabs] a[aria-current='page'] {
   color: var(--sm-accent-fill);
 }
-/* AA fix (overview minor): inactive at tertiary read 2.47:1; the sidebar's
-   secondary ramp clears 4.5:1 in both themes (≈4.67:1 light / high on dark). */
 [data-grok] [data-shell-tabs] a:not([aria-current='page']) {
   color: var(--sm-sidebar-text-secondary);
 }
@@ -678,77 +679,130 @@
        hovers above the surface instead of reading as a welded strip. */
     box-shadow: var(--sm-nav-shadow);
   }
-  /* The top-only hairline (:458) becomes the capsule's full hairline RING above. */
+  /* GLASS BEVEL — a 1px inner top-edge highlight, the cheap Liquid-Glass tell,
+     so the capsule reads as lit glass rather than a flat plate. The base top-only
+     hairline `::after` is dropped (the border ring replaces it). */
+  [data-grok] [data-shell-tabs]::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
+  }
   [data-grok] [data-shell-tabs]::after {
     content: none;
   }
 
-  /* B. Active state → a soft tint chip, NOT a Material top-underline. Same
-     element, same `view-transition-name` (layout.tsx:243) — so the chip still
-     glides between tabs for free. The base classes hard-code the underline
-     geometry (`left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full`), so each
-     of those is answered here: `inset` beats left/top, `width/height:auto` lets
-     the inset resolve the box, `transform:none` drops the centring translate. */
-  [data-grok] [data-shell-tabs] [data-nav-active] {
-    /* 8px vertical / 12px horizontal inset (was a flat 6px): the extra sideways
-       clearance pulls the end-cell chips well off the capsule's 22px corner, so
-       the active chip can never crowd the rounded edge (owner: it spilled the
-       capsule's left corner on device). */
-    inset: 8px 12px;
-    width: auto;
-    height: auto;
-    /* `-translate-x-1/2` is Tailwind v4, so it compiles to the `translate`
-       PROPERTY, not to `transform` — cancelling only `transform` leaves the chip
-       half a cell to the left (caught in the rig, shot 1). Both are reset. */
-    translate: none;
-    transform: none;
-    /* A PILL, not a rounded-rect slab (owner: "dat blauwe achtergrond voor active
-       menu item is totaal niet best practice"). A fully-rounded capsule echoes
-       the bar's own rounded glass instead of a Material block, and its corners
-       curve AWAY from the cell corners, so — unlike an r-md rect — it cannot poke
-       the capsule's own 22px curve. */
-    border-radius: var(--sm-r-pill);
-    /* A soft ~10% accent wash — the light iOS/Grok selection tint, not a heavy
-       blue-grey fill (was 12%; at pill shape 10% reads premium where 12% still
-       read as a coloured plate). The active icon+label stay accent-coloured
-       (below), so selection is carried by ink + a whisper of tint. */
-    background: color-mix(in srgb, var(--sm-accent) 10%, transparent);
-    /* ACTIVE-CHIP ALIGNMENT (owner: the chip reads crooked behind the active
-       tab on device). In place the chip is pixel-concentric with the cell AND
-       the icon+label — the rig measures matching insets and centres in every
-       tab. The crookedness is a WebKit view-transition artifact: a
-       `view-transition-name`d element whose snapshot is captured INSIDE a
-       `backdrop-filter` ancestor (this glass capsule) is re-composited at a
-       shifted origin, so the morphing chip lands visibly off after a tab switch.
-       Drop the phone chip from the cross-tab view-transition — it cross-fades
-       with the root instead of sliding, and renders concentric on every engine.
-       `!important` overrides the inline `viewTransitionName` (layout.tsx);
-       `[data-shell-tabs]`-scoped so the desktop rail's morph (no blur) is kept. */
-    view-transition-name: none !important;
+  /* Cells + Search paint ABOVE the sliding pill (the pill is z-0, an earlier
+     absolute sibling; glyphs/labels must stay crisp over it). */
+  [data-grok] [data-shell-tabs] > a,
+  [data-grok] [data-shell-tabs] > button {
+    position: relative;
+    z-index: 1;
   }
 
-  /* C. Icons: 20px → 22px, and a fill/outline weight contrast for active vs
-     rest (Lucide ships no filled variant; stroke-width is the honest stand-in). */
+  /* B. THE HERO — one persistent glass pill that physically SLIDES between tabs
+     ("Liquid Rail"). Equal `flex-1` cells make its position pure arithmetic: the
+     pill is exactly one cell wide and translated by WHOLE cells via a single
+     `--nav-i` custom prop — no JS measure, no FLIP, no ResizeObserver, no
+     framer-motion. It is a persistent sibling (never unmounted between tabs), so
+     the browser interpolates its `transform` — a genuine physical move of ONE
+     node, interruptible: a re-tap mid-flight retargets `--nav-i` and the
+     transition redirects from the current value, like a spring.
+
+     It is NOT a view-transition element (`view-transition-name: none`): it slides
+     on the LIVE DOM, which sidesteps the WebKit backdrop-filter snapshot artifact
+     that forced the old chip to cross-fade instead of slide. */
+  [data-grok] [data-shell-tabs] [data-nav-pill] {
+    position: absolute;
+    z-index: 0;
+    /* 6px vertical inset inside the capsule's 6px padding; 8px left matches the
+       8px side padding, so the pill's travel origin sits on the first cell. */
+    top: 6px;
+    bottom: 6px;
+    left: 8px;
+    /* One cell wide: the padding-box width minus 2×8px side padding, / cell count.
+       translateX(100%) == exactly one pill width == one cell, so whole-cell travel
+       needs no measurement and recomputes for free on rotate / dynamic-type. */
+    width: calc((100% - 16px) / var(--nav-n));
+    transform: translateX(calc(var(--nav-i) * 100%));
+    box-sizing: border-box;
+    /* Transparent 4px border = a 4px visual inset WITHOUT changing the 100% travel
+       unit (the wash fills only inside it via padding-box clip). */
+    border: 4px solid transparent;
+    background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+    background-clip: padding-box;
+    /* GRAFT (#3): a 0.5px accent ring so the pill keeps a crisp edge while gliding
+       over glass — the tint never reads as a mushy plate. */
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--sm-accent) 22%, transparent);
+    border-radius: var(--sm-r-pill);
+    /* THE GLIDE: `transform` on an overshoot curve + a DIFFERENT (standard) curve
+       on `width` → the pill stretches then settles as it lands, the iOS-26
+       stretch-and-settle "liquid" signature in two CSS properties, no morph
+       engine. 260ms == grokDur.morph; overshoot == grokEases.overshoot. */
+    transition:
+      transform 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.15),
+      width 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+    view-transition-name: none;
+    pointer-events: none;
+  }
+
+  /* C. Icons: 22px, with a redundant, non-colour-only active tell —
+     stroke-weight + accent ink + an interior "filled" whisper + a 2px lift/pop
+     that lands WITH the pill (same dur + curve). Lucide ships no filled variant,
+     so CSS `fill` overrides its `fill="none"` presentation attr — no 2nd icon set,
+     no reflow. Inactive icon ink is set here explicitly (independent of the label
+     colour) so it reads tertiary while the label reads secondary. */
   [data-grok] [data-shell-tabs] svg {
     width: 22px;
     height: 22px;
     stroke-width: 1.75;
+    color: var(--sm-sidebar-text-tertiary);
+    transition:
+      transform 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.15),
+      stroke-width 0.18s ease,
+      fill 0.18s ease,
+      color 0.18s ease;
   }
-  [data-grok] [data-shell-tabs] a[aria-current='page'] svg {
+  [data-grok] [data-shell-tabs] a[aria-current='page'] svg[data-active] {
+    color: var(--sm-accent);
     stroke-width: 2.25;
+    fill: color-mix(in srgb, var(--sm-accent) 14%, transparent);
+    transform: translateY(-2px) scale(1.1);
   }
 
-  /* D. Labels: kept (discoverability — design §6.1) but lighter and one step
-     larger, so they read as a caption under the glyph rather than as a 10px
-     Android micro-label. `position:relative` is LOAD-BEARING, not styling: the
-     chip is an absolutely-positioned earlier sibling, so a STATIC label would
-     paint underneath it. The icon wrapper is already `relative` (layout.tsx:248). */
-  [data-grok] [data-shell-tabs] > a > span:last-child,
-  [data-grok] [data-shell-tabs] > button > span:last-child {
+  /* D. Labels: label under the ACTIVE tab only (Grok/Linear compact look). The
+     label is always in the DOM (for the arrival transition + a11y); inactive
+     ROUTE cells collapse it to zero height and fade it out → icon-only. Search
+     keeps its label always (the only always-labelled control, aids discovery).
+     `position:relative` is LOAD-BEARING: the pill is an absolute earlier sibling,
+     so a static label would paint underneath it. */
+  [data-grok] [data-shell-tabs] [data-nav-label] {
     position: relative;
     font-size: 11px;
     font-weight: 500;
     letter-spacing: -0.01em;
+    max-height: 14px;
+    opacity: 1;
+    transition:
+      opacity 0.18s ease,
+      max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+      color 0.18s ease;
+  }
+  [data-grok] [data-shell-tabs] a:not([aria-current='page']) [data-nav-label] {
+    opacity: 0;
+    max-height: 0;
+    pointer-events: none;
+  }
+
+  /* E'. Press-down ack (all cells incl. Search), <100ms — a light physical
+     confirmation before the route commits. */
+  [data-grok] [data-shell-tabs] a:active,
+  [data-grok] [data-shell-tabs] button:active {
+    transform: scale(0.94);
+    transition: transform 0.09s cubic-bezier(0.4, 0, 0.6, 1);
   }
 
   /* E. Content clearance — the ONE non-cosmetic rule (design §6.2). The bar no
@@ -765,6 +819,23 @@
      the bar is actually mounted. (`:has()` is already used at :2424.) */
   [data-grok] [data-shell-main]:has([data-shell-tabs]) [data-shell-content] {
     padding-bottom: calc(env(safe-area-inset-bottom) + 92px);
+  }
+}
+
+/* Reduced motion — drop the slide + morph + lift/pop + press; the pill teleports
+   to the correct tab and every state stays legible (instant, no motion). Route
+   view-transitions are already disabled wholesale under reduced motion in
+   globals.css, so nothing double-runs. */
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] [data-shell-tabs] [data-nav-pill],
+  [data-grok] [data-shell-tabs] svg,
+  [data-grok] [data-shell-tabs] [data-nav-label],
+  [data-grok] [data-shell-tabs] a:active,
+  [data-grok] [data-shell-tabs] button:active {
+    transition: none;
+  }
+  [data-grok] [data-shell-tabs] a[aria-current='page'] svg[data-active] {
+    transform: none;
   }
 }
 
