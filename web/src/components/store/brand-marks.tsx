@@ -22,13 +22,16 @@ import {
   Folder,
   GitBranch,
   Globe,
+  Landmark,
   ListTodo,
   MapPin,
   MessageCircle,
   MousePointerClick,
   Palette,
   PenTool,
+  Square,
   Users,
+  Wallet,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
@@ -105,10 +108,14 @@ const LUCIDE_MARKS: Record<string, [LucideIcon, string]> = {
   box: [Box, '#64748B'],
   'list-todo': [ListTodo, '#F06A6A'],
   'square-kanban': [ListTodo, '#2684FF'],
-  'credit-card': [CreditCard, '#635BFF'],
-  wallet: [CreditCard, '#003087'],
-  landmark: [CreditCard, '#111827'],
-  square: [CreditCard, '#2A2A2A'],
+  // Finance connectors each get a DISTINCT glyph + brand hue so Stripe / PayPal /
+  // Plaid / Square never resolve to one shared card-like mark (they used to all be
+  // `CreditCard`). Stripe keeps the card, PayPal a wallet, Plaid a bank landmark,
+  // Square its namesake square — recognisable and never identical.
+  'credit-card': [CreditCard, '#635BFF'], // Stripe
+  wallet: [Wallet, '#003087'], // PayPal
+  landmark: [Landmark, '#00A98F'], // Plaid
+  square: [Square, '#2A2A2A'], // Square
   'message-circle': [MessageCircle, '#1F8DED'],
   cloud: [Cloud, '#F38020'],
   users: [Users, '#FF7A59'],

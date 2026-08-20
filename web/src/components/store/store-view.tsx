@@ -257,16 +257,14 @@ function SearchBox({ value, onChange }: { value: string; onChange: (v: string) =
   )
 }
 
-// A one-line editorial hook for the hero — the curated `card.hook` when present,
-// else a social-proof line derived from real catalog data (stars), else the
-// connector's primary category. Always distinct from the functional description.
+// The one-line subtitle for the hero. A curated `card.hook` (an editorial line)
+// when present, otherwise the connector's REAL functional description — the same
+// accurate one-liner the browse/detail cards show. Never a generic "A featured X
+// connector." filler: curated catalog cards ship no hook, so that fallback used
+// to surface on every hero (the owner's complaint). The description is always a
+// real, connector-specific sentence.
 function heroHook(card: Card): string {
-  if (card.hook) return card.hook
-  if (typeof card.stars === 'number' && card.stars >= 1000) {
-    return `Popular — ${Math.round(card.stars / 1000)}k developers rely on it.`
-  }
-  const cat = (card.categories ?? []).find((c) => c !== 'featured')
-  return cat ? `A featured ${cat} connector.` : 'A featured connector.'
+  return card.hook?.trim() || card.description
 }
 
 function FeaturedCard({
