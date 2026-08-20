@@ -152,7 +152,9 @@ export function RendererShell({
       // ONE cell. `grid` + both children at `1 / 1` is what makes the hidden
       // pane keep its exact box, which is what stops the ResizeObserver firing.
       // `relative` is deliberately absent: nothing here positions out of flow.
-      className={['grid h-full w-full min-h-0', className].filter(Boolean).join(' ')}
+      className={['grid grid-rows-[minmax(0,1fr)] h-full w-full min-h-0', className]
+        .filter(Boolean)
+        .join(' ')}
     >
       {mounted.chat && (
         <Pane
