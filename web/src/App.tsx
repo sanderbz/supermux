@@ -122,6 +122,14 @@ const DevBrowserTakeover = import.meta.env.DEV
 const DevStore = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-store'))
   : null
+// iOS keyboard DIAGNOSTIC readout (fix/ios-zoom-composer). A self-contained,
+// live-updating page that reads the real iOS-WebKit viewport/keyboard numbers
+// off the device so the black-bar fix can be device-verified. Lazy + DEV-gated
+// like every other bench — absent from the production bundle, base app
+// byte-identical.
+const DevKbdProbe = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-kbd-probe'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -442,6 +450,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevPickers />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevKbdProbe && (
+                <Route
+                  path="/dev/kbd-probe"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevKbdProbe />
                     </Suspense>
                   }
                 />
