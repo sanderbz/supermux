@@ -20,6 +20,7 @@ import { useConnectorActions } from '@/stores/connectors-store'
 import { cn } from '@/lib/utils'
 
 import { ConnectorIcon } from './connector-icon'
+import { OfficialBadge } from './connector-card'
 import { GrantControl, type GrantScope } from './grant-control'
 
 type Phase = 'idle' | 'saving' | 'added'
@@ -112,17 +113,24 @@ export function ConnectorDetail({
       <div className="flex items-start gap-3.5">
         <ConnectorIcon card={card} size={56} />
         <div className="min-w-0 flex-1">
-          <h2 className="text-[19px] font-semibold leading-tight tracking-tight text-foreground">
-            {card.display_name}
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-[19px] font-semibold leading-tight tracking-tight text-foreground">
+              {card.display_name}
+            </h2>
+            {card.official && <OfficialBadge label />}
+          </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground">
             {tools && <span className="font-medium">{tools}</span>}
             <span className="capitalize">{kindLabel(card.kind)}</span>
+            {primaryCategory(card) && <span className="capitalize">{primaryCategory(card)}</span>}
           </div>
         </div>
       </div>
 
       <p className="text-[14px] leading-relaxed text-foreground/90">{card.description}</p>
+
+      {/* Install / connect command — the exact one-liner to wire this connector. */}
+      {card.install && <InstallBlock command={card.install} />}
 
       {/* connect / credential flow */}
       {phase === 'added' ? (
@@ -283,6 +291,23 @@ export function ConnectorDetail({
           Remove connector
         </button>
       )}
+    </div>
+  )
+}
+
+/** The connector's primary chip-rail category (skips the `featured` meta tag). */
+function primaryCategory(card: Card): string | null {
+  return (card.categories ?? []).find((c) => c !== 'featured') ?? null
+}
+
+/** The install/connect command — monospace, selectable, horizontally scrollable. */
+function InstallBlock({ command }: { command: string }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[12px] font-medium text-muted-foreground">Install</span>
+      <code className="block w-full select-all overflow-x-auto whitespace-pre rounded-xl border border-border bg-muted/50 px-3 py-2.5 font-mono text-[12px] leading-relaxed text-foreground">
+        {command}
+      </code>
     </div>
   )
 }

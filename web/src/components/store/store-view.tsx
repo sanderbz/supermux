@@ -21,7 +21,7 @@ import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 
 import { CATEGORIES } from './catalog'
 import { brandMark } from './brand-marks'
-import { ConnectorCard, StateChip, chipFor } from './connector-card'
+import { ConnectorCard, OfficialBadge, StateChip, chipFor } from './connector-card'
 import { ConnectorDetail } from './connector-detail'
 import { ConnectorIcon } from './connector-icon'
 import type { GrantScope } from './grant-control'
@@ -325,7 +325,10 @@ function FeaturedCard({
       <div className="pointer-events-none relative z-10 flex items-start gap-3">
         <ConnectorIcon card={card} size={48} className="cs-icon-lift transition-transform duration-150 group-hover:scale-[1.03]" />
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-[16.5px] font-semibold leading-tight tracking-tight text-foreground">{card.display_name}</span>
+          <span className="flex items-center gap-1.5">
+            <span className="truncate text-[16.5px] font-semibold leading-tight tracking-tight text-foreground">{card.display_name}</span>
+            {card.official && <OfficialBadge />}
+          </span>
           {tools !== null && (
             <div className="mt-1.5">
               <span className="inline-flex items-center rounded-full bg-background/60 px-2 py-0.5 text-[11.5px] font-medium tabular-nums text-muted-foreground backdrop-blur-sm">

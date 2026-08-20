@@ -632,7 +632,25 @@ const BUDGET_ENTRY_JS = 160 * KB
 // breaking the gate. The ENTRY gate — the one that guards the hero path — is
 // unmoved (no JS lands on it); base app off grok downloads the rule but matches
 // none of it.
-const BUDGET_APP_JS = 297 * KB
+// 298 for the full curated connector store (feat/store). The `/store` catalog
+// grew from 8 hardcoded featured cards to the 31-connector curated catalog (7
+// first-party Anthropic MCP reference servers + 24 official-directory vendors),
+// and the store UI gained the fields that render them well. All of it lands in
+// the FULLY-LAZY store chunks (`store-view`, `marks`, `connector-detail`) — the
+// entry/hero gate did NOT move (154.56/160, 97%), and the store is only reachable
+// under bot mode. Measured 297.19 against 296.xx; ceil(measured)=298 (the same
+// ratchet rule every fase/merge above used), +~0.8 KB apportioned:
+//   ~0.5 KB  the icon-fallback layer (`brand-marks.tsx` `lucideMark`) — every
+//            curated card now resolves a real lucide glyph on its own tinted
+//            tile instead of an initials monogram, the "no broken/empty icons"
+//            bar. A compact name→[component,hue] map over the generic (non-brand)
+//            servers; brand cards still win their canonical mark.
+//   ~0.2 KB  the "Official" trust badge (`OfficialBadge`) on the 7 first-party
+//            reference servers, rendered on the card face and the detail header.
+//   ~0.1 KB  the detail sheet's Install block (the exact one-line connect command)
+//            + the primary-category tag. The 31 cards themselves are SERVER data
+//            (`connectors/catalog.rs`) and cost this bundle nothing.
+const BUDGET_APP_JS = 298 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -242,6 +242,12 @@ pub fn map_server(s: &PulseServer, featured: bool, icon: String) -> Option<Value
         "kind": super::manifest::KIND_MCP_CATALOG,
         "display_name": display_name,
         "icon": icon,
+        // A mirrored row carries no curated lucide glyph / install line; those
+        // are properties of the curated catalog card it enriches (client-side the
+        // fields are optional). Kept here so every card shares one shape.
+        "lucide": Value::Null,
+        "install": Value::Null,
+        "official": false,
         "description": description,
         // Preview cards declare no tools (the list endpoint carries none); the
         // count, when the blurb states one, powers the "N tools" chip.
@@ -280,129 +286,328 @@ pub fn map_page(page: &ServersPage) -> Vec<Value> {
         .collect()
 }
 
-// ── curated FEATURED set ──────────────────────────────────────────────────────
+// ── curated catalog ───────────────────────────────────────────────────────────
 
-/// Ids we always surface first, even before (or without) a network fetch. Kept
-/// small and hand-picked: the connectors people reach for on day one.
+/// The featured (marquee) ids — the small hero pin-list, surfaced first. A subset
+/// of the full curated set below; every other curated card is a browse-tier card.
 const FEATURED_IDS: &[&str] = &[
+    "pmcp-filesystem",
     "pmcp-github",
     "pmcp-notion",
     "pmcp-slack",
     "pmcp-linear",
     "pmcp-sentry",
-    "pmcp-filesystem",
     "pmcp-postgres",
     "pmcp-playwright",
+    "pmcp-google-drive",
+    "pmcp-stripe",
+    "pmcp-zapier",
+    "pmcp-figma",
 ];
 
-/// Is a mirrored card part of the curated featured set?
+/// Every id in the curated catalog (`featured_cards`). The live PulseMCP mirror
+/// is treated as ENRICHMENT ONLY: [`CatalogMirror::refresh`] keeps a fetched row
+/// only when its id is one of these, so the store is the curated catalog (never
+/// the unranked page-0 dump that produced the "nonsense descriptions"), while a
+/// live row for a curated id can still win in [`merge_featured`] (richer stars).
+const CURATED_IDS: &[&str] = &[
+    "pmcp-filesystem",
+    "pmcp-fetch",
+    "pmcp-git",
+    "pmcp-memory",
+    "pmcp-sequential-thinking",
+    "pmcp-time",
+    "pmcp-everything",
+    "pmcp-github",
+    "pmcp-sentry",
+    "pmcp-linear",
+    "pmcp-notion",
+    "pmcp-slack",
+    "pmcp-asana",
+    "pmcp-atlassian",
+    "pmcp-stripe",
+    "pmcp-paypal",
+    "pmcp-plaid",
+    "pmcp-square",
+    "pmcp-intercom",
+    "pmcp-cloudflare",
+    "pmcp-hubspot",
+    "pmcp-zapier",
+    "pmcp-webflow",
+    "pmcp-canva",
+    "pmcp-figma",
+    "pmcp-google-drive",
+    "pmcp-google-maps",
+    "pmcp-postgres",
+    "pmcp-airtable",
+    "pmcp-playwright",
+    "pmcp-puppeteer",
+];
+
+/// Is a mirrored card part of the curated featured (marquee) set?
 pub fn is_featured(id: &str) -> bool {
     FEATURED_IDS.contains(&id)
 }
 
-/// The always-present curated cards. These render instantly with zero network
-/// (the store is never empty), and are merged/deduped with the live mirror when
-/// it warms — a live PulseMCP row for the same id wins (richer metadata).
+/// Is this id part of the curated catalog? (The mirror keeps only these.)
+pub fn is_curated(id: &str) -> bool {
+    CURATED_IDS.contains(&id)
+}
+
+/// The always-present curated catalog — the full store. These render instantly
+/// with zero network (the store is never empty) and are merged/deduped with the
+/// live mirror when it warms — a live PulseMCP row for the same id wins (richer
+/// metadata). 31 cards: the 7 first-party Anthropic/MCP reference servers
+/// (`official: true`) plus 24 widely-used official-directory vendor connectors.
 pub fn featured_cards() -> Vec<Value> {
+    #[allow(clippy::too_many_arguments)]
     fn card(
         id: &str,
         name: &str,
+        category: &str,
+        lucide: &str,
+        official: bool,
+        featured: bool,
         desc: &str,
+        install: &str,
         emit: Value,
-        homepage: &str,
-        cats: &[&str],
+        transport: &str,
     ) -> Value {
-        let mut categories: Vec<String> = vec!["featured".into()];
-        categories.extend(cats.iter().map(|c| c.to_string()));
+        let mut categories: Vec<String> = Vec::new();
+        if featured {
+            categories.push("featured".into());
+        }
+        categories.push(category.into());
         json!({
             "id": id,
             "kind": super::manifest::KIND_MCP_CATALOG,
             "display_name": name,
+            // No bundled icon bytes; the client draws the named lucide glyph (or
+            // a recognised brand mark) — never an empty monogram for a curated card.
             "icon": "",
+            "lucide": lucide,
             "description": desc,
             "tools": [],
             "tool_count": Value::Null,
             "credentials": [],
             "emit": emit,
+            // The exact one-line install/connect command shown on the detail sheet.
+            "install": install,
             "source": SOURCE_CATALOG,
-            "featured": true,
+            "featured": featured,
+            // The 7 first-party Anthropic/MCP reference servers wear an "Official" badge.
+            "official": official,
             "stars": Value::Null,
             "downloads": Value::Null,
-            "homepage_url": homepage,
+            "homepage_url": Value::Null,
             "source_url": Value::Null,
             "pulsemcp_url": Value::Null,
-            "registry": "npm",
+            "registry": Value::Null,
             "package_name": Value::Null,
-            "transport": "stdio",
+            "transport": transport,
             "auth": Value::Null,
             "categories": categories,
             "created_at": 0,
         })
     }
+    // emit helpers: a stdio launch (npx/uvx) or a hosted-remote `{ url }`.
+    fn npx(args: &[&str]) -> Value {
+        json!({ "command": "npx", "args": args })
+    }
+    fn uvx(args: &[&str]) -> Value {
+        json!({ "command": "uvx", "args": args })
+    }
+    fn remote(url: &str) -> Value {
+        json!({ "url": url })
+    }
     vec![
+        // ── Tier 1 — first-party Anthropic / MCP reference servers (official) ──
         card(
-            "pmcp-github",
-            "GitHub",
-            "Repos, issues, and pull requests — read and act on your GitHub from an agent.",
-            json!({ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }),
-            "https://github.com/modelcontextprotocol/servers",
-            &["devtools", "hosted"],
+            "pmcp-filesystem", "Filesystem", "developer", "folder", true, true,
+            "Secure local file read/write with configurable allowed-path access controls.",
+            "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed",
+            npx(&["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed"]), "stdio",
         ),
         card(
-            "pmcp-notion",
-            "Notion",
-            "Search, read, and update Notion pages and databases.",
-            json!({ "command": "npx", "args": ["-y", "@notionhq/notion-mcp-server"] }),
-            "https://github.com/makenotion/notion-mcp-server",
-            &["productivity"],
+            "pmcp-fetch", "Fetch", "developer", "globe", true, false,
+            "Fetches any URL and converts the page to clean markdown for the model to read.",
+            "uvx mcp-server-fetch",
+            uvx(&["mcp-server-fetch"]), "stdio",
         ),
         card(
-            "pmcp-slack",
-            "Slack",
-            "Post messages and read channels in your Slack workspace.",
-            json!({ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-slack"] }),
-            "https://github.com/modelcontextprotocol/servers",
-            &["communication"],
+            "pmcp-git", "Git", "developer", "git-branch", true, false,
+            "Read, search, stage, and commit in local Git repositories.",
+            "uvx mcp-server-git",
+            uvx(&["mcp-server-git"]), "stdio",
         ),
         card(
-            "pmcp-linear",
-            "Linear",
-            "Triage and update Linear issues, projects, and cycles.",
-            json!({ "command": "npx", "args": ["-y", "mcp-linear"] }),
-            "https://linear.app",
-            &["devtools", "productivity"],
+            "pmcp-memory", "Memory", "data", "brain", true, false,
+            "Knowledge-graph persistent memory that carries facts across sessions.",
+            "npx -y @modelcontextprotocol/server-memory",
+            npx(&["-y", "@modelcontextprotocol/server-memory"]), "stdio",
         ),
         card(
-            "pmcp-sentry",
-            "Sentry",
-            "Inspect Sentry issues and error events for your projects.",
-            json!({ "command": "npx", "args": ["-y", "@sentry/mcp-server"] }),
-            "https://github.com/getsentry/sentry-mcp",
-            &["devtools", "observability"],
+            "pmcp-sequential-thinking", "Sequential Thinking", "ai", "list-ordered", true, false,
+            "Structured multi-step reasoning through revisable thought sequences.",
+            "npx -y @modelcontextprotocol/server-sequentialthinking",
+            npx(&["-y", "@modelcontextprotocol/server-sequentialthinking"]), "stdio",
         ),
         card(
-            "pmcp-filesystem",
-            "Filesystem",
-            "Read and write files under a sandboxed local directory.",
-            json!({ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] }),
-            "https://github.com/modelcontextprotocol/servers",
-            &["local"],
+            "pmcp-time", "Time", "developer", "clock", true, false,
+            "Current time and timezone conversion utilities.",
+            "uvx mcp-server-time",
+            uvx(&["mcp-server-time"]), "stdio",
         ),
         card(
-            "pmcp-postgres",
-            "Postgres",
-            "Run read-only SQL and inspect schemas on a Postgres database.",
-            json!({ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-postgres"] }),
-            "https://github.com/modelcontextprotocol/servers",
-            &["database"],
+            "pmcp-everything", "Everything", "developer", "box", true, false,
+            "Reference test server exercising every MCP feature — tools, prompts, resources.",
+            "npx -y @modelcontextprotocol/server-everything",
+            npx(&["-y", "@modelcontextprotocol/server-everything"]), "stdio",
+        ),
+        // ── Tier 2 — official-directory vendor connectors ─────────────────────
+        card(
+            "pmcp-github", "GitHub", "developer", "github", false, true,
+            "Manage repositories, issues, pull requests, and code via GitHub's hosted server.",
+            "claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --header \"Authorization: Bearer <PAT>\"",
+            remote("https://api.githubcopilot.com/mcp/"), "streamable_http",
         ),
         card(
-            "pmcp-playwright",
-            "Playwright",
-            "Drive a real browser — navigate, click, and extract pages.",
-            json!({ "command": "npx", "args": ["-y", "@playwright/mcp"] }),
-            "https://github.com/microsoft/playwright-mcp",
-            &["browser", "devtools"],
+            "pmcp-sentry", "Sentry", "developer", "sentry", false, true,
+            "Query errors, issues, and performance data from your Sentry projects.",
+            "claude mcp add --transport http sentry https://mcp.sentry.dev/mcp",
+            remote("https://mcp.sentry.dev/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-linear", "Linear", "productivity", "linear", false, true,
+            "Create and manage Linear issues, projects, and cycles.",
+            "claude mcp add --transport http linear https://mcp.linear.app/mcp",
+            remote("https://mcp.linear.app/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-notion", "Notion", "productivity", "notion", false, true,
+            "Read and write Notion pages, databases, and comments.",
+            "claude mcp add --transport http notion https://mcp.notion.com/mcp",
+            remote("https://mcp.notion.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-slack", "Slack", "communication", "slack", false, true,
+            "Read channels and post messages in your Slack workspace.",
+            "claude mcp add --transport http slack https://mcp.slack.com/mcp",
+            remote("https://mcp.slack.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-asana", "Asana", "productivity", "list-todo", false, false,
+            "Manage Asana tasks, projects, and workspaces.",
+            "claude mcp add --transport sse asana https://mcp.asana.com/sse",
+            remote("https://mcp.asana.com/sse"), "sse",
+        ),
+        card(
+            "pmcp-atlassian", "Jira & Confluence", "developer", "square-kanban", false, false,
+            "Work with Atlassian Jira issues and Confluence pages.",
+            "claude mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp",
+            remote("https://mcp.atlassian.com/v1/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-stripe", "Stripe", "finance", "credit-card", false, true,
+            "Query payments and customers and manage billing across your Stripe account.",
+            "claude mcp add --transport http stripe https://mcp.stripe.com",
+            remote("https://mcp.stripe.com"), "streamable_http",
+        ),
+        card(
+            "pmcp-paypal", "PayPal", "finance", "wallet", false, false,
+            "Create invoices and manage orders and payments in PayPal.",
+            "claude mcp add --transport http paypal https://mcp.paypal.com/mcp",
+            remote("https://mcp.paypal.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-plaid", "Plaid", "finance", "landmark", false, false,
+            "Access financial account and transaction data through Plaid.",
+            "claude mcp add --transport sse plaid https://api.dashboard.plaid.com/mcp/sse",
+            remote("https://api.dashboard.plaid.com/mcp/sse"), "sse",
+        ),
+        card(
+            "pmcp-square", "Square", "finance", "square", false, false,
+            "Manage Square payments, catalog, orders, and customers.",
+            "claude mcp add --transport sse square https://mcp.squareup.com/sse",
+            remote("https://mcp.squareup.com/sse"), "sse",
+        ),
+        card(
+            "pmcp-intercom", "Intercom", "communication", "message-circle", false, false,
+            "Search conversations and customer-support data in Intercom.",
+            "claude mcp add --transport http intercom https://mcp.intercom.com/mcp",
+            remote("https://mcp.intercom.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-cloudflare", "Cloudflare", "developer", "cloud", false, false,
+            "Manage Cloudflare Workers, bindings, DNS, and read the docs.",
+            "claude mcp add --transport http cloudflare https://bindings.mcp.cloudflare.com/mcp",
+            remote("https://bindings.mcp.cloudflare.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-hubspot", "HubSpot", "data", "users", false, false,
+            "Read and update HubSpot CRM contacts, companies, and deals.",
+            "claude mcp add --transport http hubspot https://mcp.hubspot.com/anthropic",
+            remote("https://mcp.hubspot.com/anthropic"), "streamable_http",
+        ),
+        card(
+            "pmcp-zapier", "Zapier", "productivity", "zap", false, true,
+            "Trigger actions across 8,000+ apps through your personal Zapier MCP URL.",
+            "claude mcp add --transport http zapier <your-mcp.zapier.com-url>",
+            json!({}), "streamable_http",
+        ),
+        card(
+            "pmcp-webflow", "Webflow", "productivity", "layout-template", false, false,
+            "Manage Webflow CMS collections and site content.",
+            "Remote MCP via the Anthropic Directory (claude.ai/directory)",
+            json!({}), "streamable_http",
+        ),
+        card(
+            "pmcp-canva", "Canva", "ai", "palette", false, false,
+            "Create and manage Canva designs.",
+            "Remote MCP via the Anthropic Directory (claude.ai/directory)",
+            json!({}), "streamable_http",
+        ),
+        card(
+            "pmcp-figma", "Figma", "developer", "figma", false, true,
+            "Pull Figma design context into code with the Dev Mode MCP server.",
+            "claude mcp add --transport http figma http://127.0.0.1:3845/mcp",
+            remote("http://127.0.0.1:3845/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-google-drive", "Google Drive", "data", "hard-drive", false, true,
+            "Search, read, and manage files in Google Drive.",
+            "Remote connector via claude.ai (endpoint https://drivemcp.googleapis.com/mcp/v1, OAuth)",
+            remote("https://drivemcp.googleapis.com/mcp/v1"), "streamable_http",
+        ),
+        card(
+            "pmcp-google-maps", "Google Maps", "data", "map-pin", false, false,
+            "Geocoding, place search, and directions.",
+            "npx -y @modelcontextprotocol/server-google-maps",
+            npx(&["-y", "@modelcontextprotocol/server-google-maps"]), "stdio",
+        ),
+        card(
+            "pmcp-postgres", "PostgreSQL", "data", "database", false, true,
+            "Query a Postgres (or other SQL) database over a DSN via DBHub — use a read-only user.",
+            "npx -y @bytebase/dbhub --dsn \"postgresql://readonly:pass@host:5432/db\"",
+            npx(&["-y", "@bytebase/dbhub", "--dsn", "postgresql://readonly:pass@host:5432/db"]), "stdio",
+        ),
+        card(
+            "pmcp-airtable", "Airtable", "data", "table", false, false,
+            "Read and write Airtable bases and records.",
+            "npx -y airtable-mcp-server  (env AIRTABLE_API_KEY)",
+            npx(&["-y", "airtable-mcp-server"]), "stdio",
+        ),
+        card(
+            "pmcp-playwright", "Playwright", "browser", "playwright", false, true,
+            "Drive a real browser — navigate, click, and snapshot — for web automation and testing.",
+            "npx -y @playwright/mcp@latest",
+            npx(&["-y", "@playwright/mcp@latest"]), "stdio",
+        ),
+        card(
+            "pmcp-puppeteer", "Puppeteer", "browser", "mouse-pointer-click", false, false,
+            "Headless-Chrome browser automation and screenshots.",
+            "npx -y @modelcontextprotocol/server-puppeteer",
+            npx(&["-y", "@modelcontextprotocol/server-puppeteer"]), "stdio",
         ),
     ]
 }
@@ -549,6 +754,13 @@ impl CatalogMirror {
         let page = fetch_page().await?;
         let mut cards = map_page(&page);
         mirror_icons(&page, &mut cards, data_dir).await;
+        // Enrichment-only mirror: keep a fetched row only when its id is one of
+        // the curated catalog's. This RETIRES the raw unranked page-0 dump (the
+        // source of the "nonsense descriptions" — obscure alphabetical servers
+        // with PulseMCP `short_description` junk) while still letting a live row
+        // for a curated id win in `merge_featured` (richer stars/registry). Done
+        // AFTER `mirror_icons`, which zips `page.servers` with `cards` by index.
+        cards.retain(|c| c.get("id").and_then(Value::as_str).map(is_curated).unwrap_or(false));
         {
             let mut w = self.slot.write().await;
             *w = Some((cards.clone(), Instant::now()));
@@ -779,11 +991,39 @@ mod tests {
     }
 
     #[test]
-    fn featured_set_is_present_without_network() {
+    fn curated_catalog_is_present_without_network() {
         let cards = merge_featured(vec![]);
-        assert!(cards.len() >= 8);
-        assert!(cards.iter().all(|c| c["featured"] == json!(true)));
+        // The full curated catalog renders with zero network.
+        assert_eq!(cards.len(), CURATED_IDS.len(), "all 31 curated cards present");
+        // The 12 featured ids sort to the front and are flagged featured.
+        let featured: Vec<&str> = cards
+            .iter()
+            .filter(|c| c["featured"] == json!(true))
+            .filter_map(|c| c["id"].as_str())
+            .collect();
+        assert_eq!(featured.len(), FEATURED_IDS.len(), "12 featured cards");
         assert!(cards.iter().any(|c| c["id"] == json!("pmcp-github")));
+        // The 7 first-party Anthropic/MCP reference servers wear the Official badge.
+        let official: Vec<&str> = cards
+            .iter()
+            .filter(|c| c["official"] == json!(true))
+            .filter_map(|c| c["id"].as_str())
+            .collect();
+        assert_eq!(official.len(), 7, "7 official reference servers");
+        for id in [
+            "pmcp-filesystem",
+            "pmcp-fetch",
+            "pmcp-git",
+            "pmcp-memory",
+            "pmcp-sequential-thinking",
+            "pmcp-time",
+            "pmcp-everything",
+        ] {
+            assert!(official.contains(&id), "{id} is official");
+        }
+        // Every curated card carries a real description + a lucide glyph name.
+        assert!(cards.iter().all(|c| !c["description"].as_str().unwrap_or("").is_empty()));
+        assert!(cards.iter().all(|c| !c["lucide"].as_str().unwrap_or("").is_empty()));
     }
 
     #[test]

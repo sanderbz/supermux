@@ -6,7 +6,7 @@
 // active scope?) — see `chipFor`. Tapping the card (or its chip) opens the detail
 // sheet, which hosts the connect / grant flow.
 import * as React from 'react'
-import { Check, MoreHorizontal } from 'lucide-react'
+import { BadgeCheck, Check, MoreHorizontal } from 'lucide-react'
 
 import { toolCountLabel, type ConnectorCard as Card } from '@/lib/api/connectors'
 
@@ -66,6 +66,7 @@ export function ConnectorCard({
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex items-center gap-2">
             <span className="truncate text-[14px] font-medium text-foreground">{card.display_name}</span>
+            {card.official && <OfficialBadge />}
             {chips}
           </span>
           <span className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">{card.description}</span>
@@ -91,6 +92,7 @@ export function ConnectorCard({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-1.5">
             <h3 className="truncate text-[15px] font-medium leading-tight text-foreground">{card.display_name}</h3>
+            {card.official && <OfficialBadge />}
           </div>
           {tools && <div className="mt-1.5 flex flex-wrap items-center gap-1.5">{chips}</div>}
         </div>
@@ -127,6 +129,19 @@ export function ConnectorCard({
         </button>
       </div>
     </div>
+  )
+}
+
+/** The "Official" trust badge — a first-party Anthropic/MCP reference server. */
+export function OfficialBadge({ label = false }: { label?: boolean }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
+      title="Official — a first-party Anthropic MCP reference server"
+    >
+      <BadgeCheck className="size-3.5" aria-hidden />
+      {label ? 'Official' : <span className="sr-only">Official</span>}
+    </span>
   )
 }
 

@@ -12,7 +12,26 @@
 // user-authored connectors with no asset).
 
 import * as React from 'react'
-import { Database, Globe } from 'lucide-react'
+import {
+  Box,
+  Brain,
+  Clock,
+  Cloud,
+  CreditCard,
+  Database,
+  Folder,
+  GitBranch,
+  Globe,
+  ListTodo,
+  MapPin,
+  MessageCircle,
+  MousePointerClick,
+  Palette,
+  PenTool,
+  Users,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react'
 
 import type { ConnectorCard } from '@/lib/api/connectors'
 
@@ -65,5 +84,50 @@ export function brandMark(card: ConnectorCard): BrandMark | null {
   if (card.kind === 'builtin_browser' || /\bbrowser\b/i.test(hay)) {
     return { node: <Globe strokeWidth={2} className="size-[62%]" aria-hidden />, hex: '#0EA5E9' }
   }
+  // A curated card ships a lucide glyph NAME as its reliable, always-present icon
+  // (brand SVGs above are the nice-to-have). This guarantees every catalog card
+  // renders a real, meaningful icon on its own tinted tile — never an initials
+  // monogram, which is now the honest last resort for user-authored cards only.
+  const mark = lucideMark(card.lucide)
+  if (mark) return mark
   return null
+}
+
+/** kebab lucide-name → [component, brand-ish tile hue]. Only the names the
+ *  curated catalog actually ships; anything else falls through to the monogram. */
+const LUCIDE_MARKS: Record<string, [LucideIcon, string]> = {
+  folder: [Folder, '#E8A33D'],
+  globe: [Globe, '#2563EB'],
+  'git-branch': [GitBranch, '#F1502F'],
+  brain: [Brain, '#8B5CF6'],
+  'list-ordered': [ListTodo, '#6366F1'],
+  clock: [Clock, '#0EA5E9'],
+  box: [Box, '#64748B'],
+  'list-todo': [ListTodo, '#F06A6A'],
+  'square-kanban': [ListTodo, '#2684FF'],
+  'credit-card': [CreditCard, '#635BFF'],
+  wallet: [CreditCard, '#003087'],
+  landmark: [CreditCard, '#111827'],
+  square: [CreditCard, '#2A2A2A'],
+  'message-circle': [MessageCircle, '#1F8DED'],
+  cloud: [Cloud, '#F38020'],
+  users: [Users, '#FF7A59'],
+  zap: [Zap, '#FF4A00'],
+  'layout-template': [Globe, '#146EF5'],
+  palette: [Palette, '#00C4CC'],
+  figma: [PenTool, '#F24E1E'],
+  'hard-drive': [Folder, '#1FA463'],
+  'map-pin': [MapPin, '#EA4335'],
+  table: [Database, '#E5A100'],
+  'mouse-pointer-click': [MousePointerClick, '#40B5A4'],
+  database: [Database, '#4169E1'],
+}
+
+/** Resolve a lucide icon NAME to a mark (a glyph node + tile hue), or `null`. */
+export function lucideMark(name: string | undefined | null): BrandMark | null {
+  if (!name) return null
+  const hit = LUCIDE_MARKS[name.trim().toLowerCase()]
+  if (!hit) return null
+  const [Icon, hex] = hit
+  return { node: <Icon strokeWidth={2} className="size-[58%]" aria-hidden />, hex }
 }

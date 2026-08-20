@@ -57,6 +57,13 @@ export interface ConnectorCard {
   /** Catalog preview cards declare no tools[]; the count rides here instead. */
   tool_count?: number | null
   featured?: boolean
+  /** First-party Anthropic/MCP reference server — wears the "Official" badge. */
+  official?: boolean
+  /** The exact one-line install/connect command (shown on the detail sheet). */
+  install?: string
+  /** A lucide icon NAME (kebab-case) the curated card ships as its reliable icon
+   *  fallback when no brand mark / mirrored asset is present. */
+  lucide?: string
   /** A short editorial hook for the Featured hero — one curated line, distinct
    *  from the functional `description`. Optional; the hero derives a social-proof
    *  line from `stars`/category when it is absent. */
