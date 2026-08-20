@@ -200,13 +200,25 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
     // running code already contains it, so suppress the bogus offer. Falls back
     // to the version compare when the tag isn't present locally (we never fetch
     // here) or the build sha is unknown. See `running_binary_contains_release`.
+    // Compute ancestry whenever a git answer would change the verdict:
+    //   · the version strings say "newer" (the deploy-before-tag false positive
+    //     `is_newer` can't see past — a build that describes as an older tag but
+    //     already contains the release commit), OR
+    //   · this is a DEV / deploy-self build with no parseable tag (`current.tag`
+    //     is None). `is_newer` is blind to those — it returns false for every
+    //     tagless build, in BOTH directions — so a deploy-self build one commit
+    //     ahead of the last release and a genuinely-behind dev checkout look
+    //     identical to the string compare. Ancestry is the only honest signal:
+    //     the running commit either already contains the release (calm) or
+    //     provably does not (a real upgrade).
     let contains_release = match (&repo, latest.as_ref()) {
-        (Some(repo), Some(rel)) if version_newer => {
+        (Some(repo), Some(rel)) if version_newer || current.tag.is_none() => {
             running_binary_contains_release(repo, &rel.tag, &current.sha)
         }
         _ => None,
     };
-    let update_available = decide_update_available(version_newer, contains_release);
+    let update_available =
+        decide_update_available(version_newer, current.tag.is_some(), contains_release);
 
     let mut blocked = Vec::new();
 
@@ -493,12 +505,34 @@ fn inspect_git(repo: &Path) -> Option<GitSnapshot> {
 
 /// Reconcile the version-string verdict with what git ancestry can prove.
 ///
-/// `version_says_newer` is [`version::is_newer`]'s answer; `contains_release`
-/// is [`running_binary_contains_release`]'s (`None` = couldn't determine). The
-/// only case we OVERRIDE is "the strings say there's an update, but the release
-/// commit is already in our history" — that's the deploy-before-tag false
-/// positive. Everything else trusts the version compare.
-fn decide_update_available(version_says_newer: bool, contains_release: Option<bool>) -> bool {
+/// `version_says_newer` is [`version::is_newer`]'s answer; `has_tag` is whether
+/// the running binary carries a parseable release tag; `contains_release` is
+/// [`running_binary_contains_release`]'s answer (`None` = couldn't determine).
+///
+/// Two regimes:
+///
+///   · TAGGED build (`has_tag`): trust the version compare, with one override —
+///     "the strings say there's an update, but the release commit is already in
+///     our history" (the deploy-before-tag false positive) suppresses the offer.
+///
+///   · DEV / deploy-self build (`!has_tag`): the strings can't rank a tagless
+///     build, so `version_says_newer` is meaningless here and we go purely on
+///     ancestry. Offer the update ONLY when the release is provably NOT already
+///     in this build's history (`Some(false)`); stay calm when it is already
+///     contained (`Some(true)` — the deploy-self "one commit ahead of the last
+///     release" case that used to nag forever) OR when we simply cannot tell
+///     (`None` — no local tag / unknown sha: a dev build we can't reason about
+///     is not worth a persistent "update available"). This keeps the indicator
+///     honest in BOTH directions without ever inventing a tag.
+fn decide_update_available(
+    version_says_newer: bool,
+    has_tag: bool,
+    contains_release: Option<bool>,
+) -> bool {
+    if !has_tag {
+        // Tagless: the version strings are blind; ancestry is the only truth.
+        return matches!(contains_release, Some(false));
+    }
     match (version_says_newer, contains_release) {
         (false, _) => false,             // strings agree we're current-or-ahead
         (true, Some(true)) => false,     // release commit already in our build
@@ -566,15 +600,37 @@ mod ancestry_tests {
 
     #[test]
     fn decide_only_overrides_the_false_positive() {
+        // TAGGED builds (has_tag = true).
         // The whole point: strings say "update", but the release is already ours.
-        assert!(!decide_update_available(true, Some(true)));
+        assert!(!decide_update_available(true, true, Some(true)));
         // A genuinely newer release still advertises.
-        assert!(decide_update_available(true, Some(false)));
+        assert!(decide_update_available(true, true, Some(false)));
         // Undeterminable ancestry trusts the version compare (either way).
-        assert!(decide_update_available(true, None));
+        assert!(decide_update_available(true, true, None));
         // No version-level update → never an update, whatever ancestry says.
-        assert!(!decide_update_available(false, None));
-        assert!(!decide_update_available(false, Some(false)));
+        assert!(!decide_update_available(false, true, None));
+        assert!(!decide_update_available(false, true, Some(false)));
+    }
+
+    #[test]
+    fn dev_build_goes_purely_on_ancestry() {
+        // DEV / deploy-self builds (has_tag = false): the version strings are
+        // blind, so `version_says_newer` is ignored and ancestry decides.
+        //
+        // A deploy-self build one commit AHEAD of the last release already
+        // contains that release's commit → calm, no perpetual "update available"
+        // (the owner's IMG_2352 bug).
+        assert!(!decide_update_available(false, false, Some(true)));
+        assert!(!decide_update_available(true, false, Some(true)));
+        // A dev checkout that is genuinely BEHIND / diverged from the latest
+        // release (its commit is provably not in our history) still gets offered
+        // the upgrade — the real update path is preserved.
+        assert!(decide_update_available(false, false, Some(false)));
+        assert!(decide_update_available(true, false, Some(false)));
+        // Can't tell (no local tag, unknown sha) → stay calm; a dev build we
+        // cannot reason about is not worth a standing nag.
+        assert!(!decide_update_available(false, false, None));
+        assert!(!decide_update_available(true, false, None));
     }
 
     /// Build a throwaway git repo and exercise the real `git` calls. Layout:

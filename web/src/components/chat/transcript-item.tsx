@@ -212,6 +212,16 @@ export const TranscriptItem = React.memo(function TranscriptItem(
       />
     )
   }
+  if (node.kind === 'harness-run') {
+    return (
+      <HarnessRunLine
+        evs={node.evs}
+        names={props.names}
+        pinFor={props.pinFor}
+        onOpenSession={props.onOpenSession}
+      />
+    )
+  }
 
   const { item, speaker, grouped, showGutter, sender } = node
   // Before the system arm: a blocked banner is a CARD, not a centred line, and
@@ -801,6 +811,110 @@ export function HarnessLine({ ev, names, pinFor, onOpenSession, onOpenSchedule }
         </>
       )}
     </SystemLine>
+  )
+}
+
+export interface HarnessRunLineProps {
+  /** The folded run — two or more consecutive `session.delegate` events. */
+  evs: readonly HarnessEvent[]
+  names?: ReadonlyMap<string, string>
+  pinFor?: (seed: string) => MarkPin | undefined
+  onOpenSession?: (slug: string) => void
+}
+
+/**
+ * A folded run of delegations, as ONE calm line (§13.2 / daily-driver).
+ *
+ * `grouping.ts::collapseDelegations` hands us a maximal run of back-to-back
+ * `session.delegate` rows so the transcript is not walled by a stack of
+ * identical "Delegated to ●x" narrator lines. Collapsed, it is a single centred
+ * affordance that names how many; expanded, it is exactly the rows it stands
+ * for — the information is preserved, a curious reader is one tap away, and the
+ * resting history stays quiet.
+ *
+ * Two collapsed shapes, chosen by whether the run is one colleague or several:
+ *   · all to ONE session → `Delegated to ●ipc ×12`, so the run still reads as
+ *     the thing it is (a busy back-and-forth with one bot). The chip navigates;
+ *     the `×N` toggle expands — two affordances, never a chip nested in a
+ *     button.
+ *   · MIXED targets → a plain `12 delegations` toggle; naming twelve chips on
+ *     one line would be its own wall.
+ */
+export function HarnessRunLine({ evs, names, pinFor, onOpenSession }: HarnessRunLineProps) {
+  const [expanded, setExpanded] = React.useState(false)
+  const count = evs.length
+  const targets = React.useMemo(() => [...new Set(evs.map((e) => e.target))], [evs])
+
+  if (expanded) {
+    return (
+      <div data-testid="chat-delegation-run" data-expanded="true">
+        {evs.map((ev) => (
+          <HarnessLine
+            key={ev.id}
+            ev={ev}
+            names={names}
+            pinFor={pinFor}
+            onOpenSession={onOpenSession}
+          />
+        ))}
+        <SystemLine>
+          <RunToggle expanded onClick={() => setExpanded(false)}>
+            Show less
+          </RunToggle>
+        </SystemLine>
+      </div>
+    )
+  }
+
+  // Collapsed. `data-count` is what the render test reads to assert the fold.
+  const single = targets.length === 1 ? targets[0] : null
+  return (
+    <SystemLine testId="chat-delegation-run">
+      <span data-count={count} className="inline-flex items-center">
+        {single ? (
+          <>
+            Delegated to{' '}
+            <MentionChip
+              seed={single}
+              pin={pinFor?.(single)}
+              name={names?.get(single)}
+              onClick={onOpenSession ? () => onOpenSession(single) : undefined}
+            />{' '}
+            <RunToggle onClick={() => setExpanded(true)}>×{count}</RunToggle>
+          </>
+        ) : (
+          <RunToggle onClick={() => setExpanded(true)}>{count} delegations</RunToggle>
+        )}
+      </span>
+    </SystemLine>
+  )
+}
+
+/** The expand/collapse control on a folded delegation run — the same
+ *  zero-layout-cost hover pill `SystemEntity` uses, so the sentence never
+ *  shifts when the affordance lights up. */
+function RunToggle({
+  children,
+  expanded,
+  onClick,
+}: {
+  children: React.ReactNode
+  expanded?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={expanded ?? false}
+      className={cn(
+        'font-medium text-ink-2',
+        'my-[-1px] ml-[-3px] mr-[-5px] inline-flex items-center rounded-md py-px pl-[3px] pr-[5px] tabular-nums',
+        'sm-t-hover hover:bg-fill-soft hover:text-ink',
+      )}
+    >
+      {children}
+    </button>
   )
 }
 

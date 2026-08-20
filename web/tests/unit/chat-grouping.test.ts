@@ -625,6 +625,71 @@ describe('harness events in the stream', () => {
     )
   })
 
+  test('a run of consecutive delegations collapses to ONE grouped node', () => {
+    // THE WALL (owner's IMG_2353). A session that messaged other bots many
+    // times logs one `session.delegate` row per event; rendered as standalone
+    // lines they stack as identical narrator rows — one per event, and a
+    // session-block divider between any two that straddle the 30-min gap. The
+    // fold turns a maximal run of back-to-back delegations into a single
+    // `harness-run` node that carries every event (nothing is lost) and takes
+    // at most one divider.
+    const wall: HarnessEvent[] = Array.from({ length: 6 }, (_, i) => ({
+      id: 100 + i,
+      // Spread across days so, unfolded, each would earn its own divider.
+      ts: 1_000 + i * SESSION_GAP_S * 2,
+      actor: 'user',
+      action: 'session.delegate',
+      target: 'ipc',
+      detail: { from: 'web-ui' },
+    }))
+    const nodes = buildTranscript([user('u1', 500)], {
+      nowMs: 9_000_000,
+      self: 'web-ui',
+      events: wall,
+    })
+    const runs = nodes.filter((n) => n.kind === 'harness-run')
+    expect(runs).toHaveLength(1)
+    const run = runs[0]
+    if (run.kind !== 'harness-run') throw new Error('unreachable')
+    expect(run.evs.map((e) => e.id)).toEqual([100, 101, 102, 103, 104, 105])
+    // No bare per-event `harness` lines survive the fold, and the whole run
+    // takes exactly one session-block divider rather than one per delegation.
+    expect(nodes.filter((n) => n.kind === 'harness')).toHaveLength(0)
+    expect(nodes.filter((n) => n.kind === 'divider')).toHaveLength(1)
+  })
+
+  test('a lone delegation is left as a plain line, not a run', () => {
+    // The common one-off case must stay byte-identical: a single delegation is
+    // still a `harness` line, never a one-element run.
+    const nodes = buildTranscript([user('u1', 500)], {
+      nowMs: 9_000,
+      self: 'web-ui',
+      events: [
+        { id: 7, ts: 1_000, actor: 'user', action: 'session.delegate', target: 'ipc', detail: { from: 'web-ui' } },
+      ],
+    })
+    expect(nodes.filter((n) => n.kind === 'harness-run')).toHaveLength(0)
+    expect(nodes.filter((n) => n.kind === 'harness')).toHaveLength(1)
+  })
+
+  test('a non-delegation event between two delegations breaks the run', () => {
+    // A rename or schedule fire is different news; like a differing tool in the
+    // receipt coalescer it ends the run, so the two delegations do NOT fold
+    // across it.
+    const nodes = buildTranscript([user('u1', 500)], {
+      nowMs: 9_000,
+      self: 'web-ui',
+      events: [
+        { id: 1, ts: 1_000, actor: 'user', action: 'session.delegate', target: 'ipc', detail: { from: 'web-ui' } },
+        { id: 2, ts: 1_100, actor: 'agent:web-ui', action: 'session.rename', target: 'web-ui', detail: { from: 'a', to: 'b' } },
+        { id: 3, ts: 1_200, actor: 'user', action: 'session.delegate', target: 'ipc', detail: { from: 'web-ui' } },
+      ],
+    })
+    // Two lone delegations either side of the rename — three plain lines, no run.
+    expect(nodes.filter((n) => n.kind === 'harness-run')).toHaveLength(0)
+    expect(nodes.filter((n) => n.kind === 'harness')).toHaveLength(3)
+  })
+
   test('an action nothing can render is not printed', () => {
     // The server filters to the surfaced set; the renderer has copy for four
     // actions and no fallback sentence, so an unknown one is dropped here

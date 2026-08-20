@@ -87,10 +87,14 @@ fn parse_tag(s: &str) -> Option<String> {
 pub fn is_newer(current: Option<&str>, latest: Option<&str>) -> bool {
     let Some(latest) = latest else { return false };
     let Some(current) = current else {
-        // A dev build with a real release available; we still don't auto-tag
-        // it as "update available" because the dev probably has uncommitted
-        // changes; the preflight will produce a clear `NotOnMain` / `Uncommitted`
-        // reason anyway. Returning false here keeps the cosmetic state honest.
+        // A dev / deploy-self build (no parseable tag): the version STRINGS
+        // cannot rank it, so this pure compare stays conservative and returns
+        // false in both directions. The real ahead/behind decision for a tagless
+        // build is made by `preflight::decide_update_available`, which consults
+        // git ANCESTRY (`running_binary_contains_release`) — the only honest
+        // signal for a build with no tag. That is what stops a deploy-self build
+        // one commit past the last release from perpetually reporting "update
+        // available" while still surfacing a genuinely-behind dev checkout.
         return false;
     };
     let (cn, cpre, c_ahead) = parse_semver(current);
@@ -216,5 +220,32 @@ mod tests {
         // The preflight surfaces the dev-state reasons separately; the bare
         // version-vs-version compare should stay conservative.
         assert!(!is_newer(None, Some("v0.3.0")));
+    }
+
+    #[test]
+    fn deploy_self_build_ahead_of_release_is_not_an_update() {
+        // FIX B, case 1: a deploy-self build whose `git describe` anchors to the
+        // latest release tag but sits N commits AHEAD of it
+        // (`v0.5.0-77-g999b98c`) must NOT read as "update available" — the
+        // release it would offer is a strict ancestor, i.e. a downgrade.
+        assert!(!is_newer(Some("v0.5.0-77-g999b98c"), Some("v0.5.0")));
+        assert!(!is_newer(Some("v0.5.0-77-g999b98c-dirty"), Some("v0.5.0")));
+    }
+
+    #[test]
+    fn a_build_behind_the_latest_release_still_updates() {
+        // FIX B, case 2: a build genuinely behind the latest release keeps the
+        // real upgrade offer — the fix must not silence the honest case.
+        assert!(is_newer(Some("v0.4.20"), Some("v0.5.0")));
+        assert!(is_newer(Some("v0.4.20-3-gdeadbee"), Some("v0.5.0")));
+    }
+
+    #[test]
+    fn running_the_installed_version_clears_the_offer() {
+        // FIX B, case 3: once the restart has adopted the installed release, the
+        // running tag equals the latest tag — no lingering "restart to update".
+        assert!(!is_newer(Some("v0.5.0"), Some("v0.5.0")));
+        // ...and a dirty rebuild of that exact release is still the same version.
+        assert!(!is_newer(Some("v0.5.0-dirty"), Some("v0.5.0")));
     }
 }

@@ -252,6 +252,14 @@ export type TranscriptNode =
   | ({ kind: 'item'; key: string } & GroupedItem)
   | { kind: 'divider'; key: string; ts: number; label: string }
   | { kind: 'harness'; key: string; ts: number; ev: HarnessEvent }
+  // A RUN of consecutive delegation rows, folded into one collapsible line
+  // (§13.2, daily-driver: a session that delegated many times used to wall the
+  // history with a stack of identical "Delegated to ●x" lines, one per event
+  // and one divider between each). The renderer shows a single "N delegations"
+  // affordance that expands to the individual rows — the information is kept,
+  // the resting transcript is not a stack. `ts` is the FIRST event's, so the
+  // run sits (and takes at most one divider) where its first delegation landed.
+  | { kind: 'harness-run'; key: string; ts: number; evs: HarnessEvent[] }
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -289,10 +297,12 @@ export function dayDividers(rows: readonly GroupedItem[], nowMs: number): Transc
   )
 }
 
-/** One position in the merged pre-divider stream: a message row, or an event. */
+/** One position in the merged pre-divider stream: a message row, an event, or
+ *  a folded run of consecutive delegation events. */
 type StreamRow =
   | { kind: 'item'; ts: number; row: GroupedItem }
   | { kind: 'harness'; ts: number; ev: HarnessEvent }
+  | { kind: 'harness-run'; ts: number; evs: HarnessEvent[] }
 
 /**
  * The divider pass, over the MERGED stream.
@@ -302,6 +312,54 @@ type StreamRow =
  * turns separated by "Delegated to ●deploy-fix" are not one run, and stacking
  * them at 8px with no second mark would draw them as one.
  */
+/** The uuid/id a session-block divider is keyed by, per stream-row kind. */
+function dividerAnchor(entry: StreamRow): string {
+  if (entry.kind === 'item') return entry.row.item.uuid
+  if (entry.kind === 'harness') return `hx-${entry.ev.id}`
+  return `hxr-${entry.evs[0].id}`
+}
+
+/**
+ * Fold consecutive delegation events into one run (§13.2 / daily-driver).
+ *
+ * The failure this fixes: a session that messaged other bots many times (the
+ * delegate/IPC mechanism logs one `session.delegate` row each) rendered a WALL
+ * of identical "Delegated to ●x" lines — one centred line per event, and a
+ * session-block divider between any two that straddled the 30-minute gap, so a
+ * week of delegations read as a stack of dozens of bare narrator lines with no
+ * content. That reads as a bug even though every row is a true event.
+ *
+ * The fix mirrors the receipt coalescer: a maximal run of ADJACENT delegation
+ * rows (nothing the user said or the agent replied sits between them, since the
+ * items are the backbone `buildTranscript` weaves events into) collapses to a
+ * single `harness-run` the renderer draws as one "N delegations" affordance,
+ * expandable to the individual rows. A lone delegation is left as a plain
+ * `harness` line — unchanged, so the common one-off case is byte-identical and
+ * the existing single-line tests still hold. Only `session.delegate` folds:
+ * a rename or a schedule fire between two delegations is real, different news
+ * and breaks the run, exactly as a differing tool breaks a receipt coalesce.
+ */
+function collapseDelegations(stream: readonly StreamRow[]): StreamRow[] {
+  const out: StreamRow[] = []
+  let run: HarnessEvent[] = []
+  const flush = () => {
+    if (run.length === 0) return
+    if (run.length === 1) out.push({ kind: 'harness', ts: run[0].ts, ev: run[0] })
+    else out.push({ kind: 'harness-run', ts: run[0].ts, evs: run })
+    run = []
+  }
+  for (const entry of stream) {
+    if (entry.kind === 'harness' && entry.ev.action === 'session.delegate') {
+      run.push(entry.ev)
+      continue
+    }
+    flush()
+    out.push(entry)
+  }
+  flush()
+  return out
+}
+
 function withDividers(stream: readonly StreamRow[], nowMs: number): TranscriptNode[] {
   const out: TranscriptNode[] = []
   let previousTs: number | null = null
@@ -313,13 +371,21 @@ function withDividers(stream: readonly StreamRow[], nowMs: number): TranscriptNo
     if (blockStart) {
       out.push({
         kind: 'divider',
-        key: `div-${entry.kind === 'item' ? entry.row.item.uuid : `hx-${entry.ev.id}`}`,
+        key: `div-${dividerAnchor(entry)}`,
         ts,
         label: dividerLabel(ts, nowMs),
       })
     }
     if (entry.kind === 'harness') {
       out.push({ kind: 'harness', key: `hx-${entry.ev.id}`, ts, ev: entry.ev })
+      previousTs = ts
+      cutByLine = true
+      continue
+    }
+    if (entry.kind === 'harness-run') {
+      // A folded run is one centred node keyed by its first event; like a lone
+      // harness line it is bubble-less, so it breaks the run around it.
+      out.push({ kind: 'harness-run', key: `hxr-${entry.evs[0].id}`, ts, evs: entry.evs })
       previousTs = ts
       cutByLine = true
       continue
@@ -435,7 +501,10 @@ export function buildTranscript(
     stream.push(item)
   }
   while (ei < evs.length) stream.push(evs[ei++])
-  return withDividers(stream, opts.nowMs)
+  // Fold runs of consecutive delegations into one collapsible line BEFORE the
+  // divider pass, so a week's worth of back-to-back delegations becomes a single
+  // node that takes at most one session-block divider instead of one per event.
+  return withDividers(collapseDelegations(stream), opts.nowMs)
 }
 
 /* ── receipt rows ────────────────────────────────────────────────────────── */

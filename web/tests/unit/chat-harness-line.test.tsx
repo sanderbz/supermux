@@ -22,8 +22,10 @@ import type { ReactElement, ReactNode } from 'react'
 import { isValidElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
+import { createElement } from 'react'
+
 import type { HarnessEvent } from '../../src/lib/api/harness'
-import { HarnessLine } from '../../src/components/chat/transcript-item'
+import { HarnessLine, HarnessRunLine } from '../../src/components/chat/transcript-item'
 import { MentionChip, SystemEntity } from '../../src/components/chat/ui'
 
 const ev = (over: Partial<HarnessEvent>): HarnessEvent => ({
@@ -91,6 +93,46 @@ describe('a delegation this session sent', () => {
   test('with nowhere to go, the chip carries no handler', () => {
     const chip = findByType(HarnessLine({ ev: outbound }), MentionChip)
     expect((chip?.props as { onClick?: () => void }).onClick).toBeUndefined()
+  })
+})
+
+describe('a folded run of delegations (the anti-wall)', () => {
+  const run = (n: number, target = 'ipc'): HarnessEvent[] =>
+    Array.from({ length: n }, (_, i) =>
+      ev({ id: 200 + i, action: 'session.delegate', target, detail: { from: 'web-ui' } }),
+    )
+
+  test('collapses many delegations to ONE line that names the count', () => {
+    // The resting state of a wall of 12 identical "Delegated to ●ipc" lines is
+    // a single line — the count is on screen, the 12 rows are not.
+    const html = renderToStaticMarkup(createElement(HarnessRunLine, { evs: run(12) }))
+    // One grouped node, carrying the count the fold stands for.
+    expect(html).toContain('data-count="12"')
+    // The collapsed line is a single `role="note"` SystemLine, not twelve.
+    expect(html.match(/role="note"/g) ?? []).toHaveLength(1)
+    // It reads as the busy back-and-forth it is: one colleague, N times.
+    const flat = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    expect(flat).toContain('Delegated to')
+    expect(flat).toContain('×12')
+  })
+
+  test('a single chip is drawn, not one per event', () => {
+    // Twelve delegations to one bot draw ONE mention chip in the collapsed line
+    // (the busy case), never a stack of twelve.
+    const html = renderToStaticMarkup(createElement(HarnessRunLine, { evs: run(12) }))
+    expect(html.match(/data-seed/g)?.length ?? 0).toBeLessThanOrEqual(1)
+  })
+
+  test('a mixed-target run reads as a plain count, no wall of chips', () => {
+    const evs = [
+      ev({ id: 1, action: 'session.delegate', target: 'ipc' }),
+      ev({ id: 2, action: 'session.delegate', target: 'deploy-fix' }),
+      ev({ id: 3, action: 'session.delegate', target: 'web-ui' }),
+    ]
+    const html = renderToStaticMarkup(createElement(HarnessRunLine, { evs }))
+    const flat = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    expect(flat).toContain('3 delegations')
+    expect(html).toContain('data-count="3"')
   })
 })
 
