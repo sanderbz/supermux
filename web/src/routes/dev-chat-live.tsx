@@ -104,6 +104,18 @@ export default function DevChatLive() {
   const gone = goneParam === 'no-session' || goneParam === 'chat-unavailable' ? goneParam : null
   const chipState = gone ? 'offline' : connState
 
+  // `?grok=1` (DEV-only) stamps `data-grok` on this bench's wrapper so the
+  // grok-scoped chat CSS (`[data-grok] …` — header pill, surface, composer,
+  // status tokens) actually applies here. The app stamps `data-grok` in
+  // <Layout> (layout.tsx), which this out-of-Layout bench never mounts — so
+  // without this knob the bench renders the BASE (non-grok) chat surface and a
+  // reviewer/jury measures the wrong skin. Mirrors /dev/store · /dev/roster ·
+  // /dev/pickers: BARE `data-grok`, NOT `data-grok-root` — the shell-root
+  // substrate + 100dvh frame is not a bench's ground (its z:0 glass would paint
+  // over the non-lifted phone frame), and every chat-scoped rule keys off bare
+  // `[data-grok]`. Byte-inert when off: production + the base app are untouched.
+  const grok = import.meta.env.DEV && params.get('grok') === '1'
+
   const viewportPhone = useMediaQuery(PHONE_QUERY)
   const phone = params.get('surface') === 'phone' || viewportPhone
   const bare = params.has('bare')
@@ -113,7 +125,10 @@ export default function DevChatLive() {
   const showActions = params.has('actions')
 
   return (
-    <div className="h-dvh w-full overflow-hidden bg-paper text-ink">
+    <div
+      {...(grok ? { 'data-grok': '' } : {})}
+      className="h-dvh w-full overflow-hidden bg-paper text-ink"
+    >
       {phone ? (
         <PhoneFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} showActions={showActions} />
       ) : (

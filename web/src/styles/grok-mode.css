@@ -2558,8 +2558,10 @@
   align-self: flex-start;
 }
 /* The desktop leading pair sat on `gap-2` (8px) — too airy for two glyphs that
-   read as one cluster. Snug it. Mobile's leading is a single `+`, so this only
-   tightens the desktop `@`·clock pair; the send side is untouched. */
+   read as one cluster. Snug it to `0.25rem` = 4px (NOT 2px: the commit that
+   introduced this said "snugged … to a 2px cluster", which was inexact — the
+   shipped value is and always was 4px). Mobile's leading is a single `+`, so
+   this only tightens the desktop `@`·clock pair; the send side is untouched. */
 [data-grok] .sm-composer > div:first-child {
   gap: 0.25rem;
 }
@@ -2892,6 +2894,69 @@
   background-color: var(--sm-text-tertiary);
   /* a spinner variant (border-t only) also loses its live amber arc */
   border-top-color: var(--sm-text-tertiary);
+}
+
+/* 5) MODE (BYPASS) DOT — its OWN token, distinct from the connection dot.
+      The compact phone header packs a mode dot and the connection dot into one
+      right-aligned cluster. Both drew the app's `--status-error` token
+      (ModeGlyphChip's risky dot and `<ConnectionNote>`'s alarming compact dot),
+      so a bypass session next to an alarming connection showed two dots on one
+      token — the collision the sweep flagged, and still a live one in the base
+      app. Bypass is a MODE caution (approvals off), not a connection state, so
+      it gets its OWN token: the calm WARNING amber. That parts it cleanly from
+      the connection dot in BOTH renderings — from the neutral tertiary the
+      grok connection dot already carries (rule §4d re-points the compact chip to
+      `--sm-bg-tertiary`), and from the app's danger orange in the base. The amber
+      clears the 3:1 graphical-contrast floor on the header glass in both themes
+      (light #8a5200 ≈ 5.8:1 on the pane, dark #e8a33d ≈ 8.5:1). Base app is
+      untouched: off grok the dot keeps `bg-status-error` (header-pill.tsx). */
+[data-grok] [data-testid='chat-header-pill'] [data-mode-risk] {
+  background-color: var(--sm-tone-warning);
+}
+
+/* ── HEADER RENDERER SWITCH — MUST FIT AT 320px (sweep FIX 2) ──────────────────
+   The trailing renderer toggle (renderer-switch.tsx) floors each of its three
+   touch cells at 44px on a coarse pointer (`[@media(pointer:coarse)]:min-w-11`)
+   — a hard ~138px that does NOT shrink. On a 320px header card the busy header
+   (name + mode dot + connection dot + presence dot + this toggle) pushed the
+   `>_` (Terminal) cell's right edge to x≈350: ~30px OFF-SCREEN, clipped and
+   untappable (measured, rig). The header's own design intent is that the switch
+   "and its cells all shrink" at 320 (header-pill.tsx `NAME_MIN` doc); the 44px
+   coarse floor is what blocked it.
+
+   Below 360px only, condense the switch: 32px cells + tighter inline padding
+   bring it to ~98px, so the whole trailing cluster — `>_` included — lands back
+   inside the card and stays on-screen and tappable. The `::after` expander still
+   gives every cell the full 44px-TALL hit target (it grows vertically into the
+   card's padding); only the WIDTH tightens, and only on the narrowest screens
+   where an off-card control is the worse failure (rubric §1.3 blocker > §4.1).
+   Specificity `[data-grok] [data-renderer-switch] [role='tab']` (0,3,0) out-ranks
+   Tailwind's `.min-w-11` (0,1,0), so this wins the coarse floor at ≤359px while
+   360/390 keep 44px. Grok-scoped: the base app (no `data-grok`) is untouched. */
+/* 320-class (≤339px): the tightest condense — 28px cells + 1px rail bring the
+   switch to ~88px so its right edge lands INSIDE the card (measured: switch
+   right 301, card right 308). */
+@media (max-width: 339px) {
+  [data-grok] [data-renderer-switch] {
+    padding: 1px;
+  }
+  [data-grok] [data-renderer-switch] [role='tab'] {
+    min-width: 28px;
+    padding-left: 5px;
+    padding-right: 5px;
+  }
+}
+/* 360-class (340–374px): a MILDER condense. At 360 the full 44px floor pushed
+   the switch ~5px past the card's rounded right edge (on-screen but poking over
+   the ground); 38px cells pull it back inside the card while keeping a larger
+   touch cell than the 320 tier. 390 (>374px) keeps the full 44px cells — it
+   already fits the card with room to spare. */
+@media (min-width: 340px) and (max-width: 374px) {
+  [data-grok] [data-renderer-switch] [role='tab'] {
+    min-width: 38px;
+    padding-left: 7px;
+    padding-right: 7px;
+  }
 }
 
 /* ══ WS12 — PICKER ROW SECONDARY CONTRAST (non-dialog anchors) ════════════════

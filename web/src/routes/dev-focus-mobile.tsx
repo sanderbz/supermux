@@ -77,11 +77,22 @@ export default function DevFocusMobile() {
   // reviewer who wants it off again drops the param and flips the Settings
   // toggle, which is the same switch).
   const [params] = useSearchParams()
-  if (params.get('chat') === '1' && !useUI.getState().botMode) {
+  // `?grok=1` (DEV-only) — stamp `data-grok` on the wrapper so the grok-scoped
+  // chat CSS applies here (this route renders <MobileFocus> DIRECTLY, outside
+  // <Layout>, which is the only place the app stamps `data-grok` —
+  // layout.tsx:418 — so without this the grok chat surface never gets its skin).
+  // Bare `data-grok`, mirroring /dev/store · /dev/roster · /dev/pickers (never
+  // `data-grok-root`, whose shell-root substrate is not this bench's ground).
+  // Byte-inert when off: production + the base app are untouched.
+  const grok = import.meta.env.DEV && params.get('grok') === '1'
+  // `?chat=1` — and `?grok=1` — seed the fase-A5 bot composition ON so the CHAT
+  // surface (header card + transcript + composer) renders under the skin, not
+  // the terminal focus. Written during render on purpose (see below).
+  if ((params.get('chat') === '1' || grok) && !useUI.getState().botMode) {
     useUI.setState({ botMode: true })
   }
   return (
-    <div className="h-dvh w-full">
+    <div {...(grok ? { 'data-grok': '' } : {})} className="h-dvh w-full">
       <MobileFocus
         mockSessions={MOCK_TILES}
         mockTeams={MOCK_FOCUS_TEAMS}

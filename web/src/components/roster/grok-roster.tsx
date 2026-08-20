@@ -940,8 +940,12 @@ export default function GrokRoster() {
                 section. Dashed hairline + placeholder mark, always inviting the
                 next hire (not just the zero-bots hint). Hidden while searching
                 (it is a create verb, not a result) and, via CSS, in the compact
-                feed density. */}
-            {!needle && (
+                feed density. ALSO hidden when the list is EMPTY: the zero-bots
+                empty state below already carries its own primary "New bot" CTA,
+                and showing both left TWO create CTAs competing on one screen
+                (sweep 4a). One primary — the centred empty-state verb when there
+                are no bots, this persistent ghost once bots exist. */}
+            {!needle && !listEmpty && (
               <button
                 type="button"
                 className="gr-ghost grok-row-enter"

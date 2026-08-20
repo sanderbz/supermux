@@ -120,8 +120,19 @@ function ModeChip({ children, className }: { children: React.ReactNode; classNam
  * toggle overran the width and pushed the toggle off the right edge (owner's
  * IMG_2348); the mode drops to a small dot so the essentials stay on-screen. The
  * specific mode rides `title`/`aria-label`; the ONE mode worth a colour —
- * `bypass`, which turns approvals off — takes the calm brand orange so it is
- * not a silent grey dot, exactly as the alarming connection state does.
+ * `bypass`, which turns approvals off — is coloured so it is not a silent grey
+ * dot.
+ *
+ * DISTINCT FROM THE CONNECTION DOT (sweep fix). The bypass dot used to reuse
+ * `bg-status-error` — the EXACT token the compact `<ConnectionNote>` paints its
+ * alarming (terminal/gone) connection dot with. Side by side in this cluster the
+ * two read as one indistinguishable token meaning two different things (mode vs
+ * connection). The risky dot now carries its own `data-mode-risk` hook: off grok
+ * it keeps `bg-status-error` (base app byte-identical), and under the grok skin
+ * `grok-mode.css` re-points it to the calm WARNING amber — a MODE caution that
+ * parts cleanly from the connection dot in both renderings (the neutral tertiary
+ * the grok connection chip carries, and the app's danger orange in the base),
+ * with AA-clean graphical contrast in both themes.
  */
 function ModeGlyphChip({ label }: { label: string }) {
   const risky = label === 'Bypass'
@@ -130,6 +141,7 @@ function ModeGlyphChip({ label }: { label: string }) {
       role="img"
       aria-label={`${label} mode`}
       title={`${label} mode`}
+      data-mode-risk={risky ? '' : undefined}
       className={cn('size-2 flex-none rounded-full', risky ? 'bg-status-error' : 'bg-ink-2')}
     />
   )
