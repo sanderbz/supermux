@@ -112,6 +112,40 @@ export function getDraft(name: string): string {
   return drafts.get(name) ?? ''
 }
 
+/**
+ * Does ANY session have unsent text in the composer right now?
+ *
+ * The PWA bundle-adoption idle-guard (`lib/sw-update.ts`) asks this before it
+ * silently reloads onto a freshly deployed shell: a reload while the user is
+ * mid-message is a jarring interruption — the caret, the scroll position and
+ * the on-screen keyboard all go, even though the draft TEXT survives in
+ * `sessionStorage`. So a waiting service worker with unsent text on screen
+ * waits for a deliberate one-tap "Reload to update" instead of adopting itself.
+ *
+ * Reads both the live in-memory drafts AND the persisted ones a fresh document
+ * has not hydrated yet (loaded, never opened the composer since) — either is a
+ * message the user is in the middle of.
+ */
+export function hasUnsentDraft(): boolean {
+  for (const v of drafts.values()) {
+    if (v.trim() !== '') return true
+  }
+  try {
+    const s = store()
+    if (s) {
+      for (let i = 0; i < s.length; i++) {
+        const k = s.key(i)
+        if (k && k.startsWith(STORE_PREFIX) && (s.getItem(k) ?? '').trim() !== '') {
+          return true
+        }
+      }
+    }
+  } catch {
+    /* storage blocked (private mode / partitioned) — fall back to the map above */
+  }
+  return false
+}
+
 export function setDraft(name: string, value: string): void {
   if (getDraft(name) === value) return
   if (value === '') drafts.delete(name)

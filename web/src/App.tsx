@@ -15,6 +15,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { PushBridge } from '@/components/pwa/push-bridge'
+import { SWUpdatePrompt } from '@/components/pwa/sw-update-prompt'
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { useRendererPrefsSync } from '@/hooks/use-renderer-prefs-sync'
@@ -193,6 +194,12 @@ export default function App() {
                 which lock-screen card has gone stale. Mounted here, inside the
                 providers, because it reads the sessions snapshot. */}
             <PushBridge />
+            {/* "Reload to update" — surfaces a one-tap adoption of a freshly
+                deployed app shell when a new service worker is waiting and the
+                app was not idle enough to adopt it silently. Renders nothing
+                otherwise. Mounted here so a deploy reaches the client from any
+                route. See lib/sw-update.ts for the idle-guarded state machine. */}
+            <SWUpdatePrompt />
             {/* First-60-seconds unboxing — welcome banner + 4-step tour
                 (step 4 = Agent Teams explainer) for migrated v2 users;
                 self-gates to the first launch only. */}

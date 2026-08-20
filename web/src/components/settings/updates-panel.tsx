@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useVersion } from '@/hooks/use-version'
 import { useMarkUpdatesSeen } from '@/hooks/use-update-badge'
+import { adopt, getSWUpdateWaiting } from '@/lib/sw-update'
 import type {
   BlockedReason,
   InstallMode,
@@ -177,7 +178,17 @@ function UpdateProgressSheet({
         <div className="flex justify-end gap-2">
           {meta.done ? (
             <Button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                // A server deploy ships a NEW frontend bundle, which the service
+                // worker installs as a WAITING worker. A plain location.reload()
+                // would re-fetch index.html but the OLD worker would still serve
+                // the OLD precached JS/CSS — the reload would NOT pick up the new
+                // version. So adopt the waiting worker first (skipWaiting +
+                // reload onto the new bundle); fall back to a plain reload when
+                // nothing is waiting (a no-op deploy, or the SW disabled).
+                if (getSWUpdateWaiting()) adopt()
+                else window.location.reload()
+              }}
               className="h-11 gap-1.5"
             >
               <RefreshCw className="size-4" />

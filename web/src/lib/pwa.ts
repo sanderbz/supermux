@@ -16,6 +16,14 @@
 
 import { registerSW } from 'virtual:pwa-register'
 import { injectIOSSplashLinks } from '@/lib/ios-splash'
+import { markWaiting } from '@/lib/sw-update'
+
+// How often a long-open PWA re-checks the server for a freshly deployed shell.
+// The browser only polls the SW script on navigation / roughly daily on its
+// own, so without this a home-screen app can sit on a stale bundle for hours
+// after a deploy. 60s is cheap (one conditional GET of sw.js, 304 when nothing
+// changed) and makes "deployed" reach "waiting" within a minute.
+const SW_UPDATE_POLL_MS = 60_000
 
 /**
  * Wire up the PWA: register the service worker (auto-updating) and add the iOS
@@ -27,15 +35,27 @@ export function initPWA(): void {
 
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
 
-  // `prompt` registration (see the `registerType` comment in vite.config.ts): a
-  // new shell is fetched and left WAITING; `onNeedRefresh` is intentionally a
-  // no-op — we never reload the running session, and the next cold launch picks
-  // the new shell up. This file has always documented that behaviour; until the
-  // registerType was corrected the build shipped `autoUpdate`, whose generated
-  // registration reloads the document on activation and takes any unsent draft
-  // with it.
-  registerSW({
+  // `prompt` registration (see the `registerType` comment in vite.config.ts):
+  // `autoUpdate` reloads the document out from under the user on every
+  // activation — the measured data-loss bug — so we stay on `prompt`, which
+  // leaves the freshly deployed shell WAITING and reloads NOTHING on its own.
+  //
+  // What USED to be missing: `onNeedRefresh` was a no-op, so that waiting worker
+  // sat there until every tab closed (never, for a home-screen PWA) and the
+  // deploy never reached the client. Now `onNeedRefresh` hands the adoption
+  // thunk (`updateSW(true)` = skipWaiting + reload onto the new bundle) to the
+  // idle-guarded adoption store: it reloads silently when the app is idle,
+  // otherwise surfaces a one-tap "Reload to update" button. Either way the new
+  // bundle is adopted and the "waiting" hint resolves — no draft is lost,
+  // because the idle-guard vetoes an auto-reload while the composer holds unsent
+  // text and the button is a deliberate user tap.
+  const updateSW = registerSW({
     immediate: true,
+    onNeedRefresh() {
+      markWaiting(() => {
+        void updateSW(true)
+      })
+    },
     onRegisteredSW(_url, registration) {
       // Token-rotation invalidation: Settings → Rotate token
       // posts `{type:'token-rotated'}` to the controlling SW. The SW has no
@@ -47,6 +67,17 @@ export function initPWA(): void {
           void caches?.delete?.('supermux-html')
           void registration?.update?.()
         }
+      })
+
+      // Actively poll for a new shell so a deploy reaches a long-open PWA within
+      // ~a minute instead of whenever the browser next feels like checking. Also
+      // check the instant the tab is brought to the foreground — the common way
+      // a phone PWA comes back after a deploy happened while it was backgrounded.
+      if (!registration) return
+      const check = () => void registration.update?.()
+      window.setInterval(check, SW_UPDATE_POLL_MS)
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') check()
       })
     },
   })
