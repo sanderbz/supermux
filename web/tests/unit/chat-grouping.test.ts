@@ -570,6 +570,29 @@ describe('harness events in the stream', () => {
     expect(nodes[idx + 1]).toMatchObject({ kind: 'item', key: 'a1' })
   })
 
+  test('a mid-turn user message stays ABOVE the reply that answers it', () => {
+    // THE ORDERING BUG. With the management log merged in, the stream used to be
+    // TOTAL-sorted by ts (`stream.sort((a, b) => a.ts - b.ts)`). A message the
+    // owner sends MID-TURN carries a later wall-clock stamp (105) than the reply
+    // that follows it (101) — the reply belongs to a turn that STARTED at 100
+    // and is stamped with that earlier clock. Arrival order (the wire's own
+    // write order) is the truth: `u-mid` came in before `reply` was emitted. The
+    // by-ts sort reordered them and hoisted the reply ABOVE the very message it
+    // answers; the merge keeps the item backbone in arrival order.
+    const items = [
+      user('u-start', 100), // the turn starts
+      user('u-mid', 105), // the owner sends another message while it works
+      assistant('reply', 101), // the reply, stamped with the earlier turn's clock
+    ]
+    const withLog: HarnessEvent[] = [
+      { id: 1, ts: 100, actor: 'user', action: 'schedule.create', target: 's1', detail: { session: 'web-ui', title: 'Nightly' } },
+    ]
+    const nodes = buildTranscript(items, { nowMs: 3_000_000, events: withLog, self: 'web-ui' })
+    const order = nodes.flatMap((n) => (n.kind === 'item' ? [n.item.uuid] : []))
+    expect(order).toEqual(['u-start', 'u-mid', 'reply'])
+    expect(order.indexOf('u-mid')).toBeLessThan(order.indexOf('reply'))
+  })
+
   test('a session renaming ITSELF is news', () => {
     const self: HarnessEvent[] = [
       { id: 9, ts: 1500, actor: 'agent:web-ui', action: 'session.rename', target: 'web-ui', detail: { from: 'a', to: 'b' } },

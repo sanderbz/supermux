@@ -403,17 +403,38 @@ export function buildTranscript(
   // the branch: it keeps the common path off the sort entirely.
   if (shown.length === 0) return dayDividers(rows, opts.nowMs)
 
-  const stream: StreamRow[] = rows.map((row) => ({
-    kind: 'item' as const,
-    ts: row.item.ts,
-    row,
-  }))
-  for (const ev of shown) stream.push({ kind: 'harness', ts: ev.ts, ev })
-  // Sort by ts ALONE, and lean on stability: the items were pushed first and in
-  // the order `receiptsFirst` decided, so an event sharing a second with a turn
-  // lands after it and the receipts-first ordering inside that second is
-  // untouched. A tie-break on kind would undo one of those two properties.
-  stream.sort((a, b) => a.ts - b.ts)
+  // MERGE the events into the item backbone — never a TOTAL sort of the two.
+  //
+  // The items are already in TRUE ARRIVAL ORDER: the wire delivers them in the
+  // transcript's own write order (`wire-entries.ts` reverses, it does not sort),
+  // and `receiptsFirst` only reorders WITHIN a second. That order is not the
+  // same as ascending `ts`. A message the owner sends MID-TURN carries a later
+  // wall-clock `ts` than the reply that follows it in arrival order, because the
+  // reply belongs to a turn that STARTED before the message arrived and CC
+  // stamps the reply with that earlier turn's clock. A `stream.sort((a, b) =>
+  // a.ts - b.ts)` re-sorts those two items against each other and hoists the
+  // reply ABOVE the later user message — the reply printed above the very
+  // message it answers. (Stability only ever protected EQUAL ts; the old
+  // comment reasoned about "an event sharing a second with a turn" and never
+  // about two items whose ts differ, which a total sort freely reorders.)
+  //
+  // So the items are the FIXED backbone and only the events are placed. Each
+  // event lands before the first item whose ts it does not reach; `<` (not
+  // `<=`) keeps the documented tie — an event sharing a second with a turn
+  // lands AFTER it, and the receipts-first order inside that second is
+  // untouched. Events are ordered among themselves by ts (few, sparse), which
+  // never touches an item's position.
+  const itemRows = rows.map((row) => ({ kind: 'item' as const, ts: row.item.ts, row }))
+  const evs = shown
+    .map((ev) => ({ kind: 'harness' as const, ts: ev.ts, ev }))
+    .sort((a, b) => a.ts - b.ts)
+  const stream: StreamRow[] = []
+  let ei = 0
+  for (const item of itemRows) {
+    while (ei < evs.length && evs[ei].ts < item.ts) stream.push(evs[ei++])
+    stream.push(item)
+  }
+  while (ei < evs.length) stream.push(evs[ei++])
   return withDividers(stream, opts.nowMs)
 }
 
