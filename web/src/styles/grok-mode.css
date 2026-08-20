@@ -731,7 +731,11 @@
      of those is answered here: `inset` beats left/top, `width/height:auto` lets
      the inset resolve the box, `transform:none` drops the centring translate. */
   [data-grok] [data-shell-tabs] [data-nav-active] {
-    inset: 6px;
+    /* 8px vertical / 12px horizontal inset (was a flat 6px): the extra sideways
+       clearance pulls the end-cell chips well off the capsule's 22px corner, so
+       the active chip can never crowd the rounded edge (owner: it spilled the
+       capsule's left corner on device). */
+    inset: 8px 12px;
     width: auto;
     height: auto;
     /* `-translate-x-1/2` is Tailwind v4, so it compiles to the `translate`
@@ -739,12 +743,21 @@
        half a cell to the left (caught in the rig, shot 1). Both are reset. */
     translate: none;
     transform: none;
-    border-radius: var(--sm-r-md);
-    background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+    /* A PILL, not a rounded-rect slab (owner: "dat blauwe achtergrond voor active
+       menu item is totaal niet best practice"). A fully-rounded capsule echoes
+       the bar's own rounded glass instead of a Material block, and its corners
+       curve AWAY from the cell corners, so — unlike an r-md rect — it cannot poke
+       the capsule's own 22px curve. */
+    border-radius: var(--sm-r-pill);
+    /* A soft ~10% accent wash — the light iOS/Grok selection tint, not a heavy
+       blue-grey fill (was 12%; at pill shape 10% reads premium where 12% still
+       read as a coloured plate). The active icon+label stay accent-coloured
+       (below), so selection is carried by ink + a whisper of tint. */
+    background: color-mix(in srgb, var(--sm-accent) 10%, transparent);
     /* ACTIVE-CHIP ALIGNMENT (owner: the chip reads crooked behind the active
        tab on device). In place the chip is pixel-concentric with the cell AND
-       the icon+label — the rig measures equal 6px insets and matching centres in
-       every tab. The crookedness is a WebKit view-transition artifact: a
+       the icon+label — the rig measures matching insets and centres in every
+       tab. The crookedness is a WebKit view-transition artifact: a
        `view-transition-name`d element whose snapshot is captured INSIDE a
        `backdrop-filter` ancestor (this glass capsule) is re-composited at a
        shifted origin, so the morphing chip lands visibly off after a tab switch.
@@ -1944,9 +1957,16 @@
 [data-grok] .grok-roster .gr-ft .who {
   font-size: 13.5px;
   font-weight: 600;
+  /* The name eats the row's slack, so the trailing action icons ride to the
+     right edge as one cluster (owner: the archive + settings icons were "gek
+     aligned"). Before, each `.set` carried its OWN `margin-left:auto`, so the
+     free space SPLIT between the two margins and the archive floated to the row's
+     middle instead of sitting beside the gear. One auto margin here collapses all
+     the slack at once; the two equal-size icons then sit 11px apart, right-
+     aligned and centred on the footer line by the flex `align-items`. */
+  margin-right: auto;
 }
 [data-grok] .grok-roster .gr-ft .set {
-  margin-left: auto;
   color: var(--sm-text-tertiary);
   background: transparent;
   border: 0;
