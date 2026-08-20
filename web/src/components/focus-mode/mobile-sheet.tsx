@@ -21,24 +21,28 @@
 // What this component still owns: the keyboard-aware sizing. On iOS the soft
 // keyboard does NOT shrink the layout viewport, so a full-height sheet alone
 // would leave the composer hidden behind the keyboard; `useKeyboardViewport`
-// publishes a px `contentHeight` (= visualViewport.height) + `keyboardInset`
-// (= layoutHeight − visualViewport.height − visualViewport.offsetTop, i.e. the
-// keyboard overlap WITH the iOS focus-scroll `offsetTop` already folded in) and
-// we drive a 0.28s cubic-bezier transition on `height` + `transform` so the
-// sheet sits flush above the keyboard.
+// publishes a px `contentHeight` (= visualViewport.height) + `keyboardOffsetTop`
+// (= visualViewport.offsetTop, how far iOS scrolled the visual viewport DOWN to
+// keep the focused field above the keyboard) and we drive a 0.28s cubic-bezier
+// transition on `height` + `transform` so the sheet sits flush above the
+// keyboard.
 //
-// The lift is a `transform: translateY(-keyboardInset)`, NOT `bottom` — per the
-// sourced 2025/26 recipe, iOS 26 regressed `position: fixed` offset properties
-// during keyboard interaction, and a GPU-composited transform is the stable
-// lever. Geometry is identical to the old `bottom: keyboardInset` (fixed is
-// layout-viewport-relative on iOS, so a `bottom-0` box lifted by `keyboardInset`
-// lands its bottom edge exactly at the keyboard top and its top at the visual-
-// viewport top — offsetTop folded in via the inset), so this is a stability
-// change, not a geometry change.
+// BOTH keyboard states are now TOP-anchored (`top: 0`), and BOTH position their
+// dynamic geometry with a `transform`, NEVER a `bottom`/`top` offset VALUE — per
+// the sourced 2025/26 recipe, iOS 26 resolves `position: fixed` offset
+// properties unreliably while the keyboard animates. The open state fills the
+// visual viewport exactly: `top: 0` (static, never animates) + `height =
+// visualViewport.height` + `transform: translateY(offsetTop)` slides the box
+// DOWN to the visual-viewport top, so its bottom lands flush at the keyboard top
+// (`offsetTop + height == visualViewport bottom`). The earlier `bottom: 0` +
+// `translateY(-keyboardInset)` OVER-RESERVED on device — the composer floated a
+// ~150px black band above the keyboard — because it leaned on `bottom` resolving
+// against a reference iOS shifts mid-keyboard; anchoring by the stable `top: 0`
+// removes that dependency entirely (rig-neutral: the emulable path stays flush).
 //
 // When the keyboard is closed — `contentHeight == null`, the moment the field
-// blurs (`useKeyboardViewport` gates on editable focus) — the sheet is anchored
-// by its TOP (`top: 0`, height `100dvh`), NOT by its bottom.
+// blurs (`useKeyboardViewport` gates on editable focus) — the sheet stays
+// top-anchored (`top: 0`, height `100dvh`, no transform).
 //
 // WHY TOP-ANCHOR THE CLOSED STATE (the "top bar dead / mis-placed when the
 // keyboard is closed" regression). The earlier closed state was `bottom: 0` +
@@ -74,32 +78,48 @@ export interface MobileSheetProps {
    *  null/undefined the sheet is top-anchored at `100dvh` (keyboard closed). */
   contentHeight?: number | null
   /** Pixels the soft keyboard overlaps the bottom of the layout viewport
-   *  (offsetTop already folded in). Lifts the `bottom-0` sheet UP by this much
-   *  via `transform: translateY(-inset)` so its bottom edge sits at the keyboard
-   *  TOP (not behind it). 0 when the keyboard is closed. */
+   *  (offsetTop already folded in). Retained for callers that still read it. */
   keyboardInset?: number
+  /** `visualViewport.offsetTop` — how far iOS scrolled the visual viewport down
+   *  within the layout viewport. The keyboard-OPEN sheet is TOP-anchored
+   *  (`top: 0`) and translated DOWN by this, so it fills the visual viewport
+   *  exactly with its bottom flush at the keyboard top. 0 when closed. */
+  keyboardOffsetTop?: number
   children: React.ReactNode
 }
 
 export function MobileSheet({
   contentHeight,
   keyboardInset = 0,
+  keyboardOffsetTop = 0,
   children,
 }: MobileSheetProps) {
+  // `keyboardInset` is no longer used to POSITION the sheet (see the open-state
+  // block); kept in the signature so existing callers keep compiling.
+  void keyboardInset
   return (
     <div
       data-testid="focus-sheet"
       style={
         contentHeight != null
           ? {
-              // KEYBOARD OPEN — pin to the visual viewport: bottom-anchored, exact
-              // height, lifted above the keyboard via transform (NOT `bottom`; iOS
-              // 26 fixed-offset regression). `-keyboardInset` folds in
-              // visualViewport.offsetTop. `top: auto` so the bottom edge governs.
-              top: 'auto',
-              bottom: 0,
+              // KEYBOARD OPEN — fill the visual viewport EXACTLY. Anchor by the
+              // TOP, not the bottom: iOS 26 resolves the `bottom`/`top` OFFSET
+              // *values* unreliably while the keyboard animates, and the earlier
+              // `bottom: 0` + `translateY(-inset)` over-reserved on device (the
+              // composer floated a large black band above the keyboard). `top: 0`
+              // is STATIC — identical to the working keyboard-CLOSED state, it
+              // never animates — and the dynamic positioning rides one
+              // GPU-composited transform: translate DOWN by `offsetTop` (how far
+              // iOS scrolled the visual viewport) so the sheet's top sits at the
+              // visual-viewport top and its bottom lands flush at the keyboard
+              // top (`offsetTop + height == visualViewport bottom`). No `bottom`
+              // property is touched, so there is nothing for the regression to
+              // mis-resolve.
+              top: 0,
+              bottom: 'auto',
               height: contentHeight,
-              transform: `translateY(-${keyboardInset}px)`,
+              transform: `translateY(${keyboardOffsetTop}px)`,
               transition:
                 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1), transform 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
             }

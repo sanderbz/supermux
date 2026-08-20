@@ -38,7 +38,6 @@ import {
   Sparkles,
   Terminal,
   Trash2,
-  Users,
 } from 'lucide-react'
 
 import { useSessions } from '@/hooks/use-sessions'
@@ -100,15 +99,6 @@ const TeamPanel = React.lazy(() =>
 // above: a roster with no member open must not pay for the terminal stack.
 const MemberPane = React.lazy(() =>
   import('@/components/roster/member-pane').then((m) => ({ default: m.MemberPane })),
-)
-
-// "Hire a crew" (Phase 4b) — the EXISTING team sheet, in its from-scratch mode
-// (no `sessionName` ⇒ POST /api/teams/start). Lazy so the roster's first paint
-// never carries a form nobody has opened.
-const StartTeamSheet = React.lazy(() =>
-  import('@/components/session-tile/start-team-sheet').then((m) => ({
-    default: m.StartTeamSheet,
-  })),
 )
 
 /* ── what the right pane is looking at ──────────────────────────────────────
@@ -592,8 +582,6 @@ export default function GrokRoster() {
   const [density, setDensity] = React.useState<Density>(readDensity)
   const [selected, setSelected] = React.useState<Sel>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
-  // "Hire a crew" (Phase 4b) — the team sheet in its from-scratch mode.
-  const [crewOpen, setCrewOpen] = React.useState(false)
   // Which face the right pane wears for the OPEN bot: the live conversation
   // ('thread', the default) or the per-bot settings page ('settings'). It resets
   // to 'thread' whenever the selection changes (the render-phase guard below) so
@@ -970,27 +958,10 @@ export default function GrokRoster() {
               </button>
             )}
 
-            {/* …and the crew verb right beneath it, same visual grammar (Phase
-                4b). Starting a team was only reachable from the retiring focus
-                surfaces; here it is one row under "Hire a new bot", where the
-                other create verb already lives. */}
-            {!needle && (
-              <button
-                type="button"
-                className="gr-ghost grok-row-enter"
-                aria-label="Hire a crew"
-                data-vr="hire-crew"
-                onClick={() => setCrewOpen(true)}
-              >
-                <span className="gr-ghost-mark" aria-hidden>
-                  <Users size={18} aria-hidden />
-                </span>
-                <span className="gr-ghost-col">
-                  <span className="gr-ghost-t">Hire a crew</span>
-                  <span className="gr-ghost-s">A lead and the teammates it works with.</span>
-                </span>
-              </button>
-            )}
+            {/* No "Hire a crew" create verb: Claude starts a team itself when a
+                job needs one — teams are not created from the interface. An
+                auto-created team still renders as a row here and is dismissable;
+                only the create-a-team affordance is gone. */}
 
             {/* OD-2 = FOLD: no leading `Teams` divider. Each section renders its
                 team rows first (a crew is the heavier row) and then its bot rows,
@@ -1209,18 +1180,6 @@ export default function GrokRoster() {
         onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
       />
 
-      {/* "Hire a crew" — the SAME sheet the convert flow uses, in its
-          from-scratch mode (no `sessionName`). Mounted only once opened so the
-          lazy chunk is never fetched for a roster nobody hired from. */}
-      {crewOpen && (
-        <React.Suspense fallback={null}>
-          <StartTeamSheet
-            open={crewOpen}
-            onOpenChange={setCrewOpen}
-            onStarted={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
-          />
-        </React.Suspense>
-      )}
     </div>
   )
 }

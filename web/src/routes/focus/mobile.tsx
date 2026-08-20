@@ -377,6 +377,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   const {
     height: vvHeight,
     keyboardInset,
+    keyboardOffsetTop,
     keyboardOpen,
   } = useKeyboardViewport()
 
@@ -670,6 +671,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
         <MobileSheet
           contentHeight={vvHeight}
           keyboardInset={keyboardInset}
+          keyboardOffsetTop={keyboardOffsetTop}
         >
           {/* The title-bar "···" overflow was removed: it opened the SAME
               SessionPickerSheet the bottom-left session pill already opens (the

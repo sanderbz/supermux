@@ -655,6 +655,18 @@
     transform: none;
     border-radius: var(--sm-r-md);
     background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+    /* ACTIVE-CHIP ALIGNMENT (owner: the chip reads crooked behind the active
+       tab on device). In place the chip is pixel-concentric with the cell AND
+       the icon+label — the rig measures equal 6px insets and matching centres in
+       every tab. The crookedness is a WebKit view-transition artifact: a
+       `view-transition-name`d element whose snapshot is captured INSIDE a
+       `backdrop-filter` ancestor (this glass capsule) is re-composited at a
+       shifted origin, so the morphing chip lands visibly off after a tab switch.
+       Drop the phone chip from the cross-tab view-transition — it cross-fades
+       with the root instead of sliding, and renders concentric on every engine.
+       `!important` overrides the inline `viewTransitionName` (layout.tsx);
+       `[data-shell-tabs]`-scoped so the desktop rail's morph (no blur) is kept. */
+    view-transition-name: none !important;
   }
 
   /* C. Icons: 20px → 22px, and a fill/outline weight contrast for active vs
@@ -2531,6 +2543,25 @@
     height: 44px;
     transform: translate(-50%, -50%);
   }
+}
+
+/* ── Composer leading control — multi-line anchoring + snug cluster (owner) ────
+   The composer row is `items-end`, so as the field GROWS the leading control
+   rode the bottom edge up with everything (measured lead.bottom == field.bottom
+   == send.bottom on a 4-line draft). Best practice — and the owner's ask — is
+   that ONLY the trailing send disc bottom-anchors; the leading control (the `+`,
+   or the desktop `@`·clock pair) stays at the FIRST line. On a GROWN composer
+   (multi-line / chips → `rounded-[26px]`) top-align the leading child; at rest
+   (single line, `rounded-full`) there is no rule, so the bar is a byte-exact
+   revert and the send disc still bottom-anchors from the row's `items-end`. */
+[data-grok] .sm-composer.rounded-\[26px\] > :first-child {
+  align-self: flex-start;
+}
+/* The desktop leading pair sat on `gap-2` (8px) — too airy for two glyphs that
+   read as one cluster. Snug it. Mobile's leading is a single `+`, so this only
+   tightens the desktop `@`·clock pair; the send side is untouched. */
+[data-grok] .sm-composer > div:first-child {
+  gap: 0.25rem;
 }
 
 /* ══ WS9 — EMPTY / LOADING / ERROR / ATTENTION SURFACES ═══════════════════════

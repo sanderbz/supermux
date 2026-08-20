@@ -32,7 +32,6 @@ import {
   FolderOpen,
   Loader2,
   Terminal,
-  Users,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -56,15 +55,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { SessionActionsMenu } from '@/components/session-tile/session-actions-menu'
-// "Give this bot a crew" (Phase 4b) — the EXISTING team sheet in its convert
-// mode (`POST /api/teams/start-from-existing`), so converting a session into a
-// team no longer requires ejecting to the retiring focus surfaces. Lazy: a
-// panel nobody converts from must not carry the form.
-const StartTeamSheet = React.lazy(() =>
-  import('@/components/session-tile/start-team-sheet').then((m) => ({
-    default: m.StartTeamSheet,
-  })),
-)
 import { IssueList } from '@/components/issues/issue-list'
 import { IssueSurface } from '@/components/issues/issue-surface'
 import { useSession } from '@/hooks/use-sessions'
@@ -382,60 +372,12 @@ function MemoryTab({
   )
 }
 
-/** Convert THIS bot into a team lead — the grok home of the verb that used to
- *  live on three retiring surfaces. Claude-only (the server refuses any other
- *  provider) and hidden once the session already carries the `team` tag the
- *  conversion adds, so it never offers to re-convert a lead. */
-function GiveCrewRow({
-  name,
-  session,
-  onNavigate,
-}: {
-  name: string
-  session: ApiSession | null
-  onNavigate: (name: string) => void
-}) {
-  const [open, setOpen] = React.useState(false)
-  const eligible =
-    (session?.provider ?? 'claude') === 'claude' && !(session?.tags ?? []).includes('team')
-  if (!eligible) return null
-  return (
-    <Field
-      label="Crew"
-      hint="Turn this bot into the lead of a team — it spawns teammates and hands them work."
-    >
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        data-vr="bot-give-crew"
-        className="inline-flex min-h-9 items-center gap-2 self-start rounded-[10px] border border-border bg-card px-3 text-[13px] font-medium text-foreground transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <Users className="size-4" aria-hidden />
-        Give this bot a crew
-      </button>
-      {open && (
-        <React.Suspense fallback={null}>
-          <StartTeamSheet
-            open={open}
-            onOpenChange={setOpen}
-            sessionName={name}
-            sessionDir={session?.dir}
-            onStarted={(lead) => onNavigate(lead)}
-          />
-        </React.Suspense>
-      )}
-    </Field>
-  )
-}
-
 function OverviewTab({
   name,
   session,
-  onNavigate,
 }: {
   name: string
   session: ApiSession | null
-  onNavigate: (name: string) => void
 }) {
   const pct = ctxPct(session?.tokens)
   const tokens = fmtTokens(session?.tokens)
@@ -503,8 +445,6 @@ function OverviewTab({
       <Field label="Working directory">
         <WorkingDirRow name={name} dir={dir} />
       </Field>
-
-      <GiveCrewRow name={name} session={session} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -824,7 +764,7 @@ function BotPanelBody({
       >
         {restartAdvised && <div className="mb-4"><RestartHint /></div>}
         {tab === 'overview' && (
-          <OverviewTab name={name} session={session} onNavigate={onNavigate} />
+          <OverviewTab name={name} session={session} />
         )}
         {tab === 'instructions' && (
           <InstructionsTab name={name} session={session} onRestartAdvised={onRestartAdvised} />

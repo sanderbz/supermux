@@ -33,6 +33,13 @@ export interface KeyboardViewport {
    *  0 when the keyboard is closed. Drive the accessory dock's bottom offset off
    *  this so it rides the keyboard top. */
   keyboardInset: number
+  /** `visualViewport.offsetTop` — how far iOS has scrolled the visual viewport
+   *  DOWN within the layout viewport to keep the focused field above the
+   *  keyboard. 0 when closed / not driving. A TOP-anchored keyboard sheet lands
+   *  flush by pinning `top: 0` (static — never animates) and translating DOWN by
+   *  this, so it never touches the `bottom`/`top` OFFSET values iOS 26 resolves
+   *  unreliably mid-keyboard. Published on the same gate as `height`. */
+  keyboardOffsetTop: number
   /** True once the inset crosses a small threshold — i.e. the keyboard is open.
    *  Lets callers gate keyboard-only chrome (the accessory key bar). */
   keyboardOpen: boolean
@@ -121,6 +128,7 @@ export function useKeyboardViewport(): KeyboardViewport {
   const [vp, setVp] = React.useState<KeyboardViewport>(() => ({
     height: null,
     keyboardInset: 0,
+    keyboardOffsetTop: 0,
     keyboardOpen: false,
   }))
 
@@ -180,6 +188,10 @@ export function useKeyboardViewport(): KeyboardViewport {
       // this measure so the reset does not wait for the next resize/scroll frame.
       const driving = keyboardOpen || (hasEditableFocus() && inset > 1)
       const publishedHeight = driving ? measuredHeight : null
+      // Published on the SAME gate as `height`: 0 unless we're driving layout, so
+      // a closed/blurred sheet never carries a stale offset (iOS leaves a residual
+      // `offsetTop` after dismiss — see the blur re-sync note above).
+      const publishedOffsetTop = driving ? visual.offsetTop : 0
       setVp((prev) => {
         // Skip a state write if nothing meaningfully changed (rAF can still fire
         // on a no-op scroll) — sub-pixel churn shouldn't re-render the tree.
@@ -191,11 +203,17 @@ export function useKeyboardViewport(): KeyboardViewport {
         if (
           !heightChanged &&
           Math.abs(prev.keyboardInset - inset) < 1 &&
+          Math.abs(prev.keyboardOffsetTop - publishedOffsetTop) < 1 &&
           prev.keyboardOpen === keyboardOpen
         ) {
           return prev
         }
-        return { height: publishedHeight, keyboardInset: inset, keyboardOpen }
+        return {
+          height: publishedHeight,
+          keyboardInset: inset,
+          keyboardOffsetTop: publishedOffsetTop,
+          keyboardOpen,
+        }
       })
     }
 
