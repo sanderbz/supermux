@@ -519,6 +519,8 @@ export function ChatComposer({
                 // as an `@`, the glyph of what it does.
                 onClick={() => handle.insert('@')}
               >
+                {/* `@` is the 18px reference the paperclip and clock are now sized
+                    to (they were a small 17 and a 16 beside it). */}
                 <AtIcon />
               </LeadingButton>
               {onSchedule && (
@@ -530,7 +532,9 @@ export function ChatComposer({
                   // a prompt and the composer keeps every character.
                   onClick={() => onSchedule(handle.draft)}
                 >
-                  <ClockIcon className="size-4" />
+                  {/* 18px, matching `@` and the paperclip — was `size-4` (16px),
+                      the third of three mismatched sizes. */}
+                  <ClockIcon className="size-[18px]" />
                 </LeadingButton>
               )}
             </div>
@@ -1029,14 +1033,21 @@ function SendIcon() {
 
 /** Attach — a paperclip. The one place a paperclip is the honest glyph: a
  *  direct desktop file-picker button (the mobile add-menu rule is paperclip-
- *  free, but there attach is a labelled ROW, not an icon). */
+ *  free, but there attach is a labelled ROW, not an icon).
+ *
+ *  SIZED TO ITS NEIGHBOURS (owner: "the attachment icon is smaller / cramped").
+ *  The old glyph was an 17px path drawn in the LOW-RIGHT of an 18-viewBox — it
+ *  filled ~58% of its cell where `@` and the clock fill ~72–75%, so beside them
+ *  it read a size down. This is the same full-bleed paperclip drawn on a 24
+ *  viewBox rendered at 18px, so the glyph is centred and fills the cell to the
+ *  same optical weight as `AtIcon`/`ClockIcon` — one considered leading set. */
 function PaperclipIcon() {
   return (
-    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" aria-hidden>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path
-        d="M14.4 8.1l-5 5a2.7 2.7 0 01-3.8-3.8l5-5a1.6 1.6 0 012.3 2.3l-5 5a.55.55 0 01-.8-.8l4.6-4.6"
+        d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"
         stroke="currentColor"
-        strokeWidth="1.5"
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

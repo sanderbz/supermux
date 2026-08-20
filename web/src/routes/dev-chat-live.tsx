@@ -43,6 +43,7 @@ import { EntityPickerView } from '@/components/chat/entity-picker'
 import { handoffLabel, readDelegateIntent } from '@/components/chat/delegate-intent'
 import { atRows, slashRows } from '@/components/chat/slash'
 import type { ComposerHandle } from '@/components/chat/use-composer'
+import type { UseStagedAttachmentsResult } from '@/components/focus-mode/use-staged-attachments'
 import { entryLabels } from '@/components/chat/grouping'
 import { ProvisionalTailView } from '@/components/chat/provisional-tail'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
@@ -180,6 +181,20 @@ export default function DevChatLive() {
  *  Module-level so it is referentially stable and cannot break the transcript's
  *  memo boundary (`transcript-item.tsx`'s doc). */
 const NOOP = () => {}
+
+/** A STATIC empty staged-attachment plane for the bench (see `BenchComposer`).
+ *  Every method is inert and the chip list is permanently empty — the bench has
+ *  no upload server — so its sole effect is to make the composer draw its leading
+ *  paperclip disc, i.e. render the real 📎·@·clock trio the desktop composition
+ *  ships. Module-level for referential stability. */
+const BENCH_ATTACHMENTS: UseStagedAttachmentsResult = {
+  attachments: [],
+  uploading: false,
+  handleFiles: NOOP,
+  dismiss: NOOP,
+  readyPaths: () => [],
+  reset: NOOP,
+}
 
 // Exported for `tests/unit/chat-gone-composer.test.tsx`: the gone→gated-composer
 // wiring is the honesty contract the `st-gone-*` shots exist to prove, so a test
@@ -399,6 +414,13 @@ function BenchComposer({
       // else an offline plane shows the "You're offline" refusal.
       blocked={gone ? CHAT_GONE[gone].detail : offline ? CHAT_OFFLINE_BLOCKED : undefined}
       onOpenTerminal={noop}
+      // The staged-attachment plane, as a STATIC empty fixture — no chips, no
+      // upload, just enough to draw the leading paperclip disc so the bench
+      // renders the REAL 📎·@·clock leading trio the desktop composition ships
+      // (the app's `chat-panel.tsx` always wires attachments; without this the
+      // bench showed only `@`·clock and the paperclip's optical size could not
+      // be reviewed).
+      attachments={BENCH_ATTACHMENTS}
       onSchedule={spec?.schedulable ? noop : undefined}
       pickerData={{
         files: TRACKED_FILES,

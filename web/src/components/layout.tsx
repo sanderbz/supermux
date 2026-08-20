@@ -381,11 +381,66 @@ export function Layout() {
     grok && focusName
       ? agentHueVarsFor({ name: focusName }, resolvedTheme === 'dark', rosterMarks.pinFor(focusName))
       : undefined
+  // KEYBOARD-FLUSH COMPOSER (owner: "zit nog steeds zwarte balk boven keyboard").
+  //
+  // The grok CHAT thread that mounts in the roster's right pane is the DESKTOP
+  // composition (`<ChatPanel surface="desktop">` — a real <textarea>, hence the
+  // iOS form-accessory bar in the owner's shot), with NO keyboard-avoidance: its
+  // composer is `absolute bottom-0` of a surface filling THIS shell, and the
+  // shell is locked to `100dvh` (the LAYOUT viewport, which iOS never shrinks for
+  // the soft keyboard). So on a touch device the composer sat behind the keyboard
+  // and iOS scrolled the field into view, stranding it over a black band.
+  //
+  // Same principle `MobileSheet` uses for the focus route, applied one level up at
+  // the shell ground: while the soft keyboard is open on a coarse pointer AND an
+  // editable element holds focus, pin `--grok-vvh` = `visualViewport.height` on
+  // the shell root, so the whole grok shell shrinks to the visual viewport and the
+  // pane's bottom-anchored composer rides flush at the keyboard top. No transform,
+  // no `bottom`/`offsetTop` (the pieces iOS 26 resolves unreliably): the shell is
+  // normal flow at the document top, `overflow:hidden`, and exactly viewport-tall,
+  // so the body cannot scroll and `offsetTop` stays 0 — the shrink alone is flush.
+  // Inline (not a hook module) to stay under the app-JS budget; writes go straight
+  // to inline style so a keyboard-animation resize burst never re-renders the tree.
+  // Inert off grok / off touch / keyboard-closed — desktop + base app byte-identical.
+  const shellRef = React.useRef<HTMLDivElement | null>(null)
+  React.useEffect(() => {
+    const el = shellRef.current
+    const v = typeof window !== 'undefined' ? window.visualViewport : undefined
+    if (!grok || !el || !v || !window.matchMedia?.('(pointer: coarse)').matches) return
+    let raf = 0
+    const measure = () => {
+      raf = 0
+      // The keyboard overlap on the layout viewport (`visualViewport` shrinks
+      // under a stable `innerHeight`; offsetTop folded in so a scrolled page is
+      // not double-counted). `> 80` is the same iOS keyboard-open signal
+      // `use-keyboard-viewport.ts` uses on its overlay path — on a coarse pointer
+      // nothing but the soft keyboard shrinks the visual viewport that far.
+      const inset = Math.max(0, window.innerHeight - v.height - v.offsetTop)
+      if (inset > 80) el.style.setProperty('--grok-vvh', `${v.height}px`)
+      else el.style.removeProperty('--grok-vvh')
+    }
+    const schedule = () => {
+      if (!raf) raf = window.requestAnimationFrame(measure)
+    }
+    // `resize` fires when the keyboard opens AND when it dismisses (the visual
+    // viewport grows back), which is also the blur re-sync; `scroll` tracks the
+    // offsetTop wobble during the open animation. Both on `visualViewport`.
+    measure()
+    v.addEventListener('resize', schedule)
+    v.addEventListener('scroll', schedule)
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf)
+      v.removeEventListener('resize', schedule)
+      v.removeEventListener('scroll', schedule)
+      el.style.removeProperty('--grok-vvh')
+    }
+  }, [grok])
   return (
     <RosterMarksProvider value={rosterMarks}>
     <AttentionProvider value={attention}>
     <ShellOverlayProvider value={overlayHostValue}>
     <div
+      ref={shellRef}
       className="flex h-full w-full"
       // WS4 — the focused session's `--sm-agent-*` hue (empty off grok / off a
       // focus route, so no inline properties are set and the shell inherits the

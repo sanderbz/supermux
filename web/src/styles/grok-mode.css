@@ -389,6 +389,30 @@
      spills into that in-bounds gutter, so it is not clipped. */
   height: 100vh;
   height: 100dvh;
+  /* KEYBOARD-FLUSH COMPOSER (owner: "zit nog steeds zwarte balk boven keyboard").
+     The grok CHAT thread mounted in the roster's right pane (desktop composition,
+     `<ChatPanel surface="desktop">` — a real <textarea>, hence the iOS form
+     accessory bar in the owner's shot) has NO keyboard-avoidance of its own: its
+     composer is `absolute bottom-0` of a surface that fills THIS shell, and the
+     shell is locked to `100dvh` (the LAYOUT viewport, which iOS never shrinks for
+     the soft keyboard). So on a phone/tablet the composer sat at the layout-
+     viewport bottom, BEHIND the keyboard, and iOS scrolled the field into view —
+     leaving the ~150–260px black band between the floated composer and the
+     keyboard top.
+
+     The fix is the same principle `MobileSheet` uses for the focus route, applied
+     one level up at the shell ground: when the soft keyboard is open on a coarse
+     pointer, `use-grok-shell-viewport.ts` publishes `--grok-vvh` =
+     `visualViewport.height` here, so the WHOLE shell shrinks to the visual
+     viewport and the pane's `absolute bottom-0` composer rides flush at the
+     keyboard top. No transform and no `bottom`/`offsetTop` arithmetic (the pieces
+     iOS 26 resolves unreliably): the shell root is normal flow at the document
+     top, the body is not scrollable (this element is `overflow:hidden` and
+     exactly viewport-tall), so `visualViewport.offsetTop` stays 0 and the shrink
+     alone is flush. `--grok-vvh` is only ever set while the keyboard is open, so
+     at rest this is a byte-exact `100dvh`; the fixed `MobileSheet` overlay is
+     viewport-positioned and unaffected by the shell's height. */
+  height: var(--grok-vvh, 100dvh);
   overflow: hidden;
 }
 
@@ -2557,13 +2581,14 @@
 [data-grok] .sm-composer.rounded-\[26px\] > :first-child {
   align-self: flex-start;
 }
-/* The desktop leading pair sat on `gap-2` (8px) — too airy for two glyphs that
-   read as one cluster. Snug it to `0.25rem` = 4px (NOT 2px: the commit that
-   introduced this said "snugged … to a 2px cluster", which was inexact — the
-   shipped value is and always was 4px). Mobile's leading is a single `+`, so
-   this only tightens the desktop `@`·clock pair; the send side is untouched. */
+/* The leading cluster (attach · `@` · clock) sat on `gap-2` (8px) — far too airy
+   for glyphs that should read as ONE set (owner: "icons in input staan te ver
+   van elkaar"). Snug it to `0.125rem` = 2px: with the leading discs' own cell
+   the icon centres now sit ~38px apart instead of ~44, a visibly tighter
+   cluster. Mobile's leading is a single `+`, so this only tightens the trio/pair
+   the desktop composition draws; the send side is untouched. */
 [data-grok] .sm-composer > div:first-child {
-  gap: 0.25rem;
+  gap: 0.125rem;
 }
 
 /* ══ WS9 — EMPTY / LOADING / ERROR / ATTENTION SURFACES ═══════════════════════
