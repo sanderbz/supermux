@@ -548,7 +548,15 @@
    10px plate (stepped down from the icon's own 12px radius — nested radii step
    down, §8) and the active icon takes the accent as TEXT. */
 [data-grok] [data-shell-rail] [data-nav-active] {
-  background: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+  /* #17 — a SOFT, INSET rounded highlight, not an edge-to-edge plate. The base
+     mark is `absolute inset-0` (a full-tile `bg-primary` block); a 12% wash over
+     the whole 44px tile still read as a coloured BLOCK behind the icon (owner:
+     "heavy blue-block"). Pulling it in 3px on every side turns it into a calm
+     rounded selection pill that hugs the glyph with air around it — the same
+     low-alpha, corner-safe treatment the phone capsule chip already uses — and
+     10% (down from 12%) settles it further into "premium/calm". */
+  inset: 3px;
+  background: color-mix(in srgb, var(--sm-accent) 10%, transparent);
   border-radius: var(--sm-r-md);
 }
 [data-grok] [data-shell-rail] a[aria-current='page'] {
@@ -1890,12 +1898,23 @@
   margin-right: auto;
 }
 [data-grok] .grok-roster .gr-ft .set {
+  /* #18 — the archive + settings icons as a clean, right-aligned grid pair.
+     Equal 30px SQUARE tap targets (was `padding:4px` around an 18px glyph → a
+     26px non-square hit box that read off-grid), the glyph centred in each by
+     `place-items:center`, vertically centred on the footer line by the row's
+     `align-items:center`. `.who { margin-right:auto }` (above) still collapses
+     the slack so the two squares ride the right edge as one cluster; the flex
+     `gap` sets their even spacing, and the footer's own 18px right padding is
+     the group's clean right margin. */
   color: var(--sm-text-tertiary);
   background: transparent;
   border: 0;
   cursor: pointer;
-  display: inline-flex;
-  padding: 4px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border-radius: 8px;
 }
 [data-grok] .grok-roster .gr-ft .set:hover {

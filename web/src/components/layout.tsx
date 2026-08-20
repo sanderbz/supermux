@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import {
   FolderClosed,
   LayoutGrid,
+  Plug,
   Search,
   Settings as SettingsIcon,
   Terminal,
@@ -66,6 +67,14 @@ interface NavItem {
    *  desktop SideNav honours it; the mobile BottomNav already drops Focus via
    *  `desktopOnly`, so mobile is untouched either way. */
   grokHidden?: boolean
+  /** Render this item ONLY under the Grok skin (`[data-grok]`), on BOTH the
+   *  desktop SideNav and the mobile BottomNav. The inverse of `grokHidden`:
+   *  used by the Grok-native nav doorways that the BASE app must never grow —
+   *  the Connector-store entry (`/store`) and the phone-nav Terminal doorway
+   *  (`/focus`). Both navs filter these out when grok is off, so the default
+   *  app is byte-identical (the store/terminal stay reachable there via the
+   *  command palette + Settings, exactly as before). */
+  grokOnly?: boolean
 }
 
 const NAV: NavItem[] = [
@@ -76,6 +85,20 @@ const NAV: NavItem[] = [
   // Terminal glyph (>_) matches the abstract-geometric rest of the rail and
   // names what focus mode IS — sitting inside a terminal session.
   { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true, grokHidden: true },
+  // Terminal — the GROK doorway back to the pty view (#21). The base Focus item
+  // above is `desktopOnly` (never on the phone) AND `grokHidden` (never on the
+  // grok rail), so under grok there was no primary-nav way to reach a terminal
+  // session from a phone — only the in-session renderer switch. This `grokOnly`
+  // twin restores that doorway on BOTH the grok rail and the grok phone nav,
+  // routing to /focus (→ last-active session, where the pty + chat⇄terminal
+  // switch live). Same Terminal glyph as the base Focus item. Not `desktopOnly`,
+  // so the phone renders it; `grokOnly`, so the base app never grows a 5th tab.
+  { to: '/focus', label: 'Terminal', icon: Terminal, grokOnly: true },
+  // Connectors — the Connector-store entry (#22). The store is a fully built
+  // route (/store) that had NO nav surface at all; this `grokOnly` item makes it
+  // a first-class Grok destination on the rail and the phone nav (Plug glyph,
+  // the same mark the command palette already uses for it). Base app unchanged.
+  { to: '/store', label: 'Connectors', icon: Plug, grokOnly: true },
   { to: '/files', label: 'Files', icon: FolderClosed },
   // Hosts registry AND the scheduler both moved into Settings (rare-use config
   // doesn't need a primary-nav slot). `/hosts` → /settings#hosts and
@@ -122,7 +145,12 @@ function NavBadgeDot({ state }: { state: UpdateBadgeState }) {
  *  entry, so the rail carries only Overview / Files / Settings. */
 function SideNav({ grok }: { grok: boolean }) {
   const { state: updateBadge } = useUpdateBadge()
-  const items = grok ? NAV.filter((item) => !item.grokHidden) : NAV
+  // grok: drop `grokHidden` (base Focus) and keep the `grokOnly` doorways
+  // (Terminal + Connectors). base: drop the `grokOnly` doorways so the default
+  // rail is byte-identical (Overview / Focus / Files / Settings).
+  const items = grok
+    ? NAV.filter((item) => !item.grokHidden)
+    : NAV.filter((item) => !item.grokOnly)
   return (
     <nav
       aria-label="Primary"
@@ -141,7 +169,7 @@ function SideNav({ grok }: { grok: boolean }) {
         {items.map((item) => {
           const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
           return (
-            <Tooltip key={item.to}>
+            <Tooltip key={item.label}>
               <TooltipTrigger asChild>
                 <MorphNavLink
                   to={item.to}
@@ -210,20 +238,33 @@ function MobileTopBar(_props: { overview: boolean }) {
 /** Mobile: bottom tab bar, safe-area inset (≤md). Filters out `desktopOnly`
  *  items so the mobile chrome stays at its 5-tab footprint — on mobile the
  *  natural way into a focused session is tapping a tile in Overview. */
-function BottomNav() {
+function BottomNav({ grok }: { grok: boolean }) {
   const { state: updateBadge } = useUpdateBadge()
+  // Always drop `desktopOnly` (base Focus). Under grok, keep the `grokOnly`
+  // doorways (Terminal + Connectors) and drop `grokHidden`; under base, drop the
+  // `grokOnly` doorways so the default tab bar is byte-identical (Overview /
+  // Files / Settings + the Search control). The `data-tab-count` (route cells +
+  // the Search button) lets grok-mode.css keep the active chip inside the
+  // capsule corners as the cell count grows.
+  const items = NAV.filter(
+    (item) => !item.desktopOnly && (grok ? !item.grokHidden : !item.grokOnly),
+  )
   return (
     <nav
       aria-label="Primary"
       // Substrate hook — same contract as the desktop rail, hairline on top.
       data-shell-tabs=""
+      // grok-only hook so grok-mode.css can keep the active chip inside the
+      // capsule corners as the cell count grows. Omitted off grok (`undefined`
+      // drops the attribute) so the base tab bar's DOM is byte-identical.
+      data-tab-count={grok ? items.length + 1 : undefined}
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
-      {NAV.filter((item) => !item.desktopOnly).map((item) => {
+      {items.map((item) => {
         const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
         return (
           <MorphNavLink
-            key={item.to}
+            key={item.label}
             to={item.to}
             end={item.end}
             aria-label={
@@ -474,7 +515,7 @@ export function Layout() {
         >
           <Outlet />
         </main>
-        {!chromeless && <BottomNav />}
+        {!chromeless && <BottomNav grok={grok} />}
       </div>
       {/* The global ⌘K command palette. Mounted ONCE at shell level so the
        *  shortcut works on EVERY route (overview, board, files, scheduler,
