@@ -55,6 +55,7 @@ import { useKeyboardCapture } from './use-keyboard-capture'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { Dropzone } from '@/components/files/dropzone'
 import { AttachmentRow } from './attachment-chip'
+import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { useAttachmentUpload } from './use-attachment-upload'
 import { useExternalEdit } from './use-external-edit'
 import { MobileComposeSheet } from './mobile-compose-sheet'
@@ -869,6 +870,19 @@ export function DesktopSplit({
                       // "I had to escape to the terminal" is a preference, and
                       // it should still be true after a reload.
                       onOpenTerminal={() => setRenderer('terminal')}
+                      // Bring the leading `+` add-menu to the desktop chat pane
+                      // (fine pointer ⇒ the Radix popover). Only the callbacks
+                      // that reach OUT of the composer are threaded; mention /
+                      // slash / schedule / attach are composer-local. Switch
+                      // session is OMITTED on desktop — the persistent session
+                      // list makes it redundant, so that row simply won't render.
+                      actions={{
+                        onCommandPalette: triggerCommandPalette,
+                        onSnippets: () => {
+                          onSnippets?.()
+                          setSnippetsOpen(true)
+                        },
+                      }}
                       // Phase B — the retired focus header's verbs, re-homed in
                       // the pill's trailing slot (Detach ⌘D / Stop ⌘W / Make it a
                       // team). Injected here so hiding `DesktopFocusHeader` under

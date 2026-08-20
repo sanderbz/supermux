@@ -67,10 +67,15 @@ export default function DevComposerAttach() {
           surface={phone ? 'phone' : 'desktop'}
           attachments={staged}
           onSchedule={schedulable ? noop : undefined}
-          // On the phone the Attach group lives in the `+` add-menu, which only
-          // renders when `actions` is present — so wire inert ones here.
+          // The leading `+` add-menu renders whenever `actions` is present — now
+          // on BOTH surfaces (the shipped wiring: mobile.tsx + desktop-split.tsx).
+          // Faithful to production: the phone sheet carries Switch-session, the
+          // desktop popover omits it (its persistent session list makes it
+          // redundant). Inert callbacks — this is a screenshot bench.
           actions={
-            phone ? { onSwitchSession: noop, onCommandPalette: noop } : undefined
+            phone
+              ? { onSwitchSession: noop, onCommandPalette: noop, onSnippets: noop }
+              : { onCommandPalette: noop, onSnippets: noop }
           }
         />
       </div>

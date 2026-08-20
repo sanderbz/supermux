@@ -25,6 +25,7 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatComposer } from '../../src/components/chat/composer'
+import { composeActionRows, sessionActionRows } from '../../src/components/chat/chat-actions'
 import { ChatConversation } from '../../src/components/chat/conversation'
 import type { PeekLens, PtyNotice } from '../../src/components/chat/peek-lens'
 import {
@@ -892,14 +893,67 @@ describe('the slash refusal, said out loud', () => {
     expect(html).not.toContain('data-testid="chat-composer-open-terminal"')
   })
 
-  test('desktop keeps a DIRECT `@` mention button (icon == action, not a `+`)', () => {
-    // With no `actions` the leading control is the desktop minimal pair. The
-    // mention button inserts `@` and opens the picker — and it is now drawn as
-    // an `@`, not the old `+` glyph that silently typed one (owner feedback #1).
+  test('no-`actions` FALLBACK keeps a DIRECT `@` mention button (benches / read-only)', () => {
+    // The single `+` add-menu is drawn whenever `actions` is wired — which every
+    // shipping surface now does (mobile.tsx + desktop-split.tsx). Absent it (a
+    // bench, the read-only preview), the leading control falls back to the direct
+    // pair: an `@` that inserts the trigger, drawn as an `@`, not a `+`.
     const html = composer()
     expect(html).toContain('data-testid="chat-composer-at"')
-    // …and it is NOT the add-menu opener: desktop has no folded sheet.
+    // …and it is NOT the add-menu opener: no `actions`, no folded menu.
     expect(html).not.toContain('data-testid="chat-composer-add"')
+  })
+
+  test('desktop WITH `actions`: the trio collapses to ONE `+` add-menu (no bare @/clock)', () => {
+    // The winner brings the single `+` to the desktop chat pane too (a fine
+    // pointer ⇒ the anchored Radix popover). Mention / slash / attach / schedule
+    // move INTO the menu, so the bar shows one leading disc and the field
+    // reclaims the trio's width. `onSwitchSession` is OMITTED on desktop.
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle()}
+        onSchedule={() => {}}
+        actions={{ onCommandPalette: () => {} }}
+      />,
+    )
+    expect(html).toContain('data-testid="chat-composer-add"')
+    // The add control announces its menu (a11y), closed at rest.
+    expect(html).toContain('aria-haspopup="menu"')
+    expect(html).toContain('aria-expanded="false"')
+    // No direct mention / schedule discs on the bar — they live in the menu.
+    expect(html).not.toContain('data-testid="chat-composer-at"')
+    expect(html).not.toContain('data-testid="chat-composer-schedule"')
+  })
+
+  test('the add-menu draws ONE shared row list (the sheet === the popover)', () => {
+    // Both shells (Vaul sheet on coarse, Radix popover on fine) map the SAME
+    // authored rows from `chat-actions.ts`, so the two surfaces can never drift.
+    const h = {
+      onMention: () => {},
+      onSlash: () => {},
+      onSnippets: () => {},
+      onSchedule: () => {},
+      onSwitchSession: () => {},
+      onCommandPalette: () => {},
+    }
+    expect(composeActionRows(h).map((r) => r.label)).toEqual([
+      'Mention a file or session',
+      'Slash command',
+      'Insert a snippet',
+      'Schedule for later',
+    ])
+    expect(sessionActionRows(h).map((r) => r.label)).toEqual(['Switch session', 'Command palette'])
+    // Progressive gating: an unwired handler never draws a dead row. Desktop
+    // omits switch-session, so that row simply gates out.
+    expect(composeActionRows({ onMention() {}, onSlash() {}, onCommandPalette() {} }).map((r) => r.label)).toEqual([
+      'Mention a file or session',
+      'Slash command',
+    ])
+    expect(
+      sessionActionRows({ onMention() {}, onSlash() {}, onCommandPalette() {} }).map((r) => r.label),
+    ).toEqual(['Command palette'])
   })
 
   test('mobile with `actions`: ONE `+` owns the add-menu; the bare @/clock leave the bar', () => {

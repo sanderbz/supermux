@@ -43,7 +43,10 @@ import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { AtIcon, ClockIcon, Composer, MicIcon, PlusIcon } from './ui'
 import ChatActionsSheet from './chat-actions-sheet'
+import ChatActionsPopover from './chat-actions-menu'
 import { AttachmentChips } from './attachment-chips'
+import { Popover, PopoverTrigger } from '../ui/popover'
+import { useMediaQuery } from '../../hooks/use-media-query'
 import type { UseStagedAttachmentsResult } from '../focus-mode/use-staged-attachments'
 
 /** The invisible 44pt touch target every disc on the bar grows on a coarse
@@ -79,8 +82,8 @@ const EntityPicker = React.lazy(() => import('./entity-picker'))
  * control is the single `+` add-menu; absent ⇒ the desktop minimal pair.
  */
 export interface ChatComposerActions {
-  /** Open the session switcher (the picker sheet). */
-  onSwitchSession: () => void
+  /** Open the session switcher; omitted (desktop's persistent list) → no row. */
+  onSwitchSession?: () => void
   /** Open the global command palette (⌘K) — search / jump / new session. */
   onCommandPalette: () => void
   /** Open the snippets drawer; omitted → the row is not drawn. */
@@ -194,19 +197,25 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
-  // THE LEADING `+` MENU (mobile chat). Owned HERE, not by the route, so the
-  // sheet is literally anchored to the control that opens it — the fix for a
-  // menu that read as a floating, disconnected list. `mounted` gates the lazy
-  // chunk on the FIRST open so the sheet's Vaul + icons never touch the surface
-  // until a thumb asks for them.
-  const [sheetOpen, setSheetOpen] = React.useState(false)
+  // Fork the add-menu's OPEN SURFACE on input modality, not on the `phone`
+  // surface flag: a coarse pointer (any touch device — phone, tablet, a
+  // convertible on the desktop split) gets the thumb-reachable Vaul sheet; a
+  // fine pointer gets the anchored Radix popover in the composer's own glass.
+  // The single leading `+` is identical on both.
+  const coarse = useMediaQuery('(pointer: coarse)')
+  // THE LEADING `+` MENU. Owned HERE, not by the route, so the surface is
+  // literally anchored to the control that opens it — the fix for a menu that
+  // read as a floating, disconnected list. `menuOpen` drives BOTH shells and the
+  // `+ → ×` morph; `sheetMounted` gates the Vaul lazy chunk on the FIRST coarse
+  // open so the sheet's runtime never touches a fine-pointer surface.
+  const [menuOpen, setMenuOpen] = React.useState(false)
   const [sheetMounted, setSheetMounted] = React.useState(false)
-  const toggleSheet = React.useCallback(() => {
-    setSheetOpen((open) => {
-      if (!open) setSheetMounted(true)
+  const toggleMenu = React.useCallback(() => {
+    setMenuOpen((open) => {
+      if (!open && coarse) setSheetMounted(true)
       return !open
     })
-  }, [])
+  }, [coarse])
   // Vaul returns focus to the trigger (`+`) on close; a compose action that
   // stages a trigger needs the caret back in the FIELD instead, so the picker
   // it just opened is what the next keystroke types into. The picker itself is
@@ -216,12 +225,12 @@ export function ChatComposer({
     window.requestAnimationFrame(() => handle.ref.current?.focus())
   }, [handle.ref])
   const onMention = React.useCallback(() => {
-    setSheetOpen(false)
+    setMenuOpen(false)
     handle.insert('@')
     refocusField()
   }, [handle, refocusField])
   const onSlash = React.useCallback(() => {
-    setSheetOpen(false)
+    setMenuOpen(false)
     handle.insert('/')
     refocusField()
   }, [handle, refocusField])
@@ -445,6 +454,13 @@ export function ChatComposer({
       {attachments && (
         <AttachmentChips attachments={attachments.attachments} onDismiss={attachments.dismiss} />
       )}
+      {/* The one hidden OS file dialog for the fine-pointer attach affordances —
+          the desktop pair's paperclip disc AND the `+` popover's Attach row both
+          click it. Hoisted here so a single input serves either leading shape.
+          (The coarse sheet has its own native Camera/Photo/Files pickers.) */}
+      {attachments && (
+        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={onDesktopPick} />
+      )}
       <Composer
         size={phone ? 'mobile' : 'desktop'}
         placeholder={`Message ${label}`}
@@ -462,28 +478,61 @@ export function ChatComposer({
           // an overlapped `@`/clock pair on negative margins, and a 40px mic.
           //
           // SEMANTICS (owner feedback #1). Under `actions` the leading control is
-          // a single `+` that OPENS THE MENU — `+` genuinely means "add
-          // something". It no longer silently types an `@`. Mentions, commands
-          // and schedule live inside that menu (and `@`/`/` still work typed
-          // directly). Absent `actions` (desktop) the pair keeps DIRECT buttons,
-          // each with the glyph of the thing it does: an `@` for mention, a clock
-          // for schedule.
+          // a single `+` — on BOTH surfaces now — that OPENS THE MENU: `+`
+          // genuinely means "add something". It no longer silently types an `@`.
+          // Mentions, commands, attach and schedule live inside that menu (and
+          // `@`/`/` still work typed directly into the field). The menu's SHELL
+          // forks on the pointer: a Vaul sheet on coarse, an anchored Radix
+          // popover on fine — same rows, same `+`. Absent `actions` (benches /
+          // read-only) the desktop pair keeps DIRECT buttons, each with the glyph
+          // of the thing it does: an `@` for mention, a clock for schedule.
           actions ? (
-            <LeadingButton
-              testId="chat-composer-add"
-              label={sheetOpen ? 'Close actions' : 'Add to your message'}
-              phone={phone}
-              expanded={sheetOpen}
-              onClick={toggleSheet}
-            >
-              <motion.span
-                className="grid place-items-center"
-                animate={{ rotate: sheetOpen ? 45 : 0 }}
-                transition={reduce ? motionOff : springs.buttonPress}
+            coarse ? (
+              // COARSE — the `+` toggles the Vaul bottom sheet (rendered below).
+              <LeadingButton
+                testId="chat-composer-add"
+                label={menuOpen ? 'Close actions' : 'Add to your message'}
+                phone={phone}
+                expanded={menuOpen}
+                aria-haspopup="menu"
+                onClick={toggleMenu}
               >
-                <PlusIcon />
-              </motion.span>
-            </LeadingButton>
+                <AddGlyph open={menuOpen} reduce={reduce} />
+              </LeadingButton>
+            ) : (
+              // FINE — the `+` is the Radix popover trigger; the menu rises from
+              // it in the composer's own glass (focus-trap / Esc / outside-click /
+              // return-focus come free from Radix).
+              <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+                <PopoverTrigger asChild>
+                  <LeadingButton
+                    testId="chat-composer-add"
+                    label={menuOpen ? 'Close actions' : 'Add to your message'}
+                    phone={phone}
+                    expanded={menuOpen}
+                    aria-haspopup="menu"
+                  >
+                    <AddGlyph open={menuOpen} reduce={reduce} />
+                  </LeadingButton>
+                </PopoverTrigger>
+                <ChatActionsPopover
+                  // Attach is one OS dialog on a fine pointer (no camera) — the
+                  // hoisted hidden `<input>` below. Gated on wired uploads.
+                  onAttach={handleFiles ? () => fileInputRef.current?.click() : undefined}
+                  onMention={onMention}
+                  onSlash={onSlash}
+                  onSnippets={actions.onSnippets}
+                  // The draft is COPIED, not moved (T9.2): schedule opens a sheet
+                  // seeded from the prompt and the composer keeps every character.
+                  onSchedule={onSchedule ? () => onSchedule(handle.draft) : undefined}
+                  // Omitted on desktop (the persistent session list makes it
+                  // redundant) ⇒ the Switch-session row simply won't render.
+                  onSwitchSession={actions.onSwitchSession}
+                  onCommandPalette={actions.onCommandPalette}
+                  onClose={() => setMenuOpen(false)}
+                />
+              </Popover>
+            )
           ) : (
             <div className="flex flex-none items-center gap-2">
               {/* DESKTOP ATTACH — a direct disc, not a menu: there is one OS
@@ -492,23 +541,14 @@ export function ChatComposer({
                   paths; this is the discoverable fallback. Only when uploads are
                   wired. */}
               {attachments && (
-                <>
-                  <LeadingButton
-                    testId="chat-composer-attach"
-                    label="Attach a file"
-                    phone={phone}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <PaperclipIcon />
-                  </LeadingButton>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={onDesktopPick}
-                  />
-                </>
+                <LeadingButton
+                  testId="chat-composer-attach"
+                  label="Attach a file"
+                  phone={phone}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <PaperclipIcon />
+                </LeadingButton>
               )}
               <LeadingButton
                 testId="chat-composer-at"
@@ -700,16 +740,18 @@ export function ChatComposer({
           </div>
         }
       />
-      {/* THE ADD-MENU, ANCHORED (owner feedback #3). The sheet is owned by the
-          composer and opened by the `+` above it, not floated in by the route —
-          so it reads as belonging to this bar. It carries the composer's own
-          materials (glass, radius, safe-area) and its rows use one considered
-          icon set. `sheetMounted` holds it out of the tree until the first tap,
-          so Vaul is never constructed on a surface that does not open it. */}
-      {actions && sheetMounted && (
+      {/* THE ADD-MENU (COARSE), ANCHORED (owner feedback #3). The sheet is owned
+          by the composer and opened by the `+` above it, not floated in by the
+          route — so it reads as belonging to this bar. It carries the composer's
+          own materials (glass, radius, safe-area) and its rows use the SAME
+          authored list the fine-pointer popover draws from (`chat-actions.ts`).
+          `sheetMounted` holds it out of the tree until the first coarse tap, so
+          Vaul is never constructed on a surface that does not open it; the
+          `coarse` gate keeps it off fine-pointer surfaces (they get the popover). */}
+      {actions && coarse && sheetMounted && (
         <ChatActionsSheet
-          open={sheetOpen}
-          onOpenChange={setSheetOpen}
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
           onMention={onMention}
           onSlash={onSlash}
           onSchedule={onSchedule ? () => onSchedule(handle.draft) : undefined}
@@ -725,32 +767,51 @@ export function ChatComposer({
   )
 }
 
+/** The `+ → ×` morph — a `PlusIcon` rotated 45° IS an `×`, so one glyph carries
+ *  its own open/close state with zero new bytes. Shared by the coarse `+` (opens
+ *  the sheet) and the fine `+` (the popover trigger). */
+function AddGlyph({ open, reduce }: { open: boolean; reduce: boolean }) {
+  return (
+    <motion.span
+      className="grid place-items-center"
+      animate={{ rotate: open ? 45 : 0 }}
+      transition={reduce ? motionOff : springs.buttonPress}
+    >
+      <PlusIcon />
+    </motion.span>
+  )
+}
+
 /**
  * A leading disc — the ADD `+`, or a desktop mention/schedule button. The exact
  * counterpart of `TrailingButton` on the right: same `size-9`/`size-10` cell,
  * same `grid place-items-center`, same invisible 44pt target grown by a
  * `::after` inset on a coarse pointer. Ghost, not inverted — the send disc is
  * the one filled control on the bar, and a filled `+` would compete with it.
+ *
+ * `forwardRef` + a props spread so the fine-pointer `+` can be a Radix
+ * `PopoverTrigger asChild`: Radix clones this button and injects its own
+ * `onClick` / `aria-expanded` / `aria-controls` / `data-state` / `ref`, which the
+ * trailing `{...rest}` forwards onto the real `<button>` (rest wins over the
+ * defaults). The coarse `+` and the desktop pair pass an explicit `onClick`
+ * instead, with no `rest` to override it.
  */
-function LeadingButton({
-  testId,
-  label,
-  phone,
-  onClick,
-  expanded,
-  children,
-}: {
-  testId: string
-  label: string
-  phone: boolean
-  onClick: () => void
-  /** The add control announces its sheet — `aria-expanded` for a screen reader,
-   *  and it is what tells the caller this button owns a disclosure. */
-  expanded?: boolean
-  children: React.ReactNode
-}) {
+const LeadingButton = React.forwardRef<
+  HTMLButtonElement,
+  {
+    testId: string
+    label: string
+    phone: boolean
+    onClick?: () => void
+    /** The add control announces its menu — `aria-expanded` for a screen reader,
+     *  and it is what tells the caller this button owns a disclosure. */
+    expanded?: boolean
+    children: React.ReactNode
+  } & Omit<React.ComponentPropsWithoutRef<'button'>, 'onClick' | 'children' | 'className'>
+>(function LeadingButton({ testId, label, phone, onClick, expanded, children, ...rest }, ref) {
   return (
     <button
+      ref={ref}
       type="button"
       data-testid={testId}
       aria-label={label}
@@ -766,11 +827,12 @@ function LeadingButton({
         // else. The pill's `gap-3` leaves clearance to the field.
         COARSE_TARGET,
       )}
+      {...rest}
     >
       {children}
     </button>
   )
-}
+})
 
 /** The one inverted control, as a real button. Same disc as `.sm-mic` (the
  *  boards' trailing cell) — the DISC is B0's 36/40px and is not resized here,

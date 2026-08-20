@@ -28,22 +28,12 @@
  * looking at a beat later.
  */
 import * as React from 'react'
-import {
-  ArrowLeftRight,
-  AtSign,
-  Camera,
-  Clock,
-  Command,
-  FolderOpen,
-  Image as ImageIcon,
-  Scissors,
-  Slash,
-  type LucideIcon,
-} from 'lucide-react'
+import { Camera, FolderOpen, Image as ImageIcon, type LucideIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
 import { MobileActionSheet } from '../focus-mode/mobile-action-sheet'
+import { composeActionRows, sessionActionRows, type ChatActionHandlers } from './chat-actions'
 
 export interface ChatActionsSheetProps {
   open: boolean
@@ -56,8 +46,8 @@ export interface ChatActionsSheetProps {
   onSchedule?: () => void
   /** Open the snippets drawer; omitted → no row. */
   onSnippets?: () => void
-  /** Open the session switcher (the picker sheet). */
-  onSwitchSession: () => void
+  /** Open the session switcher (the picker sheet); omitted → no row. */
+  onSwitchSession?: () => void
   /** Open the global command palette (⌘K) — search / jump / new session. */
   onCommandPalette: () => void
   /**
@@ -109,6 +99,17 @@ export function ChatActionsSheet({
     [onFiles, onOpenChange],
   )
 
+  // The shared row model — the SAME list the desktop popover draws from
+  // (`chat-actions.ts`), so the two surfaces can never drift.
+  const handlers: ChatActionHandlers = {
+    onMention,
+    onSlash,
+    onSnippets,
+    onSchedule,
+    onSwitchSession,
+    onCommandPalette,
+  }
+
   return (
     <MobileActionSheet open={open} onOpenChange={onOpenChange} title="Add to your message">
       <div className="flex flex-col px-2 pb-2 pt-1">
@@ -143,14 +144,9 @@ export function ChatActionsSheet({
             </p>
           </>
         )}
-        <ActionRow icon={AtSign} label="Mention a file or session" onTap={() => run(onMention)} />
-        <ActionRow icon={Slash} label="Slash command" onTap={() => run(onSlash)} />
-        {onSnippets && (
-          <ActionRow icon={Scissors} label="Insert a snippet" onTap={() => run(onSnippets)} />
-        )}
-        {onSchedule && (
-          <ActionRow icon={Clock} label="Schedule for later" onTap={() => run(onSchedule)} />
-        )}
+        {composeActionRows(handlers).map((row) => (
+          <ActionRow key={row.key} icon={row.icon} label={row.label} onTap={() => run(row.run)} />
+        ))}
 
         {/* Reachable, but a step removed from composing — set off by a hairline
             and a quiet section label so the menu reads as considered, not as one
@@ -159,12 +155,9 @@ export function ChatActionsSheet({
         <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
           This session
         </p>
-        <ActionRow
-          icon={ArrowLeftRight}
-          label="Switch session"
-          onTap={() => run(onSwitchSession)}
-        />
-        <ActionRow icon={Command} label="Command palette" onTap={() => run(onCommandPalette)} />
+        {sessionActionRows(handlers).map((row) => (
+          <ActionRow key={row.key} icon={row.icon} label={row.label} onTap={() => run(row.run)} />
+        ))}
       </div>
 
       {/* Hidden native pickers — one per option (distinct accept/capture), so the
