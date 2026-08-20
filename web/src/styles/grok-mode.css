@@ -392,6 +392,34 @@
   overflow: hidden;
 }
 
+/* iOS keyboard-flush composer (ios-keyboard/CANONICAL.md §2 Formula A + §1b).
+   Driven by `--grok-kb-lift`, set on the shell root by layout.tsx ONLY while the
+   soft keyboard is open on a coarse pointer (see the effect). The PRESENCE of the
+   var in the shell root's inline style is the gate: absent at rest → this rule
+   does NOT match → keyboard-CLOSED is byte-identical (no transform, resting pad
+   kept). `[data-surface='chat']` keeps it to the grok chat composer, never the
+   focus route's own keyboard-owning MobileSheet. Specificity (0,5,0) beats the
+   Tailwind `pb-[18px]` utility (0,1,0), so `padding-bottom:0` wins while lifted
+   and yields back to 18px the instant the rule stops matching.
+   The `@media (pointer: coarse)` wrapper is defence-in-depth; the JS already
+   never sets the var on a fine pointer. */
+@media (pointer: coarse) {
+  [data-grok][data-grok-root][style*='--grok-kb-lift']
+    [data-surface='chat']
+    [data-testid='chat-composer'] {
+    /* POSITION: lift the whole composer flush onto the keyboard top. A transform
+       moves PAINT and HIT-AREA together (unlike the reverted shell-height reflow),
+       so the leading 📎/@/🕐 stay clickable. Moves UP into the overflow:hidden
+       shell — never past its top edge — so nothing is clipped. */
+    transform: translateY(calc(-1 * var(--grok-kb-lift)));
+    /* PADDING: collapse the resting home-indicator pad while lifted — the keyboard
+       now occupies that region, and this flat `pb-[18px]` (desktop composition)
+       does NOT collapse on its own (env() wouldn't either, §1b), so it would be
+       dead space = the residual band. 0 = pill flush on the accessory bar. */
+    padding-bottom: 0;
+  }
+}
+
 /* The one substrate blur — a leaf pseudo, behind every column. `saturate(180%)`
    gives the tints life over supermux's flat ground (no wallpaper; tokens.md §13).
    -webkit- BEFORE standard so LightningCSS emits BOTH (globals.css:578 lesson).
