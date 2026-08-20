@@ -402,7 +402,7 @@
 
      The fix is the same principle `MobileSheet` uses for the focus route, applied
      one level up at the shell ground: when the soft keyboard is open on a coarse
-     pointer, `use-grok-shell-viewport.ts` publishes `--grok-vvh` =
+     pointer, a `visualViewport` effect in `layout.tsx` publishes `--grok-vvh` =
      `visualViewport.height` here, so the WHOLE shell shrinks to the visual
      viewport and the pane's `absolute bottom-0` composer rides flush at the
      keyboard top. No transform and no `bottom`/`offsetTop` arithmetic (the pieces
