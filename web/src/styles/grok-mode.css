@@ -1926,27 +1926,59 @@
   line-height: 1;
 }
 
-/* ── the-one-human footer ──────────────────────────────────────────────────── */
-[data-grok] .grok-roster .gr-ft {
-  display: flex;
+/* ── title-bar trailing actions (archive + account) ───────────────────────────
+   The overview's footer strip is GONE (owner feedback: it was a redundant second
+   bar stacked over the floating nav). What it carried and still has a job — the
+   ARCHIVE action and the user's identity — moved UP into the header's right edge:
+   archive as a clean ghost icon button, the SB avatar as the account affordance
+   (tap → Settings). The settings gear the footer also had was a duplicate of the
+   nav's Settings entry, so it was dropped, not moved. */
+[data-grok] .grok-roster .gr-head-actions {
+  display: inline-flex;
   align-items: center;
-  gap: 11px;
-  padding: 11px 18px;
+  gap: 6px;
   flex: none;
-  position: relative;
 }
-[data-grok] .grok-roster .gr-ft::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 0.5px;
-  background: var(--sm-sidebar-separator);
+/* Header-consistent ghost icon button (also the phone `+`'s sibling: the phone
+   block below grows every `.gr-icon-btn` to a 44×44 HIG tap target). */
+[data-grok] .grok-roster .gr-icon-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--sm-text-tertiary);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 9px;
+  transition: color 0.12s, background-color 0.12s;
 }
-[data-grok] .grok-roster .gr-ft .av {
-  width: 28px;
-  height: 28px;
+[data-grok] .grok-roster .gr-icon-btn:hover {
+  color: var(--sm-text-primary);
+  background: var(--sm-bg-hover);
+}
+[data-grok] .grok-roster .gr-icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
+}
+/* The account button — the SB avatar, top-right (the modern app-bar identity
+   slot). A tap opens Settings; the round chip carries the initials. */
+[data-grok] .grok-roster .gr-me {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+[data-grok] .grok-roster .gr-me .av {
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--gr-surf2);
   display: grid;
@@ -1954,43 +1986,16 @@
   font-size: 11px;
   font-weight: 700;
   color: var(--sm-text-secondary);
-  flex: none;
+  transition: color 0.12s;
 }
-[data-grok] .grok-roster .gr-ft .who {
-  font-size: 13.5px;
-  font-weight: 600;
-  /* The name eats the row's slack, so the trailing action icons ride to the
-     right edge as one cluster (owner: the archive + settings icons were "gek
-     aligned"). Before, each `.set` carried its OWN `margin-left:auto`, so the
-     free space SPLIT between the two margins and the archive floated to the row's
-     middle instead of sitting beside the gear. One auto margin here collapses all
-     the slack at once; the two equal-size icons then sit 11px apart, right-
-     aligned and centred on the footer line by the flex `align-items`. */
-  margin-right: auto;
-}
-[data-grok] .grok-roster .gr-ft .set {
-  /* #18 — the archive + settings icons as a clean, right-aligned grid pair.
-     Equal 30px SQUARE tap targets (was `padding:4px` around an 18px glyph → a
-     26px non-square hit box that read off-grid), the glyph centred in each by
-     `place-items:center`, vertically centred on the footer line by the row's
-     `align-items:center`. `.who { margin-right:auto }` (above) still collapses
-     the slack so the two squares ride the right edge as one cluster; the flex
-     `gap` sets their even spacing, and the footer's own 18px right padding is
-     the group's clean right margin. */
-  color: var(--sm-text-tertiary);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border-radius: 8px;
-}
-[data-grok] .grok-roster .gr-ft .set:hover {
+[data-grok] .grok-roster .gr-me:hover .av {
   color: var(--sm-text-primary);
-  background: var(--sm-bg-hover);
+}
+[data-grok] .grok-roster .gr-me:focus-visible {
+  outline: none;
+}
+[data-grok] .grok-roster .gr-me:focus-visible .av {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
 }
 
 /* ── DETAIL PANE — the power-user glance Grok structurally lacks ────────────── */
@@ -2368,13 +2373,38 @@
      away here (the roster stays Comfortable = Row A, the default). */
   [data-grok] .grok-roster .gr-head {
     flex-wrap: wrap;
+    /* Row-gap between the three stacked bands (title+actions · count · search). */
+    row-gap: 10px;
   }
   [data-grok] .grok-roster .gr-seg {
     display: none;
   }
+  /* PHONE APP-BAR — a deterministic three-band header via `order`, so the wrap
+     never depends on how long the live count runs (the old free-wrap split the
+     `+` from the archive/account cluster onto different rows at different counts).
+       band 1 (order 0–2): brand · spacer · [ + · archive · SB ]  — title left,
+                            the whole action cluster grouped hard-right;
+       band 2 (order 4):   the count, on its own full-width line (the subtitle);
+       band 3 (order 5):   the search, full width.
+     The count leaving band 1 is what guarantees the action cluster always fits on
+     one row, so `+`/archive/SB read as ONE trailing group at every count. The
+     desktop header is untouched (all of this is phone-scoped). */
+  [data-grok] .grok-roster .gr-head-sp {
+    order: 1;
+  }
+  [data-grok] .grok-roster .gr-newbot {
+    order: 2;
+  }
+  [data-grok] .grok-roster .gr-head-actions {
+    order: 2;
+  }
+  [data-grok] .grok-roster .gr-count {
+    order: 4;
+    flex-basis: 100%;
+  }
   [data-grok] .grok-roster .gr-search {
     max-width: none;
-    order: 3;
+    order: 5;
     flex-basis: 100%;
   }
   /* MEASURED-GAP FIX (touch target): the header `+` — the phone's primary action
@@ -2384,6 +2414,30 @@
   [data-grok] .grok-roster .gr-icon-btn {
     width: 44px;
     height: 44px;
+  }
+  /* The account button matches the 44pt phone tap target; the 30px avatar chip
+     stays its size, centred in the larger hit box. */
+  [data-grok] .grok-roster .gr-me {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* ── EDGE-TO-EDGE under the floating nav ──────────────────────────────────
+     With the footer strip gone, the roster runs continuously to the bottom of
+     the window and the translucent floating nav floats OVER it. The shell's
+     generic clearance pads `<main>` bottom (so a page-scrolled route clears the
+     bar), but here the scroller is the roster's own `.gr-list`, not `<main>` —
+     so padding `<main>` would just lift the whole roster off the nav and stop
+     the list at a hard edge (the exact "solid footer" look the owner cut). We
+     zero that padding for the overview and move the clearance onto `.gr-list`
+     instead: the list fills the full height, its content scrolls BEHIND the
+     glass, and the bottom padding lets the last row rise fully clear of the nav.
+     Specificity clears the generic rule (which is (0,4,0)); this is (0,5,0). */
+  [data-grok] [data-shell-main]:has([data-shell-tabs]) [data-shell-content]:has(.grok-roster) {
+    padding-bottom: 0;
+  }
+  [data-grok] .grok-roster .gr-list {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 92px);
   }
 }
 

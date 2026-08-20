@@ -33,7 +33,6 @@ import {
   MoreHorizontal,
   Plus,
   Search,
-  Settings,
   SlidersHorizontal,
   Sparkles,
   Terminal,
@@ -925,6 +924,35 @@ export default function GrokRoster() {
             Cards
           </button>
         </span>
+
+        {/* Trailing utility cluster — the overview's footer strip is gone (owner
+            feedback: redundant), so the two things it carried that still have a
+            home live HERE, in the title bar. ARCHIVE moved up as a clean ghost
+            icon button (its duplicate settings gear was dropped — Settings already
+            lives in the floating nav). The SB avatar is the account affordance,
+            top-right per the modern app-bar pattern: a tap opens Settings. */}
+        <span className="gr-head-actions">
+          <button
+            type="button"
+            className="gr-icon-btn"
+            aria-label="Archived sessions"
+            onClick={openArchived}
+            title="Archived sessions"
+          >
+            <Archive size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="gr-me"
+            aria-label="Sander — settings"
+            title="Settings"
+            onClick={() => navigate('/settings')}
+          >
+            <span className="av" aria-hidden>
+              SB
+            </span>
+          </button>
+        </span>
       </header>
 
       <div className="gr-two">
@@ -1039,33 +1067,6 @@ export default function GrokRoster() {
               </div>
             )}
           </div>
-
-          <footer className="gr-ft">
-            <span className="av" aria-hidden>
-              SB
-            </span>
-            <span className="who">Sander</span>
-            {/* Two distinct destinations — the gear used to be an archive decoy.
-                Archive (box) → the archived sheet; Settings (gear) → /settings. */}
-            <button
-              type="button"
-              className="set"
-              aria-label="Archived sessions"
-              onClick={openArchived}
-              title="Archived sessions"
-            >
-              <Archive size={18} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className="set"
-              aria-label="Settings"
-              onClick={() => navigate('/settings')}
-              title="Settings"
-            >
-              <Settings size={18} aria-hidden />
-            </button>
-          </footer>
         </div>
 
         {selectedTeam && selectedMember ? (
