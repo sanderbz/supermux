@@ -397,8 +397,11 @@ fn seed_offset(path: &Path, budget: u64) -> u64 {
 /// What one [`Tailer::poll`] produced.
 #[derive(Debug, Default)]
 pub struct TailPoll {
-    /// New entries, in file order: the main transcript first, then each
-    /// subagent file (deterministically ordered by agent id).
+    /// New entries: each subagent file first (deterministically ordered by
+    /// agent id), then the MAIN transcript LAST. Main is emitted last on purpose
+    /// — it is the content the renderer shows, and the ring + seed window are
+    /// newest-biased, so the highest seq is what survives a subagent flood
+    /// ([`Tailer::poll`] carries the full rationale).
     pub entries: Vec<ChatEntry>,
     /// The cursor was reset — the consumer must drop what it has and re-seed.
     /// Raised by a pointer change and by a file that shrank, never by an inline
@@ -432,15 +435,41 @@ impl Tailer {
             pending_resync: false,
             cold_budget: COLD_SEED_TOTAL_BYTES,
         };
-        t.main = t.open_cold(path);
+        t.main = t.open_cold_main(path);
         t
     }
 
-    /// Open a cursor that seeds from the tail, charged against the set's shared
-    /// [`COLD_SEED_TOTAL_BYTES`] budget (never below [`MIN_COLD_SEED_BYTES`]).
-    /// Bounded by construction, whatever the project dir holds.
-    fn open_cold(&mut self, path: PathBuf) -> FileCursor {
-        let budget = COLD_SEED_BYTES.min(self.cold_budget).max(MIN_COLD_SEED_BYTES);
+    /// Seed the MAIN transcript from its OWN reserved [`COLD_SEED_BYTES`] budget,
+    /// never charged against the subagent-shared [`COLD_SEED_TOTAL_BYTES`] pool.
+    ///
+    /// The main conversation is what the user reads; a team lead's cursor set is
+    /// the main transcript plus N subagent files, and the subagent files must
+    /// never draw the main seed down. Reserving the main budget here is the first
+    /// half of the guarantee — the second is [`poll`](Self::poll) publishing the
+    /// main entries LAST so the newest-biased ring and seed window keep them (a
+    /// reserved seed the ring then evicts is no seed at all).
+    fn open_cold_main(&mut self, path: PathBuf) -> FileCursor {
+        let (cursor, _spent) = FileCursor::seeded(path, COLD_SEED_BYTES);
+        cursor
+    }
+
+    /// Open a SUBAGENT cursor that seeds from the tail, charged against the set's
+    /// shared [`COLD_SEED_TOTAL_BYTES`] budget, newest file first.
+    ///
+    /// A small file (≤ [`MIN_COLD_SEED_BYTES`] — a freshly-spawned agent we just
+    /// met mid-flight) is read WHOLE so its opening lines are not lost. A large
+    /// stale backlog file past the shared budget parks at EOF, NOT at a per-file
+    /// floor: a lead here has 70+ subagent files, and a 64 KB floor on each was
+    /// 4.6 MB of ring ballast the renderer drops anyway — the very flood
+    /// [`COLD_SEED_TOTAL_BYTES`] exists to bound (the "739 MB RSS" incident), and
+    /// what starved the main conversation out of a 500-entry ring.
+    fn open_cold_subagent(&mut self, path: PathBuf) -> FileCursor {
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let budget = if len <= MIN_COLD_SEED_BYTES {
+            len
+        } else {
+            COLD_SEED_BYTES.min(self.cold_budget)
+        };
         let (cursor, spent) = FileCursor::seeded(path, budget);
         self.cold_budget = self.cold_budget.saturating_sub(spent);
         cursor
@@ -472,7 +501,7 @@ impl Tailer {
         let path = transcript_path(&self.project_dir, conversation_id);
         self.subagents.clear();
         self.cold_budget = COLD_SEED_TOTAL_BYTES;
-        self.main = self.open_cold(path);
+        self.main = self.open_cold_main(path);
         self.pending_resync = true;
         true
     }
@@ -496,14 +525,22 @@ impl Tailer {
             out.resync = true;
         }
 
-        let (main, restarted) = self.main.drain();
-        out.resync |= restarted;
-        // Sidechain lines in the MAIN file are dropped: the same turns are read,
-        // with their agent id, out of `subagents/`. Keeping both would render
-        // every subagent turn twice.
-        out.entries
-            .extend(main.into_iter().filter(|e| !e.is_sidechain));
-
+        // SUBAGENT entries are published FIRST, the MAIN conversation LAST.
+        //
+        // This is the ordering half of "the main conversation is always shown".
+        // A team lead's cold seed drains the main transcript's tail (~130 items)
+        // AND every subagent file's tail (>1600 items here). They land in ONE
+        // publish, and both the ring (keeps the newest `RING_CAP`, evicting the
+        // OLDEST) and the seed page (`seed_start`, keeps the newest
+        // `SEED_MAX_BYTES`) are newest-biased. Emitting the main entries first
+        // gave them the LOWEST seq, so the subagent flood evicted every one of
+        // them and the newest-bytes seed window landed entirely on subagent
+        // turns — which the renderer drops, so the client showed "No
+        // conversation yet" over a 55 MB transcript. Emitting main LAST makes it
+        // the newest content: it survives the ring and owns the seed window,
+        // whatever the subagent-file count. The renderer drops subagent turns
+        // regardless, so their relative position never reaches the screen; the
+        // small-session path is unchanged (its ring holds everything either way).
         for (agent_id, cursor) in self.subagents.iter_mut() {
             let (entries, restarted) = cursor.drain();
             out.resync |= restarted;
@@ -518,6 +555,14 @@ impl Tailer {
                 e
             }));
         }
+
+        let (main, restarted) = self.main.drain();
+        out.resync |= restarted;
+        // Sidechain lines in the MAIN file are dropped: the same turns are read,
+        // with their agent id, out of `subagents/`. Keeping both would render
+        // every subagent turn twice.
+        out.entries
+            .extend(main.into_iter().filter(|e| !e.is_sidechain));
         out
     }
 
@@ -553,7 +598,7 @@ impl Tailer {
         }
         fresh.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         for (_, id, path) in fresh {
-            let cursor = self.open_cold(path);
+            let cursor = self.open_cold_subagent(path);
             self.subagents.insert(id, cursor);
         }
     }
@@ -572,14 +617,14 @@ impl Tailer {
     fn rewind_all(&mut self) {
         self.cold_budget = COLD_SEED_TOTAL_BYTES;
         let main = self.main.path.clone();
-        self.main = self.open_cold(main);
+        self.main = self.open_cold_main(main);
         let paths: Vec<(String, PathBuf)> = self
             .subagents
             .iter()
             .map(|(id, c)| (id.clone(), c.path.clone()))
             .collect();
         for (id, path) in paths {
-            let cursor = self.open_cold(path);
+            let cursor = self.open_cold_subagent(path);
             self.subagents.insert(id, cursor);
         }
     }
@@ -1473,6 +1518,15 @@ mod tests {
         )
     }
 
+    /// A main-thread user line whose body is `pad`, so a fixture can hit a byte
+    /// budget with a controllable number of entries (fat entries → few items per
+    /// KB, the shape a real transcript's tool results have).
+    fn padded_user_line(uuid: &str, pad: &str) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"{uuid}","timestamp":"2026-01-01T00:00:00Z","sessionId":"s1","message":{{"role":"user","content":"{pad}"}}}}"#
+        )
+    }
+
     fn sidechain_line(uuid: &str, agent_id: Option<&str>) -> String {
         let agent = agent_id.map(|a| format!(r#","agentId":"{a}""#)).unwrap_or_default();
         format!(
@@ -1629,14 +1683,16 @@ mod tests {
              the bound is {ceiling}"
         );
         // Newest first: the last file written gets a full COLD_SEED_BYTES
-        // window, the first one written is down to the floor.
+        // window, the first one written is past the shared budget and parks at
+        // EOF — no per-file floor, which on 70+ files was the ring-flooding
+        // ballast that starved the main conversation.
         let newest = t.subagents.get("x7").unwrap();
         let oldest = t.subagents.get("x0").unwrap();
         let span_of = |c: &FileCursor| std::fs::metadata(&c.path).unwrap().len() - c.offset;
         assert!(span_of(newest) > MIN_COLD_SEED_BYTES);
         assert!(
             span_of(oldest) <= MIN_COLD_SEED_BYTES,
-            "a stale agent past the shared budget must fall back to the floor"
+            "a stale agent past the shared budget must not seed a per-file floor"
         );
         // A file that appears LATER is empty when we meet it, so it costs
         // nothing and is tailed in full.
@@ -1644,6 +1700,73 @@ mod tests {
         append(&late, &[sidechain_line("late1", None)]);
         let ids = uuids(&t.poll().entries);
         assert!(ids.contains(&"late1".to_string()), "a new agent must still be tailed whole");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_large_main_with_many_subagents_still_seeds_a_readable_main_conversation() {
+        // The team-lead starvation bug (session `61577886…`, team
+        // `session-62644456`): a 55 MB main transcript beside 70+ subagent files.
+        // The main tail seeds ~130 readable items, but they were published FIRST
+        // (lowest seq), so the >1600 subagent items published after them evicted
+        // every one from the 500-entry ring AND owned the newest-bytes seed
+        // window. The renderer drops subagent turns, so a client attaching saw an
+        // empty conversation — "No conversation yet" over 55 MB of history, on
+        // every restart. The main conversation must survive the ring and own the
+        // seed, whatever the subagent-file count.
+        use crate::sessions::chat::store::{ChatStore, RING_CAP};
+        let dir = tmp_project("teamlead");
+        let f = dir.join("conv-a.jsonl");
+        // A main transcript well past COLD_SEED_BYTES, with fat (~2 KB) entries
+        // so its 512 KB tail is a couple hundred readable items — the real shape,
+        // not thousands of tiny ones.
+        let pad = "x".repeat(2_000);
+        let main_lines: Vec<String> =
+            (0..400).map(|i| padded_user_line(&format!("m{i}"), &pad)).collect();
+        append(&f, &main_lines);
+        assert!(std::fs::metadata(&f).unwrap().len() > COLD_SEED_BYTES);
+
+        // Many subagent files whose entries together far outnumber one ring — the
+        // flood that, pre-fix, evicted the whole main conversation.
+        let subs = dir.join("conv-a").join("subagents");
+        for a in 0..12 {
+            big_file(&subs.join(format!("agent-x{a:02}.jsonl")), 80, &format!("s{a}_"));
+        }
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        let poll = t.poll();
+        let sub_total = poll.entries.iter().filter(|e| e.agent_id.is_some()).count();
+        let main_total = poll.entries.iter().filter(|e| e.agent_id.is_none()).count();
+        assert!(
+            sub_total > RING_CAP,
+            "the fixture must emit more subagent items ({sub_total}) than a ring \
+             holds ({RING_CAP}), or it would not reproduce the eviction"
+        );
+        assert!(main_total >= 50, "the main tail must be a readable seed ({main_total})");
+
+        // Publish exactly as the running tailer does, then build the seed page a
+        // fresh client attaches to.
+        let store = ChatStore::new();
+        store.publish(poll.entries);
+        let att = store.attach();
+        assert!(
+            att.oldest_main_offset.is_some(),
+            "the ring must still hold a MAIN entry — without one the seed carries \
+             no main-file cursor and the client renders an empty chat"
+        );
+        let page =
+            crate::sessions::chat::ws::seed_page(att.ring, att.oldest_main_offset, "conv-a");
+        let main_in_seed = page.entries.iter().filter(|w| !w.is_subagent()).count();
+        assert!(
+            main_in_seed >= 50,
+            "the seed carried only {main_in_seed} MAIN items out of {} — the main \
+             conversation was starved out by the subagent files",
+            page.entries.len()
+        );
+        assert!(
+            page.next_before.is_some(),
+            "a 512 KB tail of a larger main transcript must page further back"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1658,7 +1781,9 @@ mod tests {
         append(&sub, &[sidechain_line("s1", None), sidechain_line("s2", None)]);
 
         let mut t = Tailer::new(&dir, "conv-a");
-        assert_eq!(uuids(&t.poll().entries), ["u1", "u2", "s1", "s2"]);
+        // Subagents are published FIRST, the main conversation LAST (so the
+        // newest-biased ring + seed keep main whatever the subagent volume).
+        assert_eq!(uuids(&t.poll().entries), ["s1", "s2", "u1", "u2"]);
 
         // The SUBAGENT file rotates (rewritten shorter). The main file did not
         // move — and must still be re-published, or it vanishes from the seed.
@@ -1667,7 +1792,7 @@ mod tests {
         assert!(after.resync, "a backwards length is a client-visible resync");
         assert_eq!(
             uuids(&after.entries),
-            ["u1", "u2", "z1"],
+            ["z1", "u1", "u2"],
             "every cursor re-seeds, not only the one that rotated"
         );
 
@@ -1675,7 +1800,7 @@ mod tests {
         std::fs::write(&f, format!("{}\n", user_line("m1"))).unwrap();
         let after = t.poll();
         assert!(after.resync);
-        assert_eq!(uuids(&after.entries), ["m1", "z1"]);
+        assert_eq!(uuids(&after.entries), ["z1", "m1"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1691,8 +1816,9 @@ mod tests {
 
         let mut t = Tailer::new(&dir, "conv-a");
         let poll = t.poll();
-        assert_eq!(uuids(&poll.entries), ["u1", "s1", "s2"]);
-        let subs = &poll.entries[1..];
+        // Subagents first, the main conversation last.
+        assert_eq!(uuids(&poll.entries), ["s1", "s2", "u1"]);
+        let subs = &poll.entries[..2];
         for e in subs {
             assert_eq!(e.agent_id.as_deref(), Some("x1"));
             assert!(e.is_sidechain);

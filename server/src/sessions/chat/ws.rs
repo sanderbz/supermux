@@ -44,7 +44,7 @@
 //! and is the one path that serializes an unsealed body — bounded by the
 //! parser's own [`MAX_LINE_BYTES`](super::model::MAX_LINE_BYTES) line ceiling.
 
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -303,14 +303,51 @@ pub(crate) fn seed_page(ring: Vec<WireEntry>, oldest_main_offset: Option<u64>, c
     }
 }
 
+/// How far back from `before` [`history_page`] parses before falling back to a
+/// whole-file read. A page is `limit` ≤ [`RING_CAP`] entries; a few MB of
+/// transcript holds far more than that, so the newest page (and every early
+/// scroll-back page near EOF) is answered from this window instead of parsing a
+/// 55 MB main transcript from byte 0 — the read that peaked ~1.8 GB RSS on this
+/// host. The window's output is byte-for-byte identical to the full read
+/// whenever it holds MORE than `limit` below-entries (see [`history_page`]); a
+/// page that would need more history than the window covers reparses from 0.
+pub(crate) const HISTORY_TAIL_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+
+/// First byte at or after `pos` that begins a transcript line (i.e. just past
+/// the next `\n`), so a windowed parse never starts mid-line. `0` maps to `0`.
+/// `None` when the file cannot be read or `pos` is at/after EOF with no newline.
+fn line_start_at_or_after(path: &FsPath, pos: u64) -> Option<u64> {
+    if pos == 0 {
+        return Some(0);
+    }
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(std::io::SeekFrom::Start(pos)).ok()?;
+    let mut buf = Vec::new();
+    let n = BufReader::new(f)
+        .take(super::model::MAX_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', &mut buf)
+        .ok()?;
+    (buf.last() == Some(&b'\n')).then_some(pos + n as u64)
+}
+
 /// The disk backlog **strictly below** `before`, newest-last.
 ///
-/// The tailer owns the live path, so this never competes with it: it re-reads
-/// the file from byte 0 and answers a bounded window. That whole-file read is
-/// the deliberate trade for an explicit, user-driven "scroll further back"
-/// action (it runs on the blocking pool, never per tile — see Task 5's
-/// `chat_tail`, which is ring-only for exactly this reason).
+/// The tailer owns the live path, so this never competes with it. It answers a
+/// bounded window on the blocking pool (never per tile — see Task 5's
+/// `chat_tail`, which is ring-only for exactly this reason), for an explicit,
+/// user-driven "scroll further back" action.
+///
+/// It seeks to a [`HISTORY_TAIL_WINDOW_BYTES`] window ending at `before` and
+/// parses only that; it reparses the whole file from byte 0 **only** when that
+/// window did not hold more than `limit` entries — i.e. when the answer really
+/// does need older history than the window covers (a deep scroll-back, or a
+/// `before` near the start of the file). The newest page and every early
+/// scroll-back page are served from the tail, so a 55 MB team-lead transcript is
+/// not parsed whole to show its last 200 messages.
 pub(crate) fn history_page(path: &FsPath, conv: &str, before: u64, limit: usize) -> Page {
+    if let Some(page) = history_page_windowed(path, conv, before, limit) {
+        return page;
+    }
     let Ok(file) = std::fs::File::open(path) else {
         return Page::empty();
     };
@@ -326,7 +363,46 @@ pub(crate) fn history_page(path: &FsPath, conv: &str, before: u64, limit: usize)
     if below.is_empty() {
         return Page::empty();
     }
-    let window = history_window_start(&below, limit);
+    page_from_below(&below, conv, limit)
+}
+
+/// Try to answer from a [`HISTORY_TAIL_WINDOW_BYTES`] window ending at `before`,
+/// without parsing the whole file.
+///
+/// Returns `Some` only when the window holds **more** than `limit` below-entries
+/// — the exact condition under which its answer is byte-for-byte what the
+/// full-file read would produce: [`history_window_start`] then drops all but the
+/// newest `limit`, and the entries above that cut (the ones a whole-file read
+/// would also have discarded) are the only thing the window is missing. When the
+/// window does NOT hold more than `limit` entries the true page may need older
+/// history, so this returns `None` and the caller reparses from byte 0.
+fn history_page_windowed(path: &FsPath, conv: &str, before: u64, limit: usize) -> Option<Page> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let end = before.min(len);
+    let win_start = line_start_at_or_after(path, end.saturating_sub(HISTORY_TAIL_WINDOW_BYTES))?;
+    if win_start == 0 {
+        // The window already reaches byte 0 — the full read is no more work and
+        // is unconditionally correct, so let the caller do it.
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(std::io::SeekFrom::Start(win_start)).ok()?;
+    let (entries, _) = parse_stream(BufReader::new(file), win_start);
+    let below: Vec<&ChatEntry> = entries
+        .iter()
+        .filter(|e| e.offset < before && !e.is_sidechain)
+        .collect();
+    // `>` not `>=`: a full page needs at least one entry ABOVE the returned
+    // window, both so `has_more`/`next_before` are correct and so the newest
+    // `limit` entries are provably complete within the window.
+    (below.len() > limit).then(|| page_from_below(&below, conv, limit))
+}
+
+/// Seal the newest `limit`-worth of `below` (newest-last), apply the page byte
+/// budget and line alignment, and stamp the paging cursor. Shared by the
+/// windowed and whole-file [`history_page`] paths so both cap and cut the same.
+fn page_from_below(below: &[&ChatEntry], conv: &str, limit: usize) -> Page {
+    let window = history_window_start(below, limit);
     // Both caps, on the same code path the seed uses: `seal` per entry, then
     // the page byte budget, then line alignment.
     let sealed: Vec<WireEntry> = below[window..]
@@ -1183,6 +1259,72 @@ mod tests {
             page.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
             ["u0", "u1"],
             "sidechain lines are the subagent files' content, not the main thread's"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn history_tail_window_matches_a_full_read_on_a_large_transcript() {
+        // The tail-seek must be an OPTIMISATION, never a behaviour change: on a
+        // main transcript larger than the window, the newest page it answers from
+        // an 8 MB tail must be byte-for-byte what a whole-file parse produces —
+        // and the whole-file read of a 55 MB team-lead transcript is exactly what
+        // this avoids (it peaked ~1.8 GB RSS on this host).
+        let dir = tmp_dir("histwindow");
+        let path = dir.join("conv-a.jsonl");
+        // A file comfortably past HISTORY_TAIL_WINDOW_BYTES.
+        let pad = "y".repeat(160);
+        let n = ((HISTORY_TAIL_WINDOW_BYTES / 200) + 20_000) as usize;
+        {
+            let mut fh = std::fs::File::create(&path).unwrap();
+            for i in 0..n {
+                writeln!(fh, "{}", user_line(&format!("u{i}"), &pad)).unwrap();
+            }
+        }
+        assert!(std::fs::metadata(&path).unwrap().len() > HISTORY_TAIL_WINDOW_BYTES);
+
+        // The whole-file expectation, computed the long way.
+        let full_page = |before: u64, limit: usize| -> Page {
+            let (entries, _) = parse_stream(BufReader::new(std::fs::File::open(&path).unwrap()), 0);
+            let below: Vec<&ChatEntry> =
+                entries.iter().filter(|e| e.offset < before && !e.is_sidechain).collect();
+            page_from_below(&below, "conv-a", limit)
+        };
+
+        // Newest page: the window MUST answer it, and identically.
+        let win = history_page_windowed(&path, "conv-a", u64::MAX, 200)
+            .expect("a file past the window must answer its newest page from the tail");
+        let full = full_page(u64::MAX, 200);
+        assert_eq!(
+            win.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            full.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            "windowed newest page must equal the full read"
+        );
+        assert_eq!(win.next_before, full.next_before);
+        assert_eq!(win.has_more, full.has_more);
+        assert_eq!(win.entries.last().unwrap().uuid(), format!("u{}", n - 1), "…ending at EOF");
+
+        // The public entry point returns the same thing.
+        let public = history_page(&path, "conv-a", u64::MAX, 200);
+        assert_eq!(
+            public.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            full.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+        );
+
+        // A `before` deep enough that fewer than `limit` entries sit below it →
+        // the window cannot prove completeness, so it declines and the caller
+        // reparses from 0 (which the public path does, correctly).
+        let deep = 50u64 * 200; // ~byte offset of the 50th entry
+        assert!(
+            history_page_windowed(&path, "conv-a", deep, 200).is_none(),
+            "a page needing more history than the window covers must fall back"
+        );
+        let public_deep = history_page(&path, "conv-a", deep, 200);
+        let full_deep = full_page(deep, 200);
+        assert_eq!(
+            public_deep.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            full_deep.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            "the fallback still serves the correct page"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
