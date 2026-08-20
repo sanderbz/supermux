@@ -650,7 +650,23 @@ const BUDGET_ENTRY_JS = 160 * KB
 //   ~0.1 KB  the detail sheet's Install block (the exact one-line connect command)
 //            + the primary-category tag. The 31 cards themselves are SERVER data
 //            (`connectors/catalog.rs`) and cost this bundle nothing.
-const BUDGET_APP_JS = 298 * KB
+// 299 for the store-Connect "choose who gets it" scope picker (feat/store). The
+// TOP-LEVEL `/store` detail (`connector-detail.tsx`) opened with `grantTarget=null`,
+// so its only grant affordance was the lone "All agents" toggle — pressing Connect
+// there read as "install = everyone", the exact fear the scoping engine was built
+// to disprove. The fix adds a "Grant to" step: a checkbox multi-select of known
+// bots (`GET /api/sessions`) + an explicit "All agents" toggle, DEFAULTING TO
+// NOTHING so Connect is disabled until a scope is chosen, and resolving the pick
+// to N `grant` calls (one vault seal, `secret_ref` reused for the extra bots).
+// Reuses the existing grant API/table — no server, migration, or endpoint change.
+// It lands in the fully-lazy `connector-detail` store chunk; the entry/hero gate
+// did NOT move (154.36/160, 96%). Measured 298.48 against 297.70 for the base;
+// ceil(measured)=299 (the same ratchet rule every fase/merge above used), +~0.8 KB:
+//   ~0.8 KB  the `GrantPicker`/`GrantOption` multi-select, the `useQuery` over the
+//            session list, and the connect() target-resolution + seal-once-reuse
+//            loop. The bot-scope (Tools-tab) flow is byte-identical — the picker
+//            renders in the library scope only.
+const BUDGET_APP_JS = 299 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

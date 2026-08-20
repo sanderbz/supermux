@@ -20,6 +20,14 @@ const BENCH_QC = new QueryClient({
 
 const GRANTED = { bot: ['pmcp-github'], all: ['shared-browser'] }
 
+// The library "Grant to" picker reads `GET /api/sessions`; offline we seed it so
+// the choose-who-gets-it step renders with real-looking bots on the bench.
+const MOCK_BOTS = [
+  { name: 'Ada', status: 'active' },
+  { name: 'Grace', status: 'idle' },
+  { name: 'Linus', status: 'waiting' },
+]
+
 const OAUTH_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'pmcp-notion')!
 const KEY_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'icloud-mail')!
 
@@ -48,7 +56,7 @@ function Slab({
           data-vr={`store-grid-${theme}${grok ? '-grok' : ''}`}
           className="h-[720px] overflow-hidden rounded-3xl border border-border"
         >
-          <StoreView grantTarget={null} mock={CURATED_FALLBACK} mockGranted={GRANTED} detailTheme={theme} />
+          <StoreView grantTarget={null} mock={CURATED_FALLBACK} mockGranted={GRANTED} mockBots={MOCK_BOTS} detailTheme={theme} />
         </div>
 
         {/* bot-scoped variant (rows) */}

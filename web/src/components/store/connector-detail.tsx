@@ -6,9 +6,11 @@
 // scope is active, granted to that bot in the same call. The secret is never
 // echoed back — the field flips to a masked "Added" state.
 import * as React from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Check, Eye, EyeOff, Loader2, Lock, Trash2 } from 'lucide-react'
 
 import {
+  ALL_AGENTS,
   connectorHasOAuth,
   plainFields,
   secretField,
@@ -16,6 +18,8 @@ import {
   type ConnectorCard as Card,
   type CredentialField,
 } from '@/lib/api/connectors'
+import { sessionsApi, displayLabel } from '@/lib/api'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useConnectorActions } from '@/stores/connectors-store'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +29,13 @@ import { GrantControl, type GrantScope } from './grant-control'
 
 type Phase = 'idle' | 'saving' | 'added'
 
+/** A pickable grant target in the library "Grant to" step. */
+export interface BotChoice {
+  name: string
+  display_name?: string
+  status?: string
+}
+
 export function ConnectorDetail({
   card,
   installed,
@@ -32,6 +43,7 @@ export function ConnectorDetail({
   grantTarget,
   onDone,
   onRemoved,
+  botsOverride,
 }: {
   card: Card
   installed: boolean
@@ -40,6 +52,9 @@ export function ConnectorDetail({
   grantTarget: string | null
   onDone: () => void
   onRemoved?: () => void
+  /** Offline bench only: seed the "Grant to" bot list instead of `GET
+   *  /api/sessions`. Undefined in production, where the live query supplies it. */
+  botsOverride?: BotChoice[]
 }) {
   const actions = useConnectorActions()
   const secret = secretField(card)
@@ -52,6 +67,43 @@ export function ConnectorDetail({
   const [phase, setPhase] = React.useState<Phase>(granted ? 'added' : 'idle')
   const [restartHint, setRestartHint] = React.useState(false)
   const [localGrant, setLocalGrant] = React.useState<GrantScope>(granted)
+
+  // The top-level `/store` detail has NO bot in scope (`grantTarget === null`),
+  // so without this it silently sealed the credential to the vault and granted to
+  // no one — the connect then read as "install = everyone" once you tapped the
+  // lone "All agents" toggle below. The "Grant to" step makes the choice explicit:
+  // a multi-select of known bots + an "All agents" toggle, defaulting to NOTHING
+  // selected so Connect stays disabled until you pick who gets it.
+  const isLibrary = grantTarget === null
+  const sessionsQuery = useQuery({
+    queryKey: SESSIONS_KEY,
+    queryFn: sessionsApi.list,
+    staleTime: 30_000,
+    enabled: isLibrary && !botsOverride,
+  })
+  const bots: BotChoice[] = botsOverride ?? sessionsQuery.data ?? []
+  const [selectedBots, setSelectedBots] = React.useState<Set<string>>(
+    () => new Set(),
+  )
+  const [allAgents, setAllAgents] = React.useState(false)
+  // "All agents" is a superset — when it is on, the per-bot rows show as checked
+  // (and locked), and the grant resolves to a single `*` row.
+  const chosenTargets: string[] = allAgents ? [ALL_AGENTS] : [...selectedBots]
+  const needChoice = isLibrary && chosenTargets.length === 0
+  // What we actually granted to, for the "Added to …" confirmation. Seeded from
+  // an already-granted open so re-opening a granted connector still names it.
+  const [addedTargets, setAddedTargets] = React.useState<string[]>(() =>
+    granted && grantTarget ? [grantTarget] : [],
+  )
+  const toggleBot = (name: string) => {
+    if (allAgents) return
+    setSelectedBots((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
   // OAuth-capable connectors LEAD with the branded "Sign in" primary; the key
   // paste is demoted behind an "or use an API key" divider (blocker B4). There is
   // no live OAuth lane on the server yet, so tapping sign-in reveals the key lane
@@ -79,25 +131,39 @@ export function ConnectorDetail({
           credentials: card.credentials,
         })
       }
+      // Resolve the scope to the grant targets. In the library view that is the
+      // "Grant to" selection (N bots, or the single `*` all-agents row); in a bot
+      // scope it is the one target the store sheet was opened with.
+      const targets = isLibrary ? chosenTargets : grantTarget ? [grantTarget] : []
       const fields: Record<string, string> = { ...values }
       if (needsSecret && secretVal.trim()) fields[secret!.key] = secretVal
       if (Object.keys(fields).length > 0) {
-        const r = await actions.putCredential(card.id, {
+        // Seal the credential ONCE (attaching the first target's grant), then
+        // reuse the returned `secret_ref` for the remaining bots so N grants
+        // share one vault secret instead of re-sealing per bot.
+        const ref = await actions.putCredential(card.id, {
           fields,
-          session_name: grantTarget ?? undefined,
+          session_name: targets[0] ?? undefined,
         })
-        if (r === null) {
+        if (ref === null) {
           setPhase('idle')
           return
         }
+        for (const t of targets.slice(1)) {
+          await actions.grant(card.id, t, ref)
+        }
         setRestartHint(true)
-      } else if (grantTarget) {
-        // No credential (built-in / OAuth-only) — just land the grant.
-        const restart = await actions.grant(card.id, grantTarget)
+      } else if (targets.length > 0) {
+        // No credential (built-in / OAuth-only) — just land the grant(s).
+        let restart = false
+        for (const t of targets) {
+          restart = (await actions.grant(card.id, t)) || restart
+        }
         setRestartHint(restart)
       }
       setSecretVal('')
-      setLocalGrant(grantTarget === '*' ? 'all' : grantTarget ? 'bot' : null)
+      setAddedTargets(targets)
+      setLocalGrant(targets.includes(ALL_AGENTS) ? 'all' : isLibrary ? null : 'bot')
       setPhase('added')
     } catch {
       setPhase('idle')
@@ -134,7 +200,7 @@ export function ConnectorDetail({
 
       {/* connect / credential flow */}
       {phase === 'added' ? (
-        <AddedPanel restartHint={restartHint} target={grantTarget} />
+        <AddedPanel restartHint={restartHint} targets={addedTargets} />
       ) : (
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
           {/* OAuth primary — the branded sign-in, leading the trust hierarchy. */}
@@ -221,25 +287,46 @@ export function ConnectorDetail({
             </>
           ) : null}
 
+          {/* GRANT TO — the choose-who-gets-it step, library scope only. In a bot
+              scope the store sheet already carries the one target, so this is
+              skipped and the flow is byte-identical to before. */}
+          {isLibrary && (keyLaneOpen || !needsSecret) && (
+            <GrantPicker
+              bots={bots}
+              selectedBots={selectedBots}
+              allAgents={allAgents}
+              loading={sessionsQuery.isLoading && !botsOverride}
+              onToggleBot={toggleBot}
+              onToggleAll={() => setAllAgents((v) => !v)}
+            />
+          )}
+
           {/* The bottom CTA belongs to the key/no-secret path; during the OAuth
               lead the branded "Sign in" above is the primary, so it stands alone.
               Enabled/working: SOLID brand-blue + white label (>=4.5:1). Blocked (a
-              required field still empty) is a NEUTRAL muted fill — never a washed
-              blue that could read as a live-but-dim CTA (blocker H2). */}
+              required field still empty, or — in the library view — no grant target
+              chosen yet) is a NEUTRAL muted fill — never a washed blue that could
+              read as a live-but-dim CTA (blocker H2). */}
           {(keyLaneOpen || !needsSecret) && (
             <button
               type="button"
               onClick={connect}
-              disabled={phase === 'saving' || requiredMissing}
+              disabled={phase === 'saving' || requiredMissing || needChoice}
               className={cn(
                 'mt-1 inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-[14px] font-semibold shadow-sm transition-colors',
-                requiredMissing
+                requiredMissing || needChoice
                   ? 'cursor-not-allowed bg-muted text-muted-foreground shadow-none'
                   : 'bg-primary text-primary-foreground hover:bg-primary/90 disabled:hover:bg-primary',
               )}
             >
               {phase === 'saving' && <Loader2 className="size-4 animate-spin" aria-hidden />}
-              {needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Install'}
+              {needChoice
+                ? `${needsSecret ? 'Connect' : 'Install'} — choose who gets it`
+                : needsSecret
+                  ? 'Connect'
+                  : grantTarget
+                    ? 'Add to this bot'
+                    : 'Install'}
             </button>
           )}
         </div>
@@ -312,14 +399,21 @@ function InstallBlock({ command }: { command: string }) {
   )
 }
 
-function AddedPanel({ restartHint, target }: { restartHint: boolean; target: string | null }) {
+function AddedPanel({ restartHint, targets }: { restartHint: boolean; targets: string[] }) {
+  // `*` (all agents) wins the phrasing; otherwise name the bots it was added to.
+  const named = targets.filter((t) => t !== ALL_AGENTS)
+  const suffix = targets.includes(ALL_AGENTS)
+    ? ' for all agents'
+    : named.length > 0
+      ? ` to ${named.join(', ')}`
+      : ''
   return (
     <div className="flex flex-col gap-2 rounded-2xl border border-status-ready/30 bg-status-ready/10 p-4">
       <div className="flex items-center gap-2 text-[14px] font-semibold text-status-ready-ink">
         <span className="grid size-6 place-items-center rounded-full bg-status-ready/20">
           <Check className="size-3.5" aria-hidden />
         </span>
-        Added{target && target !== '*' ? ` to ${target}` : target === '*' ? ' for all agents' : ''}
+        Added{suffix}
       </div>
       {restartHint && (
         <p className="text-[12.5px] text-muted-foreground">
@@ -327,6 +421,107 @@ function AddedPanel({ restartHint, target }: { restartHint: boolean; target: str
         </p>
       )}
     </div>
+  )
+}
+
+/** The library-scope "Grant to" step: an explicit "All agents" toggle plus a
+ *  checkbox list of known bots. Default is NOTHING selected so the Connect button
+ *  stays disabled until a scope is chosen — install never silently means everyone.
+ *  "All agents" is a superset: while it is on, the per-bot rows read as checked
+ *  and locked (the grant resolves to a single `*` row). */
+function GrantPicker({
+  bots,
+  selectedBots,
+  allAgents,
+  loading,
+  onToggleBot,
+  onToggleAll,
+}: {
+  bots: BotChoice[]
+  selectedBots: Set<string>
+  allAgents: boolean
+  loading: boolean
+  onToggleBot: (name: string) => void
+  onToggleAll: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[11.5px] font-medium uppercase tracking-wide text-muted-foreground">
+        Grant to
+      </span>
+      <div className="flex flex-col gap-0.5 rounded-xl border border-border bg-background p-1.5">
+        <GrantOption
+          checked={allAgents}
+          onToggle={onToggleAll}
+          label="All agents"
+          sub="Every bot — now and future"
+        />
+        {(bots.length > 0 || loading) && <span className="mx-2 my-0.5 h-px bg-border" />}
+        {loading && bots.length === 0 ? (
+          <span className="px-2.5 py-1.5 text-[12px] text-muted-foreground">Loading bots…</span>
+        ) : bots.length === 0 ? (
+          <span className="px-2.5 py-1.5 text-[12px] text-muted-foreground">
+            No bots yet — grant to All agents.
+          </span>
+        ) : (
+          bots.map((b) => (
+            <GrantOption
+              key={b.name}
+              checked={allAgents || selectedBots.has(b.name)}
+              locked={allAgents}
+              onToggle={() => onToggleBot(b.name)}
+              label={displayLabel(b)}
+              sub={b.status}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GrantOption({
+  checked,
+  locked,
+  onToggle,
+  label,
+  sub,
+}: {
+  checked: boolean
+  locked?: boolean
+  onToggle: () => void
+  label: string
+  sub?: string
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={locked}
+      onClick={onToggle}
+      className={cn(
+        'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
+        locked ? 'cursor-default' : 'hover:bg-muted',
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          'grid size-[18px] shrink-0 place-items-center rounded-[6px] border transition-colors',
+          checked
+            ? 'border-primary bg-primary text-primary-foreground'
+            : 'border-input bg-background',
+          locked && 'opacity-70',
+        )}
+      >
+        {checked && <Check className="size-3" strokeWidth={3} aria-hidden />}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="truncate text-[13px] font-medium text-foreground">{label}</span>
+        {sub && <span className="truncate text-[11.5px] capitalize text-muted-foreground">{sub}</span>}
+      </span>
+    </button>
   )
 }
 

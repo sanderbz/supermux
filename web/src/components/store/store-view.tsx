@@ -34,6 +34,8 @@ export interface StoreViewProps {
   mock?: Card[]
   /** Offline bench: seed the "granted" set (connector ids). */
   mockGranted?: { bot?: string[]; all?: string[] }
+  /** Offline bench: seed the library "Grant to" bot picker (no `GET /api/sessions`). */
+  mockBots?: { name: string; display_name?: string; status?: string }[]
   /** `page` (the /store route) or `sheet` (bot-scoped dock). */
   variant?: 'page' | 'sheet'
   /** Offline bench only: the theme (`light`/`dark`) stamped as `data-theme` on the
@@ -50,6 +52,7 @@ export function StoreView({
   grantTarget = null,
   mock,
   mockGranted,
+  mockBots,
   variant = 'page',
   detailTheme,
 }: StoreViewProps) {
@@ -221,6 +224,7 @@ export function StoreView({
               granted={grantedFor(openCard.id)}
               grantTarget={grantTarget}
               onDone={() => setOpenId(null)}
+              botsOverride={mockBots}
             />
           </div>
         </ResponsiveSheet>
