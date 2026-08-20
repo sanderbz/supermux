@@ -432,15 +432,6 @@ const fn human_label(cat: NotifCategory) -> &'static str {
     }
 }
 
-/// Notification payload delivered to the service worker. The SW reads `title` /
-/// `body` for the notification and `url` for the `notificationclick` deep-link.
-#[derive(serde::Serialize)]
-struct PushPayload<'a> {
-    title: &'a str,
-    body: &'a str,
-    url: &'a str,
-}
-
 /// `GET /api/push/preview?session=X&event=stop` — compose the notification this
 /// session would send RIGHT NOW for `event`, and return it. Sends nothing,
 /// stores nothing, records nothing.
