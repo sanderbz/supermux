@@ -653,22 +653,42 @@ impl StatusDetector {
             // terminal shows back at its idle `❯` composer (the reported bug: the
             // roster tile + header dot stay busy long after the pty went idle).
             //
-            // Reconcile against the pty ground truth. When the captured tail shows
-            // NO active marker (no spinner / `esc to interrupt`) AND a definitive
-            // at-rest marker (a bare `❯`/`$` prompt, a completed spinner) AND the
-            // pty has settled quiet, the turn is genuinely over — return `Idle`.
+            // Reconcile against the pty ground truth. For a hooked Claude session
+            // the authoritative "still working" signal is the `esc to interrupt`
+            // spinner footer (ACTIVE_BANK): Claude keeps it in view the ENTIRE
+            // time a turn is interruptible, including a silent think between tool
+            // calls. Its ABSENCE over a settled-quiet pty already means the turn
+            // is over — regardless of WHICH idle screen is showing. So key off the
+            // absence of the spinner, not the presence of one specific idle glyph.
             //
-            // This CANNOT misfire on a real running turn (incl. a silent think
-            // between tool calls): Claude keeps its `esc to interrupt` spinner line
-            // in view the entire time it is interruptible, so ACTIVE_BANK matches
-            // and the reconcile is skipped — genuine active detection is preserved.
+            // The old gate additionally required `IDLE_BANK` (a bare `❯`/`$`
+            // prompt or a completed `✻ … for Ns` spinner). That is an over-narrow
+            // proxy for "screen at rest": the modern boxed composer `│ >  │`, a
+            // `⎿ Interrupted by user` cancel screen, frozen crash output, and a
+            // scrolled/emptied tail carry NONE of those glyphs, so a no-`Stop`
+            // turn stayed pinned Active for the full TURN_SAFETY (15 min) window
+            // (the residual reported bug). Dropping that clause settles ALL those
+            // cases within ~CANCEL_SETTLE.
+            //
+            // Two guards keep it safe:
+            //   * `!ACTIVE_BANK` — a genuine running turn (incl. silent think)
+            //     still shows its spinner → reconcile skipped → stays Active.
+            //   * quiet pty ≥ CANCEL_SETTLE — a just-submitted prompt is still
+            //     echoing bytes (pty not quiet) so it can't flip to Idle before
+            //     the spinner draws; this protects the turn START.
+            //   * non-empty capture — a truly blank capture (cold start, or a
+            //     crash that cleared the pane) HOLDS the current status rather
+            //     than forcing a premature Idle (matches the codex cold-start
+            //     guard + the `silent_think_empty_capture_stays_active_after_settle`
+            //     invariant). Replaces IDLE_BANK's incidental non-empty guarantee.
+            //
             // The Esc-Esc rewind prompt is already handled earlier by
             // INTERRUPT_MARKER (→ Waiting); this covers the single-Esc cancel,
-            // whose screen is an ordinary idle composer, not that prompt.
+            // crash, and lost-`Stop`, whose screens are ordinary at-rest tails.
             if s == Status::Active
                 && last_pty.elapsed() >= CANCEL_SETTLE
                 && !ACTIVE_BANK.is_match(capture)
-                && IDLE_BANK.is_match(capture)
+                && !capture.trim().is_empty()
             {
                 return Status::Idle;
             }
@@ -1213,15 +1233,21 @@ mod tests {
 
     #[test]
     fn pre_tool_then_long_silent_think_stays_active() {
-        // A PreToolUse followed by a 40s silent think (no PostToolUse/Stop, no
+        // A PreToolUse followed by a 40s silent think (no PostToolUse/Stop, no new
         // bytes) — the old 3s fast-path expired here and the detector wrongly read
         // the status bar as Idle. The turn state machine keeps it Active.
+        //
+        // A GENUINE interruptible turn keeps its `esc to interrupt` spinner footer
+        // in view the entire time (that is exactly the ground truth the
+        // spinner-absence reconcile trusts), so the realistic silent-think capture
+        // carries it above the mode bar. ACTIVE_BANK matches → the CANCEL_SETTLE
+        // reconcile is skipped → the turn stays Active even over a quiet pty. (A
+        // capture with NO footer over a quiet pty means the turn is over — that is
+        // the stuck-`active` case the reconcile now settles.)
         let mut d = StatusDetector::new();
         let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(40));
-        assert_eq!(
-            d.detect("⏵⏵ accept edits on (shift+tab to cycle)", neutral_pty(), turn, true),
-            Status::Active
-        );
+        let cap = "✻ Thinking… (esc to interrupt · 42s)\n⏵⏵ accept edits on (shift+tab to cycle)";
+        assert_eq!(d.detect(cap, neutral_pty(), turn, true), Status::Active);
     }
 
     #[test]
@@ -1268,6 +1294,76 @@ mod tests {
         );
     }
 
+    /// The modern idle screen a cancel/finish leaves with NO trailing bare `❯`:
+    /// just the rounded boxed composer. This is the residual stuck-`active` bug —
+    /// under the OLD reconcile (which additionally required IDLE_BANK) none of
+    /// `❯$` / `$ ` / a completed spinner is present, so it stayed pinned Active.
+    const BOXED_COMPOSER: &str = "\
+╭──────────────────────────────────────────────╮
+│ >                                             │
+╰──────────────────────────────────────────────╯
+  ? for shortcuts";
+
+    /// A cancel that leaves `⎿ Interrupted by user` above the boxed composer, again
+    /// with NO trailing bare `❯` (the real modern shape of the single-Esc cancel).
+    const INTERRUPTED_BOXED: &str = "\
+● Editing the configuration file.
+  ⎿ Interrupted by user
+╭──────────────────────────────────────────────╮
+│ >                                             │
+╰──────────────────────────────────────────────╯
+  ? for shortcuts";
+
+    /// Frozen partial tool output left by a crash/kill mid-turn: no spinner, no
+    /// idle glyph at all — just the last drawn scrollback.
+    const FROZEN_TOOL_OUTPUT: &str = "\
+● Bash(cargo build)
+  ⎿ Compiling supermux-server v0.5.0
+     Compiling tokio v1.40.0";
+
+    #[test]
+    fn cancelled_boxed_composer_without_bare_prompt_settles_to_idle() {
+        // The headline residual bug: a no-`Stop` turn whose at-rest screen is the
+        // modern boxed composer with NO trailing bare `❯`. The old gate required a
+        // POSITIVE idle glyph (IDLE_BANK) and so pinned this Active for 15 min; the
+        // spinner-absence reconcile settles it to Idle within CANCEL_SETTLE.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(8));
+        assert_eq!(
+            d.detect(BOXED_COMPOSER, neutral_pty(), turn, true),
+            Status::Idle,
+            "a boxed composer with no bare ❯ and no spinner must settle to Idle"
+        );
+    }
+
+    #[test]
+    fn cancelled_interrupted_boxed_composer_settles_to_idle() {
+        // `⎿ Interrupted by user` + boxed composer, quiet pty, no spinner ⇒ Idle.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(8));
+        assert_eq!(
+            d.detect(INTERRUPTED_BOXED, neutral_pty(), turn, true),
+            Status::Idle,
+            "an interrupted composer (no spinner) over a quiet pty must settle to Idle"
+        );
+    }
+
+    #[test]
+    fn crashed_frozen_tool_output_settles_to_idle() {
+        // A crash/kill mid-turn leaves frozen partial output — no spinner, no idle
+        // glyph. Quiet pty + spinner-absence ⇒ Idle (was pinned Active for 15 min).
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(8));
+        assert_eq!(
+            d.detect(FROZEN_TOOL_OUTPUT, neutral_pty(), turn, true),
+            Status::Idle,
+            "frozen crash output with no spinner over a quiet pty must settle to Idle"
+        );
+    }
+
     #[test]
     fn fresh_turn_start_is_not_flipped_to_idle_before_spinner_draws() {
         // The turn-START guard: right after UserPromptSubmit the composer may still
@@ -1310,9 +1406,11 @@ mod tests {
     #[test]
     fn silent_think_empty_capture_stays_active_after_settle() {
         // A silent think with an EMPTY capture (nothing drawn yet) and a long-quiet
-        // pty must stay Active: the reconcile only downgrades on a POSITIVE idle
-        // marker, so an absent idle prompt (IDLE_BANK no-match) never triggers it —
-        // this is the headline "busy while thinking" behaviour, unchanged.
+        // pty must stay Active: the reconcile now downgrades on the ABSENCE of the
+        // spinner, but the `!capture.trim().is_empty()` guard holds a blank capture
+        // (cold start / cleared pane) at its current status — so an empty screen
+        // never triggers it. This is the headline "busy while thinking" behaviour,
+        // preserved by the empty-capture guard that replaced the IDLE_BANK match.
         let mut d = StatusDetector::new();
         let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_secs(20));
         assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Active);
