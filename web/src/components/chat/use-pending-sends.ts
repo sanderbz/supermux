@@ -84,6 +84,20 @@ function patch(name: string, id: string, fields: Partial<PendingSend>): void {
 
 let seq = 0
 
+/**
+ * A stable idempotency key for one send, reused verbatim across its retries.
+ *
+ * Not `crypto.randomUUID`: supermux is served over plain HTTP on tailnet/LAN
+ * origins, where `randomUUID` is undefined (it requires a secure context). A
+ * per-page-load random base + the monotonic `seq` is unique enough for the
+ * server's per-session dedup, and needs no secure context. The base keeps two
+ * page loads (each restarting `seq` at 0) from minting the same id.
+ */
+const SEND_ID_BASE = Math.random().toString(36).slice(2, 10)
+function mintSendId(n: number): string {
+  return `${SEND_ID_BASE}-${n}`
+}
+
 /* ── the hook ────────────────────────────────────────────────────────────── */
 
 /** The T5 causes this module can raise. Narrowed out of the full union on
@@ -271,7 +285,11 @@ export function usePendingSends({
 
   const submit = React.useCallback(
     async (text: string) => {
-      const id = `send-${++seq}`
+      const n = ++seq
+      const id = `send-${n}`
+      // The idempotency key travels with the row and is reused on every retry,
+      // so the server dedups a re-POST of a message it already typed.
+      const sendId = mintSendId(n)
       const atMs = serverNowMs()
       // The two BASELINES, captured before the POST leaves: what the transcript
       // already held (so no entry that was on screen can be mistaken for this
@@ -291,10 +309,10 @@ export function usePendingSends({
       // than that until the state below says otherwise.
       update(name, (cur) => [
         ...cur,
-        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt, activeAtSend: wasActive },
+        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt, activeAtSend: wasActive, sendId },
       ])
       try {
-        await input.submit(text)
+        await input.submit(text, { sendId })
         // RE-STAMPED on the response, not left at the moment the POST was
         // issued. `POST /send` is not fast by construction: it can AUTO-WAKE a
         // dead pty (`lifecycle.rs` `start()`, seconds) before it takes the
@@ -347,7 +365,13 @@ export function usePendingSends({
             patch(name, id, { state: 'undelivered', note: refusalNote(gate.notice) })
             return
           }
-          await input.submit(p.text)
+          // The SAME idempotency key as the original send: if the first POST
+          // actually reached the session (a false failure, or a dropped
+          // response), the server recognises this re-POST and does NOT type the
+          // message a second time. `p.sendId` is absent only for a row restored
+          // from before this field existed; a fresh key then is the pre-fix
+          // behaviour (a genuinely-failed send re-delivered once).
+          await input.submit(p.text, { sendId: p.sendId ?? mintSendId(++seq) })
           // The watchdog clock restarts from the RETRY, not from the original
           // send: it is a new delivery, and it gets its own window.
           //

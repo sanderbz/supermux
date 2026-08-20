@@ -31,6 +31,7 @@ pub mod pty;
 pub mod pty_state;
 pub mod recall;
 pub mod resumable;
+pub mod send_dedup;
 pub mod status;
 /// The Shared Browser connector's `request_human_takeover(reason)` detector —
 /// the `PreToolUse` payload that raises the in-chat "take the wheel" card.
@@ -1804,6 +1805,11 @@ async fn stop_handler(
 #[derive(Debug, Deserialize)]
 struct SendInput {
     text: String,
+    /// Client-generated idempotency key (chat composer). The server dedups on it
+    /// so a Retry of an already-typed message can never duplicate it. Optional:
+    /// callers that omit it get the un-deduped path unchanged.
+    #[serde(default)]
+    send_id: Option<String>,
 }
 
 async fn send_handler(
@@ -1811,7 +1817,7 @@ async fn send_handler(
     Path(name): Path<String>,
     Json(input): Json<SendInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    lifecycle::send_text(&state, &name, &input.text).await?;
+    lifecycle::send_chat_text(&state, &name, &input.text, input.send_id.as_deref()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -1830,7 +1830,24 @@ fn reject_wrapper_markup(text: &str) -> Result<(), AppError> {
 /// their own transcript, not one session forging provenance in another's.
 pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
     reject_wrapper_markup(text)?;
-    send_harness_text(state, name, text, None).await
+    send_harness_text(state, name, text, None, None).await
+}
+
+/// [`send_text`] for the CHAT composer's `POST /send`, carrying the client's
+/// idempotency key. `send_id` (minted per message in
+/// `web/.../use-pending-sends.ts` and reused verbatim on every retry) lets the
+/// server recognise a re-POST of a message it already typed — a Retry over a
+/// false failure, or over a dropped response — and make it a NO-OP instead of a
+/// second prompt in the agent's queue. `None` keeps the un-deduped behaviour for
+/// callers with no client id.
+pub async fn send_chat_text(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    send_id: Option<&str>,
+) -> Result<(), AppError> {
+    reject_wrapper_markup(text)?;
+    send_harness_text(state, name, text, None, send_id).await
 }
 
 /// [`send_text`] for HARNESS-AUTHORED deliveries: no wrapper-markup guard, and
@@ -1869,6 +1886,7 @@ pub async fn send_harness_text(
     name: &str,
     text: &str,
     preview_text: Option<&str>,
+    send_id: Option<&str>,
 ) -> Result<(), AppError> {
     // ARCHIVE CONTRACT (B5/T5): `exists_active`, never the archive-blind
     // `exists`. This function AUTO-STARTS a session that is not alive (three
@@ -1907,6 +1925,18 @@ pub async fn send_harness_text(
 
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
+    // IDEMPOTENCY (chat Retry duplicate guard). Under the per-session lock, so a
+    // double-tap that races two POSTs cannot slip both past this check: the
+    // first types + records the id below, the second sees it here and returns
+    // Ok without typing. Only chat sends carry an id; harness callers pass None
+    // and are unaffected. The record happens ONLY after a successful delivery
+    // (below `set_last_send`), so a first attempt that 409s here or downstream
+    // records nothing and a retry with the same id proceeds normally.
+    if let Some(id) = send_id {
+        if state.send_dedup.seen(name, id) {
+            return Ok(());
+        }
+    }
     // RE-RESOLVE after a wake. `wake_for_send` → `start` can migrate a legacy
     // tmux session to native on its fresh start, which `runtime_invalidate`s the
     // cache — so `rt`, resolved BEFORE the wake, is now a handle to the dead tmux
@@ -1989,6 +2019,12 @@ pub async fn send_harness_text(
     let (preview, at) =
         db::sessions::set_last_send(&state.pool, name, preview_text.unwrap_or(text)).await?;
     broadcast_send(state, name, &preview, at);
+    // Record the idempotency key ONLY now that the text is genuinely typed +
+    // Entered + stamped: a re-POST with this id is a delivered message and must
+    // not be typed again. Still under the per-session lock taken above.
+    if let Some(id) = send_id {
+        state.send_dedup.record(name, id);
+    }
     Ok(())
 }
 
@@ -4173,7 +4209,7 @@ mod write_runtime_tests {
             .session_runtimes
             .insert("parked".to_string(), rt.clone());
 
-        let res = send_harness_text(&state, "parked", "retry after the first refusal", None).await;
+        let res = send_harness_text(&state, "parked", "retry after the first refusal", None, None).await;
 
         assert!(
             matches!(res, Err(AppError::Conflict(_))),
@@ -4219,7 +4255,7 @@ mod write_runtime_tests {
             .session_runtimes
             .insert("ready".to_string(), rt.clone());
 
-        send_harness_text(&state, "ready", "a real message", None)
+        send_harness_text(&state, "ready", "a real message", None, None)
             .await
             .expect("a ready composer must accept the send");
 
@@ -4230,6 +4266,47 @@ mod write_runtime_tests {
             s.last_send_text, "a real message",
             "a genuine delivery records last_send",
         );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// IDEMPOTENT SEND — the chat Retry duplicate guard. A re-POST carrying the
+    /// SAME `send_id` (a Retry over a false failure, or a double-tap) is typed
+    /// exactly ONCE; the second call is a no-op. A DIFFERENT id is a genuinely
+    /// new message and is typed again. Proves "Retry can never duplicate a
+    /// delivered message" at the delivery seam every writer passes through.
+    #[tokio::test]
+    async fn the_same_send_id_is_typed_once_a_different_id_types_again() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "idem", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let composer = "❯ Try \"fix tests\"\n  ? for shortcuts";
+        let rt = StubRuntime::parked_at(composer);
+        state.session_runtimes.insert("idem".to_string(), rt.clone());
+
+        // First delivery with key k1: typed + Entered + recorded.
+        send_harness_text(&state, "idem", "ship it", None, Some("k1"))
+            .await
+            .expect("first send delivers");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
+
+        // Retry with the SAME key: Ok, but nothing typed (dedup no-op).
+        send_harness_text(&state, "idem", "ship it", None, Some("k1"))
+            .await
+            .expect("a same-id re-POST is an accepted no-op, not an error");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the duplicate is NOT typed again");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
+
+        // A different key is a new message: typed again.
+        send_harness_text(&state, "idem", "ship it", None, Some("k2"))
+            .await
+            .expect("a new id delivers");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 2, "a genuinely new send is typed");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2);
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
@@ -4261,7 +4338,7 @@ mod write_runtime_tests {
         let rt = StubRuntime::parked_at(&screen);
         state.session_runtimes.insert("stale".to_string(), rt.clone());
 
-        let res = send_harness_text(&state, "stale", "retry into a bare shell", None).await;
+        let res = send_harness_text(&state, "stale", "retry into a bare shell", None, None).await;
         assert!(
             matches!(res, Err(AppError::Conflict(_))),
             "a retry whose CURRENT screen is a bare shell (stale agent glyphs only in \
@@ -4289,7 +4366,7 @@ mod write_runtime_tests {
         let rt = StubRuntime::capture_fails();
         state.session_runtimes.insert("blind".to_string(), rt.clone());
 
-        let res = send_harness_text(&state, "blind", "message into the unknown", None).await;
+        let res = send_harness_text(&state, "blind", "message into the unknown", None, None).await;
         assert!(
             matches!(res, Err(AppError::Conflict(_))),
             "a capture failure must refuse the send (fail closed), got {res:?}",
@@ -4319,7 +4396,7 @@ mod write_runtime_tests {
         let rt = StubRuntime::bare_shell_with_stale_capture("❯ Try \"fix tests\"\n  ? for shortcuts");
         state.session_runtimes.insert("nativebare".to_string(), rt.clone());
 
-        let res = send_harness_text(&state, "nativebare", "into the bare shell", None).await;
+        let res = send_harness_text(&state, "nativebare", "into the bare shell", None, None).await;
         assert!(
             matches!(res, Err(AppError::Conflict(_))),
             "shell_is_foreground()==Some(true) must refuse regardless of the capture, got {res:?}",
@@ -4347,7 +4424,7 @@ mod write_runtime_tests {
         Arc::get_mut(&mut rt).unwrap().shell_fg = Some(false);
         state.session_runtimes.insert("busy".to_string(), rt.clone());
 
-        send_harness_text(&state, "busy", "queue me", None)
+        send_harness_text(&state, "busy", "queue me", None, None)
             .await
             .expect("a send during a busy turn is a queue, not a refusal");
         assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the queued text is typed");

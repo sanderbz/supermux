@@ -50,8 +50,12 @@ export function restSessionInput(
     )
 
   return {
-    // Raw text. The server adds the Enter.
-    submit: (text: string) => post(inputRoutes.send(name), { text }),
+    // Raw text. The server adds the Enter. `send_id` (when the caller minted
+    // one) is the idempotency key the server dedups on — a retry that re-POSTs
+    // an already-typed message is a no-op there. `JSON.stringify` drops the key
+    // when it is absent, so a caller that passes no id sends `{text}` as before.
+    submit: (text: string, opts?: { sendId?: string }) =>
+      post(inputRoutes.send(name), { text, send_id: opts?.sendId }),
     insert: (text: string) =>
       post(inputRoutes.paste(name), { text, submit: false }),
     sendKey: (key: KeyName) => post(inputRoutes.keys(name), { keys: key }),

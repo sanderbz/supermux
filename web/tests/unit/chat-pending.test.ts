@@ -302,6 +302,40 @@ describe('the server’s delivery receipt', () => {
     expect(applyReceipt([p], receipt('revert', 41))).toEqual([p])
   })
 
+  test('a burst back-fills: the last member is text-matched, the earlier ones ride its receipt', () => {
+    // The scalar receipt only ever holds the LAST send's text, so only msg3 is
+    // text-matched. msg1/msg2 were POSTed (unconfirmed) and serialized ahead of
+    // it, so they were delivered too — they must not later show the false
+    // "didn't reach the session".
+    const msg1: PendingSend = { ...mk('one', 1_000), receiptAtS: 40 }
+    const msg2: PendingSend = { ...mk('two', 1_500), receiptAtS: 40 }
+    const msg3: PendingSend = { ...mk('three', 2_000), receiptAtS: 40 }
+    const out = applyReceipt([msg1, msg2, msg3], receipt('three', 42))
+    expect(out.map((p) => p.receipted)).toEqual([true, true, true])
+    // …and being receipted, none of them escalates.
+    for (const p of out) {
+      expect(watchdogState(p, { nowMs: WATCHDOG_MS * 10, sawActiveSince: () => false })).toBe(
+        'unconfirmed',
+      )
+    }
+  })
+
+  test('back-fill never confirms a NEWER un-matched send, nor a refused earlier one', () => {
+    // Newer than the matched send → serialized AFTER it, so its own receipt is
+    // still owed; must stay unreceipted.
+    const matched: PendingSend = { ...mk('matched', 1_000), receiptAtS: 40 }
+    const newer: PendingSend = { ...mk('newer', 2_000), receiptAtS: 40 }
+    // An earlier UNDELIVERED send may be a genuinely refused one (409, no
+    // last_send written) — atS ordering alone must not confirm it.
+    const refused: PendingSend = { ...mk('refused', 500, 'undelivered'), receiptAtS: 40 }
+    const out = applyReceipt([refused, matched, newer], receipt('matched', 41))
+    const byId = Object.fromEntries(out.map((p) => [p.text, p]))
+    expect(byId.matched.receipted).toBe(true)
+    expect(byId.newer.receipted).toBeUndefined()
+    expect(byId.refused.receipted).toBeUndefined()
+    expect(byId.refused.state).toBe('undelivered')
+  })
+
   test('a receipted send never escalates', () => {
     // It is IN the session. The only open question is when the transcript will
     // echo it — a queued prompt can sit there for minutes — and "didn't reach

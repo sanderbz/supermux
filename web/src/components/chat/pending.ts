@@ -59,6 +59,16 @@ export interface PendingSend {
   /** The session's `last_send_at` (server epoch SECONDS) as it read when this
    *  send left — the baseline the delivery receipt is compared against. */
   receiptAtS?: number
+  /**
+   * The client-generated idempotency key carried on `POST /send` (`send_id`).
+   *
+   * Stable across the send AND its retries: the server dedups on it, so a Retry
+   * (or a mis-tapped double-send) of a message it already typed is a no-op
+   * instead of a duplicate prompt in the agent's queue. Never a server id — it
+   * is minted here, before the POST, precisely so it survives a POST whose
+   * response never comes back.
+   */
+  sendId?: string
   /** The SERVER confirmed it typed this text into the pty (`set_last_send`,
    *  written by `/send` after the paste + Enter). Transport-independent, so it
    *  survives exactly the failure the watchdog cannot see through. */
@@ -265,6 +275,28 @@ export function receiptClaims(p: PendingSend, receipt: SendReceipt | null): bool
  * the server states it typed the text. Leaving the accusation up would leave a
  * Retry button over a message that landed, which is how the duplicate happens.
  *
+ * BURST BACK-FILL (the false-"didn't reach" fix). `last_send`/`last_send_at` is
+ * a single last-writer-wins scalar: when several sends are POSTed inside one
+ * turn, only the LAST one's text survives in the receipt, so only the last is
+ * text-matched here. The earlier members lose their receipt — their text was
+ * overwritten and/or their `last_send_at` collides at 1-second granularity —
+ * and later escalate to the false "This didn't reach the session" even though
+ * they were delivered and answered.
+ *
+ * They WERE delivered, and the receipt proves it: `POST /send` is processed
+ * SERIALLY under a per-session lock and `last_send_at` is monotonic, so once the
+ * server confirms ANY send at `receipt.atS`, every OLDER still-`unconfirmed`
+ * send (its own POST resolved 200, and it was submitted before this one) was
+ * necessarily typed into the pty before it. So when the receipt text-matches a
+ * pending, back-fill the receipt onto every older `unconfirmed` send too: they
+ * all become "queued behind that turn" (the correct line), and — being
+ * `receipted` — none escalates and none offers the duplicating Retry.
+ *
+ * Restricted to `unconfirmed` on purpose: an `undelivered` earlier send may be
+ * a genuinely REFUSED one (a 409 rejected its POST, and no `last_send` was ever
+ * written for it), which the atS ordering alone must not confirm. Only an exact
+ * text match (via `receiptClaims`) un-escalates an `undelivered` row.
+ *
  * Same reference back when nothing moved.
  */
 export function applyReceipt(
@@ -272,19 +304,35 @@ export function applyReceipt(
   receipt: SendReceipt | null,
 ): readonly PendingSend[] {
   if (!receipt) return pending
+  // The newest send the receipt text-matches. Older `unconfirmed` sends were
+  // serialized ahead of it, so they are delivered too. `-Infinity` = the receipt
+  // matched nothing, so there is no burst to back-fill and behaviour is exactly
+  // as before (a receipt for text no pending sent confirms nothing).
+  let matchedMaxAtMs = -Infinity
+  for (const p of pending) {
+    if (p.receipted || p.state === 'sending') continue
+    if (receiptClaims(p, receipt) && p.atMs > matchedMaxAtMs) matchedMaxAtMs = p.atMs
+  }
   let changed = false
   const next = pending.map((p) => {
     if (p.receipted || p.state === 'sending') return p
-    if (!receiptClaims(p, receipt)) return p
-    changed = true
-    return p.state === 'undelivered'
-      ? {
-          ...p,
-          receipted: true,
-          state: 'unconfirmed' as const,
-          note: 'It reached the session after all.',
-        }
-      : { ...p, receipted: true }
+    if (receiptClaims(p, receipt)) {
+      changed = true
+      return p.state === 'undelivered'
+        ? {
+            ...p,
+            receipted: true,
+            state: 'unconfirmed' as const,
+            note: 'It reached the session after all.',
+          }
+        : { ...p, receipted: true }
+    }
+    // Back-fill: an older unconfirmed send from the same burst.
+    if (p.state === 'unconfirmed' && p.atMs < matchedMaxAtMs) {
+      changed = true
+      return { ...p, receipted: true }
+    }
+    return p
   })
   return changed ? next : pending
 }

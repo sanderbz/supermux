@@ -217,7 +217,7 @@ pub async fn delegate(
         // never should have, so answer 400 rather than emit forgeable markup.
         let wrapped = wrap_delegation(from, &input.prompt)
             .map_err(|e| AppError::BadRequest(e.into()))?;
-        lifecycle::send_harness_text(&state, to, &wrapped, Some(&input.prompt)).await?;
+        lifecycle::send_harness_text(&state, to, &wrapped, Some(&input.prompt), None).await?;
     } else {
         lifecycle::send_text(&state, to, &input.prompt).await?;
     }

@@ -68,6 +68,16 @@ describe('restSessionInput', () => {
     expect(calls[0].body).toEqual({ text: 'hello' })
   })
 
+  test('an idempotency key rides the /send body as send_id; without one the body is unchanged', async () => {
+    const { calls, input } = restRig()
+    await input.submit('hello', { sendId: 'k-7' })
+    expect(calls[0].body).toEqual({ text: 'hello', send_id: 'k-7' })
+    // No opts → the key is absent from the wire (JSON drops the undefined), so a
+    // caller that mints no id sends exactly `{text}` as before.
+    await input.submit('bye')
+    expect(calls[1].body).toEqual({ text: 'bye' })
+  })
+
   test('the name is URL-encoded into the path', async () => {
     const calls: Call[] = []
     const input = restSessionInput('a/b c', {

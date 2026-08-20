@@ -96,7 +96,9 @@ export function terminalSessionInput(source: TerminalSource): SessionInput {
     typeof source === 'function' ? source() : source
 
   return {
-    // The ONE place a submit CR is appended in the app.
+    // The ONE place a submit CR is appended in the app. `sendId` (the REST
+    // plane's idempotency key) has no meaning here — this types straight into
+    // the pty — so the second argument is accepted and ignored.
     submit: (text: string) => {
       term()?.send(`${text}\r`)
       return Promise.resolve()

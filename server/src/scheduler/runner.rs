@@ -293,7 +293,7 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
 
     for (sent, preview) in deliveries(sched, wrap) {
         if let Err(e) =
-            sessions::lifecycle::send_harness_text(state, &sched.session, &sent, Some(&preview))
+            sessions::lifecycle::send_harness_text(state, &sched.session, &sent, Some(&preview), None)
                 .await
         {
             return JobOutcome {

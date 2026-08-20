@@ -250,6 +250,12 @@ pub struct AppState {
     /// Per-session serialization locks. Added on first use; removed in
     /// `sessions::delete`/`archive`.
     pub session_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Idempotency ledger for chat `POST /send`: the client-generated `send_id`s
+    /// recently typed into each session, so a Retry (or a double-tapped resend)
+    /// of an already-delivered message is a no-op instead of a duplicate prompt.
+    /// Memory-only, self-pruned by TTL + cap; a restart simply forgets. See
+    /// [`crate::sessions::send_dedup`].
+    pub send_dedup: Arc<crate::sessions::send_dedup::SendDedup>,
     /// Per-session status watch channels (the wait-primitive seam).
     /// Empty until the detector drives updates; the map + cleanup ensures
     /// churn never leaks entries.
@@ -508,6 +514,7 @@ impl AppState {
             push_attempts: Arc::new(crate::push::AttemptLog::default()),
             pending_pushes: Arc::new(DashMap::new()),
             session_locks: Arc::new(DashMap::new()),
+            send_dedup: Arc::new(crate::sessions::send_dedup::SendDedup::default()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
             pane_conversations: Arc::new(DashMap::new()),
@@ -1301,6 +1308,7 @@ impl AppState {
     /// `DashMap` entries.
     pub fn forget_session(&self, name: &str) {
         self.session_locks.remove(name);
+        self.send_dedup.forget(name);
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
         // The pane map is keyed by (session, pane): retain-scan it so a deleted
@@ -1383,6 +1391,10 @@ impl AppState {
         if let Some((_, v)) = self.session_locks.remove(old) {
             self.session_locks.insert(new.to_string(), v);
         }
+        // The dedup ledger is a small TTL'd set of recently-typed ids; a rename
+        // is rare and the worst case of dropping it is one retry re-delivering
+        // once, so forget the old name rather than carry internals across.
+        self.send_dedup.forget(old);
         if let Some((_, v)) = self.status_watch.remove(old) {
             self.status_watch.insert(new.to_string(), v);
         }

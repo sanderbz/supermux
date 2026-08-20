@@ -61,8 +61,13 @@ export interface SessionInput {
   /** Text + submit, atomically. The REST path posts `/send`, which appends the
    *  Enter itself (and the provider submit gap); the terminal path appends
    *  exactly one `\r`. Callers NEVER add a trailing CR of their own — that is
-   *  the double-submit hazard this interface exists to remove. */
-  submit(text: string): Promise<void>
+   *  the double-submit hazard this interface exists to remove.
+   *
+   *  `opts.sendId` is an optional client-generated idempotency key: the REST
+   *  plane carries it on `POST /send` as `send_id` and the server dedups on it,
+   *  so a Retry of an already-delivered message can never duplicate it. The
+   *  terminal plane types into the pty directly and ignores it. */
+  submit(text: string, opts?: { sendId?: string }): Promise<void>
   /** Text WITHOUT submit — bracketed paste on the REST plane, raw bytes on the
    *  terminal. The insert surfaces (attachments, snippets, pickers) use this. */
   insert(text: string): Promise<void>
