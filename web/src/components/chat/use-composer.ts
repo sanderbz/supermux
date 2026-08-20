@@ -36,6 +36,7 @@ export const DRAFT_PREVIEW_CHARS = 60
 // hook — and React, and delegate-intent, and the session-input plumbing — into
 // their chunks. NOT re-exported: a barrel here would undo exactly that.
 import { composerKeyIntent } from './composer-keys'
+import { useMediaQuery } from '../../hooks/use-media-query'
 
 // ── The hook ────────────────────────────────────────────────────────────────
 
@@ -482,6 +483,13 @@ export function useComposer({
   // offset: clearing the box and typing `@` again is a new question.
   const [closed, setClosed] = React.useState<{ start: number; text: string } | null>(null)
   const pickerApi = React.useRef<ComposerPickerApi | null>(null)
+  // COARSE POINTER = the soft-keyboard contract: a bare Enter breaks the line and
+  // the send DISC is the send (like every native chat app), so Enter-to-send never
+  // fires on the reflexive key a thumb hits reaching for the next word (the field
+  // shows a Return key — `enterKeyHint` in composer.tsx). Gated on the pointer, NOT
+  // the surface — the grok chat pane is `surface="desktop"` (a real <textarea>) yet
+  // runs on the phone. Desktop (fine pointer) keeps Enter=submit, unchanged.
+  const coarse = useMediaQuery('(pointer: coarse)')
 
   // Publish the field so `insertIntoComposer` (and therefore every insert
   // surface in the app) can find this session's caret.
@@ -768,7 +776,13 @@ export function useComposer({
         // message they still want to send.
         notice: notice !== null,
       })
-      if (intent === 'pass' || intent === 'newline') return // the browser types it
+      // MOBILE (coarse pointer): a bare Enter breaks the line — the send DISC is
+      // the send. Fold it into the `pass`/`newline` early return, so a plain
+      // submit-Enter falls through to the browser, which inserts the line break
+      // (the same path Shift+Enter takes). Desktop leaves `coarse` false, so
+      // Enter=submit is byte-identical to before. (The `@`/`/` popover, when it is
+      // open, keeps its own Enter — completing the highlighted row — below.)
+      if (intent === 'pass' || intent === 'newline' || (coarse && intent === 'submit')) return
       // A picker Enter that has nothing to accept must still SEND. The
       // preventDefault therefore waits until the outcome is known — the one
       // place in this handler where the order matters.
@@ -778,7 +792,10 @@ export function useComposer({
           e.preventDefault()
           return
         }
-        if (e.key === 'Tab') return // nothing to complete: Tab keeps its browser meaning
+        // Nothing to complete: Tab keeps its browser meaning; and on mobile a bare
+        // Enter breaks the line rather than sending — both fall through to the
+        // browser, so only a desktop (fine-pointer) Enter reaches submit.
+        if (e.key === 'Tab' || coarse) return
         e.preventDefault()
         submit()
         return
@@ -798,7 +815,7 @@ export function useComposer({
       else if (intent === 'picker-close') closePicker()
       else if (intent === 'notice-dismiss') setNotice(null)
     },
-    [active, closePicker, name, notice, pickerOpen, set, stop, submit],
+    [active, closePicker, coarse, name, notice, pickerOpen, set, stop, submit],
   )
 
   // Derived, never stored — the same discipline as `trigger`. A second copy of

@@ -560,7 +560,14 @@ export function ChatComposer({
           // spellcheck is the right default, and autocapitalise/autocorrect are
           // what a phone keyboard expects from one.
           spellCheck: true,
-          enterKeyHint: 'send',
+          // A soft keyboard shows a RETURN key, not "Send" — Enter breaks the line
+          // and the send DISC sends (BUG: the iOS keyboard showed "Send" and Enter
+          // submitted). `enterKeyHint` only reaches VIRTUAL keyboards, which are a
+          // touch (coarse-pointer) surface, and there the composer's Enter IS a
+          // newline (`use-composer.ts` gates that on the same coarse pointer) — so
+          // 'enter' is unconditional: a physical desktop keyboard ignores the hint
+          // and still submits on Enter, unchanged.
+          enterKeyHint: 'enter',
           // The `@`/`/` popover, as a relationship a screen reader can follow.
           // Without it the popover was invisible to assistive tech: nothing
           // announced that suggestions had appeared, ↑/↓ moved a highlight that
@@ -1035,19 +1042,23 @@ function SendIcon() {
  *  direct desktop file-picker button (the mobile add-menu rule is paperclip-
  *  free, but there attach is a labelled ROW, not an icon).
  *
- *  SIZED TO ITS NEIGHBOURS (owner: "the attachment icon is smaller / cramped").
- *  The old glyph was an 17px path drawn in the LOW-RIGHT of an 18-viewBox — it
- *  filled ~58% of its cell where `@` and the clock fill ~72–75%, so beside them
- *  it read a size down. This is the same full-bleed paperclip drawn on a 24
- *  viewBox rendered at 18px, so the glyph is centred and fills the cell to the
- *  same optical weight as `AtIcon`/`ClockIcon` — one considered leading set. */
+ *  OPTICALLY MATCHED TO ITS NEIGHBOURS (owner: first the paperclip read SMALLER,
+ *  then the over-correction made it read LARGER — "visueel te groot tov de
+ *  anderen"). The old glyph was a busy double-curl whose ink measured a size UP
+ *  against the compact `@`/clock circles (~14.6×15.5 vs their ~13×13). This is the
+ *  canonical single-loop paperclip — the inner wire runs straight and parallel to
+ *  the outer, no curl — drawn on a 24-viewBox at 18px: its ink WIDTH lands 13.2px,
+ *  level with `@` (13) and the clock (13.6) in the rig, stroke 2.0 (≈1.5px at 18px,
+ *  the weight `@`'s 1.4 carries). The diagonal reads heavier per unit than a
+ *  compact circle, so matching the WIDTH (not the taller diagonal bounding) is
+ *  what makes the three read as one size. */
 function PaperclipIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path
-        d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"
+        d="M21 11l-9 9a6 6 0 01-8-8l9-9a4 4 0 016 6l-9 9"
         stroke="currentColor"
-        strokeWidth="1.9"
+        strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

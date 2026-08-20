@@ -416,7 +416,21 @@ export function Layout() {
       // `use-keyboard-viewport.ts` uses on its overlay path — on a coarse pointer
       // nothing but the soft keyboard shrinks the visual viewport that far.
       const inset = Math.max(0, window.innerHeight - v.height - v.offsetTop)
-      if (inset > 80) el.style.setProperty('--grok-vvh', `${v.height}px`)
+      // FLUSH, NOT FLOATING (owner: "zwarte balk BOVEN de keyboard, composer zit
+      // te hoog"). The shell is normal flow at the LAYOUT top (y=0), so its bottom
+      // sits at `--grok-vvh` in layout coordinates. The keyboard top in those same
+      // coordinates is `offsetTop + v.height` — iOS scrolls the visual viewport
+      // DOWN by `offsetTop` to keep the focused <textarea> (and its form-accessory
+      // bar) above the keys, and that offset does NOT reliably return to 0. So
+      // `v.height` alone put the shell bottom `offsetTop` px ABOVE the keyboard —
+      // the floated composer over a black band (the same over-reservation
+      // `mobile-sheet.tsx` fixed: it stopped lifting by the raw inset and
+      // positioned by `offsetTop`). Folding `offsetTop` back in lands the shell
+      // bottom ON the keyboard top whatever iOS scrolled; at `offsetTop == 0` (the
+      // ideal, and the rig) it reduces to `v.height`, so the emulable path is
+      // unchanged.
+      if (inset > 80)
+        el.style.setProperty('--grok-vvh', `${v.height + v.offsetTop}px`)
       else el.style.removeProperty('--grok-vvh')
     }
     const schedule = () => {

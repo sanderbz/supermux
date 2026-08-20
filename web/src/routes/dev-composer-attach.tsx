@@ -41,12 +41,24 @@ export default function DevComposerAttach() {
     onSent: staged.reset,
   })
 
-  const phone =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('surface') === 'phone'
+  const q =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams()
+  const phone = q.get('surface') === 'phone'
+  // `?grok=1` stamps `data-grok` so the grok-scoped composer CSS (leading-cluster
+  // gap, disc sizing) actually applies — this is how the rig reviews the grok
+  // CHAT pane's real full-width 📎·@·🕐 trio at 390px (that pane ships
+  // `surface="desktop"` on the phone). `?schedule=1` wires an inert `onSchedule`
+  // so the 🕐 (the third leading icon) is drawn. Both DEV-only, prod-inert.
+  const grok = q.get('grok') === '1'
+  const schedulable = q.get('schedule') === '1'
 
   return (
-    <div className="flex min-h-dvh items-end justify-center bg-paper p-8 text-ink">
+    <div
+      {...(grok ? { 'data-grok': '' } : {})}
+      className="flex min-h-dvh items-end justify-center bg-paper p-8 text-ink"
+    >
       <div className="w-full max-w-[840px]">
         <ChatComposer
           name={NAME}
@@ -54,6 +66,7 @@ export default function DevComposerAttach() {
           handle={handle}
           surface={phone ? 'phone' : 'desktop'}
           attachments={staged}
+          onSchedule={schedulable ? noop : undefined}
           // On the phone the Attach group lives in the `+` add-menu, which only
           // renders when `actions` is present — so wire inert ones here.
           actions={
