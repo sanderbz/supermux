@@ -19,7 +19,7 @@
 // compared against are server-stamped. Wire entries carry `ts` in SECONDS
 // (`recall.rs parse_ts`); the conversion happens here, exactly once.
 
-import type { ChatEntry } from './entries'
+import { newestAgentTs, type ChatEntry } from './entries'
 
 export type PendingState = 'sending' | 'unconfirmed' | 'undelivered'
 
@@ -116,12 +116,33 @@ export const PROMPT_CLAMP_CHARS = 8_000
 export const FUTURE_TOLERANCE_MS = 60_000
 
 /**
- * The chat view's user-authored kinds (`recall.rs read_chat_turns` keeps
- * `Prompt | Command | Teammate`). `teammate` is excluded on purpose: that turn
- * was authored by another agent, so matching one to our send would confirm a
- * delivery that never happened.
+ * The display kinds a promoted/echoed USER message can carry — the candidates
+ * `reconcile` matches an optimistic send against in the confirmed transcript.
+ * This is the user-INITIATED set `wire-entries.ts::SURVIVING_KINDS` keeps (the
+ * twin of `recall.rs::Kind::is_user_initiated`) MINUS `teammate`, plus the
+ * `notification`/`image` wrapper kinds `toDisplayList` also draws as `user`.
+ *
+ * `teammate` is excluded on purpose: that turn was authored by ANOTHER agent,
+ * so matching one to our send would confirm a delivery that never happened.
+ *
+ * The rest are all a deliberate human action on THIS session's behalf — a typed
+ * prompt, a slash `command`, a colleague's `@`-handoff (`delegation`), a
+ * `schedule` this owner set earlier, an attached `image`, a `notification`. The
+ * previous list was `['prompt', 'command']` only, so a queued send Claude Code
+ * promoted to a `delegation`/`schedule` (or any non-`prompt`) user entry stayed
+ * invisible to `reconcile` and its optimistic row parked forever BESIDE the
+ * confirmed bubble — the #13 duplicate. Every kind here renders as one `user`
+ * bubble in `toDisplayList`, so reconciling against it removes the placeholder
+ * and leaves the transcript copy as the sole survivor.
  */
-const USER_KINDS: readonly string[] = ['prompt', 'command']
+const USER_KINDS: readonly string[] = [
+  'prompt',
+  'command',
+  'delegation',
+  'schedule',
+  'notification',
+  'image',
+]
 
 /**
  * Trailing/leading whitespace + CRLF collapsed; nothing else.
@@ -333,6 +354,68 @@ export function applyReceipt(
       return { ...p, receipted: true }
     }
     return p
+  })
+  return changed ? next : pending
+}
+
+/**
+ * Settle-and-REMOVE a receipted row the transcript has demonstrably moved past —
+ * the window-eviction exit `applyReceipt` was missing, and the core of #45.
+ *
+ * `receipted` proves the server typed the text into the pty. It correctly stops
+ * the false "didn't reach the session" escalation, but it also pins the row at
+ * `unconfirmed` FOREVER (`watchdogState`, "if (p.receipted) return
+ * 'unconfirmed'"), and its only removal path is `reconcile` matching the
+ * promoted user echo in the confirmed transcript. On a long, tool-heavy turn
+ * (Claude runs 30–100 calls/turn) that echo is buried below — or evicted
+ * entirely from — the bounded recall window before `reconcile` ever sees it, so
+ * the row parks on "queued behind that turn" with a live receipt line under an
+ * answer that has already come and gone. That is the reported IMG_2441 stuck
+ * state: delivered AND answered, yet the optimistic row never clears.
+ *
+ * The exit: a receipted send whose message has DEMONSTRABLY been handled is
+ * done, echo in-window or not. "Handled" = the session has since returned to
+ * IDLE and an agent turn produced output stamped AFTER the send. Claude Code
+ * drains its input queue at the turn boundary (a0-findings §5: enqueue →
+ * dequeue → the promoted `user` entry, same text → the answer), so `receipted` +
+ * a newer agent turn + no turn still running is exactly "delivered and
+ * answered".
+ *
+ * WHY IDLE IS LOAD-BEARING, and not the `newestAgentTs > send` test on its own:
+ * a send QUEUED behind a still-running turn is GENUINELY still queued, and that
+ * turn is itself emitting agent entries stamped after the send. Clearing on
+ * those would yank the correct "queued behind that turn" indicator out from
+ * under a message that has not been reached yet — the exact live state the row
+ * exists to show. While the queued-behind turn runs the session reads active, so
+ * this stays its hand; it fires only once the queue has drained to idle, which
+ * cannot happen before the message has been consumed. Idle here DEFERS a
+ * removal, it never manufactures one: the delivery is already PROVEN by
+ * `receipted`, never inferred from status (the module's inverted-detection rule
+ * is intact — status only ever holds a removal back, never asserts one).
+ *
+ * Same reference back when nothing settled — the caller runs this off its own
+ * output and must not loop.
+ */
+export function settleReceipted(
+  pending: readonly PendingSend[],
+  entries: readonly ChatEntry[],
+  ctx: { active: boolean },
+): readonly PendingSend[] {
+  // A turn is still running: any queued send is legitimately still queued, and
+  // an agent entry after it belongs to the turn it is queued behind. Wait.
+  if (ctx.active) return pending
+  // `newestAgentTs` is epoch SECONDS (0 when the tail has no agent turn); the
+  // row's stamp is server-clock ms. No agent output after the send yet ⇒ no
+  // answer to settle against.
+  const agentMs = newestAgentTs(entries) * 1000
+  if (agentMs === 0) return pending
+  let changed = false
+  const next = pending.filter((p) => {
+    if (p.receipted && agentMs > p.atMs) {
+      changed = true
+      return false
+    }
+    return true
   })
   return changed ? next : pending
 }

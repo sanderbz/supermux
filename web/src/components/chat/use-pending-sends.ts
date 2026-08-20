@@ -34,6 +34,7 @@ import {
   latchUndelivered,
   markInlineOwned,
   reconcile,
+  settleReceipted,
   watchdogState,
   WATCHDOG_MS,
   type PendingSend,
@@ -209,16 +210,22 @@ export function usePendingSends({
     update(name, (cur) => applyReceipt(cur, { text: receiptText, atS: receiptAtS }))
   }, [name, receiptText, receiptAtS])
 
-  // Reconcile in RENDER (so a confirmed send never survives a frame as an echo)
-  // and prune the store in an effect. `reconcile` only ever removes, so the two
-  // converge in one pass and the guard in `update` stops the loop.
-  const live = reconcile(acked, entries, nowMs)
+  // SETTLE receipted rows the transcript has moved past (a queued mid-turn send,
+  // delivered AND answered, whose promoted echo fell out of the recall window
+  // before `reconcile` could match it — #45), THEN reconcile the in-window echoes
+  // away. Both only ever REMOVE, so they compose in one pass; `settleReceipted`
+  // reads `active` so a genuinely-still-queued row keeps its "queued behind that
+  // turn" indicator until the turn ends. Done in RENDER (so a confirmed send
+  // never survives a frame as an echo) and pruned into the store in an effect —
+  // the guard in `update` stops the loop.
+  const live = reconcile(settleReceipted(acked, entries, { active }), entries, nowMs)
   React.useEffect(() => {
     update(name, (cur) => {
-      const next = reconcile(cur, entries, serverNowMs())
+      const settled = settleReceipted(cur, entries, { active })
+      const next = reconcile(settled, entries, serverNowMs())
       return next.length === cur.length ? cur : next
     })
-  }, [name, entries])
+  }, [name, entries, active])
 
   // What is ALREADY on screen, for the clock-free half of reconciliation. A ref
   // rather than a dependency: it is read at the moment Enter is pressed, and a

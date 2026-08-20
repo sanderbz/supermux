@@ -21,12 +21,14 @@ import type { ChatEntry } from '../../src/components/chat/entries'
 import {
   applyReceipt,
   CONFIRM_SKEW_MS,
+  deliveryLine,
   isInlineOwned,
   latchUndelivered,
   markInlineOwned,
   normalizeSend,
   PROMPT_CLAMP_CHARS,
   reconcile,
+  settleReceipted,
   watchdogState,
   WATCHDOG_MS,
   type PendingSend,
@@ -136,6 +138,85 @@ describe('reconcile', () => {
     // goes away instead of accusing a delivery that happened.
     const out = reconcile([mk('ship it', 1_000, 'undelivered')], [entry('ship it', 9_000)], 10_000)
     expect(out).toEqual([])
+  })
+
+  // #13 — a queued send Claude Code promotes to a NON-`prompt` user kind still
+  // reconciles, so the optimistic row leaves and does not stand beside the
+  // confirmed bubble as a duplicate.
+  test('a promoted `delegation` echo reconciles the optimistic row away', () => {
+    const out = reconcile([mk('ship it', 1_000)], [entry('ship it', 1_500, 'delegation')], 2_000)
+    expect(out).toEqual([])
+  })
+
+  test('a promoted `schedule` echo reconciles the optimistic row away', () => {
+    const out = reconcile([mk('nightly deploy', 1_000)], [entry('nightly deploy', 1_500, 'schedule')], 2_000)
+    expect(out).toEqual([])
+  })
+
+  test('a `teammate` entry with the same text never claims a pending', () => {
+    // Still excluded: that turn was authored by ANOTHER agent, so matching it
+    // would confirm a delivery of OUR send that never happened.
+    const out = reconcile([mk('status?', 1_000)], [entry('status?', 1_500, 'teammate')], 2_000)
+    expect(out).toHaveLength(1)
+  })
+})
+
+describe('settleReceipted — the window-eviction exit (#45)', () => {
+  /** A receipted, queued mid-turn row (delivered per the server, no transcript
+   *  echo in the window yet). */
+  function receiptedQueued(text: string, atMs: number): PendingSend {
+    return { ...mk(text, atMs), receipted: true, activeAtSend: true }
+  }
+
+  test('a receipted row clears once idle AND an agent turn answered after the send', () => {
+    // Delivered (receipted) and answered (an assistant entry after the send),
+    // session back to idle — the echo need not be in the window. This is the
+    // IMG_2441 stuck state clearing.
+    const p = receiptedQueued('revert the migration', 10_000)
+    const answered = [entry('done', 40_000, 'assistant')]
+    expect(settleReceipted([p], answered, { active: false })).toEqual([])
+  })
+
+  test('it does NOT clear while the session is still active — the message is genuinely queued', () => {
+    // The turn it is queued behind is still running and emitting agent entries
+    // stamped after the send. Clearing here would pull the correct "queued
+    // behind that turn" indicator out from under an unhandled message.
+    const p = receiptedQueued('revert the migration', 10_000)
+    const midTurn = [entry('still working', 20_000, 'tool_use')]
+    const out = settleReceipted([p], midTurn, { active: true })
+    expect(out).toHaveLength(1)
+    // …and the live indicator still shows the queued sentence.
+    expect(deliveryLine(out[0], { active: true })).toContain('queued behind that turn')
+  })
+
+  test('it does NOT clear when no agent turn has produced output after the send', () => {
+    // Idle, receipted, but the only agent entry predates the send: no answer to
+    // settle against.
+    const p = receiptedQueued('revert the migration', 10_000)
+    const before = [entry('old reply', 5_000, 'assistant')]
+    expect(settleReceipted([p], before, { active: false })).toHaveLength(1)
+  })
+
+  test('it never clears an UNRECEIPTED row, however quiet the session', () => {
+    // No server receipt = no proof of delivery, so an idle session with agent
+    // output is not evidence THIS send landed. The watchdog still owns it.
+    const p = mk('revert the migration', 10_000)
+    const answered = [entry('done', 40_000, 'assistant')]
+    expect(settleReceipted([p], answered, { active: false })).toEqual([p])
+  })
+
+  test('same reference back when nothing settled', () => {
+    const cur = [receiptedQueued('x', 10_000)]
+    expect(settleReceipted(cur, [], { active: false })).toBe(cur)
+  })
+
+  test('a live in-flight send in the same list is never dropped', () => {
+    // A `sending` row (POST not back) is not receipted, so settle leaves it —
+    // only the answered receipted row goes.
+    const inflight = mk('typing', 41_000, 'sending')
+    const done = receiptedQueued('revert', 10_000)
+    const out = settleReceipted([done, inflight], [entry('ok', 40_000, 'assistant')], { active: false })
+    expect(out).toEqual([inflight])
   })
 })
 

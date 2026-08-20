@@ -245,7 +245,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
  *  purpose: Claude writes the user's own prompt to the transcript within ~1s
  *  of the send, so a gate that counted it would fire before the agent has
  *  confirmed anything (and, with the `last_send_at` turn anchor, always). */
-export function newestAgentTs(entries: ChatEntry[]): number {
+export function newestAgentTs(entries: readonly ChatEntry[]): number {
   const e = entries.find((x) => x.kind === 'assistant' || x.kind === 'tool_use')
   return e ? e.ts : 0
 }
