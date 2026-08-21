@@ -513,8 +513,14 @@ function AgentForm({
         </p>
       )}
 
-      {/* Footer — labels shift per step (hire a colleague, not launch a job). */}
-      <div className="flex gap-2 px-6 pb-6 pt-4">
+      {/* Footer — pinned to the bottom of the sheet's scroll body so the primary
+          action is ALWAYS reachable, never pushed below the viewport-capped
+          sheet by a tall body (Advanced open / the connector catalog) or hidden
+          behind the soft keyboard. `sticky bottom-0` keeps it in the same single
+          scroll body the fields use (DRY with the working sheets) while the body
+          scrolls behind it; an opaque bg + top border read it as a footer.
+          Labels shift per step (hire a colleague, not launch a job). */}
+      <div className="sticky bottom-0 z-10 flex gap-2 border-t border-border bg-background px-6 pb-6 pt-4">
         {step === 'describe' ? (
           <>
             <Button type="button" variant="ghost" className="flex-1" onClick={onCancel}>
@@ -622,12 +628,15 @@ function DescribeStep(props: {
         <label htmlFor="ns-goal" className="text-[15px] font-semibold text-foreground">
           What should this bot do?
         </label>
+        {/* NO autoFocus — the same iOS-PWA Vaul keyboard-during-open race the
+            start-team-sheet documents: the keyboard popping mid-slide-in makes
+            Vaul cache `initialDrawerHeight` from the still-translated drawer and
+            the sheet ends up half-cropped (owner IMG_2478). Users tap to focus. */}
         <textarea
           id="ns-goal"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           rows={3}
-          autoFocus
           placeholder="Review my PRs and post a summary to Slack."
           className="w-full resize-y rounded-xl border border-input bg-transparent px-3 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
@@ -838,10 +847,12 @@ function ConnectStep({ slug, mock }: { slug: string; mock?: ConnectorCard[] }) {
         </p>
       </div>
 
-      {/* The store is the tall part — give it its own bounded scroll region so
-          the sheet's Skip / Finish actions stay on-screen instead of being
-          pushed below the fold by the catalog. */}
-      <div data-grok className="max-h-[52vh] overflow-y-auto overscroll-contain">
+      {/* The store is the tall part — it flows in the sheet's SINGLE scroll body
+          (no inner max-h cap) so the outer ResponsiveSheet (maxHeight:var(--vvh))
+          governs the height and the catalog scrolls within it. The Skip / Finish
+          actions stay on-screen because the footer is `sticky bottom-0`, not
+          because the catalog is boxed off. */}
+      <div data-grok>
         {emptyVault ? (
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-muted/20 px-6 py-10 text-center">
             <Plus className="size-6 text-muted-foreground" aria-hidden />
