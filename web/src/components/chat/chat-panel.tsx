@@ -64,7 +64,7 @@ import { LoginCard, ProviderAuthCard } from './login-card'
 import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
-import { selectionInside } from './selection'
+import { useDeferredFollow } from './follow-bottom'
 import { useTapToDismissKeyboard } from './use-tap-to-dismiss'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
@@ -387,13 +387,24 @@ export default function ChatPanel({
   const coarse = useMediaQuery('(pointer: coarse)')
   useTapToDismissKeyboard(scrollRef, coarse)
 
+  // The follow-bottom gate. `selectionInside(el)` already stood this write DOWN
+  // while a selection was held (keeping the highlight), but nothing RESUMED the
+  // follow when the selection cleared — so after a copy a reader who had drifted
+  // below the live bottom stayed stuck scrolled up until some later render moved
+  // the view. `useDeferredFollow` keeps the same stand-down AND flushes the
+  // deferred scroll the instant the selection clears (see `follow-bottom.ts`).
+  const follow = useDeferredFollow()
+
   React.useEffect(() => {
     const el = scrollRef.current
     if (!el || !pinnedRef.current) return
-    if (selectionInside(el)) return
     const bottom = el.scrollHeight - el.clientHeight
     if (Math.abs(el.scrollTop - bottom) < 1) return
-    el.scrollTop = bottom
+    follow(() => {
+      const e = scrollRef.current
+      if (!e || !pinnedRef.current) return
+      e.scrollTop = e.scrollHeight - e.clientHeight
+    })
   })
 
   // …and the same pin, for the one thing that grows WITHOUT re-rendering this
@@ -408,10 +419,13 @@ export default function ChatPanel({
     if (!el || !followsFooterGrowth(el, grewBy)) return
     pinnedRef.current = true
     // Same rule as the effect above: a reader holding a selection in the track
-    // keeps it, even at the cost of the newest band being briefly covered.
-    if (selectionInside(el)) return
-    el.scrollTop = el.scrollHeight
-  }, [])
+    // keeps it (the write is deferred), even at the cost of the newest band being
+    // briefly covered — and the follow resumes the instant the selection clears.
+    follow(() => {
+      const e = scrollRef.current
+      if (e) e.scrollTop = e.scrollHeight
+    })
+  }, [follow])
 
   // ── The input plane (fase A4 T3) ───────────────────────────────────────────
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft

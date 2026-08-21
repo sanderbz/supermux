@@ -108,6 +108,12 @@ const DevPickers = import.meta.env.DEV
 const DevRendererThrash = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-renderer-thrash'))
   : null
+// Text-selection stand-down bench: the REAL chat follow hook + a REAL xterm,
+// used by the offline rig to prove a held selection survives the peek re-render /
+// height reflow. Dev-only, absent from the production bundle.
+const DevSelectionProbe = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-selection-probe'))
+  : null
 // Shared-browser TAKEOVER bench (connector phase 2): the canvas panel fed
 // either a live `/ws/browser/{name}/takeover` socket (`?session=NAME`) or an
 // authentic captured frame with no server at all (`?mock=1`). Phase 3 moves
@@ -346,6 +352,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevRendererThrash />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevSelectionProbe && (
+                <Route
+                  path="/dev/selection-probe"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevSelectionProbe />
                     </Suspense>
                   }
                 />

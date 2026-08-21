@@ -198,6 +198,28 @@ const MAX_BACKOFF_MS = 30_000
 const MAX_ATTEMPTS = 6 // 1011 server-error path then permanent
 const RESIZE_DEBOUNCE_MS = 100
 const VISIBILITY_DEBOUNCE_MS = 2_000
+
+/**
+ * Should a viewport reflow be DEFERRED because the reader holds a text selection?
+ *
+ * xterm's SelectionService clears the selection on `onResize(rowsChanged)` — so a
+ * `fit()` that changes the ROW COUNT (a height / keyboard / visualViewport nudge)
+ * WIPES a highlight the reader is mid-copy on. On mobile the ~1s hot-cadence
+ * re-render re-pins the terminal container height to `var(--vvh)`, so the
+ * ResizeObserver fires a height-only `fit()` on (or before) the next tick and the
+ * selection vanishes "within a second" — the terminal analogue of the chat
+ * scroll-follow wipe (`follow-bottom.ts`), which the chat-only guards never
+ * covered because xterm's selection is a canvas model, not a DOM Range.
+ *
+ * DEFER a NON-width reflow while a selection is held; a real WIDTH change (a
+ * rotation, a split resize, a font change) still refits IMMEDIATELY so the pty
+ * geometry never sticks wrong. `term.write()` of live pty bytes is NEVER gated —
+ * it does not clear the selection — so output keeps streaming during a copy; only
+ * the geometry mutation waits, and it flushes the instant the selection clears.
+ */
+export function shouldDeferReflow(hasSelection: boolean, widthChanged: boolean): boolean {
+  return hasSelection && !widthChanged
+}
 // Resume staleness ceiling. The server pings every 20s and reaps a client that
 // stays silent past a 30s deadline (ws/mod.rs PING_EVERY / PONG_DEADLINE) — a
 // page hidden longer than this has likely been reaped server-side even when
@@ -770,7 +792,24 @@ export function useLiveTerm(
     // ARE coloured (authoritative SGR from tmux); the existing rows below are
     // re-emitted as plain text (xterm exposes no SGR read-back) — an acceptable
     // trade only taken to avoid a black void on an evicted history.
+    // ── Text-selection stand-down state (shared with the ResizeObserver) ──────
+    // Both wipers below clear an xterm selection: a `fit()` whose row count
+    // changes (ResizeObserver) and the `t.reset()` inside `fillGapAndRepaint`.
+    // While the reader holds a selection we DEFER each and record it here, then
+    // flush the pending one(s) the instant the selection clears (the single
+    // `onSelectionChange` listener registered after the RO). `term.write()` of
+    // live pty bytes is never gated — output streams throughout.
+    let fitDeferred = false
+    let gapDeferred = false
+
     const fillGapAndRepaint = (t: Terminal) => {
+      // A held selection would be wiped by the `t.reset()` below (xterm clears the
+      // selection on reset). A history gap-fill can wait a few seconds: DEFER it
+      // and re-run when the selection clears. `write()` of live bytes is untouched.
+      if (t.hasSelection()) {
+        gapDeferred = true
+        return
+      }
       // Only meaningful when we hold a contiguous authoritative block from
       // `histOldestAbs` down to the seam that extends ABOVE the buffer top.
       if (histOldestAbs === Infinity) return
@@ -2230,53 +2269,88 @@ export function useLiveTerm(
     // Width at the last FULL fit — 0 until then, so the first observer pass
     // always takes the full-fit path regardless of keyboard state.
     let lastFitWidth = 0
+    // The debounced fit, factored out so the selection-clear flush can re-run the
+    // exact same pass the ResizeObserver would have.
+    const runResizeFit = () => {
+      const f = fitRef.current
+      const t = termRef.current
+      if (!f || !t) return
+      const el = t.element
+      const widthChanged =
+        Math.abs(container.clientWidth - lastFitWidth) >= 1
+      if (keyboardOpenRef.current && el && !widthChanged) {
+        // Keyboard-driven height change → bottom-anchor, keep the grid.
+        const delta = Math.round(el.offsetHeight - container.clientHeight)
+        el.style.marginTop = delta > 0 ? `-${delta}px` : ''
+        return
+      }
+      // TEXT-SELECTION STAND-DOWN. A held selection + a NON-width reflow (height /
+      // viewport / keyboard) is exactly the wipe: `fit()` changes the row count and
+      // xterm's `onResize(rowsChanged)` clears the selection. Defer — record it and
+      // bail — and flush it the instant the selection clears (the listener below).
+      // A real WIDTH change still fits immediately, so geometry never sticks wrong.
+      if (shouldDeferReflow(t.hasSelection(), widthChanged)) {
+        fitDeferred = true
+        return
+      }
+      fitDeferred = false
+      if (el) el.style.marginTop = ''
+      try {
+        f.fit()
+        t.clearTextureAtlas()
+      } catch {
+        return
+      }
+      lastFitWidth = container.clientWidth
+      const geometryChanged = t.cols !== lastSentCols || t.rows !== lastSentRows
+      if (geometryChanged) {
+        lastSentCols = t.cols
+        lastSentRows = t.rows
+        resize(t.cols, t.rows)
+      }
+      // Mirror cols out (exposed for parity; harmless when unused).
+      if (historyEnabled) setColsIfChanged(t.cols)
+      // With the flag on, a WIDTH change invalidates the cached FETCHED history
+      // rows (tmux reflowed them at a different width). xterm reflows its own
+      // replayed scrollback natively. DROP the fetched cache and re-probe from
+      // the seam at the new width so a subsequent scroll-up re-fetches at the
+      // correct width — tmux owns the reflow, xterm never reflows fetched rows.
+      if (historyEnabled && geometryChanged) {
+        histRows.clear()
+        histOldestAbs = Infinity
+        histHitTop = histSizeLast === 0
+        histInflightReq = null
+        histWidthMismatches = 0 // a real local resize legitimizes a retry
+        if (histSizeLast > 0) requestOlder()
+      }
+    }
     const ro = new ResizeObserver(() => {
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(() => {
-        const f = fitRef.current
-        const t = termRef.current
-        if (!f || !t) return
-        const el = t.element
-        const widthChanged =
-          Math.abs(container.clientWidth - lastFitWidth) >= 1
-        if (keyboardOpenRef.current && el && !widthChanged) {
-          // Keyboard-driven height change → bottom-anchor, keep the grid.
-          const delta = Math.round(el.offsetHeight - container.clientHeight)
-          el.style.marginTop = delta > 0 ? `-${delta}px` : ''
-          return
-        }
-        if (el) el.style.marginTop = ''
-        try {
-          f.fit()
-          t.clearTextureAtlas()
-        } catch {
-          return
-        }
-        lastFitWidth = container.clientWidth
-        const geometryChanged = t.cols !== lastSentCols || t.rows !== lastSentRows
-        if (geometryChanged) {
-          lastSentCols = t.cols
-          lastSentRows = t.rows
-          resize(t.cols, t.rows)
-        }
-        // Mirror cols out (exposed for parity; harmless when unused).
-        if (historyEnabled) setColsIfChanged(t.cols)
-        // With the flag on, a WIDTH change invalidates the cached FETCHED history
-        // rows (tmux reflowed them at a different width). xterm reflows its own
-        // replayed scrollback natively. DROP the fetched cache and re-probe from
-        // the seam at the new width so a subsequent scroll-up re-fetches at the
-        // correct width — tmux owns the reflow, xterm never reflows fetched rows.
-        if (historyEnabled && geometryChanged) {
-          histRows.clear()
-          histOldestAbs = Infinity
-          histHitTop = histSizeLast === 0
-          histInflightReq = null
-          histWidthMismatches = 0 // a real local resize legitimizes a retry
-          if (histSizeLast > 0) requestOlder()
-        }
-      }, RESIZE_DEBOUNCE_MS)
+      resizeTimer = window.setTimeout(runResizeFit, RESIZE_DEBOUNCE_MS)
     })
     ro.observe(container)
+
+    // Flush the deferred geometry the instant the selection clears (the resume,
+    // mirroring the chat renderer's `follow-bottom.ts`). While a selection was
+    // held the fit and/or gap-repaint above stood down; once it clears the
+    // geometry may be stale, so re-run each pending pass exactly once now. xterm
+    // fires this on ANY selection change — including its own `clearSelection()` —
+    // so a genuine width fit that legitimately cleared the selection just finds
+    // nothing pending. Guarded against re-entry: the pending flags are cleared
+    // before the work runs.
+    const onTermSelectionChange = () => {
+      const t = termRef.current
+      if (!t || t.hasSelection()) return
+      if (fitDeferred) {
+        // runResizeFit clears fitDeferred itself on the taken path.
+        runResizeFit()
+      }
+      if (gapDeferred) {
+        gapDeferred = false
+        if (t) fillGapAndRepaint(t)
+      }
+    }
+    const termSelectionSub = term.onSelectionChange(onTermSelectionChange)
 
     // 5. Resume health-check. Fires on visibilitychange→visible, pageshow
     //    (bfcache restore) and network `online`. Reconnects when:
@@ -2415,6 +2489,7 @@ export function useLiveTerm(
         wsRef.current = null
       }
       scrollSub.dispose()
+      termSelectionSub.dispose()
       disposeAndroidIme?.()
       term.dispose()
       termRef.current = null
