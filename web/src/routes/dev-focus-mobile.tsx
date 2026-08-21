@@ -32,6 +32,7 @@
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import { MobileFocus } from '@/routes/focus/mobile'
+import { useViewportShellVars } from '@/hooks/use-keyboard-viewport'
 import { MOCK_TILES } from '@/components/session-tile/mock'
 import { mockTeamsForLead } from '@/routes/dev-teams.fixture'
 import { useUI } from '@/stores/ui-store'
@@ -69,6 +70,13 @@ const MOCK_FOCUS_TEAMS = mockTeamsForLead(MOCK_TILES[0]?.name ?? '')
 
 export default function DevFocusMobile() {
   const { name } = useParams()
+  // This bench renders <MobileFocus> DIRECTLY, outside <Layout> — which is the
+  // ONLY place the app mounts the viewport-shell-var publisher (layout.tsx:424).
+  // Mount it here too so `--vvh` / `--vv-offset-top` are LIVE-published off
+  // `window.visualViewport` exactly as in production, letting an offline rig fake
+  // the visual viewport and verify MobileSheet's visual-viewport pin end to end.
+  // DEV-only route → tree-shaken from prod; the base app is untouched.
+  useViewportShellVars()
   // `?chat=1` — seed the experiment ON for this review. Written during render on
   // purpose: `useUI` is read by <MobileFocus> in the SAME pass, so an effect
   // would paint one frame of the terminal composition into every screenshot.

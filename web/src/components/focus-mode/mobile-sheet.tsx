@@ -10,29 +10,51 @@
 // platform branching). FocusHeader's back-chevron and the existing left-edge
 // swipe-back gesture (useEdgeGestures → onSwipeRight) are the dismiss paths.
 //
-// KEYBOARD MODEL — NATIVE COLUMN (`interactive-widget=resizes-content`).
-// This is now a PLAIN `100dvh` flex column in normal flow — NO `position:
-// fixed`, NO `transform`, NO `transition`, NO visualViewport height/offset
-// math. `web/index.html` carries `interactive-widget=resizes-content`, so when
-// the soft keyboard opens the BROWSER shrinks the layout viewport; `100dvh`
-// resolves against the current (post-shrink) viewport, the column reflows, its
-// `flex-1 min-h-0` body shrinks, and the composer/dock (the last flex child)
-// rides just above the keyboard — one mechanism, owned by the browser, so
-// nothing can disagree with it.
+// KEYBOARD MODEL — VISUAL-VIEWPORT PIN, DRIVEN OFF CSS VARS.
+// This sheet is `position: fixed` and PINNED to the visual viewport using the
+// two custom properties the shell coordinator already publishes to <html>
+// (useViewportShellVars → use-keyboard-viewport.ts):
 //
-// This replaces the old visualViewport-driven fixed sheet (height =
-// visualViewport.height + translateY(offsetTop)). On a real iOS standalone PWA
-// `visualViewport.height` UNDER-reported the above-keyboard space, so the fixed
-// sheet came out shorter than the real gap and its composer floated ~75px above
-// the keyboard — the reported iOS black band. Removing the JS sheet-sizing path
-// removes the band. Removing `transform` also means this root is NEVER a
-// containing block for the `fixed` KeyBar/Joystick (guarded by
-// shell-containing-block.spec.ts) — strictly safer than the transformed sheet.
+//   height:    var(--vvh, 100dvh)
+//   transform: translateY(var(--vv-offset-top, 0px))
 //
-// `100dvh` (not `100svh`): with `resizes-content` the browser resolves `dvh`
-// against the CURRENT viewport, so it fills the visible area whether the URL bar
-// is shown or hidden and whether or not the keyboard is up. `svh` (URL-bar-shown
-// small height) would leave dead space when the URL bar retracts.
+// While an editable field is focused and the soft keyboard overlaps the
+// viewport, `useViewportShellVars` sets `--vvh = visualViewport.height` and
+// `--vv-offset-top = visualViewport.offsetTop`; otherwise they rest at their
+// `:root` fallbacks (`100dvh` / `0px`, globals.css). So:
+//
+//   · KEYBOARD OPEN  — height resolves to `visualViewport.height` (the ONLY
+//     value that follows the keyboard on iOS) and the box is translated DOWN by
+//     `visualViewport.offsetTop` (how far iOS scrolled the visual viewport to
+//     keep the field above the keyboard). Its TOP lands at the visual-viewport
+//     top and its BOTTOM lands exactly at `visualViewport.height` — band 0.
+//   · KEYBOARD CLOSED — height is `100dvh`, translateY(0): a plain top-anchored
+//     full-height column.
+//
+// WHY THIS, NOT A BARE `100dvh` COLUMN. iOS Safari/WKWebView do NOT honor
+// `interactive-widget=resizes-content`: the soft keyboard OVERLAYS the layout
+// viewport and `100dvh` / `clientHeight` stay at their full (812px) value when
+// the keyboard opens. A bare `h-[100dvh]` sheet therefore stays ~62px too tall
+// on a real iOS standalone PWA — its bottom floats above the real viewport
+// bottom and the composer sits over a black band (measured: visualViewport
+// .height=498, 100dvh=812, offsetTop=314). Only `visualViewport.height` shrinks
+// on keyboard-open, so the sheet has to be sized off it. Anchoring by `top: 0` +
+// `translateY(offsetTop)` (never a `bottom`/`top` OFFSET value) avoids the iOS 26
+// unreliable-offset-resolution trap while keeping the bottom flush at the
+// keyboard top.
+//
+// The composer/dock stays the LAST flex child (`flex flex-col`), so it rides at
+// the sheet's bottom — i.e. flush at the keyboard top — and keeps its own
+// `pb-[max(var(--kb-safe-bottom),…)]` home-indicator pad (owned by the composer,
+// not this wrapper).
+//
+// CONTAINING-BLOCK NOTE: the `transform` makes THIS element a containing block
+// for its own `fixed` descendants (only the joystick's finger-ring, which is
+// used with the keyboard CLOSED → translateY(0) → no offset, so it is
+// positionally identical to the viewport). The floating KeyBar and joystick
+// overlay live OUTSIDE this sheet (siblings of it / `absolute` within the
+// terminal body), so shell-containing-block.spec's fixed-chrome invariant is
+// unaffected — the walk it runs starts ABOVE the sheet.
 
 import * as React from 'react'
 
@@ -44,7 +66,14 @@ export function MobileSheet({ children }: MobileSheetProps) {
   return (
     <div
       data-testid="focus-sheet"
-      className="flex h-[100dvh] flex-col bg-background"
+      className="fixed inset-x-0 top-0 z-50 flex flex-col bg-background"
+      style={{
+        // Size + pin to the VISUAL viewport off the vars the shell publishes.
+        // `--vvh`/`--vv-offset-top` follow the keyboard on iOS (the only values
+        // that do); they rest at `100dvh`/`0px` with the keyboard closed.
+        height: 'var(--vvh, 100dvh)',
+        transform: 'translateY(var(--vv-offset-top, 0px))',
+      }}
     >
       {children}
     </div>
