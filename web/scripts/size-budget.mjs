@@ -779,7 +779,19 @@ const BUDGET_ENTRY_JS = 160 * KB
 // branch head — +0.46 KB, entirely on the lazy `settings` chunk (the ENTRY
 // hero-path gate is UNMOVED and green). ceil(measured)=310, the same rule every
 // fase/merge above used.
-const BUDGET_APP_JS = 310 * KB
+// RATCHETED 310 → 311 by the kbdebug rework (feat/grok-mode). The on-device
+// composer probe (`components/dev/kbdebug-overlay.tsx`) was a full-screen fixed
+// panel that COVERED ~2/3 of the phone and blocked the composer + navigation, so
+// the owner could not open a real chat, raise the keyboard and read the numbers.
+// It is now a small, draggable, NON-BLOCKING floating chip (pointer-events:none
+// wrapper; only the chip/expanded-card opt back in) showing the live band px,
+// tap-to-expand to the full LIVE+SETTLED dump, with a robust multi-selector
+// composer probe. All of the +0.69 KB lands on the lazy, flag-gated
+// `kbdebug-overlay` chunk (2.87 → 4.04 KB gz) — a chunk a NORMAL user never
+// fetches (it is behind `?kbdebug=1` / `localStorage.kbdebug`), and the ENTRY
+// hero-path gate is UNMOVED and green. Measured 310.76 against 310.00 at this
+// branch head. ceil(measured)=311, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 311 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

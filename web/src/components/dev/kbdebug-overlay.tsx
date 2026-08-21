@@ -6,25 +6,55 @@
 // it lives in its OWN code-split chunk, out of the entry/main bundle.
 //
 // The offline rig cannot render the real iOS soft keyboard, so the black-bar /
-// composer-pinning behaviour is only observable on a real device. This overlay
-// dumps everything needed to diagnose it into a fixed, high-contrast, monospace
-// readout so a SINGLE on-device screenshot is self-explanatory:
+// composer-pinning behaviour is only observable on a real device. The whole
+// point of this overlay is to be usable DURING a real session — the owner has
+// to open a real chat, tap the composer, raise the soft keyboard and READ the
+// numbers while the keyboard is up. So the overlay is NOT a full-screen panel:
 //
+//   · a SMALL, DRAGGABLE, NON-BLOCKING floating chip pinned to a corner shows a
+//     COMPACT live summary — the "band" px (composer.rectBottom − vvHeight)
+//     prominently, plus vvh / --kb-safe-bottom / env / display in tiny text.
+//   · the root wrapper is pointer-events:none EXCEPT the chip/panel, so the
+//     app, the composer, the keyboard and navigation underneath stay fully
+//     interactive. There is NO backdrop.
+//   · TAP the chip to expand the FULL readout (LIVE + SETTLED dump) in a
+//     compact, scrollable, still-non-blocking card; × collapses back to the
+//     chip. Collapsed by default.
+//   · DRAG the chip to reposition it so it never permanently occludes the
+//     composer; its position is persisted in localStorage.
+//
+// The readout still carries the two measurement modes it always had:
 //   · a LIVE block, re-measured on window/visualViewport resize + scroll
 //     (coalesced through one rAF), and
 //   · a SETTLED snapshot, re-measured on a rAF ~250ms AFTER the last
 //     focus/resize — iOS reports a stale `visualViewport` mid-keyboard-animation,
 //     so the settled read is the trustworthy one for a screenshot.
 //
-// READ-ONLY: it measures, it never mutates app state or the DOM under test. The
-// only interactive affordance is a small close button. No app value is read
-// through React — it queries the live DOM directly so it reflects exactly what
-// the browser resolved, independent of the app's own hooks.
+// READ-ONLY: it measures, it never mutates app state or the DOM under test. No
+// app value is read through React — it queries the live DOM directly so it
+// reflects exactly what the browser resolved, independent of the app's hooks.
 
 import * as React from 'react'
 
-const COMPOSER_SELECTOR = '[data-testid="chat-composer"]'
+// The composer probe tries these in order and reports the FIRST that matches,
+// so the band is measured against the real bottom edge of whatever composer the
+// open surface actually mounts:
+//   1. the phone/desktop chat composer bar,
+//   2. the focus mobile bottom panel (the pill bar when chat is folded),
+//   3. the chat composer's own contenteditable/textarea field,
+//   4. the focus edit-sheet composer textarea (the raise-to-edit sheet).
+// On a surface with no composer (e.g. settings) none match and the chip shows
+// `composer —` instead of a scary red NOT FOUND.
+const COMPOSER_SELECTORS = [
+  '[data-testid="chat-composer"]',
+  '[data-vr="mobile-bottom-panel"]',
+  '[data-testid="chat-composer-field"]',
+  '[data-vr="edit-sheet-textarea"]',
+] as const
+
 const SETTLE_MS = 250
+const POS_KEY = 'kbdebug-pos'
+const DRAG_SLOP = 6 // px of movement before a press becomes a drag (not a tap)
 
 interface AncestorRow {
   tag: string
@@ -46,6 +76,8 @@ interface AncestorRow {
 
 interface ComposerSnap {
   found: boolean
+  /** Which selector matched (empty when none did). */
+  selector: string
   position: string
   bottom: string
   top: string
@@ -74,6 +106,10 @@ interface Snap {
   standalone: boolean
   viewportMeta: string
   composer: ComposerSnap
+  /** The headline number: composer.rectBottom − visualViewport.height, rounded.
+   *  How far the composer's bottom edge sits BELOW the visual viewport (the gap
+   *  the keyboard leaves). null when there is no composer or no visualViewport. */
+  band: number | null
 }
 
 /** Does `cs` establish a containing block for `position: fixed` descendants?
@@ -98,10 +134,20 @@ function shortClass(el: Element): string {
   return c.length > 48 ? c.slice(0, 45) + '…' : c
 }
 
+/** Resolve the first composer selector that matches, in priority order. */
+function findComposer(): { el: HTMLElement | null; selector: string } {
+  for (const sel of COMPOSER_SELECTORS) {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (el) return { el, selector: sel }
+  }
+  return { el: null, selector: '' }
+}
+
 function measure(): Snap {
   const de = document.documentElement
   const rootCS = getComputedStyle(de)
   const vv = window.visualViewport ?? null
+  const vvHeight = vv ? Math.round(vv.height * 100) / 100 : null
 
   // env(safe-area-inset-bottom) is not readable directly — probe it via a hidden
   // element whose padding-bottom resolves the env() to a concrete px, then read
@@ -127,6 +173,7 @@ function measure(): Snap {
   // The composer + its ancestor chain up to <body>.
   const composer: ComposerSnap = {
     found: false,
+    selector: '',
     position: '',
     bottom: '',
     top: '',
@@ -137,9 +184,10 @@ function measure(): Snap {
     rectHeight: 0,
     chain: [],
   }
-  const el = document.querySelector(COMPOSER_SELECTOR) as HTMLElement | null
+  const { el, selector } = findComposer()
   if (el) {
     composer.found = true
+    composer.selector = selector
     const cs = getComputedStyle(el)
     const r = el.getBoundingClientRect()
     composer.position = cs.position
@@ -172,11 +220,14 @@ function measure(): Snap {
     }
   }
 
+  const band =
+    composer.found && vvHeight !== null ? Math.round(composer.rectBottom - vvHeight) : null
+
   return {
     t: new Date().toISOString().slice(11, 23),
     innerHeight: window.innerHeight,
     innerWidth: window.innerWidth,
-    vvHeight: vv ? Math.round(vv.height * 100) / 100 : null,
+    vvHeight,
     vvWidth: vv ? Math.round(vv.width * 100) / 100 : null,
     vvOffsetTop: vv ? Math.round(vv.offsetTop * 100) / 100 : null,
     vvOffsetLeft: vv ? Math.round(vv.offsetLeft * 100) / 100 : null,
@@ -189,7 +240,16 @@ function measure(): Snap {
     standalone,
     viewportMeta,
     composer,
+    band,
   }
+}
+
+// ── small helpers ─────────────────────────────────────────────────────────
+
+/** The env safe-area px, stripped to a short number for the chip. */
+function shortPx(v: string): string {
+  const m = /([\d.]+)/.exec(v)
+  return m ? String(Math.round(parseFloat(m[1]))) : v
 }
 
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
@@ -252,13 +312,12 @@ function ChainTable({ chain }: { chain: AncestorRow[] }) {
 
 function ComposerBlock({ c }: { c: ComposerSnap }) {
   if (!c.found) {
-    return (
-      <div style={{ color: '#ff6b6b' }}>composer: {COMPOSER_SELECTOR} NOT FOUND</div>
-    )
+    return <div style={{ color: '#9fb4c2' }}>composer: — (no composer on this surface)</div>
   }
   return (
     <div>
-      <Row k="composer pos" v={c.position} />
+      <Row k="composer sel" v={<span style={{ color: '#8affc1' }}>{c.selector}</span>} />
+      <Row k="  pos" v={c.position} />
       <Row k="  top/bottom" v={`${c.top} / ${c.bottom}`} />
       <Row k="  height" v={c.height} />
       <Row k="  transform" v={c.transform === 'none' ? 'none' : c.transform} />
@@ -272,6 +331,16 @@ function ComposerBlock({ c }: { c: ComposerSnap }) {
 function SnapView({ s }: { s: Snap }) {
   return (
     <div>
+      <Row
+        k="band px"
+        v={
+          s.band === null ? (
+            '—'
+          ) : (
+            <span style={{ color: '#ffd166', fontWeight: 700 }}>{s.band}</span>
+          )
+        }
+      />
       <Row k="inner W×H" v={`${s.innerWidth} × ${s.innerHeight}`} />
       <Row
         k="vv W×H"
@@ -295,11 +364,65 @@ function SnapView({ s }: { s: Snap }) {
   )
 }
 
+// ── position persistence ────────────────────────────────────────────────────
+
+interface Pos {
+  x: number
+  y: number
+}
+
+function clampPos(p: Pos, chipW: number, chipH: number): Pos {
+  const maxX = Math.max(0, window.innerWidth - chipW)
+  const maxY = Math.max(0, window.innerHeight - chipH)
+  return { x: Math.min(Math.max(0, p.x), maxX), y: Math.min(Math.max(0, p.y), maxY) }
+}
+
+/** Default corner: top-right, tucked under the safe-area top inset. */
+function defaultPos(): Pos {
+  return { x: Math.max(8, window.innerWidth - 148), y: 10 }
+}
+
+function loadPos(): Pos | null {
+  try {
+    const raw = window.localStorage.getItem(POS_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as Pos
+    if (typeof p?.x === 'number' && typeof p?.y === 'number') return p
+  } catch {
+    // ignore malformed / blocked storage
+  }
+  return null
+}
+
+function savePos(p: Pos) {
+  try {
+    window.localStorage.setItem(POS_KEY, JSON.stringify(p))
+  } catch {
+    // storage blocked — position simply won't persist
+  }
+}
+
+// ── the overlay ─────────────────────────────────────────────────────────────
+
 export default function KbDebugOverlay() {
   const [live, setLive] = React.useState<Snap>(() => measure())
   const [settled, setSettled] = React.useState<Snap>(() => measure())
   const [closed, setClosed] = React.useState(false)
+  const [expanded, setExpanded] = React.useState(false)
+  const [pos, setPos] = React.useState<Pos>(() => loadPos() ?? defaultPos())
 
+  const chipRef = React.useRef<HTMLDivElement>(null)
+  // Drag bookkeeping — lives in a ref so pointermove doesn't re-render per frame.
+  const drag = React.useRef<{
+    active: boolean
+    moved: boolean
+    startX: number
+    startY: number
+    baseX: number
+    baseY: number
+  } | null>(null)
+
+  // ── measurement wiring (unchanged behaviour) ──────────────────────────────
   React.useEffect(() => {
     if (closed) return
     let raf = 0
@@ -353,75 +476,250 @@ export default function KbDebugOverlay() {
     }
   }, [closed])
 
+  // Keep the chip on-screen when the viewport changes (rotation / keyboard).
+  React.useEffect(() => {
+    if (closed) return
+    const onResize = () => {
+      const el = chipRef.current
+      const w = el?.offsetWidth ?? 140
+      const h = el?.offsetHeight ?? 30
+      setPos((p) => clampPos(p, w, h))
+    }
+    window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
+    }
+  }, [closed])
+
+  // ── drag / tap on the chip ────────────────────────────────────────────────
+  const onPointerDown = (e: React.PointerEvent) => {
+    // Ignore the close button etc. (they stopPropagation), primary button only.
+    if (e.button !== 0 && e.pointerType === 'mouse') return
+    const el = chipRef.current
+    drag.current = {
+      active: true,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      baseX: pos.x,
+      baseY: pos.y,
+    }
+    el?.setPointerCapture?.(e.pointerId)
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current
+    if (!d?.active) return
+    const dx = e.clientX - d.startX
+    const dy = e.clientY - d.startY
+    if (!d.moved && Math.hypot(dx, dy) < DRAG_SLOP) return
+    d.moved = true
+    const el = chipRef.current
+    const w = el?.offsetWidth ?? 140
+    const h = el?.offsetHeight ?? 30
+    setPos(clampPos({ x: d.baseX + dx, y: d.baseY + dy }, w, h))
+  }
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current
+    drag.current = null
+    chipRef.current?.releasePointerCapture?.(e.pointerId)
+    if (!d) return
+    if (d.moved) {
+      // A drag — persist the new position, do NOT toggle.
+      setPos((p) => {
+        savePos(p)
+        return p
+      })
+    } else {
+      // A tap — toggle the expanded readout.
+      setExpanded((v) => !v)
+    }
+  }
+
   if (closed) return null
 
+  const band = live.band
+  const bandColor = band === null ? '#9fb4c2' : band > 0 ? '#ffd166' : '#8affc1'
+
   return (
+    // Full-viewport wrapper that lets ALL taps pass through (pointer-events:none)
+    // — only the chip and the expanded card opt back in. No backdrop: the app,
+    // the composer, the keyboard and navigation underneath stay fully live.
     <div
       data-testid="kbdebug-overlay"
       style={{
         position: 'fixed',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        maxHeight: '85vh',
+        inset: 0,
         zIndex: 2147483647,
-        overflow: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        background: 'rgba(3, 10, 14, 0.94)',
-        color: '#eafff2',
-        font: '11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-        padding: '8px 10px 14px',
-        borderTop: '2px solid #37e0a0',
-        boxShadow: '0 -8px 24px rgba(0,0,0,0.6)',
-        pointerEvents: 'auto',
+        pointerEvents: 'none',
       }}
     >
+      {/* THE CHIP — small, one line tall, draggable, non-blocking. */}
       <div
+        ref={chipRef}
+        data-testid="kbdebug-chip"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         style={{
+          position: 'absolute',
+          left: pos.x,
+          top: pos.y,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          position: 'sticky',
-          top: 0,
+          gap: 8,
+          maxWidth: '70vw',
+          padding: '4px 9px',
+          borderRadius: 999,
+          background: 'rgba(3, 10, 14, 0.9)',
+          color: '#eafff2',
+          border: '1px solid #37e0a0',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+          font: '11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          cursor: 'grab',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
         }}
       >
-        <span style={{ color: '#37e0a0', fontWeight: 700, fontSize: 13 }}>
-          KBDEBUG · live {live.t}
-        </span>
-        <button
-          type="button"
-          onClick={() => setClosed(true)}
+        <span style={{ color: '#37e0a0', fontWeight: 700, letterSpacing: 0.3 }}>KB</span>
+        <span
           style={{
-            color: '#03212a',
-            background: '#37e0a0',
-            border: 'none',
-            borderRadius: 4,
-            padding: '2px 10px',
+            color: bandColor,
             fontWeight: 700,
-            cursor: 'pointer',
+            fontSize: 14,
+            fontVariantNumeric: 'tabular-nums',
+            minWidth: '3ch',
+            textAlign: 'right',
           }}
         >
-          ✕
-        </button>
+          {band === null ? '—' : band}
+        </span>
+        <span
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            lineHeight: 1.15,
+            color: '#9fb4c2',
+            fontSize: 9,
+          }}
+        >
+          <span>
+            vvh {live.vvHeight ?? '—'} · kb {shortPx(live.varKbSafeBottom)}
+          </span>
+          <span>
+            env {shortPx(live.safeAreaBottomPx)} · {live.standalone ? 'pwa' : 'web'} ·{' '}
+            {live.composer.found ? 'cmp✓' : 'cmp—'}
+          </span>
+        </span>
+        <span
+          aria-hidden
+          style={{ color: '#37e0a0', fontSize: 10, opacity: 0.8, marginLeft: 2 }}
+        >
+          {expanded ? '×' : '▸'}
+        </span>
       </div>
 
-      <div style={{ marginTop: 6 }}>
-        <div style={{ color: '#37e0a0', fontWeight: 700 }}>▶ LIVE</div>
-        <SnapView s={live} />
-      </div>
+      {/* THE EXPANDED CARD — compact, scrollable, still non-blocking. */}
+      {expanded && (
+        <div
+          data-testid="kbdebug-panel"
+          style={{
+            position: 'absolute',
+            left: 8,
+            right: 8,
+            top: Math.min(pos.y + 40, window.innerHeight * 0.4),
+            marginLeft: 'auto',
+            marginRight: 'auto',
+            maxWidth: 360,
+            maxHeight: '55vh',
+            overflow: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            background: 'rgba(3, 10, 14, 0.96)',
+            color: '#eafff2',
+            border: '1px solid #37e0a0',
+            borderRadius: 12,
+            boxShadow: '0 8px 28px rgba(0,0,0,0.65)',
+            font: '11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            padding: '8px 10px 12px',
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              position: 'sticky',
+              top: 0,
+              background: 'rgba(3, 10, 14, 0.96)',
+              paddingBottom: 4,
+            }}
+          >
+            <span style={{ color: '#37e0a0', fontWeight: 700, fontSize: 12 }}>
+              KBDEBUG · live {live.t}
+            </span>
+            <button
+              type="button"
+              data-testid="kbdebug-collapse"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setExpanded(false)}
+              style={{
+                color: '#03212a',
+                background: '#37e0a0',
+                border: 'none',
+                borderRadius: 6,
+                padding: '2px 10px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              ✕
+            </button>
+          </div>
 
-      <div
-        style={{
-          marginTop: 10,
-          paddingTop: 6,
-          borderTop: '2px dashed #ffd166',
-        }}
-      >
-        <div style={{ color: '#ffd166', fontWeight: 700 }}>
-          ▣ SETTLED @ +{SETTLE_MS}ms after last focus/resize · {settled.t}
+          <div style={{ marginTop: 4 }}>
+            <div style={{ color: '#37e0a0', fontWeight: 700 }}>▶ LIVE</div>
+            <SnapView s={live} />
+          </div>
+
+          <div
+            style={{
+              marginTop: 10,
+              paddingTop: 6,
+              borderTop: '2px dashed #ffd166',
+            }}
+          >
+            <div style={{ color: '#ffd166', fontWeight: 700 }}>
+              ▣ SETTLED @ +{SETTLE_MS}ms after last focus/resize · {settled.t}
+            </div>
+            <SnapView s={settled} />
+          </div>
+
+          <div style={{ marginTop: 10, textAlign: 'right' }}>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setClosed(true)}
+              style={{
+                color: '#9fb4c2',
+                background: 'transparent',
+                border: '1px solid #2a3a44',
+                borderRadius: 6,
+                padding: '2px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              hide overlay
+            </button>
+          </div>
         </div>
-        <SnapView s={settled} />
-      </div>
+      )}
     </div>
   )
 }
