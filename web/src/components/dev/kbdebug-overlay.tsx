@@ -244,6 +244,150 @@ function measure(): Snap {
   }
 }
 
+// ── server sink: POST the keyboard-OPEN snapshot ──────────────────────────
+//
+// The chip is `position: fixed` and scrolls out of view the instant the iOS
+// soft keyboard opens, so an on-device SCREENSHOT can never capture the
+// keyboard-OPEN geometry — which is exactly the state whose numbers we need to
+// know why the black band persists on the owner's real device. So on the
+// keyboard-open transition (and again once it settles) the overlay POSTs a
+// compact snapshot to `/api/_internal/kbdebug`, a best-effort server sink that
+// appends it to a log the owner can read. This is the ONLY thing that reaches
+// the network, still only when the flag is on (the overlay is otherwise never
+// mounted), and every error is swallowed.
+
+const SINK_URL = '/api/_internal/kbdebug'
+/** innerHeight − visualViewport.height beyond which we call the keyboard OPEN. */
+const KB_OPEN_THRESHOLD = 150
+
+interface FocusSheetComputed {
+  position: string
+  height: string
+  transform: string
+  bottom: string
+  top: string
+}
+
+/** The flat wire snapshot POSTed to the sink — the fields the owner needs to
+ *  diagnose the keyboard band on the real device. Distinct from the rich in-UI
+ *  `Snap`: flatter, stable field names, safe to append as one JSON line. */
+interface PostSnap {
+  ts: string
+  innerHeight: number
+  visualViewportHeight: number | null
+  visualViewportOffsetTop: number | null
+  safeBottom: string
+  kbSafeBottom: string
+  vvh: string
+  kb: string
+  display: string
+  composerSel: string
+  composerPaddingBottom: string | null
+  composerRectBottom: number | null
+  focusSheetRectBottom: number | null
+  focusSheetRectHeight: number | null
+  focusSheetComputed: FocusSheetComputed | null
+  /** round(composerRectBottom − visualViewport.height) — the black-band px. */
+  bandPx: number | null
+}
+
+/** The focus-mode raise-to-edit sheet surface (the pinned sheet whose bottom
+ *  edge the keyboard is supposed to hug). Null on any other surface. */
+function findFocusSheet(): HTMLElement | null {
+  return document.querySelector('[data-vr="edit-sheet-surface"]') as HTMLElement | null
+}
+
+/** Gather the flat wire snapshot straight off the live DOM. */
+function buildPostSnap(): PostSnap {
+  const de = document.documentElement
+  const rootCS = getComputedStyle(de)
+  const vv = window.visualViewport ?? null
+  const vvHeight = vv ? Math.round(vv.height * 100) / 100 : null
+
+  const { el, selector } = findComposer()
+  let composerPaddingBottom: string | null = null
+  let composerRectBottom: number | null = null
+  if (el) {
+    composerPaddingBottom = getComputedStyle(el).paddingBottom
+    composerRectBottom = Math.round(el.getBoundingClientRect().bottom)
+  }
+
+  const sheet = findFocusSheet()
+  let focusSheetRectBottom: number | null = null
+  let focusSheetRectHeight: number | null = null
+  let focusSheetComputed: FocusSheetComputed | null = null
+  if (sheet) {
+    const r = sheet.getBoundingClientRect()
+    focusSheetRectBottom = Math.round(r.bottom)
+    focusSheetRectHeight = Math.round(r.height)
+    const cs = getComputedStyle(sheet)
+    focusSheetComputed = {
+      position: cs.position,
+      height: cs.height,
+      transform: cs.transform === 'none' ? 'none' : cs.transform,
+      bottom: cs.bottom,
+      top: cs.top,
+    }
+  }
+
+  const standalone =
+    (navigator as unknown as { standalone?: boolean }).standalone === true ||
+    window.matchMedia?.('(display-mode: standalone)').matches === true
+
+  const bandPx =
+    composerRectBottom !== null && vvHeight !== null
+      ? Math.round(composerRectBottom - vvHeight)
+      : null
+
+  return {
+    ts: new Date().toISOString(),
+    innerHeight: window.innerHeight,
+    visualViewportHeight: vvHeight,
+    visualViewportOffsetTop: vv ? Math.round(vv.offsetTop * 100) / 100 : null,
+    safeBottom: rootCS.getPropertyValue('--safe-bottom').trim(),
+    kbSafeBottom: rootCS.getPropertyValue('--kb-safe-bottom').trim(),
+    vvh: rootCS.getPropertyValue('--vvh').trim(),
+    kb: rootCS.getPropertyValue('--kb').trim(),
+    display: standalone ? 'standalone' : 'browser',
+    composerSel: selector,
+    composerPaddingBottom,
+    composerRectBottom,
+    focusSheetRectBottom,
+    focusSheetRectHeight,
+    focusSheetComputed,
+    bandPx,
+  }
+}
+
+/** Fire-and-forget POST to the sink with the app's bearer token. Best-effort:
+ *  any error (no token, offline, blocked) is swallowed. */
+function postSnapshot(snap: PostSnap): void {
+  try {
+    const token = (window as { _SUPERMUX_AUTH_TOKEN?: string })._SUPERMUX_AUTH_TOKEN
+    void fetch(SINK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(snap),
+      keepalive: true,
+    }).catch(() => {
+      /* best-effort — network errors are irrelevant to a debug probe */
+    })
+  } catch {
+    /* JSON/stringify/global access blew up — ignore */
+  }
+}
+
+/** Is the soft keyboard currently OPEN? True when the visual viewport is
+ *  materially shorter than the layout viewport. */
+function keyboardOpen(): boolean {
+  const vv = window.visualViewport
+  if (!vv) return false
+  return window.innerHeight - vv.height > KB_OPEN_THRESHOLD
+}
+
 // ── small helpers ─────────────────────────────────────────────────────────
 
 /** The env safe-area px, stripped to a short number for the chip. */
@@ -412,6 +556,9 @@ export default function KbDebugOverlay() {
   const [pos, setPos] = React.useState<Pos>(() => loadPos() ?? defaultPos())
 
   const chipRef = React.useRef<HTMLDivElement>(null)
+  // Tracks the keyboard-open edge so we POST the sink snapshot exactly on the
+  // false→open transition (plus one settled follow-up), never on every frame.
+  const wasKbOpenRef = React.useRef(false)
   // Drag bookkeeping — lives in a ref so pointermove doesn't re-render per frame.
   const drag = React.useRef<{
     active: boolean
@@ -428,6 +575,24 @@ export default function KbDebugOverlay() {
     let raf = 0
     let settleRaf = 0
     let settleTimer: ReturnType<typeof setTimeout> | undefined
+    // A separate timer for the settled sink POST (~250ms after the keyboard-open
+    // edge), so the owner also gets the trustworthy post-animation numbers.
+    let sinkSettleTimer: ReturnType<typeof setTimeout> | undefined
+
+    // On the false→open transition: POST the live snapshot immediately, then one
+    // more ~250ms later once iOS has finished the keyboard animation. Two POSTs
+    // per keyboard-open, never a per-frame flood.
+    const maybePostOnOpen = () => {
+      const nowOpen = keyboardOpen()
+      if (nowOpen && !wasKbOpenRef.current) {
+        wasKbOpenRef.current = true
+        postSnapshot(buildPostSnap())
+        if (sinkSettleTimer) clearTimeout(sinkSettleTimer)
+        sinkSettleTimer = setTimeout(() => postSnapshot(buildPostSnap()), SETTLE_MS)
+      } else if (!nowOpen && wasKbOpenRef.current) {
+        wasKbOpenRef.current = false
+      }
+    }
 
     const scheduleLive = () => {
       if (raf) return
@@ -453,6 +618,7 @@ export default function KbDebugOverlay() {
     const onAny = () => {
       scheduleLive()
       scheduleSettle()
+      maybePostOnOpen()
     }
 
     const vv = window.visualViewport
@@ -468,6 +634,7 @@ export default function KbDebugOverlay() {
       if (raf) cancelAnimationFrame(raf)
       if (settleRaf) cancelAnimationFrame(settleRaf)
       if (settleTimer) clearTimeout(settleTimer)
+      if (sinkSettleTimer) clearTimeout(sinkSettleTimer)
       vv?.removeEventListener('resize', onAny)
       vv?.removeEventListener('scroll', onAny)
       window.removeEventListener('resize', onAny)
@@ -568,7 +735,11 @@ export default function KbDebugOverlay() {
         style={{
           position: 'absolute',
           left: pos.x,
-          top: pos.y,
+          // Never let the collapsed chip hide behind the status bar / dynamic
+          // island: floor its top at the safe-area inset (+ a small margin).
+          // `max()` keeps drags below that floor honoured while clamping any
+          // position that would tuck it under the clock.
+          top: `max(${pos.y}px, calc(env(safe-area-inset-top) + 6px))`,
           display: 'flex',
           alignItems: 'center',
           gap: 8,
