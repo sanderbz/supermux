@@ -838,7 +838,11 @@ const BUDGET_ENTRY_JS = 160 * KB
 // lands OFF the hero path: the ENTRY gate — the one that actually guards cold
 // load — stays green at 154.57/160 (97%). Measured 315.35 against 313 at this
 // branch head. ceil(measured)=316, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 316 * KB
+// RE-RATCHETED 316 → 320: the eleven fully-implemented mode files (each a real
+// keyboard-avoidance layout, no longer baseline passthroughs) push the measured
+// main-app JS to 318.36; ceil(measured)+margin=320. Still all off the hero path;
+// ENTRY gate unchanged at 154.73/160.
+const BUDGET_APP_JS = 320 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
