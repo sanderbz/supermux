@@ -835,7 +835,20 @@ fn pty_ready_for_send(capture: &str) -> bool {
         return false;
     }
     let screen = current_screen_tail(capture);
-    agent_ui_visible(&screen) || agent_busy(&screen)
+    agent_ui_visible(&screen) || agent_busy(&screen) || codex_ready(&screen)
+}
+
+/// True once a READY, EMPTY Codex composer is visible. Codex draws `›` (U+203A),
+/// not Claude's `❯`, so [`agent_ui_visible`] is blind to it and the send guard
+/// wrongly 409'd every send/delegate to an awake, idle Codex (FIX 2). ORed into
+/// [`pty_ready_for_send`] AFTER the picker/trust rejections, so a real Codex
+/// resume-picker or folder-trust dialog is still refused first. Keyed (via
+/// `status`) on the "Ask Codex to do anything" placeholder and/or the composer
+/// model footer — signals a picker/trust dialog never shows — and NEVER on a
+/// bare `›` (a `› N.` numbered selector stays non-ready). See
+/// [`status::is_codex_ready_composer`].
+fn codex_ready(screen: &str) -> bool {
+    status::is_codex_ready_composer(screen)
 }
 
 /// How many bottom rows of a capture count as the CURRENT interactive screen for
@@ -861,10 +874,23 @@ fn current_screen_tail(capture: &str) -> String {
     lines[start..].join("\n")
 }
 
-/// Heuristic: are we stuck in Claude's `--resume` session picker?
+/// Heuristic: are we stuck in a `--resume` session picker (Claude OR Codex)?
+///
+/// Claude's picker draws "Resume a conversation" / "Select a session" / "…
+/// conversation to resume". Codex's native `codex resume` picker (FIX 3) draws a
+/// distinct header — "Resume a session" / "Resume a previous session" — so a
+/// genuinely-stuck Codex picker is now visible to `should_escape_resume_picker`
+/// and can be escaped on a fresh, non-resume-intended start, exactly as Claude's
+/// is. All markers are disjoint from the ready-composer signals
+/// ("Ask Codex to do anything" + the model footer), so the composer never reads
+/// as a picker and a real picker still receives NO injected prompt.
 fn at_resume_picker(capture: &str) -> bool {
     let c = capture.to_lowercase();
-    c.contains("resume a conversation") || c.contains("select a session") || c.contains("conversation to resume")
+    c.contains("resume a conversation")
+        || c.contains("select a session")
+        || c.contains("conversation to resume")
+        || c.contains("resume a session")
+        || c.contains("resume a previous session")
 }
 
 /// Heuristic: is Claude blocking on its first-run "Do you trust the files in
@@ -2976,6 +3002,86 @@ mod agent_ready_heuristics_tests {
         assert!(
             pty_ready_for_send(&live),
             "a live composer at the bottom of the current screen still delivers",
+        );
+    }
+
+    /// FIX 2 (a). A ready, EMPTY Codex composer — `›` cursor + the placeholder
+    /// "Ask Codex to do anything" + the model footer — must be SENDABLE. Codex
+    /// draws `›` (U+203A) not Claude's `❯`, so before the fix the send guard was
+    /// blind to it and 409'd every send/delegate to an awake, idle Codex.
+    #[test]
+    fn codex_idle_composer_is_ready_for_send() {
+        let composer = "› Ask Codex to do anything\n  gpt-5.6-sol high · /opt/projects/Folderwijzer-codex";
+        assert!(
+            pty_ready_for_send(composer),
+            "an idle Codex composer (`›` + Ask-Codex placeholder + model footer) is a \
+             ready send target — the delegate/#2 regression",
+        );
+        // The model footer ALONE (placeholder scrolled out of a short tail) still
+        // reads ready — it is a signal a picker/trust dialog never shows.
+        assert!(
+            pty_ready_for_send("  gpt-5.6-sol high · /opt/projects/Folderwijzer-codex"),
+            "the Codex composer model footer alone is enough to read ready",
+        );
+    }
+
+    /// FIX 2 (b). A Codex `› N.` NUMBERED selector (CODEX_WAITING_BANK) must stay
+    /// GUARDED — the bare `›` is not admitted, so a selector/approval never reads
+    /// as a ready composer even though it shares Codex's cursor glyph.
+    #[test]
+    fn codex_numbered_selector_is_not_ready_for_send() {
+        let selector = "Do you want to run this command?\n› 1. Yes, run it\n  2. No, keep chatting";
+        assert!(
+            !pty_ready_for_send(selector),
+            "a Codex `› N.` numbered selector is a waiting prompt — MUST NOT be typed into",
+        );
+    }
+
+    /// FIX 3 (c). A Codex resume picker must be NOT ready (no injected prompt) AND
+    /// recognised by `at_resume_picker` so `should_escape_resume_picker` can
+    /// escape a genuinely-stuck one on a fresh, non-resume-intended start.
+    #[test]
+    fn codex_resume_picker_is_guarded_and_escapable() {
+        let picker = "Resume a previous session\n› 1. Fix the parser   2h ago\n  2. Older chat   1d ago";
+        assert!(
+            at_resume_picker(picker),
+            "a Codex resume picker header must be visible to the escape path (FIX 3)",
+        );
+        assert!(
+            !pty_ready_for_send(picker),
+            "a Codex resume picker still receives NO typed prompt",
+        );
+        // Escapable only on a fresh, non-resume-intended start; an INTENDED resume
+        // is never auto-escaped.
+        assert!(
+            should_escape_resume_picker(picker, false, false),
+            "a stuck Codex picker on a non-resume start is escapable",
+        );
+        assert!(
+            !should_escape_resume_picker(picker, true, false),
+            "an INTENDED Codex resume is never auto-escaped",
+        );
+    }
+
+    /// FIX 3 (d). A real folder-trust dialog is still NOT ready — the Codex-ready
+    /// predicate keys on composer markers a trust gate never shows, so it never
+    /// admits an injected prompt into the trust dialog.
+    #[test]
+    fn codex_trust_dialog_still_receives_no_injection() {
+        let trust = "Do you trust the files in this folder?\n› 1. Yes, I trust\n  2. No";
+        assert!(
+            !pty_ready_for_send(trust),
+            "a folder-trust dialog must still be refused a typed prompt",
+        );
+    }
+
+    /// FIX 2 (e). Claude's idle `❯` composer is UNCHANGED by the Codex additions —
+    /// still ready for send.
+    #[test]
+    fn claude_idle_composer_still_ready_after_codex_fix() {
+        assert!(
+            pty_ready_for_send("❯ Try \"fix tests\"\n  ? for shortcuts"),
+            "the Claude idle composer must remain a ready send target (unchanged)",
         );
     }
 }

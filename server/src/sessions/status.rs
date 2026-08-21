@@ -1064,6 +1064,36 @@ static CODEX_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
+/// The Codex COMPOSER'S model footer, e.g. `gpt-5.6-sol high · /opt/projects/x`.
+/// A `gpt-<model>` token followed by Codex's `·` separator on the same line — the
+/// footer a READY, empty composer draws under its `›` prompt. Distinct from
+/// [`IDLE_BANK`]'s `gpt-\S+ · ~` (which anchors on the home-dir shell prompt); a
+/// live composer's footer carries the working directory, not a `~` path.
+static CODEX_COMPOSER_FOOTER: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?im)^\s*gpt-\S+.*·").unwrap());
+
+/// True when `screen` shows a Codex WAITING prompt — a numbered `› N.` selector,
+/// a "Press enter to confirm", or a command-approval "Do you want to …". Exposed
+/// for the send-guard so a Codex picker/approval stays NON-ready (and never a
+/// bare `›`). Mirrors [`CODEX_WAITING_BANK`].
+pub(crate) fn is_codex_waiting(screen: &str) -> bool {
+    CODEX_WAITING_BANK.is_match(screen)
+}
+
+/// True when `screen` shows a READY, empty Codex COMPOSER — the placeholder
+/// "Ask Codex to do anything" and/or the composer's model footer
+/// ([`CODEX_COMPOSER_FOOTER`]), neither of which a Codex resume-picker or
+/// folder-trust dialog draws. The send-guard ORs this in because Codex's `›`
+/// composer is invisible to the Claude `❯` checks in `agent_ui_visible`.
+/// Deliberately NOT keyed on a bare `›`: a `› N.` numbered selector is
+/// [`is_codex_waiting`] and MUST stay non-ready, so a waiting screen is rejected
+/// here even if a footer lingers.
+pub(crate) fn is_codex_ready_composer(screen: &str) -> bool {
+    !is_codex_waiting(screen)
+        && (screen.to_ascii_lowercase().contains("ask codex to do anything")
+            || CODEX_COMPOSER_FOOTER.is_match(screen))
+}
+
 /// USER-INTERRUPT marker: the literal prompt Claude Code shows after the user
 /// presses Esc twice mid-turn. Unique enough to pre-empt the turn state
 /// machine (Claude Code doesn't emit a `Stop` hook for user-interrupts, so the

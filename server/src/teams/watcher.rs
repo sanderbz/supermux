@@ -14,7 +14,7 @@
 //! the live-pane scan to MAP a team to the supermux session hosting its lead:
 //! whichever `supermux-<name>` window contains the team's member panes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +57,12 @@ pub fn spawn(state: AppState) {
         let _watcher = arm_fs_watcher(fs_wake.clone());
 
         let mut last_payload: Option<serde_json::Value> = None;
+        // The last SUCCESSFULLY-READ opted-in host set. Carried across ticks so a
+        // transient `db::sessions::list()` failure STOPS UPDATING the teams
+        // surface (reuses this) instead of CLEARING it to empty — the change-only
+        // broadcast at the bottom of the loop would otherwise latch that empty
+        // payload until the next diff (ec1ce9e fail-closed regression, FIX 1).
+        let mut prev_opted: HashSet<String> = HashSet::new();
         // Deregister safety: per team, how many CONSECUTIVE ticks it has been
         // absent from the detected set. Reset to 0 the instant a team reappears;
         // a team is only torn down after DEREGISTER_AFTER_ABSENT_TICKS straight
@@ -112,7 +118,7 @@ pub fn spawn(state: AppState) {
             // raw scan's `persist_team_name` still maintains an implicit team's
             // backlink each tick, so reaping against the filtered set would thrash
             // it (clear → rewrite → clear …). See [`retain_opted_in_team_hosts`].
-            let teams = retain_opted_in_team_hosts(&state, &all_teams).await;
+            let teams = retain_opted_in_team_hosts(&state, &all_teams, &mut prev_opted).await;
 
             let mut board_changed = false;
             for team in &teams {
@@ -259,7 +265,10 @@ pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
 /// off [`scan_and_enrich_raw`] (on-disk truth), never this filtered set.
 pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
     let raw = scan_and_enrich_raw(state).await;
-    let opted = retain_opted_in_team_hosts(state, &raw).await;
+    // One-shot request path (no cross-tick state): a fresh empty carry set means a
+    // DB error yields an empty view for THIS response only — there is no SSE latch
+    // to clear here (that is the watcher loop's concern, where the carry lives).
+    let opted = retain_opted_in_team_hosts(state, &raw, &mut HashSet::new()).await;
     dedup_by_host(drop_rosterless(opted))
 }
 
@@ -283,33 +292,62 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
 /// team's host is tagged the instant it is created (before its teammates even
 /// spawn), so it never needs the unmapped placeholder to represent it.
 ///
-/// A DB error yields an EMPTY opted-in set (fail-closed): on an unknown DB state
-/// we prefer surfacing nothing for a tick over relabelling ordinary sessions as
-/// teams (mirrors the diagnosis's `unwrap_or_default`). Borrows the raw set so
-/// the caller can still key the backlink reaper off it (see [`spawn`]); clones
-/// only the — typically few — opted-in teams it keeps.
-async fn retain_opted_in_team_hosts(state: &AppState, teams: &[Team]) -> Vec<Team> {
-    use std::collections::HashSet;
-
-    let opted: HashSet<String> = match db::sessions::list(&state.pool).await {
-        Ok(sessions) => sessions
-            .into_iter()
-            .filter(|s| {
-                s.creator == "team"
-                    || serde_json::from_str::<Vec<String>>(&s.tags)
-                        .map(|t| t.iter().any(|x| x == "team"))
-                        .unwrap_or(false)
-            })
-            .map(|s| s.name)
-            .collect(),
+/// A DB error CARRIES THE PREVIOUS tick's opted-in set forward (FIX 1) rather
+/// than fail-closing to empty: distinguishing "DB unreadable this tick" from "no
+/// teams opted in" means a momentary SQLite-pool error STOPS UPDATING the teams
+/// surface instead of CLEARING it (the change-only broadcast in [`spawn`] would
+/// otherwise latch the empty payload until the next diff). The opt-in TEST itself
+/// is unchanged — only the error branch differs. Borrows the raw set so the
+/// caller can still key the backlink reaper off it (see [`spawn`]); clones only
+/// the — typically few — opted-in teams it keeps. `prev_opted` is refreshed on a
+/// successful read and reused on failure.
+async fn retain_opted_in_team_hosts(
+    state: &AppState,
+    teams: &[Team],
+    prev_opted: &mut HashSet<String>,
+) -> Vec<Team> {
+    let fresh: Option<HashSet<String>> = match db::sessions::list(&state.pool).await {
+        Ok(sessions) => Some(
+            sessions
+                .into_iter()
+                .filter(|s| {
+                    s.creator == "team"
+                        || serde_json::from_str::<Vec<String>>(&s.tags)
+                            .map(|t| t.iter().any(|x| x == "team"))
+                            .unwrap_or(false)
+                })
+                .map(|s| s.name)
+                .collect(),
+        ),
         Err(e) => {
             tracing::debug!(
                 error = %e,
-                "teams watcher: opt-in session list failed; hiding all teams this tick",
+                "teams watcher: opt-in session list failed; carrying previous opted-in set forward this tick",
             );
-            HashSet::new()
+            None
         }
     };
+
+    retain_with_carried_opt_in(teams, fresh, prev_opted)
+}
+
+/// Pure core of [`retain_opted_in_team_hosts`] (unit-testable without a DB).
+///
+/// `fresh` is `Some(set)` for a successful `db::sessions::list()` read and `None`
+/// when the read ERRORED this tick. On success the carried set is REPLACED with
+/// the fresh one; on error the previously-carried set is reused, so a transient
+/// DB error never clears the teams surface. Either way, only teams whose resolved
+/// host is in the (possibly carried-forward) opted-in set survive — the invariant
+/// that a non-opted-in / implicit-subagent team stays hidden holds on both arms.
+fn retain_with_carried_opt_in(
+    teams: &[Team],
+    fresh: Option<HashSet<String>>,
+    prev_opted: &mut HashSet<String>,
+) -> Vec<Team> {
+    if let Some(set) = fresh {
+        *prev_opted = set;
+    }
+    let opted = &*prev_opted;
 
     teams
         .iter()
@@ -1872,7 +1910,7 @@ mod tests {
         seed_session(&state, "ipc", "[]", "").await;
 
         let implicit = host_team("session-78e8f229", Some("ipc"), one_member("a@ipc"), 0);
-        let out = retain_opted_in_team_hosts(&state, &[implicit]).await;
+        let out = retain_opted_in_team_hosts(&state, &[implicit], &mut HashSet::new()).await;
 
         assert!(out.is_empty(), "a normal session's implicit team is not a team");
 
@@ -1888,7 +1926,7 @@ mod tests {
         seed_session(&state, "supermux", "[\"team\"]", "").await;
 
         let genuine = host_team("session-62644456", Some("supermux"), one_member("a@sm"), 0);
-        let out = retain_opted_in_team_hosts(&state, &[genuine]).await;
+        let out = retain_opted_in_team_hosts(&state, &[genuine], &mut HashSet::new()).await;
 
         let names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
         assert_eq!(names, vec!["session-62644456"], "tag-`team` host keeps its team");
@@ -1905,7 +1943,7 @@ mod tests {
         seed_session(&state, "crew", "[]", "team").await;
 
         let genuine = host_team("session-aaaa1111", Some("crew"), one_member("a@crew"), 0);
-        let out = retain_opted_in_team_hosts(&state, &[genuine]).await;
+        let out = retain_opted_in_team_hosts(&state, &[genuine], &mut HashSet::new()).await;
 
         assert_eq!(out.len(), 1, "creator=team host keeps its team");
 
@@ -1920,7 +1958,7 @@ mod tests {
         let (state, dir) = test_state().await;
 
         let unmapped = host_team("session-orphan", None, one_member("a@x"), 0);
-        let out = retain_opted_in_team_hosts(&state, &[unmapped]).await;
+        let out = retain_opted_in_team_hosts(&state, &[unmapped], &mut HashSet::new()).await;
 
         assert!(out.is_empty(), "unmapped team drops (never the placeholder)");
 
@@ -1940,11 +1978,51 @@ mod tests {
         let genuine = host_team("session-62644456", Some("supermux"), one_member("a@sm"), 0);
         let unmapped = host_team("session-orphan", None, one_member("a@x"), 0);
 
-        let out = retain_opted_in_team_hosts(&state, &[implicit, genuine, unmapped]).await;
+        let out = retain_opted_in_team_hosts(&state, &[implicit, genuine, unmapped], &mut HashSet::new()).await;
         let names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
         assert_eq!(names, vec!["session-62644456"], "only the tag-`team` host's team survives");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FIX 1 (f). On a simulated `db::sessions::list()` Err (`fresh == None`) the
+    /// previously-carried opted-in set is REUSED — the teams surface stops updating
+    /// instead of collapsing to empty (the ec1ce9e fail-closed regression) — while
+    /// a non-opted-in host still stays excluded. Exercises the pure carry core.
+    #[test]
+    fn retain_carries_previous_opt_in_forward_on_db_error() {
+        // Last successful read had exactly `supermux` opted in.
+        let mut prev: HashSet<String> = HashSet::new();
+        prev.insert("supermux".to_string());
+
+        let genuine = host_team("session-genuine", Some("supermux"), one_member("a@sm"), 0);
+        let implicit = host_team("session-implicit", Some("ipc"), one_member("a@ipc"), 0);
+
+        // Simulated DB error this tick → `fresh = None` → carry `prev` forward.
+        let out = retain_with_carried_opt_in(
+            &[genuine, implicit],
+            None,
+            &mut prev,
+        );
+        let names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["session-genuine"],
+            "the carried-forward opted-in host survives (NOT empty); a non-opted-in host stays excluded",
+        );
+        // The carry set is untouched by an error tick (still just `supermux`).
+        assert!(prev.contains("supermux") && prev.len() == 1);
+
+        // CONTROL: a SUCCESSFUL read (`fresh = Some`) REPLACES the carry set.
+        let genuine2 = host_team("session-genuine", Some("supermux"), one_member("a@sm"), 0);
+        let mut fresh: HashSet<String> = HashSet::new();
+        fresh.insert("other-host".to_string());
+        let out2 = retain_with_carried_opt_in(&[genuine2], Some(fresh), &mut prev);
+        assert!(out2.is_empty(), "after a fresh read `supermux` is no longer opted in");
+        assert!(
+            prev.contains("other-host") && !prev.contains("supermux"),
+            "a successful read refreshes the carried set",
+        );
     }
 }
