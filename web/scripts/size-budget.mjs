@@ -742,7 +742,21 @@ const BUDGET_ENTRY_JS = 160 * KB
 // actually fell in absolute terms to 152.27/160 (95%) from the base's 157.57,
 // because the grok chunk is lazy and the rebalance pushed weight off the entry
 // path. ceil(measured)=305, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 305 * KB
+// RATCHETED 305 → 308 by the flag-gated ?kbdebug composer probe (feat/grok-mode).
+// The offline screenshot rig cannot render the real iOS soft keyboard, so the
+// keyboard black-bar / composer-pinning bug is only observable on a real device.
+// This adds a READ-ONLY, flag-gated overlay (`?kbdebug=1` / localStorage) that
+// dumps the live visualViewport + the --vvh/--vv-offset-top/--kb/--kb-safe-bottom
+// vars + the composer's ancestor chain (labelling the containing block it pins
+// to) so ONE on-device screenshot is self-explanatory. Measured 307.88 against
+// 305.00 for the base at this branch head — +2.88 KB, ALL of it a lazy chunk
+// (`kbdebug-overlay-*.js`) that a normal cold load never fetches: the shell reads
+// the flag ONCE at mount and only then triggers the dynamic import, so for users
+// without the flag there is zero code fetched and zero work done. The ENTRY gate
+// — the real hero-path guard — is UNMOVED as a gate and green at 152.49/160
+// (95%): the overlay's weight is entirely off the entry path by construction.
+// ceil(measured)=308, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 308 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
