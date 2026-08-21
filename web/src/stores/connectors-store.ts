@@ -90,6 +90,10 @@ export interface ConnectorActions {
   grant: (id: string, sessionName: string, secretRef?: string) => Promise<boolean>
   /** Revoke a grant from one session. Resolves `restartHint`. */
   revoke: (id: string, sessionName: string) => Promise<boolean>
+  /** Flip a grant's `enabled` flag WITHOUT dropping the grant row — an at-a-glance
+   *  enable/disable that survives a re-enable (revoke would forget it). Re-grants
+   *  to the same session with the new flag. Resolves `restartHint`. */
+  setEnabled: (id: string, sessionName: string, enabled: boolean) => Promise<boolean>
   /** Seal a credential (write-only) + optional one-tap grant. Resolves the
    *  secret_ref so a follow-up grant can attach it. */
   putCredential: (id: string, args: PutCredentialArgs) => Promise<string | null>
@@ -134,6 +138,16 @@ export function useConnectorActions(): ConnectorActions {
       toast({ message: `Revoke failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
   })
 
+  // Enable/disable rides the SAME grant endpoint (it already takes an `enabled`
+  // flag), so no new route: a disabled grant stays a row, ready to flip back on.
+  const enableM = useMutation({
+    mutationFn: (v: { id: string; sessionName: string; enabled: boolean }) =>
+      apiGrant(v.id, { session_name: v.sessionName, enabled: v.enabled }),
+    onSuccess: (_r, v) => invalidateAll(v.sessionName),
+    onError: (e: unknown) =>
+      toast({ message: `Couldn't update — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
   const credM = useMutation({
     mutationFn: (v: { id: string; args: PutCredentialArgs }) => apiPutCredential(v.id, v.args),
     onSuccess: (_r, v) => invalidateAll(v.args.session_name),
@@ -152,6 +166,7 @@ export function useConnectorActions(): ConnectorActions {
     install.isPending ||
     grantM.isPending ||
     revokeM.isPending ||
+    enableM.isPending ||
     credM.isPending ||
     removeM.isPending
 
@@ -164,6 +179,10 @@ export function useConnectorActions(): ConnectorActions {
     },
     revoke: async (id, sessionName) => {
       const r = await revokeM.mutateAsync({ id, sessionName })
+      return !!r.restartHint
+    },
+    setEnabled: async (id, sessionName, enabled) => {
+      const r = await enableM.mutateAsync({ id, sessionName, enabled })
       return !!r.restartHint
     },
     putCredential: async (id, args) => {

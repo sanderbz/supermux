@@ -687,7 +687,26 @@ const BUDGET_ENTRY_JS = 160 * KB
 // without a ratchet. The ENTRY gate — the hard limit protecting first paint —
 // stays green and unmoved in headroom at 157.17/160 (98%). ceil(measured)=301,
 // the same rule every fase/merge above used.
-const BUDGET_APP_JS = 301 * KB
+// RATCHETED 301 → 302 by the click-the-name per-bot connector panel (Plan 2,
+// Workflow B). Clicking the bot NAME now opens its settings panel (split row hit
+// target — name-as-button vs the thread-opening body), the Tools tab leads with
+// connectors as its hero (Skills/MCP folded behind Advanced), the "+ Add
+// connector" outline became the accent PRIMARY, own-grant rows gained an
+// at-a-glance enable switch (lifted out of the ⋯ menu) plus an actionable
+// "Needs sign-in" chip that deep-links into the connector's sign-in, and the
+// restart HINT gained a one-tap "Restart to apply" (reusing the `restart`
+// recovery rung, arm-confirmed mid-turn). Measured 301.93 against 300.95 for the
+// base at this branch head — +0.98 KB, all of it in the already-lazy bot-panel /
+// connectors chunks (grok-roster is lazy too; nothing lands on the hero path):
+//   ~0.6 KB  the `RestartToApply` action (recovery rung + arm-confirm), the
+//            per-row enable `RowToggle`, and the actionable sign-in chip +
+//            `initialOpenId` deep-link plumbing through `StoreView`.
+//   ~0.4 KB  the name-as-click open handler (+ deep-link `paneTab`), the mobile
+//            focus-route panel-tab hint, and the `setEnabled` store action.
+// The base was again at 300.95/301 (100%), so this feature could not land
+// without a ratchet. The ENTRY gate stays green and unmoved at 157.42/160 (98%).
+// ceil(measured)=302, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 302 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
@@ -711,7 +730,17 @@ const BUDGET_APP_JS = 301 * KB
 // TeamPanel/MemberPane skin + the mobile header/nav float + menu-bg fixes) lands
 // at 31.11 — +0.11 over the mobile-nav ceiling. ceil(measured)=32; grok-scoped,
 // base app off grok downloads but matches none of it.
-const BUDGET_CSS = 32 * KB
+// RATCHETED 32 → 33 by the click-the-name per-bot connector panel (Plan 2,
+// Workflow B). The split row hit target adds the base-button/name-button z-layer
+// rules + the pointer-transparent content fall-through (grok-scoped, in
+// grok-mode.css), and the promoted connector surface adds a handful of Tailwind
+// utilities (the accent primary Add, the row enable switch, the actionable
+// sign-in chip, the one-tap restart button). Measured 32.07 against 31.96 for the
+// base at this branch head — +0.11 KB. The base was already at 31.96/32 (100%),
+// so it could not land without a ratchet; ceil(measured)=33, the same rule the
+// ratchets above use. Grok-scoped + the store utilities: the ENTRY gate is
+// unmoved and green, and the base app off grok matches none of the grok rules.
+const BUDGET_CSS = 33 * KB
 
 function gzipSize(path) {
   return gzipSync(readFileSync(path), { level: 9 }).length

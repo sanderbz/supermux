@@ -38,6 +38,10 @@ export interface StoreViewProps {
   mockBots?: { name: string; display_name?: string; status?: string }[]
   /** `page` (the /store route) or `sheet` (bot-scoped dock). */
   variant?: 'page' | 'sheet'
+  /** Deep-link the sheet straight onto ONE connector's detail (its sign-in /
+   *  grant flow) instead of the catalog grid — e.g. an actionable "Needs sign-in"
+   *  chip on the bot panel. Seeds the open card; the back arrow returns to the grid. */
+  initialOpenId?: string
   /** Offline bench only: the theme (`light`/`dark`) stamped as `data-theme` on the
    *  detail sheet's PORTALED content. The detail `ResponsiveSheet` renders through
    *  a Radix portal at `document.body`, so it escapes a slab's local `data-theme`
@@ -55,11 +59,12 @@ export function StoreView({
   mockBots,
   variant = 'page',
   detailTheme,
+  initialOpenId,
 }: StoreViewProps) {
   const botName = grantTarget && grantTarget !== '*' ? grantTarget : null
   const [q, setQ] = React.useState('')
   const [cat, setCat] = React.useState('all')
-  const [openId, setOpenId] = React.useState<string | null>(null)
+  const [openId, setOpenId] = React.useState<string | null>(initialOpenId ?? null)
 
   const live = useConnectors(mock ? { source: 'local' } : {})
   const cards: Card[] = mock ?? live.data ?? []

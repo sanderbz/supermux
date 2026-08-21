@@ -38,7 +38,7 @@ import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { modelOptions } from '@/lib/model-options'
 import { SessionFace } from '@/components/roster/session-face'
-import { GrantedConnectors } from '@/components/roster/granted-connectors'
+import { GrantedConnectors, RestartToApply } from '@/components/roster/granted-connectors'
 import { LearnedNotes } from '@/components/roster/learned-notes'
 import { NotifPolicyControl } from '@/components/focus-mode/notif-policy-control'
 import {
@@ -152,13 +152,18 @@ export function Field({
 }
 
 /** The "Applies on next start" advisory — shown after a launch-line change
- *  (model / notes) so the user knows the live agent was NOT relaunched. */
-function RestartHint() {
+ *  (model / notes / a grant) so the user knows the live agent was NOT relaunched.
+ *  Now carries the one-tap restart that closes the loop (was advice with no
+ *  button); a mid-turn bot arms first. */
+function RestartHint({ name }: { name: string }) {
   return (
-    <p className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-[12px] text-muted-foreground">
-      <ArrowRight className="size-3 shrink-0" aria-hidden />
-      Applies on next start — the running agent keeps its current model.
-    </p>
+    <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5">
+      <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <ArrowRight className="size-3 shrink-0" aria-hidden />
+        Applies on next start — the running agent keeps its current setup.
+      </span>
+      <RestartToApply name={name} />
+    </div>
   )
 }
 
@@ -492,27 +497,34 @@ export function ToolsTab({ name, session }: { name: string; session: ApiSession 
   const mcp = session?.mcp?.trim() || ''
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Skills" hint="This bot runs with your workspace skill set.">
-        <p className="text-[13px] text-muted-foreground">Workspace defaults.</p>
-      </Field>
-
+      {/* Connectors are the HERO of this tab — the real, per-bot action surface —
+          so they lead. The Skills placeholder + MCP + launch flags fold behind
+          Advanced below, where they stop pushing the live content down. */}
       <GrantedConnectors name={name} />
-
-      <Field label="MCP" hint="The MCP servers this bot launched with (read-only).">
-        {mcp ? (
-          <code className="block max-w-full truncate rounded-md bg-muted/60 px-2 py-1.5 font-mono text-[12px] text-foreground">
-            {mcp}
-          </code>
-        ) : (
-          <p className="text-[13px] text-muted-foreground">None.</p>
-        )}
-      </Field>
 
       <details className="group rounded-xl border border-border bg-card px-4 py-3">
         <summary className="cursor-pointer list-none text-[13px] font-medium text-foreground [&::-webkit-details-marker]:hidden">
           Advanced
         </summary>
-        <dl className="mt-3 flex flex-col gap-2 text-[13px]">
+        <div className="mt-3 flex flex-col gap-4">
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground text-[13px]">Skills</dt>
+            <dd className="text-[13px] text-foreground">Workspace defaults</dd>
+          </div>
+          <div className="flex flex-col gap-1">
+            <dt className="text-muted-foreground text-[13px]">MCP</dt>
+            <dd className="min-w-0">
+              {mcp ? (
+                <code className="block max-w-full truncate rounded-md bg-muted/60 px-2 py-1.5 font-mono text-[12px] text-foreground">
+                  {mcp}
+                </code>
+              ) : (
+                <span className="text-[13px] text-muted-foreground">None</span>
+              )}
+            </dd>
+          </div>
+        </div>
+        <dl className="mt-4 flex flex-col gap-2 border-t border-border pt-3 text-[13px]">
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted-foreground">Flags</dt>
             <dd className="min-w-0 text-right">
@@ -739,7 +751,7 @@ function BotPanelBody({
         aria-labelledby={`bot-tab-${tab}`}
         tabIndex={0}
       >
-        {restartAdvised && <div className="mb-4"><RestartHint /></div>}
+        {restartAdvised && <div className="mb-4"><RestartHint name={name} /></div>}
         {tab === 'overview' && (
           <OverviewTab name={name} session={session} />
         )}
@@ -813,6 +825,7 @@ export function BotPanel({
           <BotPanelBody
             name={name}
             variant="sheet"
+            initialTab={initialTab}
             onOpenThread={() => {
               onOpenChange?.(false)
               onOpenThread()

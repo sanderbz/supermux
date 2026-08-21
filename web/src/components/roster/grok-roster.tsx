@@ -115,6 +115,10 @@ type Sel =
   | { kind: 'member'; team: string; agent: string }
   | null
 
+/** The bot-panel's tab keys — mirrors `BotPanelProps['initialTab']` so a deep-link
+ *  from the roster can seat a specific tab. */
+type BotTab = 'overview' | 'instructions' | 'tools' | 'memory' | 'activity'
+
 /** The pane's SUBJECT as a stable string — what the "reset the pane to the
  *  thread" guard compares across renders (objects never compare equal).
  *
@@ -243,10 +247,14 @@ interface RowProps {
   group: GroupKey
   active: boolean
   onOpen: (s: ApiSession) => void
+  /** The NAME's own click target — opens THIS bot's settings panel (§2.1). Split
+   *  from `onOpen` so the avatar/body still opens the thread while the name text
+   *  opens the panel. */
+  onOpenSettings: (s: ApiSession) => void
   index: number
 }
 
-const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, index }: RowProps) {
+export const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, onOpenSettings, index }: RowProps) {
   const name = displayLabel(session)
   const time = relativeTime(session.updated_at)
   const sw = stateWordFor(session, group)
@@ -257,14 +265,24 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
   const tags = session.tags?.slice(0, 2) ?? []
 
   return (
-    <button
-      type="button"
+    // Split hit target (§2.1): the row is a POSITIONING context, not itself a
+    // button — a full-bleed base button opens the thread (the fast, default
+    // path), and the NAME is its own button opening the settings panel. Two real
+    // sibling buttons (never nested), so the keyboard contract holds: the base
+    // button and the name are each a tab stop. `.gr-top`/`.col` are made
+    // pointer-transparent in CSS so every non-name click falls through to the
+    // base button.
+    <div
       className="gr-rowA grok-row-enter"
       data-active={active || undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
-      onClick={() => onOpen(session)}
-      aria-label={`${name} — ${sw.word}`}
     >
+      <button
+        type="button"
+        className="gr-row-open"
+        onClick={() => onOpen(session)}
+        aria-label={`Open ${name} — ${sw.word}`}
+      />
       <span className="gr-top">
         <SessionFace
           name={session.name}
@@ -276,7 +294,15 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
         />
         <span className="col">
           <span className="l1">
-            <span className="nm">{name}</span>
+            <button
+              type="button"
+              className="nm gr-nm-btn"
+              onClick={() => onOpenSettings(session)}
+              aria-label={`Open ${name} settings`}
+              title="Open settings"
+            >
+              {name}
+            </button>
             {/* compact-only inline preview (Row C) */}
             <span className="cprev">{preview}</span>
             {time && <span className="tm">{time}</span>}
@@ -314,7 +340,7 @@ const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, in
           </span>
         </span>
       </span>
-    </button>
+    </div>
   )
 })
 
@@ -587,6 +613,9 @@ export default function GrokRoster() {
   // opening a new colleague always lands on their conversation, never on the last
   // bot's settings tab.
   const [paneView, setPaneView] = React.useState<'thread' | 'settings'>('thread')
+  // Which tab the settings pane opens on — Overview by default; a deep-link
+  // (e.g. a "manage tools" entry) seats 'tools' before flipping the view (§2.1).
+  const [paneTab, setPaneTab] = React.useState<BotTab>('overview')
 
   // Install the "New bot" verb for the command palette while this roster is
   // mounted; clear on unmount (parity with the New-group channel). The palette
@@ -809,7 +838,34 @@ export default function GrokRoster() {
   // inbox feel). BotPanel's "Open thread" and the thread's own settings toggle
   // both flow through `setPaneView`.
   const openThread = React.useCallback(() => setPaneView('thread'), [])
-  const openSettings = React.useCallback(() => setPaneView('settings'), [])
+  // In-pane settings toggle (the thread header's SlidersHorizontal + the crew
+  // chip). Always lands on Overview — the deep-link tab is a separate entry.
+  const openSettings = React.useCallback(() => {
+    setPaneTab('overview')
+    setPaneView('settings')
+  }, [])
+  // NAME-AS-CLICK (§2.1): select THIS bot and show its settings panel, optionally
+  // deep-linked to a tab. On phone there is no side pane, so it routes to the
+  // bot's focus screen and hands the mobile panel a tab hint via history state.
+  const openBotSettings = React.useCallback(
+    (s: ApiSession, tab: BotTab = 'overview') => {
+      attention.markRead(s)
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+        navigate(`/focus/${encodeURIComponent(s.name)}`, {
+          state: { openPanel: true, panelTab: tab },
+        })
+        return
+      }
+      const next: Sel = { kind: 'bot', name: s.name }
+      setSelected(next)
+      // Pre-ack the new selection so the "reset the pane to the thread" render
+      // guard does NOT fire and stomp our 'settings' view back to 'thread'.
+      setPaneSelSeen(selKey(next))
+      setPaneTab(tab)
+      setPaneView('settings')
+    },
+    [attention, navigate],
+  )
   // The terminal escape hatch + the ineligible-bot fallback: honestly LEAVE the
   // roster for the still-present /focus route, which owns the live terminal (and
   // its keyboard capture). Phase 1 does not reproduce the terminal in the pane.
@@ -1029,6 +1085,7 @@ export default function GrokRoster() {
                       group={key}
                       active={selected?.kind === 'bot' && selected.name === s.name}
                       onOpen={openSession}
+                      onOpenSettings={openBotSettings}
                       index={rowIndex++}
                     />
                   ))}
@@ -1158,8 +1215,13 @@ export default function GrokRoster() {
               fallback={<div className="gr-pane" data-shell-pane aria-hidden />}
             >
               <BotPanel
+                // Key on the bot so switching colleagues while in settings
+                // remounts the panel — the deep-link `initialTab` (initial state)
+                // applies fresh instead of inheriting the last bot's open tab.
+                key={selectedSession.name}
                 variant="pane"
                 name={selectedSession.name}
+                initialTab={paneTab}
                 onOpenThread={openThread}
                 onOpenTerminal={threadEligible ? undefined : openInFocus}
                 onNavigate={(n) => navigate(`/focus/${encodeURIComponent(n)}`)}

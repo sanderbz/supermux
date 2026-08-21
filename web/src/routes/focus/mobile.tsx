@@ -70,7 +70,7 @@
 // surface shrinks to sit above the soft keyboard exactly as the terminal did.
 
 import * as React from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { useNavigateMorph } from '@/components/view-transitions/morph'
@@ -598,6 +598,24 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // `grok` (read once at mount, above) also decides this: on ⇒ the tabbed
   // BotPanel sheet; off ⇒ the flat SessionInfoPanel.
   const [infoOpen, setInfoOpen] = React.useState(false)
+  // Which tab the info panel opens on — mobile parity for the roster's
+  // name-as-click deep-link (§2.1): a "manage tools" entry navigates here with
+  // `{ openPanel, panelTab }` in history state, and the panel lands on that tab.
+  const [infoTab, setInfoTab] = React.useState<
+    'overview' | 'instructions' | 'tools' | 'memory' | 'activity'
+  >('overview')
+  const location = useLocation()
+  const panelHint = (location.state ?? null) as { openPanel?: boolean; panelTab?: typeof infoTab } | null
+  React.useEffect(() => {
+    if (panelHint?.openPanel) {
+      setInfoTab(panelHint.panelTab ?? 'overview')
+      setInfoOpen(true)
+      // Consume the one-shot hint so a back-and-forward or a resize doesn't
+      // re-open the panel; keep the URL, drop only the state.
+      navigate(location.pathname + location.search, { replace: true, state: {} })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelHint?.openPanel, panelHint?.panelTab])
   // feat-last-prompt — recall sheet for the user's last prompt. No auto-show
   // on mobile (the icon in the header is the only entry).
   const [lastSendOpen, setLastSendOpen] = React.useState(false)
@@ -697,7 +715,10 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
               // `stopped` (not `current.status`) so a pty the SOCKET found dead
               // hides it too — see `useTerminalGone`.
               onRefresh={stopped ? undefined : () => termRef.current?.resync()}
-              onTitleClick={() => setInfoOpen(true)}
+              onTitleClick={() => {
+                setInfoTab('overview')
+                setInfoOpen(true)
+              }}
               hasLastSend={!!current}
               lastSendOpen={lastSendOpen}
               onToggleLastSend={() => setLastSendOpen((o) => !o)}
@@ -1017,6 +1038,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
           <BotPanel
             name={name}
             variant="sheet"
+            initialTab={infoTab}
             open={infoOpen}
             onOpenChange={setInfoOpen}
             onOpenThread={() => setInfoOpen(false)}

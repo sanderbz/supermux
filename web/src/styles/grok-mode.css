@@ -1691,12 +1691,57 @@
 [data-grok] .grok-roster .gr-rowA[data-highlighted] {
   background: var(--gr-sel);
 }
-[data-grok] .grok-roster .gr-rowA:focus-visible {
+[data-grok] .grok-roster .gr-rowA .gr-mark {
+  flex: none;
+}
+
+/* ── SPLIT HIT TARGET (§2.1): a full-bleed base button opens the thread; the
+   NAME is its own button opening the settings panel. `.gr-rowA` isolates so the
+   two z-layers compare locally. `.gr-top` is `display:contents` in the inbox
+   densities, so content is made pointer-transparent on its real children — every
+   click but the name falls through to the base button. */
+[data-grok] .grok-roster .gr-rowA {
+  isolation: isolate;
+}
+[data-grok] .grok-roster .gr-rowA > .gr-row-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: inherit;
+}
+[data-grok] .grok-roster .gr-rowA > .gr-row-open:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
 }
-[data-grok] .grok-roster .gr-rowA .gr-mark {
-  flex: none;
+[data-grok] .grok-roster .gr-rowA .gr-mark,
+[data-grok] .grok-roster .gr-rowA .col {
+  pointer-events: none;
+}
+/* The name reclaims pointer events and lifts above the base button; it inherits
+   the `.nm` type, so here we only strip button chrome and add the affordance. */
+[data-grok] .grok-roster .gr-rowA .gr-nm-btn {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  text-underline-offset: 2px;
+}
+[data-grok] .grok-roster .gr-rowA .gr-nm-btn:hover {
+  text-decoration: underline;
+}
+[data-grok] .grok-roster .gr-rowA .gr-nm-btn:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 55%, transparent);
 }
 
 /* ── the persistent HIRE ghost row (pinned above Teams) ─────────────────────── */
