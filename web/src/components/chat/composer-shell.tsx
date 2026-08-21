@@ -78,15 +78,11 @@ export function ComposerFrame({
       className={cn(
         // On the phone the composer is now the SINGLE bottom bar (the old dock
         // below it is folded away under chat — mobile polish #4), so it owns the
-        // home-indicator inset. The pad is driven off the coordinator's
-        // `--kb-safe-bottom` (keyboard CLOSED ⇒ env(safe-area-inset-bottom),
-        // keyboard OPEN ⇒ 0), floored at 14px so the resting closed gap is
-        // unchanged: `max(var(--kb-safe-bottom),14px)`. iOS does NOT collapse a raw
-        // `env(safe-area-inset-bottom)` above the keyboard (it stays ~34px), which
-        // is exactly why the gate lives in JS (`--kb-safe-bottom`) rather than in
-        // `env()` — without it the un-collapsed inset re-opens a dead band once the
-        // footer is lifted to the keyboard top.
-        phone ? 'px-[14px] pb-[max(var(--kb-safe-bottom),14px)]' : 'px-8 pb-[18px]',
+        // home-indicator inset: `max(env(safe-area-inset-bottom), 14px)` keeps the
+        // 14px breathing room on a flat-bottom phone and lifts clear of the
+        // indicator on a notched one. `env()` collapses to 0 above the soft
+        // keyboard, so nothing double-pads when the field sits at the keyboard top.
+        phone ? 'px-[14px] pb-[max(env(safe-area-inset-bottom),14px)]' : 'px-8 pb-[18px]',
         className,
       )}
     >
