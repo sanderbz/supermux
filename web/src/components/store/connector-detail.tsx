@@ -75,11 +75,15 @@ export function ConnectorDetail({
   // a multi-select of known bots + an "All agents" toggle, defaulting to NOTHING
   // selected so Connect stays disabled until you pick who gets it.
   const isLibrary = grantTarget === null
+  // Enabled in BOTH scopes (not just library): the "Added" panel's Restart-bot
+  // buttons resolve each granted bot's display label and its live status (to guard
+  // a mid-turn restart) from this list. The offline bench passes `botsOverride`, so
+  // the live query stays off there.
   const sessionsQuery = useQuery({
     queryKey: SESSIONS_KEY,
     queryFn: sessionsApi.list,
     staleTime: 30_000,
-    enabled: isLibrary && !botsOverride,
+    enabled: !botsOverride,
   })
   const bots: BotChoice[] = botsOverride ?? sessionsQuery.data ?? []
   const [selectedBots, setSelectedBots] = React.useState<Set<string>>(
@@ -174,7 +178,13 @@ export function ConnectorDetail({
   const botName = grantTarget && grantTarget !== '*' ? grantTarget : null
 
   return (
-    <div className="flex flex-col gap-5">
+    // The sheet body (ResponsiveSheet) has NO horizontal padding of its own, so
+    // the detail content owns its inset. Without this the description, the header
+    // and the Remove link ran flush to the screen edge while the p-4 cards read as
+    // inset — an untidy split. A single content inset (px-5, matching the sheet
+    // header's px-5) pulls everything to one tidy left/right margin; the cards keep
+    // their internal p-4 on top of it. (owner device feedback)
+    <div className="flex flex-col gap-5 px-5 py-5">
       {/* header */}
       <div className="flex items-start gap-3.5">
         <ConnectorIcon card={card} size={56} />
@@ -200,7 +210,7 @@ export function ConnectorDetail({
 
       {/* connect / credential flow */}
       {phase === 'added' ? (
-        <AddedPanel restartHint={restartHint} targets={addedTargets} />
+        <AddedPanel restartHint={restartHint} targets={addedTargets} bots={bots} />
       ) : (
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
           {/* OAuth primary — the branded sign-in, leading the trust hierarchy. */}
@@ -399,14 +409,28 @@ function InstallBlock({ command }: { command: string }) {
   )
 }
 
-function AddedPanel({ restartHint, targets }: { restartHint: boolean; targets: string[] }) {
+function AddedPanel({
+  restartHint,
+  targets,
+  bots,
+}: {
+  restartHint: boolean
+  targets: string[]
+  bots: BotChoice[]
+}) {
   // `*` (all agents) wins the phrasing; otherwise name the bots it was added to.
+  const isAll = targets.includes(ALL_AGENTS)
   const named = targets.filter((t) => t !== ALL_AGENTS)
-  const suffix = targets.includes(ALL_AGENTS)
-    ? ' for all agents'
-    : named.length > 0
-      ? ` to ${named.join(', ')}`
-      : ''
+  const suffix = isAll ? ' for all agents' : named.length > 0 ? ` to ${named.join(', ')}` : ''
+
+  // The bots we actually offer a restart for. `*` fans out to every known bot;
+  // otherwise it is the named grant targets. Resolve each to its live session row
+  // (for a nice label + a mid-turn guard); a target with no row still restarts by
+  // slug with a plain-name button.
+  const restartTargets: BotChoice[] = isAll
+    ? bots
+    : named.map((n) => bots.find((b) => b.name === n) ?? { name: n })
+
   return (
     <div className="flex flex-col gap-2 rounded-2xl border border-status-ready/30 bg-status-ready/10 p-4">
       <div className="flex items-center gap-2 text-[14px] font-semibold text-status-ready-ink">
@@ -420,7 +444,85 @@ function AddedPanel({ restartHint, targets }: { restartHint: boolean; targets: s
           Restart the bot to apply — grants bind at the next launch.
         </p>
       )}
+      {/* Restart the granted bot(s) straight from here so the grant binds now,
+          instead of leaving to hunt for the bot. One button per named bot; for the
+          `*` all-agents grant, one button per known bot ("Restart all granted
+          bots" fans out to each). A bot mid-turn asks for a confirm tap first. */}
+      {restartTargets.length > 0 && (
+        <div className="mt-1 flex flex-col gap-1.5">
+          {isAll && (
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Restart all granted bots
+            </span>
+          )}
+          {restartTargets.map((b) => (
+            <RestartButton
+              key={b.name}
+              name={b.name}
+              label={displayLabel(b)}
+              busy={b.status === 'active' || b.status === 'starting'}
+            />
+          ))}
+        </div>
+      )}
     </div>
+  )
+}
+
+/** A single "Restart <bot>" action wired to `POST /api/sessions/{name}/restart`
+ *  (the atomic stop→start; conversation, worktree and schedules survive, the live
+ *  terminal is rebuilt so the new grants bind). Idempotent-safe: a bot that is
+ *  mid-turn (`active`/`starting`) needs a second confirm tap before it fires, so a
+ *  running turn is never torn down by a stray tap. */
+function RestartButton({ name, label, busy }: { name: string; label: string; busy: boolean }) {
+  type S = 'idle' | 'confirm' | 'running' | 'done' | 'error'
+  const [state, setState] = React.useState<S>('idle')
+
+  const run = async () => {
+    setState('running')
+    try {
+      await sessionsApi.restart(name)
+      setState('done')
+    } catch {
+      setState('error')
+    }
+  }
+  const onClick = () => {
+    if (state === 'running' || state === 'done') return
+    if (state === 'idle' && busy) {
+      setState('confirm')
+      return
+    }
+    void run()
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={state === 'running' || state === 'done'}
+      aria-label={`Restart ${label}`}
+      className={cn(
+        'inline-flex h-9 items-center justify-center gap-1.5 self-start rounded-lg px-3 text-[12.5px] font-medium transition-colors',
+        state === 'confirm'
+          ? 'bg-status-active/15 text-status-active-ink hover:bg-status-active/25'
+          : state === 'done'
+            ? 'bg-status-ready/15 text-status-ready-ink'
+            : 'bg-foreground/[0.06] text-foreground hover:bg-foreground/10',
+      )}
+    >
+      {state === 'running' && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+      {state === 'done' && <Check className="size-3.5" aria-hidden />}
+      {state === 'confirm'
+        ? `${label} is mid-turn — restart anyway?`
+        : state === 'running'
+          ? 'Restarting…'
+          : state === 'done'
+            ? 'Restarted'
+            : state === 'error'
+              ? 'Restart failed — retry'
+              : `Restart ${label}`}
+    </button>
   )
 }
 
