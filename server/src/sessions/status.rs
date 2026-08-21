@@ -863,9 +863,30 @@ impl StatusDetector {
         // and the card flipped to busy"). Suppress it for hooked sessions; keep
         // it as the genuine liveness fallback for shell / codex / claude with
         // unwired (or not-yet-fired) hooks.
+        //
+        // CLAUDE-ONLY spinner gate: reaching here at all means the `esc to
+        // interrupt` spinner (ACTIVE_BANK) is ABSENT — a working claude already
+        // returned Active at step 2's `if spinner { return Active }`. A claude
+        // whose spinner is SUSTAINEDLY absent is at rest; its only fresh bytes
+        // are a ticking background view (the Agent-Teams roster's per-second
+        // timers) or a cursor blink on an idle composer — not the agent working.
+        // Without the gate an unwired-hooks claude-swarm lead (has_hooks=false)
+        // pins Active forever off that motion (measured: `ipc`, last_pty≈0 for a
+        // day). A shell has no spinner (a busy `npm build` shows none and its
+        // fresh bytes ARE the work), codex already returned above, and kimi keeps
+        // the raw heartbeat — so the gate is claude-only.
         let silent = last_pty.elapsed();
         if !has_hooks && silent < PTY_ACTIVE_WINDOW {
-            return Status::Active;
+            let claude_roster_tick_at_rest = self.provider == "claude"
+                && self.spinner_absent_settled(
+                    spinner,
+                    capture,
+                    self.watching_since.elapsed() >= SPINNER_SETTLE,
+                );
+            if !claude_roster_tick_at_rest {
+                return Status::Active;
+            }
+            // else fall through → idle-timeout / step-5 sustained-absence settle → Idle.
         }
         // ── 4. idle timeout ──────────────────────────────────────────────────
         // Only downgrade a session we have already classified. A never-seen
@@ -2130,5 +2151,100 @@ mod tests {
         let raw = "output\n$ \n   \n\n\n";
         let out = prepare_capture(raw);
         assert_eq!(out, "output\n$ ", "trailing blanks dropped, prompt kept last");
+    }
+
+    // ── step-3 PTY-heartbeat spinner gate (claude-only) ──────────────────────
+    // The live stuck `ipc` is an unwired-hooks claude-swarm LEAD running raw
+    // claude with NO supermux hooks (has_hooks=false) and an EMPTY turn machine
+    // (turn.classify == None). It never reaches the step-1 or step-5 settle — it
+    // lands on the step-3 PTY heartbeat, where the per-second Agent-Teams roster
+    // repaint keeps `last_pty≈0 < PTY_ACTIVE_WINDOW`, pinning Active every tick
+    // forever. The gate settles it: reaching the heartbeat means the `esc to
+    // interrupt` spinner is ABSENT (a working claude returned Active at step 2),
+    // and a claude whose spinner is SUSTAINEDLY absent over fresh roster bytes is
+    // at rest. Claude-only: shells (no spinner) and kimi keep the raw heartbeat.
+
+    #[test]
+    fn heartbeat_claude_roster_tick_no_spinner_settles_to_idle() {
+        // (a) THE literal `ipc`: provider=claude, has_hooks=false, empty turn, the
+        // spinner-free ticking roster, last_pty fresh (roster repaint), watched >
+        // SPINNER_SETTLE, held Active. The step-3 heartbeat would pin Active off
+        // the fresh bytes; the spinner-absence gate lets it fall through to the
+        // step-5 sustained-absence settle → Idle.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert!(d.spinner_last_seen.is_none());
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), TurnState::default(), false),
+            Status::Idle,
+            "an unwired-hooks claude lead, spinner absent over a ticking roster, must settle to Idle"
+        );
+    }
+
+    #[test]
+    fn heartbeat_shell_roster_tick_stays_active() {
+        // (b) A SHELL with the SAME inputs stays Active: a shell has no spinner,
+        // and a busy shell (e.g. `npm build`) shows none while its fresh bytes ARE
+        // the work — the gate is claude-only, so the raw heartbeat is preserved.
+        let mut d = StatusDetector::for_provider("shell");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), TurnState::default(), false),
+            Status::Active,
+            "a shell producing fresh bytes must stay live via the heartbeat"
+        );
+    }
+
+    #[test]
+    fn heartbeat_kimi_roster_tick_stays_active() {
+        // (c) kimi with the SAME inputs stays Active: only claude is gated, kimi
+        // keeps the raw PTY heartbeat.
+        let mut d = StatusDetector::for_provider("kimi");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), TurnState::default(), false),
+            Status::Active,
+            "only claude is gated — kimi keeps the raw heartbeat and stays Active"
+        );
+    }
+
+    #[test]
+    fn heartbeat_claude_with_visible_spinner_stays_active() {
+        // (d) A GENUINELY working claude: the capture carries `esc to interrupt`,
+        // so it returns Active at step 2 and never reaches the heartbeat gate.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d.detect(
+                "✻ Thinking… (esc to interrupt · 12s)",
+                Instant::now(),
+                TurnState::default(),
+                false,
+            ),
+            Status::Active,
+            "a visible esc-to-interrupt spinner is a genuine turn → Active"
+        );
+    }
+
+    #[test]
+    fn heartbeat_claude_young_watch_window_stays_active() {
+        // (e) Restart grace: the SAME resting claude but watched only briefly
+        // (2s < SPINNER_SETTLE) and never having seen a spinner. The gate requires
+        // the spinner-absence to be SUSTAINED, so a just-restarted lead holds
+        // Active until the absence settles — a real main turn's spinner gets time
+        // to draw rather than being idled prematurely.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(2);
+        assert!(d.spinner_last_seen.is_none());
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), TurnState::default(), false),
+            Status::Active,
+            "a just-restarted claude (watched < SPINNER_SETTLE) must hold Active until the absence is sustained"
+        );
     }
 }
