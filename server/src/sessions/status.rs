@@ -469,6 +469,23 @@ impl TurnState {
             (None, None) => None,                     // only a (stale) notif — handled above
         }
     }
+
+    // ── TEMP ipc status trace (revert after) ─────────────────────────────────
+    // Pub wrappers over the private `classify`/`turn_start`/`turn_end` so the ipc
+    // diagnosis can dump the turn-machine verdict and turn-boundary ages. Remove
+    // with the trace.
+    /// The turn-state-machine verdict for the live turn timestamps.
+    pub fn dbg_classify(&self) -> Option<Status> {
+        self.classify()
+    }
+    /// Seconds since the newest turn-start hook, or `None` if none seen.
+    pub fn dbg_start_secs(&self) -> Option<u64> {
+        self.turn_start().map(|t| t.elapsed().as_secs())
+    }
+    /// Seconds since the newest turn-end (`Stop`) hook, or `None` if none seen.
+    pub fn dbg_end_secs(&self) -> Option<u64> {
+        self.turn_end().map(|t| t.elapsed().as_secs())
+    }
 }
 
 /// Per-session classifier. Holds only the last classification so the fusion
@@ -542,6 +559,25 @@ impl StatusDetector {
 
     /// The most recent classification (the value the fallback "holds").
     pub fn last_status(&self) -> Status {
+        self.last_status
+    }
+
+    // ── TEMP ipc status trace (revert after) ─────────────────────────────────
+    // Read-only accessors on the private settle fields so the ipc diagnosis
+    // (auto_actions.rs `IPC-STATUS-TRACE`) can dump the live runtime values that
+    // decide the spinner-absence settle. Pure getters, no logic. Remove with the
+    // trace.
+    /// Seconds since this detector began observing the session (`watching_since`).
+    pub fn dbg_watching_secs(&self) -> u64 {
+        self.watching_since.elapsed().as_secs()
+    }
+    /// Seconds since the `esc to interrupt` spinner was last seen, or `None` if
+    /// it has never been seen in this detector's lifetime (`spinner_last_seen`).
+    pub fn dbg_spinner_seen_secs(&self) -> Option<u64> {
+        self.spinner_last_seen.map(|t| t.elapsed().as_secs())
+    }
+    /// The detector's current held classification (`last_status`).
+    pub fn dbg_last_status(&self) -> Status {
         self.last_status
     }
 
@@ -980,6 +1016,22 @@ pub fn prepare_capture_ansi(raw: &str) -> String {
     }
     let start = lines.len().saturating_sub(CAPTURE_LINES);
     lines[start..].join("\n")
+}
+
+// ── TEMP ipc status trace (revert after) ─────────────────────────────────────
+// Free predicates exposing the private regex banks so the ipc diagnosis can
+// report which bank each live capture matches. Read-only; remove with the trace.
+/// Whether `capture` matches the ACTIVE bank (`esc to interrupt` spinner, …).
+pub fn dbg_active_bank(capture: &str) -> bool {
+    ACTIVE_BANK.is_match(capture)
+}
+/// Whether `capture` matches the IDLE bank (bare `❯`/`$` prompt, …).
+pub fn dbg_idle_bank(capture: &str) -> bool {
+    IDLE_BANK.is_match(capture)
+}
+/// Whether `capture` matches the WAITING bank (selector/confirmation prompt).
+pub fn dbg_waiting_bank(capture: &str) -> bool {
+    WAITING_BANK.is_match(capture)
 }
 
 // ── the regex bank ───────────────────────────────────────────────────────────

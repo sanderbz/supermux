@@ -574,6 +574,14 @@ pub async fn tick(
     last_capture_at: &mut Instant,
     chat_tail: &mut ChatTailGate,
 ) -> anyhow::Result<Status> {
+    // ── TEMP ipc status trace (revert after) ─────────────────────────────────
+    // Fires at the very top of every tick for `ipc`, BEFORE the capture-skip
+    // early-return. If we see IPC-TICK-ENTER but never IPC-STATUS-TRACE, the
+    // capture-skip is short-circuiting the detect. Remove with the diagnosis.
+    if name == "ipc" {
+        tracing::warn!(target: "ipc_trace", name = %name, "IPC-TICK-ENTER");
+    }
+
     // While the detector's internal status is still `Unknown` (cold-start), pull
     // the persisted `last_status` from the DB and force it in. This satisfies
     // the "Unknown stays Unknown" cold-start guard in `classify` so a session
@@ -805,6 +813,33 @@ pub async fn tick(
     let has_hooks = state.has_hooks(name);
     let prev = detector.last_status();
     let new_status = detector.detect(&capture, last_pty, turn, has_hooks);
+
+    // ── TEMP ipc status trace (revert after) ─────────────────────────────────
+    // Diagnose why the live `ipc` session stays active despite the settle fix:
+    // dump every input the classifier keyed off + the branch verdicts. Pure
+    // logging, zero control-flow impact. Remove with the diagnosis.
+    if name == "ipc" {
+        tracing::warn!(
+            target: "ipc_trace",
+            name = %name,
+            ?new_status,
+            prev = ?detector.dbg_last_status(),
+            spinner = status::dbg_active_bank(&capture),
+            idle_bank = status::dbg_idle_bank(&capture),
+            waiting_bank = status::dbg_waiting_bank(&capture),
+            turn_class = ?turn.dbg_classify(),
+            turn_start_secs = ?turn.dbg_start_secs(),
+            turn_end_secs = ?turn.dbg_end_secs(),
+            turn = ?turn,
+            watching_secs = detector.dbg_watching_secs(),
+            spinner_seen_secs = ?detector.dbg_spinner_seen_secs(),
+            last_pty_secs = last_pty.elapsed().as_secs(),
+            has_hooks,
+            cap_lines = capture.lines().count(),
+            cap_empty = capture.trim().is_empty(),
+            "IPC-STATUS-TRACE"
+        );
+    }
 
     // THE FREEZE, reconciled with what is actually on the screen.
     //
