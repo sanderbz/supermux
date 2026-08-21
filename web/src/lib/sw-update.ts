@@ -131,6 +131,20 @@ export function markWaiting(reload: ReloadFn): void {
   armVisibilityAdopt()
 }
 
+/**
+ * Retract the "waiting" state — the page is CURRENT (its built sha matches what
+ * the server is serving). The version-guard calls this on every check that finds
+ * NO mismatch so a bar surfaced by an earlier poll (or a since-adopted deploy)
+ * disappears on its own instead of lingering. Notifies subscribers only when it
+ * actually flips, so it is cheap to call on every poll. No effect on the reload
+ * thunk — a genuinely waiting SW worker can still be adopted later.
+ */
+export function markCurrent(): void {
+  if (!waiting) return
+  waiting = false
+  emit()
+}
+
 /** TEST SEAM: reset module state between cases. */
 export function __resetSWUpdateForTest(): void {
   waiting = false

@@ -20,12 +20,59 @@
 // never a surprise reload). It is a strict SUPERSET trigger for the bar, never a
 // second reload mechanism that could fight the SW path.
 
-import { markWaiting } from '@/lib/sw-update'
+import { markCurrent, markWaiting } from '@/lib/sw-update'
 
 /** How often the running bundle asks the server for its live build sha. Matches
  *  the SW `registration.update()` cadence in `lib/pwa.ts`; a plain conditional
  *  GET of a tiny JSON body, negligible cost. */
 const VERSION_POLL_MS = 60_000
+
+/** sessionStorage key for the bounded adopt-escalation counter. First tap =
+ *  plain reload (the server now serves index.html no-cache, so that alone yields
+ *  the fresh bundle); a second tap after the guard STILL fires escalates to
+ *  `unregister()` + reload. Cleared the moment the page is current, so it can
+ *  never accumulate across unrelated deploys. */
+const ADOPT_ATTEMPT_KEY = 'sm_adopt_attempt'
+
+function readAttempt(): number {
+  try {
+    const n = Number(globalThis.sessionStorage?.getItem(ADOPT_ATTEMPT_KEY))
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function bumpAttempt(): void {
+  try {
+    globalThis.sessionStorage?.setItem(ADOPT_ATTEMPT_KEY, String(readAttempt() + 1))
+  } catch {
+    // sessionStorage unavailable (private mode / no DOM) — the guard still works,
+    // it just always takes the first-tap plain-reload branch.
+  }
+}
+
+function clearAttempt(): void {
+  try {
+    globalThis.sessionStorage?.removeItem(ADOPT_ATTEMPT_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+/** Delete every Cache Storage bucket so NOTHING stale can be served to the page
+ *  after the reload — the wedged-precache escape hatch. Best-effort: a missing
+ *  `caches` API (non-secure context, old browser) simply skips it. */
+async function clearAllCaches(): Promise<void> {
+  try {
+    const c = (globalThis as unknown as { caches?: CacheStorage }).caches
+    if (!c) return
+    const keys = await c.keys()
+    await Promise.all(keys.map((k) => c.delete(k)))
+  } catch {
+    // ignore — a reload against the no-cache index.html still refreshes the shell
+  }
+}
 
 /** A real, comparable git sha (not the `"dev"` sentinel a non-git build bakes).
  *  Both sides must be real for a mismatch to mean anything. */
@@ -66,19 +113,32 @@ async function fetchServedSha(): Promise<string | null> {
 
 /**
  * Adopt the newer build for the version-mismatch path — deliberately robust
- * against a wedged/absent SW, since that is the exact case this guard exists to
- * rescue:
+ * against a wedged/absent SW/precache, since that is the exact case this guard
+ * exists to rescue.
+ *
+ * FIRST, unconditionally clear ALL Cache Storage: whatever happens next ends in a
+ * `location.reload()`, and a wedged CacheFirst/precache bucket could otherwise
+ * hand the reload the very stale chunks we are trying to escape. With the caches
+ * emptied and the server serving `index.html` `no-cache`, the reload is forced to
+ * refetch the fresh shell + its fresh hashed chunks from the network.
+ *
+ * THEN:
  *   1. Force the SW to re-check (`registration.update()`) so a genuinely waiting
  *      worker is discovered even if the plugin's callback was missed.
  *   2. If one IS waiting, adopt it the clean way: SKIP_WAITING →
  *      `controllerchange` → reload (with a short timeout fallback in case
  *      `controllerchange` never lands).
- *   3. Otherwise fall back to a plain reload. `index.html` is served `no-cache`
- *      and references content-hashed chunk URLs, so a reload pulls the freshly
- *      deployed bundle from the network even under the old controller — the new
- *      chunk URLs are simply not in the old CacheFirst cache.
+ *   3. Otherwise a BOUNDED last resort. The FIRST tap is a plain reload — the
+ *      server's `no-cache` index.html now yields the fresh bundle, so that alone
+ *      normally fixes it. If the guard STILL fires after that reload and the user
+ *      taps AGAIN, escalate: `unregister()` the SW so the next load is fully
+ *      network-fresh and re-registers on the new bundle, then reload. The attempt
+ *      counter is cleared the moment the page is found current (see `check`), so
+ *      it can never loop or bleed into an unrelated future deploy.
  */
-async function adoptNewBuild(): Promise<void> {
+export async function adoptNewBuild(): Promise<void> {
+  // Escape a wedged precache first — every branch below ends in a reload.
+  await clearAllCaches()
   try {
     const reg = await navigator.serviceWorker?.getRegistration()
     await reg?.update?.()
@@ -89,13 +149,42 @@ async function adoptNewBuild(): Promise<void> {
         { once: true },
       )
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
-      window.setTimeout(() => location.reload(), 3_000)
+      window.setTimeout(() => location.reload(), 2_000)
       return
+    }
+    // No waiting worker — bounded escalation.
+    const attempt = readAttempt()
+    bumpAttempt()
+    if (attempt >= 1) {
+      // Second (or later) tap: the plain reload did not clear the mismatch.
+      // Fully de-register so the next load re-registers on the new bundle.
+      await reg?.unregister?.()
     }
   } catch {
     // fall through to a plain reload
   }
   location.reload()
+}
+
+/**
+ * Reconcile one served sha against this bundle's built sha and drive the bar.
+ * Exported + pure of the network so it unit-tests headlessly.
+ *
+ *   * Server is on a NEWER build → surface the bar (idle-guard inside
+ *     `markWaiting` still decides silent-adopt vs. one-tap button).
+ *   * Server answered and we are CURRENT (equal shas) → retract any bar a
+ *     previous poll surfaced so it clears on its own, and reset the bounded
+ *     adopt-escalation counter so a future, unrelated deploy starts fresh.
+ *   * Served sha unavailable (offline / 401 / dev) → leave the bar untouched: a
+ *     transient blip must never dismiss a legitimately-shown bar.
+ */
+export function reconcileServedSha(served: unknown, built: unknown): void {
+  if (isNewerServedSha(served, built)) {
+    markWaiting(() => void adoptNewBuild())
+  } else if (isRealSha(served)) {
+    markCurrent()
+    clearAttempt()
+  }
 }
 
 let started = false
@@ -112,12 +201,7 @@ export function startVersionGuard(): void {
   started = true
 
   const check = async () => {
-    const served = await fetchServedSha()
-    if (isNewerServedSha(served, __APP_BUILD_SHA__)) {
-      // A newer build is live. Surface the same bar the SW path uses; the
-      // idle-guard inside markWaiting still decides silent-vs-button.
-      markWaiting(() => void adoptNewBuild())
-    }
+    reconcileServedSha(await fetchServedSha(), __APP_BUILD_SHA__)
   }
 
   window.setInterval(() => void check(), VERSION_POLL_MS)

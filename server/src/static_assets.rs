@@ -262,15 +262,73 @@ fn json_string(s: &str) -> String {
 fn cache_control(path: &str) -> &'static str {
     if path.starts_with("assets/") || path.starts_with("fonts/") {
         "public, max-age=31536000, immutable"
-    } else if path == "sw.js" || path == "registerSW.js" || path == "manifest.webmanifest" {
-        // The service-worker script, its registration shim, and the web manifest
-        // gate every update: a stale copy pinned by the HTTP cache (or a proxy /
-        // odd WebKit state) can keep a freshly deployed SW from ever being seen
-        // by `registration.update()`. Serve them `no-cache` so the browser always
+    } else if path == "sw.js"
+        || path == "registerSW.js"
+        || path == "manifest.webmanifest"
+        || path == "index.html"
+        || path.ends_with(".html")
+    {
+        // The service-worker script, its registration shim, the web manifest —
+        // AND every HTML document, `index.html` above all — gate every update: a
+        // stale copy pinned by the HTTP cache (or a proxy / odd WebKit state)
+        // can keep a freshly deployed SW from ever being seen by
+        // `registration.update()`. Serve them `no-cache` so the browser always
         // revalidates the bytes that decide whether a new build is waiting.
+        //
+        // Why `index.html` specifically, and why this was the permanent-reload-bar
+        // bug: `index.html` is the shell the service worker fetches — as the
+        // navigateFallback target and as the NetworkFirst HTML copy — to decide
+        // which bundle is running. It references the content-hashed chunk URLs
+        // for a given build. A `max-age=3600` copy of it pins the SW (and thus
+        // the WHOLE app) on the OLD chunk URLs for the TTL: the running bundle's
+        // baked `__APP_BUILD_SHA__` stays behind the server's live `/api/version`
+        // sha, so the version-guard shows the reload bar FOREVER, and each tap's
+        // `location.reload()` is served the same stale cached `index.html` and
+        // never escapes. `no-cache` makes every navigation revalidate → the
+        // fresh `index.html`, the fresh chunk URLs, the current bundle. This also
+        // un-wedges an ALREADY-installed bundle with no reinstall: it changes
+        // what the running SW's own network fetches receive. Hashed `assets/` and
+        // `fonts/` stay immutable — only the entry documents flip to `no-cache`.
         "no-cache"
     } else {
         "public, max-age=3600"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_control;
+
+    #[test]
+    fn index_html_is_no_cache_so_the_sw_is_never_pinned_on_a_stale_bundle() {
+        // The permanent-reload-bar regression: a max-age copy of the shell pins
+        // the SW on the old hashed chunks. index.html (and any *.html) must
+        // revalidate on every navigation.
+        assert_eq!(cache_control("index.html"), "no-cache");
+        assert_eq!(cache_control("offline.html"), "no-cache");
+    }
+
+    #[test]
+    fn update_gating_files_stay_no_cache() {
+        assert_eq!(cache_control("sw.js"), "no-cache");
+        assert_eq!(cache_control("registerSW.js"), "no-cache");
+        assert_eq!(cache_control("manifest.webmanifest"), "no-cache");
+    }
+
+    #[test]
+    fn hashed_assets_and_fonts_stay_immutable() {
+        assert_eq!(
+            cache_control("assets/index-abc123.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control("assets/style-def456.css"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control("fonts/JetBrainsMono.woff2"),
+            "public, max-age=31536000, immutable"
+        );
     }
 }
 

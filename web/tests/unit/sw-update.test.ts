@@ -18,6 +18,7 @@ import {
   __resetSWUpdateForTest,
   adopt,
   getSWUpdateWaiting,
+  markCurrent,
   markWaiting,
   shouldAutoAdopt,
   subscribeSWUpdate,
@@ -162,5 +163,28 @@ describe('markWaiting — adopting a waiting worker', () => {
     doc.fire('visibilitychange')
     expect(reloaded).toBe(0)
     expect(getSWUpdateWaiting()).toBe(true)
+  })
+})
+
+describe('markCurrent — retract a stale bar once the page is current', () => {
+  test('flips waiting back to false and notifies subscribers', () => {
+    g.document = makeDoc('visible')
+    const notified: boolean[] = []
+    subscribeSWUpdate(() => notified.push(getSWUpdateWaiting()))
+
+    markWaiting(() => {})
+    expect(getSWUpdateWaiting()).toBe(true)
+
+    markCurrent()
+    expect(getSWUpdateWaiting()).toBe(false)
+    expect(notified).toEqual([true, false])
+  })
+
+  test('no-op (no spurious notify) when nothing is waiting', () => {
+    const notified: number[] = []
+    subscribeSWUpdate(() => notified.push(1))
+    markCurrent()
+    expect(getSWUpdateWaiting()).toBe(false)
+    expect(notified).toEqual([])
   })
 })

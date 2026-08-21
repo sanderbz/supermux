@@ -8,9 +8,19 @@
  * the load-bearing decision so it can never regress into either a stuck-stale
  * bundle (missed mismatch) or a false-positive bar (offline blip, dev build).
  */
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
-import { isNewerServedSha, isRealSha } from '../../src/lib/version-guard'
+import {
+  adoptNewBuild,
+  isNewerServedSha,
+  isRealSha,
+  reconcileServedSha,
+} from '../../src/lib/version-guard'
+import {
+  __resetSWUpdateForTest,
+  getSWUpdateWaiting,
+  markWaiting,
+} from '../../src/lib/sw-update'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -47,5 +57,97 @@ describe('isNewerServedSha — surface the bar IFF a genuinely newer build is li
   test('a dev build never compares (nothing to adopt)', () => {
     expect(isNewerServedSha(B, 'dev')).toBe(false)
     expect(isNewerServedSha('dev', A)).toBe(false)
+  })
+})
+
+describe('reconcileServedSha — the bar surfaces on a newer build, retracts when current', () => {
+  beforeEach(() => {
+    __resetSWUpdateForTest()
+    // A visible tab (no document.visibilityState === 'hidden') so markWaiting
+    // surfaces the button rather than silently adopting.
+  })
+  afterEach(() => {
+    __resetSWUpdateForTest()
+  })
+
+  test('server on a newer real sha → the bar shows', () => {
+    reconcileServedSha(B, A)
+    expect(getSWUpdateWaiting()).toBe(true)
+  })
+
+  test('served == built → a previously-shown bar RETRACTS (clears on its own)', () => {
+    // A bar is up from an earlier poll.
+    markWaiting(() => {})
+    expect(getSWUpdateWaiting()).toBe(true)
+    // Next poll finds us current → the bar clears.
+    reconcileServedSha(A, A)
+    expect(getSWUpdateWaiting()).toBe(false)
+  })
+
+  test('a null served sha (offline / 401) leaves a shown bar untouched', () => {
+    markWaiting(() => {})
+    expect(getSWUpdateWaiting()).toBe(true)
+    reconcileServedSha(null, A)
+    expect(getSWUpdateWaiting()).toBe(true)
+  })
+})
+
+describe('adoptNewBuild — force-clears Cache Storage then reloads', () => {
+  type G = {
+    caches?: unknown
+    navigator?: unknown
+    location?: unknown
+    window?: unknown
+    sessionStorage?: unknown
+  }
+  const g = globalThis as unknown as G
+  const saved: G = {}
+
+  beforeEach(() => {
+    for (const k of ['caches', 'navigator', 'location', 'sessionStorage'] as const) {
+      saved[k] = g[k]
+    }
+  })
+  afterEach(() => {
+    for (const k of ['caches', 'navigator', 'location', 'sessionStorage'] as const) {
+      if (saved[k] === undefined) delete g[k]
+      else g[k] = saved[k]
+    }
+  })
+
+  test('deletes every cache bucket and calls location.reload()', async () => {
+    const deleted: string[] = []
+    g.caches = {
+      keys: async () => ['supermux-html', 'supermux-assets', 'workbox-precache'],
+      delete: async (k: string) => {
+        deleted.push(k)
+        return true
+      },
+    }
+    // No service worker registration → the bounded-reload path.
+    g.navigator = { serviceWorker: { getRegistration: async () => undefined } }
+    const reload = mock(() => {})
+    g.location = { reload }
+    g.sessionStorage = {
+      _m: new Map<string, string>(),
+      getItem(k: string) {
+        return this._m.get(k) ?? null
+      },
+      setItem(k: string, v: string) {
+        this._m.set(k, v)
+      },
+      removeItem(k: string) {
+        this._m.delete(k)
+      },
+    }
+
+    await adoptNewBuild()
+
+    expect(deleted.sort()).toEqual([
+      'supermux-assets',
+      'supermux-html',
+      'workbox-precache',
+    ])
+    expect(reload).toHaveBeenCalledTimes(1)
   })
 })
