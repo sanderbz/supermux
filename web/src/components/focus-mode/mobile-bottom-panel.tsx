@@ -366,7 +366,7 @@ export function MobileBottomPanel({
       // unchanged from when the dock owned this.
       className={cn(
         'glass relative shrink-0 overflow-hidden border-t border-border/60',
-        'pb-[max(env(safe-area-inset-bottom),0.5rem)]',
+        'pb-[max(var(--kb-safe-bottom),0.5rem)]',
       )}
     >
       {/* The drag handle — the ONE drag region. 22pt tall hit area; visible
