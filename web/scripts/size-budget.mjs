@@ -756,7 +756,20 @@ const BUDGET_ENTRY_JS = 160 * KB
 // — the real hero-path guard — is UNMOVED as a gate and green at 152.49/160
 // (95%): the overlay's weight is entirely off the entry path by construction.
 // ceil(measured)=308, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 308 * KB
+// RATCHETED 308 → 309 by the PWA served-version update guard (fix/grok-mode PWA
+// reload bar). A PWA wedged on an OLD service worker can never fire the plugin's
+// `onNeedRefresh`, so the SW path alone can never break that deadlock. This adds
+// `lib/version-guard.ts` — a SW-lifecycle-INDEPENDENT heartbeat that polls
+// `/api/version` and compares the server's live `current.sha` to the sha THIS
+// bundle was built from (`__APP_BUILD_SHA__`, a vite `define`), surfacing the
+// same one-tap reload bar via the shared `markWaiting` store on a mismatch.
+// Measured 308.34 against 308.00 for the base at this branch head — +~0.5 KB, and
+// UNUSUALLY it lands on the ENTRY chunk (152.95/160, 96%) because the guard is
+// reached from `main.tsx → lib/pwa.ts` (the boot path), not a lazy route — but
+// the ENTRY gate, the real hero-path guard, stays green with headroom. It reuses
+// the existing adoption store (no second reload mechanism) so no data-loss path
+// changes. ceil(measured)=309, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 309 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

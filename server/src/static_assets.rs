@@ -262,6 +262,13 @@ fn json_string(s: &str) -> String {
 fn cache_control(path: &str) -> &'static str {
     if path.starts_with("assets/") || path.starts_with("fonts/") {
         "public, max-age=31536000, immutable"
+    } else if path == "sw.js" || path == "registerSW.js" || path == "manifest.webmanifest" {
+        // The service-worker script, its registration shim, and the web manifest
+        // gate every update: a stale copy pinned by the HTTP cache (or a proxy /
+        // odd WebKit state) can keep a freshly deployed SW from ever being seen
+        // by `registration.update()`. Serve them `no-cache` so the browser always
+        // revalidates the bytes that decide whether a new build is waiting.
+        "no-cache"
     } else {
         "public, max-age=3600"
     }

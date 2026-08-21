@@ -1,8 +1,27 @@
+import { execSync } from 'node:child_process'
 import { defineConfig } from 'vite'
 import { fileURLToPath, URL } from 'node:url'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// Git sha this bundle is built from, baked in so the running page can tell when
+// the SERVER is live on a newer build than itself (the SW-lifecycle-independent
+// update guard in `src/lib/version-guard.ts`). Precedence mirrors
+// `server/build.rs` EXACTLY (`SUPERMUX_VERSION_SHA` env, else `git rev-parse
+// HEAD`) so the JS-baked sha and the server's `/api/version` `current.sha` are
+// identical for a given deploy and only differ once a new build ships.
+const BUILD_SHA: string =
+  process.env.SUPERMUX_VERSION_SHA?.trim() ||
+  (() => {
+    try {
+      return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim()
+    } catch {
+      return 'dev'
+    }
+  })()
 
 // https://vite.dev/config/
 // Tailwind v4 is wired via the first-party Vite plugin —
@@ -166,6 +185,10 @@ export default defineConfig({
       },
     }),
   ],
+  // Bundle-build identity for the update guard (see BUILD_SHA above).
+  define: {
+    __APP_BUILD_SHA__: JSON.stringify(BUILD_SHA),
+  },
   resolve: {
     // @/* → src/* (shadcn copy-source convention; mirrors tsconfig paths).
     alias: {

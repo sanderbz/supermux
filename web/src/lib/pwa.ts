@@ -17,6 +17,7 @@
 import { registerSW } from 'virtual:pwa-register'
 import { injectIOSSplashLinks } from '@/lib/ios-splash'
 import { markWaiting } from '@/lib/sw-update'
+import { startVersionGuard } from '@/lib/version-guard'
 
 // How often a long-open PWA re-checks the server for a freshly deployed shell.
 // The browser only polls the SW script on navigation / roughly daily on its
@@ -32,6 +33,13 @@ const SW_UPDATE_POLL_MS = 60_000
 export function initPWA(): void {
   // iOS launch-splash links — runs on iOS only (see ios-splash.ts).
   injectIOSSplashLinks()
+
+  // Served-version heartbeat — the SW-lifecycle-INDEPENDENT update guard. Runs
+  // only in a production build (in dev the page is Vite-served, not the embedded
+  // server bundle, so a sha "mismatch" is meaningless) and even when a service
+  // worker is missing, so a bundle wedged on an ancient SW that can never fire
+  // `onNeedRefresh` still surfaces the reload bar. See lib/version-guard.ts.
+  if (import.meta.env.PROD) startVersionGuard()
 
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
 
