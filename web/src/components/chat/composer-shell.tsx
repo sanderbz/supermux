@@ -78,16 +78,20 @@ export function ComposerFrame({
       className={cn(
         // On the phone the composer is now the SINGLE bottom bar (the old dock
         // below it is folded away under chat — mobile polish #4), so it owns the
-        // home-indicator inset: `max(var(--safe-bottom,…), 14px)` keeps the 14px
-        // breathing room on a flat-bottom phone and lifts clear of the indicator
-        // on a notched one. `--safe-bottom` is env(safe-area-inset-bottom) at rest
-        // and is GATED to 0px by the globals `:root:has(:focus)` rule the instant
-        // any editable takes focus — so the ~34px home-indicator band cannot
-        // survive as a transparent gap between the composer and the keyboard top.
-        // This is the ROBUST gate: pure CSS, no dependence on the JS keyboard
-        // detector (which the real-device standalone case defeated).
+        // home-indicator inset: the `max(…, 14px)` keeps the 14px breathing room
+        // on a flat-bottom phone and lifts clear of the indicator on a notched
+        // one. The inner gate is `min(--kb-safe-bottom, --safe-bottom)`: BOTH are
+        // env(safe-area-inset-bottom) at rest, and keyboard-open zeros WHICHEVER
+        // signal fires — the JS keyboard detector sets `--kb-safe-bottom=0` on
+        // devices where visualViewport SHRINKS, and the globals `:root:has(:focus)`
+        // rule sets `--safe-bottom=0` on devices where the contenteditable
+        // registers as :focus for :has. Neither alone is robust (the owner's real
+        // device shrinks vv but does NOT match :has for the contenteditable, so
+        // --safe-bottom stayed 34px there); the MIN of both drops to 0 as long as
+        // EITHER path detects the open keyboard — so the ~34px home-indicator band
+        // cannot survive as a transparent gap between the composer and the keyboard.
         phone
-          ? 'px-[14px] pb-[max(var(--safe-bottom,env(safe-area-inset-bottom)),14px)]'
+          ? 'px-[14px] pb-[max(min(var(--kb-safe-bottom,env(safe-area-inset-bottom)),var(--safe-bottom,env(safe-area-inset-bottom))),14px)]'
           : 'px-8 pb-[18px]',
         className,
       )}

@@ -474,19 +474,21 @@
   --vv-overshoot: 0px;
   --kb: 0px;
   --kb-safe-bottom: env(safe-area-inset-bottom);
-  /* The bottom home-indicator inset, as ONE named gate (Fix B). At rest it is the
-     device inset; while ANY editable holds focus the `:has(:focus)` rule below
-     forces it to 0 so the ~34px band cannot paint under a lifted composer/panel.
-     This is PURE CSS, so it holds even if the JS keyboard detector never flips
-     (the real-device standalone case the `--kb-safe-bottom` JS gate missed). */
+  /* The bottom home-indicator inset, as one of TWO keyboard-open signals. At rest
+     it is the device inset; while an editable matches the `:has(:focus)` rule
+     below it forces to 0. But this CSS path is NOT robust alone: on the owner's
+     real device the contenteditable composer does NOT register as :focus for
+     :has, so --safe-bottom stays 34px there. Consumers therefore read
+     min(--kb-safe-bottom, --safe-bottom) so the JS detector (--kb-safe-bottom)
+     covers the devices this rule misses, and vice versa. */
   --safe-bottom: env(safe-area-inset-bottom);
 }
 
-/* Fix B — the robust, detector-independent bottom-band gate. The instant any
-   text field takes focus the soft keyboard is coming up, so the home-indicator
-   inset is no longer under an exposed edge: zero it. Consumers read
-   `var(--safe-bottom, …)` and drop to their small floor (0.5rem / 14px) while
-   typing, then restore the full inset on blur. */
+/* One of the two bottom-band gates. The instant a text field matches :focus the
+   soft keyboard is coming up, so zero the inset. This CSS path fires on devices
+   where the editable matches `:has(:focus)`; on devices where it does NOT (the
+   owner's real contenteditable), the JS `--kb-safe-bottom` gate covers instead —
+   consumers min() both so whichever fires drops the band. */
 :root:has(input:focus, textarea:focus, [contenteditable]:focus) {
   --safe-bottom: 0px;
 }
@@ -534,10 +536,17 @@
   padding-top: env(safe-area-inset-top);
 }
 @utility pb-safe {
-  /* Fix B — read the gated `--safe-bottom` (0 while an editable is focused) so a
-     `pb-safe` bar never carries the ~34px home-indicator band up against the
-     keyboard while typing. Falls back to the raw inset pre-JS / if unset. */
-  padding-bottom: var(--safe-bottom, env(safe-area-inset-bottom));
+  /* Read the MIN of both keyboard-open signals — the JS detector
+     (`--kb-safe-bottom`, 0 on visualViewport-shrink devices) OR the CSS
+     `:has(:focus)` gate (`--safe-bottom`, 0 where the editable matches :focus) —
+     so a `pb-safe` bar drops to 0 the moment EITHER path detects the keyboard and
+     never carries the ~34px home-indicator band up against it. Neither alone is
+     robust; each covers the devices the other misses. Falls back to the raw inset
+     pre-JS / if unset. */
+  padding-bottom: min(
+    var(--kb-safe-bottom, env(safe-area-inset-bottom)),
+    var(--safe-bottom, env(safe-area-inset-bottom))
+  );
 }
 @utility pl-safe {
   padding-left: env(safe-area-inset-left);
