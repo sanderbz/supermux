@@ -195,6 +195,16 @@ const SYSTEM_WORD: Record<string, string> = {
  * `nowMs` is bucketed to 30s (`chat-panel.tsx`) so the transcript reshapes twice
  * a minute rather than once a second. A prop that starts changing per render is
  * what would silently undo this — hence the test in `chat-interactive`.
+ *
+ * BELT-AND-SUSPENDERS (see `areTranscriptPropsEqual` below): even with the panel
+ * indexes stabilised, `buildTranscript` mints a brand-new `node` OBJECT for every
+ * row on each rebuild — and it rebuilds on every harness `/events` tick
+ * (`conversation.tsx:370-373`), a debounced feed that fires while subagents
+ * delegate. A new `node` identity for an UNCHANGED row would fail the default
+ * shallow comparator and re-render/re-run this bubble's markdown, collapsing any
+ * live WebKit selection anchored in it. The custom comparator holds the boundary
+ * by content: a `kind:'item'` row is equal when its underlying `item` object and
+ * run-grammar are unchanged, regardless of the fresh `node` wrapper.
  */
 export const TranscriptItem = React.memo(function TranscriptItem(
   props: TranscriptItemProps,
@@ -252,7 +262,87 @@ export const TranscriptItem = React.memo(function TranscriptItem(
       gutter={showGutter ? props.name : undefined}
     />
   )
-})
+}, areTranscriptPropsEqual)
+
+/**
+ * Skip a re-render only when NOTHING this row draws has changed.
+ *
+ * Conservative by construction: it returns `true` (skip) exclusively when every
+ * scalar/callback prop reference-compares equal AND the `node` renders the same
+ * thing. The `node` object itself is a fresh wrapper on every `buildTranscript`
+ * rebuild, so it is compared by CONTENT, not identity:
+ *
+ *  - `kind:'item'` — the selection-bearing bubbles. Equal when the underlying
+ *    `item` object is the SAME reference (buildTranscript preserves it from the
+ *    transcript query, so a harness-only tick keeps it) OR carries identical
+ *    content (`uuid`/`type`/`text`/`truncated`/`retracted`), AND the run-grammar
+ *    that decides layout is unchanged (`speaker`/`grouped`/`showGutter`/
+ *    `sender`). Any difference → re-render. This is the lock that keeps
+ *    `ChatMarkdown` mounted through an unrelated subagent-activity rebuild.
+ *  - `divider` — equal when the label text is unchanged.
+ *  - `harness` / `harness-run` — equal when the event payload reference is the
+ *    same; a refetched `/events` payload is a new object → re-render (cheap,
+ *    and these centred lines hold no selection).
+ *
+ * If in any doubt it returns `false`: new messages, edits, renames, retractions
+ * and regroupings all change one of the compared fields and still render.
+ */
+function areTranscriptPropsEqual(a: TranscriptItemProps, b: TranscriptItemProps): boolean {
+  if (
+    a.name !== b.name ||
+    a.surface !== b.surface ||
+    a.labels !== b.labels ||
+    a.mentions !== b.mentions ||
+    a.names !== b.names ||
+    a.rawUrl !== b.rawUrl ||
+    a.pinFor !== b.pinFor ||
+    a.showActions !== b.showActions ||
+    a.onOpenSession !== b.onOpenSession ||
+    a.onOpenSchedule !== b.onOpenSchedule ||
+    a.onOpenTerminal !== b.onOpenTerminal
+  ) {
+    return false
+  }
+  const x = a.node
+  const y = b.node
+  if (x === y) return true
+  if (x.kind !== y.kind || x.key !== y.key) return false
+  if (x.kind === 'item' && y.kind === 'item') {
+    if (
+      x.grouped !== y.grouped ||
+      x.showGutter !== y.showGutter ||
+      x.speaker !== y.speaker ||
+      x.sender !== y.sender
+    ) {
+      return false
+    }
+    const ai = x.item
+    const bi = y.item
+    if (ai === bi) return true
+    if (ai.type !== bi.type || ai.uuid !== bi.uuid) return false
+    // A receipts block carries no `text`; its content lives in `lines`/`overflow`,
+    // which a rebuild replaces on the fresh item object. Only the reference check
+    // above can vouch for it, so a receipts row whose object changed re-renders.
+    if (ai.type === 'receipts' || bi.type === 'receipts') return false
+    // Every prose/scalar field any variant draws — miss one and an edit to it
+    // would be silently frozen, so the set is deliberately broad.
+    const A = ai as Record<string, unknown>
+    const B = bi as Record<string, unknown>
+    return (
+      A.text === B.text &&
+      A.truncated === B.truncated &&
+      A.retracted === B.retracted &&
+      A.secs === B.secs &&
+      A.badge === B.badge &&
+      A.detail === B.detail &&
+      A.label === B.label
+    )
+  }
+  if (x.kind === 'divider' && y.kind === 'divider') return x.label === y.label
+  if (x.kind === 'harness' && y.kind === 'harness') return x.ev === y.ev
+  if (x.kind === 'harness-run' && y.kind === 'harness-run') return x.evs === y.evs
+  return false
+}
 
 /* ── the human ───────────────────────────────────────────────────────────── */
 

@@ -173,10 +173,27 @@ export default function ChatPanel({
   // from the shared sessions query: one cache, already populated by the shell,
   // so this adds a subscriber rather than a fetch.
   const { sessions } = useSessions()
-  const mentions = React.useMemo(() => mentionIndex(sessions), [sessions])
+  // A subagent-count / activity SSE delta hands the shared sessions query a NEW
+  // array reference every ~3s while subagents run (use-sessions.ts:286/298),
+  // even though it changes NEITHER a name NOR a display_name — the only fields
+  // mentionIndex/displayNames read (grouping.ts:651-689). Keying these memos on
+  // the raw `sessions` reference would therefore mint new Map identities every
+  // tick, breaking TranscriptItem's React.memo (transcript-item.tsx:199) →
+  // re-running the un-memoised ChatMarkdown → WebKit collapsing any live text
+  // selection anchored in that prose. So key them on a CONTENT SIGNATURE of just
+  // name + display_name: an activity tick leaves the signature (and thus the Map
+  // identity) untouched, while a real rename / add / remove still changes it and
+  // still updates.
+  const nameSig = React.useMemo(
+    () => sessions.map((s) => `${s.name} ${s.display_name ?? ''}`).join(''),
+    [sessions],
+  )
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- key on nameSig, not the sessions ref (see above)
+  const mentions = React.useMemo(() => mentionIndex(sessions), [nameSig])
   // slug → what that session is CALLED. The arrival divider names a colleague,
   // and the wire's teammate envelope carries only the slug.
-  const names = React.useMemo(() => displayNames(sessions), [sessions])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- key on nameSig, not the sessions ref (see above)
+  const names = React.useMemo(() => displayNames(sessions), [nameSig])
   // The other half of the transcript: what the HARNESS did — this session's
   // delegations, renames and schedule fires, read from the durable audit ledger
   // (SSE is only its invalidation tick). Rendered as centred system lines in

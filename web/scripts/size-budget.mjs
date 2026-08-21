@@ -791,7 +791,19 @@ const BUDGET_ENTRY_JS = 160 * KB
 // fetches (it is behind `?kbdebug=1` / `localStorage.kbdebug`), and the ENTRY
 // hero-path gate is UNMOVED and green. Measured 310.76 against 310.00 at this
 // branch head. ceil(measured)=311, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 311 * KB
+// RATCHETED 311 → 312 by the chat text-selection fix (feat/grok-mode). A
+// subagent-count/activity SSE delta handed the shared sessions query a new array
+// reference every ~3s, minting new `mentions`/`names` Map identities that broke
+// `TranscriptItem`'s React.memo → re-ran the un-memoised `ChatMarkdown` → WebKit
+// collapsed any live text selection. The fix keys those two memos on a name
+// signature (not the array ref) and adds a content-aware `arePropsEqual`
+// comparator to `TranscriptItem` so a `buildTranscript` rebuild no longer
+// re-renders unchanged bubbles. All of the +0.36 KB lands on the lazy
+// `chat-panel` chunk (a Bot/Grok-mode surface off the hero path); the base app
+// never fetches it and the ENTRY hero-path gate is UNMOVED and green at
+// 153.26/160 (96%). Measured 311.31 against 310.95 at this branch head.
+// ceil(measured)=312, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 312 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
