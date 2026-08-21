@@ -42,6 +42,7 @@ import {
   useRosterMarksProvider,
 } from '@/hooks/use-roster-marks'
 import { AttentionProvider, useAttentionProvider } from '@/hooks/use-attention'
+import { useViewportShellVars } from '@/hooks/use-keyboard-viewport'
 
 interface NavItem {
   to: string
@@ -405,6 +406,11 @@ export function Layout() {
   // health. The singleton SSE client (use-sse.ts) is the source of truth.
   const { status: sseStatus } = useSseStatus()
   useSseConnectionLink(sseStatus)
+  // Layout foundation (Piece 1): the SINGLE keyboard/safe-area coordinator.
+  // Publishes --vvh / --vv-offset-top / --kb / --kb-safe-bottom to the shell
+  // root so every bottom-anchored surface reads one source of truth. Additive
+  // and, until a surface consumes the vars, a visual no-op. Mounted ONCE here.
+  useViewportShellVars()
   // Route-aware mobile chrome (Fix 1b / Fix 3). The focus route is a full-screen
   // experience: the shell's mobile top bar AND bottom tab bar must NOT be in its
   // tree, or they leak out from under the Vaul sheet when the keyboard opens and

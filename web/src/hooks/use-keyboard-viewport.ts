@@ -245,3 +245,40 @@ export function useKeyboardViewport(): KeyboardViewport {
 
   return vp
 }
+
+/**
+ * useViewportShellVars — the SINGLE keyboard/safe-area coordinator (layout
+ * foundation, Piece 1). Mount it ONCE at the shell (layout.tsx). It REUSES the
+ * already-correct `useKeyboardViewport` observer (same rAF-coalesced updates,
+ * same hardened drive gate, same dual-signal detector) and, on each change,
+ * mirrors its numbers to four CSS custom properties on `document.documentElement`
+ * so every bottom-anchored surface can read one source of truth without
+ * prop-drilling a React value:
+ *
+ *   --vvh            visible height   = vv.height px while driving, else 100dvh
+ *   --vv-offset-top  iOS page-pin     = vv.offsetTop px while driving, else 0px
+ *   --kb             keyboard inset   = max(0, innerHeight − vv.height − vv.offsetTop) px
+ *   --kb-safe-bottom gated home-ind.  = keyboardOpen ? 0px : env(safe-area-inset-bottom)
+ *
+ * Because the strings are derived from the hook's return (`height` is `null` ⇔
+ * not driving and otherwise IS `visualViewport.height`; `keyboardOffsetTop` is 0
+ * unless driving; `keyboardInset` is the raw inset formula; `keyboardOpen` is the
+ * open flag), the CSS mirror and the React value can never disagree. Additive and
+ * — until a surface consumes the vars — a visual no-op. The globals.css `:root`
+ * fallbacks cover the pre-JS / desktop / no-visualViewport case.
+ */
+export function useViewportShellVars(): void {
+  const { height, keyboardInset, keyboardOffsetTop, keyboardOpen } =
+    useKeyboardViewport()
+  React.useEffect(() => {
+    const s = document.documentElement.style
+    const driving = height !== null
+    s.setProperty('--vvh', driving ? `${height}px` : '100dvh')
+    s.setProperty('--vv-offset-top', driving ? `${keyboardOffsetTop}px` : '0px')
+    s.setProperty('--kb', `${keyboardInset}px`)
+    s.setProperty(
+      '--kb-safe-bottom',
+      keyboardOpen ? '0px' : 'env(safe-area-inset-bottom)',
+    )
+  }, [height, keyboardInset, keyboardOffsetTop, keyboardOpen])
+}

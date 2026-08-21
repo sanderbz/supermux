@@ -706,7 +706,19 @@ const BUDGET_ENTRY_JS = 160 * KB
 // The base was again at 300.95/301 (100%), so this feature could not land
 // without a ratchet. The ENTRY gate stays green and unmoved at 157.42/160 (98%).
 // ceil(measured)=302, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 302 * KB
+// RATCHETED 302 → 303 by the layout foundation (Steps 1+2). Two additions land
+// on the shell/hooks path: (1) the SINGLE keyboard/safe-area coordinator
+// `useViewportShellVars` — it REUSES the existing `useKeyboardViewport` observer
+// and, on each change, mirrors four numbers to CSS custom properties on <html>
+// (--vvh / --vv-offset-top / --kb / --kb-safe-bottom) so every bottom-anchored
+// surface reads one contract; mounted once in `layout.tsx`. (2) the global iOS
+// input-zoom floor is pure CSS (one `@media (pointer: coarse)` rule + the :root
+// var fallbacks) — CSS-side, not app JS. Measured 302.06 against 301.95 for the
+// base at this branch head — +0.11 KB, all of it the coordinator hook + its
+// mount (no consumer wiring yet: this step only publishes the vars, a visual
+// no-op). The ENTRY gate stays green and unmoved at 157.58/160 (98%).
+// ceil(measured)=303, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 303 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

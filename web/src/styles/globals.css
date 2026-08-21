@@ -458,6 +458,50 @@
   --safe-top: env(safe-area-inset-top);
 }
 
+/* ── Layout foundation: keyboard/safe-area viewport contract (Piece 1) ────────
+   The single set of custom properties every bottom-anchored surface reads. They
+   are LIVE-published to <html> by the shell coordinator (useViewportShellVars →
+   layout.tsx) off `window.visualViewport`. These `:root` values are the resting
+   FALLBACKS: correct before JS runs, on desktop, and whenever no editable field
+   is driving the keyboard. --vvh = full dynamic viewport, --kb = no keyboard
+   inset, --kb-safe-bottom = the ungated home-indicator pad. Consumers land in
+   later steps; publishing the vars here is a behavioral no-op. */
+:root {
+  --vvh: 100dvh;
+  --vv-offset-top: 0px;
+  --kb: 0px;
+  --kb-safe-bottom: env(safe-area-inset-bottom);
+}
+
+/* ── Global iOS input-zoom floor (layout foundation, Piece 4) ─────────────────
+   iOS Safari/WKWebView auto-zooms on focus of any form control whose computed
+   font-size is < 16px. Floor EVERY touch form control at >=16px, app-wide, so no
+   input can ever trigger that zoom again — retiring the per-input
+   `text-base md:text-*` whack-a-mole. `1em` keeps a larger inherited context
+   intact; `max(16px, 1em)` only lifts anything that would resolve below 16px.
+   Scoped to `pointer: coarse` so fine-pointer DESKTOP sizes (`text-[13px]` etc.)
+   are wholly unaffected.
+
+   WHY `!important` + unlayered: this floor must beat every other author rule that
+   sizes a touch input below 16px, and those come in two shapes. Tailwind v4 emits
+   utilities inside cascade LAYERS, so being unlayered already wins there
+   (`text-[13px]` on add-mcp-form, `text-[12.5px]` on last-send-recall). But the
+   grok skin (`styles/grok-mode.css`) styles some inputs with UNLAYERED COMPOUND
+   selectors — e.g. `[data-grok] .grok-roster .gr-search input { font-size:14px }`
+   (specificity 0,3,1) — which a bare `input` (0,0,1) loses to even unlayered.
+   `!important` on a normal declaration outranks every non-important rule at any
+   specificity/layer, making the floor authoritative without a specificity war.
+   Safe against shrink: no touch form control in the app is intentionally >16px,
+   and `1em` still lets a genuinely larger inherited context scale up. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  [contenteditable]:not([contenteditable='false']) {
+    font-size: max(16px, 1em) !important;
+  }
+}
+
 /* Kill the iOS Safari native grey tap-flash on a control. Inside a transformed,
    layer-promoted ancestor (Vaul's `will-change: transform` Drawer.Content) that
    native highlight is painted against the control's DOCUMENT box, ignoring the
