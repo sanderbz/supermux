@@ -29,7 +29,8 @@ export interface KeyboardViewport {
    *  behind the keyboard the way the larger `100dvh` could). */
   height: number | null
   /** Pixels the soft keyboard (and any bottom OS chrome) overlaps the layout
-   *  viewport: `layoutHeight - visualViewport.height - visualViewport.offsetTop`.
+   *  viewport: `layoutHeight - visualViewport.height` (the pure overlay inset —
+   *  the `- offsetTop` term was dropped in the real-device fix; see the detector).
    *  0 when the keyboard is closed. Drive the accessory dock's bottom offset off
    *  this so it rides the keyboard top. */
   keyboardInset: number
@@ -113,10 +114,21 @@ export function createKeyboardOpenDetector(): (
     } else if (layoutHeight > baselineHeight) {
       baselineHeight = layoutHeight
     }
-    const inset = Math.max(0, layoutHeight - visual.height - visual.offsetTop)
+    // REAL-DEVICE ROOT FIX. Do NOT subtract `visual.offsetTop`: on a standalone
+    // iOS PWA the keyboard overlap is absorbed ENTIRELY into `offsetTop` (owner
+    // device: layout 812, vv.height 498, offsetTop 314 → 812−498−314 = 0), so the
+    // old `−offsetTop` term drove the inset to 0, `keyboardOpen` never flipped,
+    // `height` published `null`, and the sheet fell back to bare `100dvh` while
+    // the panel painted `env(safe-area-inset-bottom)` = the 34px black band. The
+    // overlay inset is simply `layoutHeight − vv.height`.
+    const inset = Math.max(0, layoutHeight - visual.height)
     const layoutShrink = Math.max(0, baselineHeight - layoutHeight)
     const open =
       inset > KEYBOARD_OPEN_THRESHOLD ||
+      // Standalone real-device signal: iOS put the whole overlap into offsetTop
+      // (see the inset note). A large offsetTop with the layout viewport intact
+      // is a keyboard, not a page scroll — the case the inset-only rule missed.
+      visual.offsetTop > KEYBOARD_OPEN_THRESHOLD ||
       (coarsePointer &&
         layoutShrink > KEYBOARD_OPEN_THRESHOLD &&
         hasEditableFocus())
@@ -310,7 +322,8 @@ export function useKeyboardOpen(): boolean {
  *
  *   --vvh            visible height   = vv.height px while driving, else 100dvh
  *   --vv-offset-top  iOS page-pin     = vv.offsetTop px while driving, else 0px
- *   --kb             keyboard inset   = max(0, innerHeight − vv.height − vv.offsetTop) px
+ *   --vv-overshoot   Fix-C tuck       = 34px while driving, else 0px
+ *   --kb             keyboard inset   = max(0, innerHeight − vv.height) px
  *   --kb-safe-bottom gated home-ind.  = keyboardOpen ? 0px : env(safe-area-inset-bottom)
  *
  * Because the strings are derived from the hook's return (`height` is `null` ⇔
@@ -328,6 +341,11 @@ export function useViewportShellVars(): void {
     const driving = height !== null
     s.setProperty('--vvh', driving ? `${height}px` : '100dvh')
     s.setProperty('--vv-offset-top', driving ? `${keyboardOffsetTop}px` : '0px')
+    // Defense-in-depth overshoot (Fix C): while driving (keyboard open), let the
+    // sheet extend ~34px BELOW the visual-viewport bottom so it tucks behind the
+    // opaque keyboard instead of ever UNDER-shooting into a visible band (guards
+    // the WebKit stale-vv-frame / vv.height under-report). 0 at rest.
+    s.setProperty('--vv-overshoot', driving ? '34px' : '0px')
     s.setProperty('--kb', `${keyboardInset}px`)
     s.setProperty(
       '--kb-safe-bottom',

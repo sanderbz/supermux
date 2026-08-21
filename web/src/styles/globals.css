@@ -469,8 +469,26 @@
 :root {
   --vvh: 100dvh;
   --vv-offset-top: 0px;
+  /* Fix C — the defense-in-depth overshoot the sheet adds to its height while the
+     keyboard drives layout (published by useViewportShellVars; 0px at rest). */
+  --vv-overshoot: 0px;
   --kb: 0px;
   --kb-safe-bottom: env(safe-area-inset-bottom);
+  /* The bottom home-indicator inset, as ONE named gate (Fix B). At rest it is the
+     device inset; while ANY editable holds focus the `:has(:focus)` rule below
+     forces it to 0 so the ~34px band cannot paint under a lifted composer/panel.
+     This is PURE CSS, so it holds even if the JS keyboard detector never flips
+     (the real-device standalone case the `--kb-safe-bottom` JS gate missed). */
+  --safe-bottom: env(safe-area-inset-bottom);
+}
+
+/* Fix B — the robust, detector-independent bottom-band gate. The instant any
+   text field takes focus the soft keyboard is coming up, so the home-indicator
+   inset is no longer under an exposed edge: zero it. Consumers read
+   `var(--safe-bottom, …)` and drop to their small floor (0.5rem / 14px) while
+   typing, then restore the full inset on blur. */
+:root:has(input:focus, textarea:focus, [contenteditable]:focus) {
+  --safe-bottom: 0px;
 }
 
 /* ── Global iOS input-zoom floor (layout foundation, Piece 4) ─────────────────
@@ -516,7 +534,10 @@
   padding-top: env(safe-area-inset-top);
 }
 @utility pb-safe {
-  padding-bottom: env(safe-area-inset-bottom);
+  /* Fix B — read the gated `--safe-bottom` (0 while an editable is focused) so a
+     `pb-safe` bar never carries the ~34px home-indicator band up against the
+     keyboard while typing. Falls back to the raw inset pre-JS / if unset. */
+  padding-bottom: var(--safe-bottom, env(safe-area-inset-bottom));
 }
 @utility pl-safe {
   padding-left: env(safe-area-inset-left);

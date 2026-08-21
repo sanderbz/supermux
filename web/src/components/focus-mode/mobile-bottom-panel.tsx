@@ -366,7 +366,13 @@ export function MobileBottomPanel({
       // unchanged from when the dock owned this.
       className={cn(
         'glass relative shrink-0 overflow-hidden border-t border-border/60',
-        'pb-[max(var(--kb-safe-bottom),0.5rem)]',
+        // Fix B — gate the home-indicator inset on `--safe-bottom`, which the
+        // globals `:root:has(:focus)` rule forces to 0 the instant any editable is
+        // focused. So while typing this drops to the 0.5rem floor (no 34px band),
+        // and it does so via PURE CSS — no dependence on the JS keyboard detector
+        // (which the real-device standalone case defeated). At rest it is the full
+        // env(safe-area-inset-bottom) home-indicator clearance.
+        'pb-[max(var(--safe-bottom,env(safe-area-inset-bottom)),0.5rem)]',
       )}
     >
       {/* The drag handle — the ONE drag region. 22pt tall hit area; visible

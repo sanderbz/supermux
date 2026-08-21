@@ -71,7 +71,14 @@ export function MobileSheet({ children }: MobileSheetProps) {
         // Size + pin to the VISUAL viewport off the vars the shell publishes.
         // `--vvh`/`--vv-offset-top` follow the keyboard on iOS (the only values
         // that do); they rest at `100dvh`/`0px` with the keyboard closed.
-        height: 'var(--vvh, 100dvh)',
+        //
+        // FIX C — defense-in-depth overshoot. While the keyboard drives layout,
+        // `--vv-overshoot` is 34px (0px at rest), so the sheet's bottom lands
+        // ~34px BELOW the visual-viewport bottom, tucked behind the opaque
+        // keyboard. An UNDERSHOOT is the visible black band; an overshoot is
+        // invisible — robust against the WebKit stale-vv-frame (#265578) and any
+        // `vv.height` under-report. Same top:0 + translateY(offsetTop) anchoring.
+        height: 'calc(var(--vvh, 100dvh) + var(--vv-overshoot, 0px))',
         transform: 'translateY(var(--vv-offset-top, 0px))',
       }}
     >

@@ -679,7 +679,17 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
       <motion.div
         // The whole focus surface tracks the left-edge drag so the peek-of-next
         // reads as "the next session sliding in behind."
-        style={{ x: edge.peekX }}
+        //
+        // TRANSFORM-ANCESTOR GUARD (real-root fix). This wrapper is the ONLY
+        // transform ancestor above <MobileSheet> (data-testid=focus-sheet). A
+        // `transform` — even `translateX(0)` while idle — makes this element the
+        // containing block for the sheet's `position: fixed`, which changes
+        // whether iOS applies the visual-viewport keyboard shift to it. So the
+        // transform is applied ONLY while a left-edge drag is actually in flight;
+        // at rest (and therefore whenever the keyboard is up — you cannot be
+        // edge-swiping and typing at once) the wrapper carries NO transform and
+        // the sheet is a true viewport-fixed box again.
+        style={edge.dragging ? { x: edge.peekX } : undefined}
         transition={reduceMotion ? motionOff : springs.sheetDetent}
         className="h-full w-full"
       >
