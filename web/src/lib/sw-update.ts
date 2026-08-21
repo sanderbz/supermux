@@ -39,6 +39,7 @@ type ReloadFn = () => void
 let waiting = false
 let reloadFn: ReloadFn | null = null
 let visibilityArmed = false
+let controllerChangeArmed = false
 const listeners = new Set<() => void>()
 
 function emit(): void {
@@ -145,10 +146,66 @@ export function markCurrent(): void {
   emit()
 }
 
+/** The minimal shape of `navigator.serviceWorker` this module touches, so the
+ *  controllerchange installer can be driven by a stub in a DOM-less test. */
+type SWContainer = {
+  controller: unknown
+  addEventListener: (type: 'controllerchange', fn: () => void) => void
+}
+
+/**
+ * Install the ONE-TIME `controllerchange` reload — the piece that makes a
+ * skipWaiting+clientsClaim service worker (see vite.config.ts) actually LAND the
+ * page on its freshly-activated bundle.
+ *
+ * WHY THIS IS SEPARATE FROM the `onNeedRefresh`/version-guard paths: on iOS
+ * standalone the client-side "tap to adopt" (updateSW(true)/SKIP_WAITING) was
+ * never reliably delivered, so the new SW parked as a WAITING worker and the
+ * fresh precache never activated. With skipWaiting+clientsClaim the new SW now
+ * activates and CLAIMS this page on its own — which fires exactly one
+ * `controllerchange`. We turn that into a reload onto the new bundle.
+ *
+ * DRAFT-SAFE, the SAME way every other adoption path is: we route through
+ * `markWaiting`, so an unsent composer draft (or a visible tab mid-interaction)
+ * vetoes the silent reload and surfaces the one-tap bar instead; only a truly
+ * idle tab reloads on its own.
+ *
+ * INITIAL-CLAIM GUARD: clientsClaim ALSO fires `controllerchange` the first time
+ * a brand-new SW claims a page that loaded uncontrolled (first-ever visit) —
+ * that page is already on the fresh bundle, so reloading it would be a pointless
+ * flash. We snapshot `controller` at install time and act only when an EXISTING
+ * controller is being REPLACED (a genuine update takeover).
+ *
+ * Installed exactly once (module flag) and cannot loop: `controllerchange` fires
+ * once per activation, and after the reload the new SW controls the page from
+ * the first byte, so no further activation — hence no further event — occurs.
+ */
+export function installControllerChangeReload(
+  container?: SWContainer,
+  reload: ReloadFn = () => location.reload(),
+): void {
+  if (controllerChangeArmed) return
+  const sw: SWContainer | undefined =
+    container ??
+    (typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+      ? (navigator.serviceWorker as unknown as SWContainer)
+      : undefined)
+  if (!sw || typeof sw.addEventListener !== 'function') return
+  controllerChangeArmed = true
+  // null now → first-visit claim (skip the reload); set now → an update will
+  // REPLACE this controller (reload onto its bundle).
+  const hadController = !!sw.controller
+  sw.addEventListener('controllerchange', () => {
+    if (!hadController) return
+    markWaiting(reload)
+  })
+}
+
 /** TEST SEAM: reset module state between cases. */
 export function __resetSWUpdateForTest(): void {
   waiting = false
   reloadFn = null
   visibilityArmed = false
+  controllerChangeArmed = false
   listeners.clear()
 }

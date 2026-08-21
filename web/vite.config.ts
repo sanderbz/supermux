@@ -106,6 +106,29 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // iOS-STANDALONE STUCK-SW FIX. Two SW-side settings so a freshly
+        // installed worker takes over IMMEDIATELY instead of parking as a
+        // WAITING worker forever:
+        //   - `skipWaiting` → the new SW calls self.skipWaiting() on install, so
+        //     it does not sit behind the old one until every tab closes (which,
+        //     for a home-screen PWA, is ~never);
+        //   - `clientsClaim` → on activate it clients.claim()s all open pages, so
+        //     it starts controlling THIS page without a reload.
+        // Together they guarantee ACTIVATION is never stuck: iOS standalone never
+        // reliably delivered the client-side "tap to update" (updateSW(true) /
+        // SKIP_WAITING) that `prompt` mode waits on, so the fresh precache never
+        // activated and the owner's PWA served the old bundle after every deploy.
+        // Activation now happens on its own; the page still lands on the fresh
+        // bundle via the draft-guarded `controllerchange` reload in `lib/pwa.ts`.
+        // registerType stays `prompt` (the VISIBLE reload keeps its draft veto).
+        skipWaiting: true,
+        clientsClaim: true,
+        // Bump this to RENAME the Cache Storage buckets so an already-installed,
+        // stuck SW cannot keep serving its OLD precache: iOS re-precaches into the
+        // new-named bucket on next launch, and `cleanupOutdatedCaches` (below)
+        // purges the superseded ones. Bump the suffix whenever a stale-cache
+        // deadlock must be force-broken again.
+        cacheId: 'supermux-v2',
         // Precache the fingerprinted shell assets (JS/CSS/icons). These are
         // content-hashed, so CacheFirst is safe and `cleanupOutdatedCaches`
         // sweeps superseded revisions on every SW activation.

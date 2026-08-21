@@ -16,7 +16,7 @@
 
 import { registerSW } from 'virtual:pwa-register'
 import { injectIOSSplashLinks } from '@/lib/ios-splash'
-import { markWaiting } from '@/lib/sw-update'
+import { installControllerChangeReload, markWaiting } from '@/lib/sw-update'
 import { startVersionGuard } from '@/lib/version-guard'
 
 // How often a long-open PWA re-checks the server for a freshly deployed shell.
@@ -42,6 +42,16 @@ export function initPWA(): void {
   if (import.meta.env.PROD) startVersionGuard()
 
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+
+  // Land the page on the fresh bundle the moment the new SW takes over. With
+  // skipWaiting+clientsClaim (vite.config.ts) the new worker activates and
+  // claims this page on its own — iOS standalone never delivered the waiting-SW
+  // tap that `prompt` mode would otherwise wait on. This turns that takeover's
+  // one `controllerchange` into a DRAFT-GUARDED reload (idle → reload; unsent
+  // draft / visible tab → surface the one-tap bar instead). Installed before
+  // registerSW so the controller snapshot is taken before this load can be
+  // claimed. See installControllerChangeReload in lib/sw-update.ts.
+  installControllerChangeReload()
 
   // `prompt` registration (see the `registerType` comment in vite.config.ts):
   // `autoUpdate` reloads the document out from under the user on every

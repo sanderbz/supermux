@@ -18,6 +18,7 @@ import {
   __resetSWUpdateForTest,
   adopt,
   getSWUpdateWaiting,
+  installControllerChangeReload,
   markCurrent,
   markWaiting,
   shouldAutoAdopt,
@@ -163,6 +164,83 @@ describe('markWaiting — adopting a waiting worker', () => {
     doc.fire('visibilitychange')
     expect(reloaded).toBe(0)
     expect(getSWUpdateWaiting()).toBe(true)
+  })
+})
+
+/** A stub `navigator.serviceWorker`: a settable `controller` + a captured
+ *  `controllerchange` handler we can fire by hand. */
+function makeSW(controller: unknown) {
+  const handlers: Array<() => void> = []
+  return {
+    controller,
+    addEventListener(type: 'controllerchange', fn: () => void) {
+      if (type === 'controllerchange') handlers.push(fn)
+    },
+    fire() {
+      for (const fn of handlers) fn()
+    },
+    get listenerCount() {
+      return handlers.length
+    },
+  }
+}
+
+describe('installControllerChangeReload — landing on the fresh bundle', () => {
+  test('an UPDATE takeover with no draft (backgrounded) reloads', () => {
+    g.document = makeDoc('hidden')
+    const sw = makeSW({}) // an EXISTING controller is being replaced
+    let reloaded = 0
+    installControllerChangeReload(sw, () => {
+      reloaded++
+    })
+    sw.fire()
+    expect(reloaded).toBe(1)
+    expect(getSWUpdateWaiting()).toBe(false)
+  })
+
+  test('DRAFT VETO: an unsent draft surfaces the bar instead of reloading', () => {
+    store.setItem('supermux-draft:release-train', 'half a thought')
+    g.document = makeDoc('hidden') // backgrounded, yet the draft still vetoes
+    const sw = makeSW({})
+    let reloaded = 0
+    installControllerChangeReload(sw, () => {
+      reloaded++
+    })
+    sw.fire()
+    expect(reloaded).toBe(0)
+    expect(getSWUpdateWaiting()).toBe(true) // one-tap bar, user drives it
+  })
+
+  test('a VISIBLE tab is never silently reloaded — it gets the bar', () => {
+    g.document = makeDoc('visible')
+    const sw = makeSW({})
+    let reloaded = 0
+    installControllerChangeReload(sw, () => {
+      reloaded++
+    })
+    sw.fire()
+    expect(reloaded).toBe(0)
+    expect(getSWUpdateWaiting()).toBe(true)
+  })
+
+  test('INITIAL-CLAIM guard: a first-visit claim (no prior controller) never reloads', () => {
+    g.document = makeDoc('hidden')
+    const sw = makeSW(null) // page loaded UNCONTROLLED, SW claims it for the 1st time
+    let reloaded = 0
+    installControllerChangeReload(sw, () => {
+      reloaded++
+    })
+    sw.fire()
+    expect(reloaded).toBe(0)
+    expect(getSWUpdateWaiting()).toBe(false)
+  })
+
+  test('installed exactly once — a second call adds no second listener', () => {
+    g.document = makeDoc('hidden')
+    const sw = makeSW({})
+    installControllerChangeReload(sw, () => {})
+    installControllerChangeReload(sw, () => {})
+    expect(sw.listenerCount).toBe(1)
   })
 })
 
