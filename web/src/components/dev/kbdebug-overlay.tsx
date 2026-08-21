@@ -268,6 +268,84 @@ interface FocusSheetComputed {
   top: string
 }
 
+/** One node of the ACTUAL-element ancestor chain — the element sitting just
+ *  above the keyboard (hit-tested with `elementFromPoint`) and every ancestor
+ *  up to <body>. Unlike ComposerSnap this is NOT keyed on a hard-coded testid:
+ *  it reports whatever element really occupies the bottom-center band, so the
+ *  wrapper/ancestor that creates the residual band is visible server-side even
+ *  when the composer isn't the `[data-testid=chat-composer]` node. */
+interface FullChainRow {
+  /** tagName + any data-testid/data-vr/data-* attrs + the first ~2 class tokens. */
+  sel: string
+  position: string
+  top: string
+  bottom: string
+  paddingBottom: string
+  paddingTop: string
+  marginBottom: string
+  marginTop: string
+  height: string
+  transform: string
+  overflow: string
+  /** getBoundingClientRect, rounded. */
+  rectTop: number
+  rectBottom: number
+  rectHeight: number
+}
+
+const FULL_CHAIN_CAP = 16
+
+/** Build the `sel` label for a node: tag + data-* attrs + first ~2 class tokens. */
+function fullChainSel(el: Element): string {
+  const tag = el.tagName.toLowerCase()
+  const dataAttrs: string[] = []
+  for (const a of Array.from(el.attributes)) {
+    if (a.name.startsWith('data-')) dataAttrs.push(`[${a.name}="${a.value}"]`)
+  }
+  const cls = (el.getAttribute('class') || '').trim()
+  const tokens = cls ? cls.split(/\s+/).slice(0, 2) : []
+  const clsPart = tokens.length ? '.' + tokens.join('.') : ''
+  return tag + dataAttrs.join('') + clsPart
+}
+
+/** Hit-test `elementFromPoint(x, y)` and walk that ACTUAL element UP to <body>,
+ *  capturing each node's box (computed padding/margin/height/transform/overflow
+ *  + rect). Best-effort: any failure yields an empty chain. Capped at
+ *  FULL_CHAIN_CAP ancestors. */
+function probeChainFrom(x: number, y: number): FullChainRow[] {
+  const out: FullChainRow[] = []
+  try {
+    let node: Element | null = document.elementFromPoint(x, y)
+    let steps = 0
+    while (node && steps < FULL_CHAIN_CAP) {
+      const cs = getComputedStyle(node)
+      const r = node.getBoundingClientRect()
+      out.push({
+        sel: fullChainSel(node),
+        position: cs.position,
+        top: cs.top,
+        bottom: cs.bottom,
+        paddingBottom: cs.paddingBottom,
+        paddingTop: cs.paddingTop,
+        marginBottom: cs.marginBottom,
+        marginTop: cs.marginTop,
+        height: cs.height,
+        transform: cs.transform === 'none' ? 'none' : cs.transform,
+        overflow: `${cs.overflowX}/${cs.overflowY}`,
+        rectTop: Math.round(r.top),
+        rectBottom: Math.round(r.bottom),
+        rectHeight: Math.round(r.height),
+      })
+      if (node === document.body) break
+      node = node.parentElement
+      steps++
+    }
+  } catch {
+    // hit-test / style read blew up — best-effort, return whatever we have
+  }
+  return out
+}
+
 /** The flat wire snapshot POSTed to the sink — the fields the owner needs to
  *  diagnose the keyboard band on the real device. Distinct from the rich in-UI
  *  `Snap`: flatter, stable field names, safe to append as one JSON line. */
@@ -289,6 +367,14 @@ interface PostSnap {
   focusSheetComputed: FocusSheetComputed | null
   /** round(composerRectBottom − visualViewport.height) — the black-band px. */
   bandPx: number | null
+  /** The ACTUAL element just above the keyboard (bottom-center, hit-tested with
+   *  elementFromPoint) → every ancestor up to <body>, each with its computed box
+   *  + rect. NOT keyed on a hard-coded testid, so the band-creating wrapper is
+   *  visible even when it isn't the chat-composer node. */
+  fullChain: FullChainRow[]
+  /** Same walk from a probe point 30px HIGHER — in case the very-bottom hit is a
+   *  keyboard accessory / IME strip rather than the composer itself. */
+  fullChainAbove: FullChainRow[]
 }
 
 /** The focus-mode raise-to-edit sheet surface (the pinned sheet whose bottom
@@ -339,6 +425,13 @@ function buildPostSnap(): PostSnap {
       ? Math.round(composerRectBottom - vvHeight)
       : null
 
+  // The ACTUAL element just above the keyboard, bottom-center of the visual
+  // viewport (8px up from its bottom edge), + a second probe 30px higher.
+  const centerX = Math.round(window.innerWidth / 2)
+  const probeY = Math.max(0, (window.visualViewport?.height ?? window.innerHeight) - 8)
+  const fullChain = probeChainFrom(centerX, probeY)
+  const fullChainAbove = probeChainFrom(centerX, Math.max(0, probeY - 30))
+
   return {
     ts: new Date().toISOString(),
     innerHeight: window.innerHeight,
@@ -356,6 +449,8 @@ function buildPostSnap(): PostSnap {
     focusSheetRectHeight,
     focusSheetComputed,
     bandPx,
+    fullChain,
+    fullChainAbove,
   }
 }
 

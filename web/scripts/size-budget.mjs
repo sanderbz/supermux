@@ -803,7 +803,22 @@ const BUDGET_ENTRY_JS = 160 * KB
 // never fetches it and the ENTRY hero-path gate is UNMOVED and green at
 // 153.26/160 (96%). Measured 311.31 against 310.95 at this branch head.
 // ceil(measured)=312, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 312 * KB
+// RATCHETED 312 → 313 by the kbdebug FULL ancestor-chain dump (feat/grok-mode).
+// The on-device probe POSTed a snapshot keyed on a hard-coded
+// `[data-testid=chat-composer]`, which returns EMPTY on the owner's real view —
+// the visible composer is a DIFFERENT element and the residual keyboard band is
+// created by some WRAPPER the testid never measured. `buildPostSnap` now also
+// hit-tests the ACTUAL element just above the keyboard (`elementFromPoint` at
+// bottom-center of the visual viewport, plus a second probe 30px higher) and
+// walks it UP to <body>, capturing each node's computed box (padding/margin/
+// height/transform/overflow) + rect — so the band-creating wrapper is visible
+// server-side. All of the +0.31 KB lands on the lazy, flag-gated
+// `kbdebug-overlay` chunk (4.83 → 5.14 KB gz) — a chunk a NORMAL user never
+// fetches (behind `?kbdebug=1` / `localStorage.kbdebug`), and the ENTRY
+// hero-path gate is UNMOVED and green at 153.36/160 (96%). Measured 312.22
+// against 311.91 at this branch head. ceil(measured)=313, the same rule every
+// fase/merge above used.
+const BUDGET_APP_JS = 313 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
