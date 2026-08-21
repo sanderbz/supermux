@@ -78,11 +78,14 @@ export function ComposerFrame({
       className={cn(
         // On the phone the composer is now the SINGLE bottom bar (the old dock
         // below it is folded away under chat — mobile polish #4), so it owns the
-        // home-indicator inset: `max(env(safe-area-inset-bottom), 14px)` keeps the
-        // 14px breathing room on a flat-bottom phone and lifts clear of the
-        // indicator on a notched one. `env()` collapses to 0 above the soft
-        // keyboard, so nothing double-pads when the field sits at the keyboard top.
-        phone ? 'px-[14px] pb-[max(env(safe-area-inset-bottom),14px)]' : 'px-8 pb-[18px]',
+        // home-indicator inset: `max(var(--kb-safe-bottom), 14px)` keeps the 14px
+        // breathing room on a flat-bottom phone and lifts clear of the indicator
+        // on a notched one. `--kb-safe-bottom` is env(safe-area-inset-bottom) at
+        // rest and is GATED to 0px while the soft keyboard is open — so the
+        // ~34px home-indicator band does not survive as a transparent gap between
+        // the composer and the keyboard top (MobileSheet already pins the bar
+        // flush to the keyboard).
+        phone ? 'px-[14px] pb-[max(var(--kb-safe-bottom),14px)]' : 'px-8 pb-[18px]',
         className,
       )}
     >
