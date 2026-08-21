@@ -490,6 +490,19 @@ pub struct StatusDetector {
     /// held-`Active` session back to `Idle` even while a ticking background pane
     /// (an Agent-Teams roster) keeps `last_pty` perpetually fresh.
     spinner_last_seen: Option<Instant>,
+    /// Instant this detector began observing the session (server start /
+    /// first-seen). It marks the window in which a genuinely-active MAIN turn
+    /// WOULD have drawn its `esc to interrupt` spinner. The step-1 reconcile
+    /// keys its spinner-NEVER-seen settle off this wall-clock rather than pty
+    /// silence: a swarm LEAD whose subagents POST PreToolUse/PostToolUse hooks
+    /// on the parent session keeps `turn_start` fresh (→ `classify()` = Active)
+    /// while a per-second roster repaint keeps `last_pty` fresh — so neither the
+    /// turn machine nor the pty-quiet gate ever settles it. `watching_since` is
+    /// immune to both: once we have watched ≥ [`SPINNER_SETTLE`] without EVER
+    /// seeing the spinner, an idle-at-prompt lead (spinner absent the whole time)
+    /// settles, while a just-restarted detector waits out the window so a real
+    /// main turn's spinner has time to draw and take the seen path instead.
+    watching_since: Instant,
 }
 
 impl Default for StatusDetector {
@@ -510,6 +523,7 @@ impl StatusDetector {
             last_status: Status::Unknown,
             provider: String::new(),
             spinner_last_seen: None,
+            watching_since: Instant::now(),
         }
     }
 
@@ -522,6 +536,7 @@ impl StatusDetector {
             last_status: Status::Unknown,
             provider: provider.to_string(),
             spinner_last_seen: None,
+            watching_since: Instant::now(),
         }
     }
 
@@ -585,11 +600,17 @@ impl StatusDetector {
     /// * once a spinner has EVER been seen, "sustained" is `spinner_last_seen`
     ///   older than [`SPINNER_SETTLE`]. When it has NEVER been seen (`None`),
     ///   `if_unseen` decides: the turn-machine branch passes the pty-quiet
-    ///   ([`CANCEL_SETTLE`]) fallback so a just-started turn whose spinner has
-    ///   not drawn yet — still echoing bytes — is NOT idled; the held-`Active`
-    ///   fallback passes `true`, since a stale-hook Active held over a
-    ///   bank-silent, still-ticking roster (the stuck `ipc`) has no fresh turn to
-    ///   protect and must settle.
+    ///   ([`CANCEL_SETTLE`]) gate OR-ed with the roster-proof watching wall-clock
+    ///   (`watching_since.elapsed() >= SPINNER_SETTLE`) — the pty-quiet disjunct
+    ///   still settles a single-Esc cancel / crash over a quiet pty, and the
+    ///   watching disjunct additionally settles a swarm LEAD whose subagent hooks
+    ///   pin `turn_start` Active while its main agent is idle at the prompt (no
+    ///   spinner ever drawn — the live `ipc`) over a ticking roster the pty-quiet
+    ///   gate can never trip; a just-started turn (pty still echoing, within the
+    ///   watch window) has both disjuncts false and is NOT idled. The held-`Active`
+    ///   (step-5, stale-hook) fallback passes `true`, since a hold over a
+    ///   bank-silent, still-ticking roster has no fresh turn to protect and must
+    ///   settle.
     fn spinner_absent_settled(&self, spinner: bool, capture: &str, if_unseen: bool) -> bool {
         !spinner
             && !capture.trim().is_empty()
@@ -748,9 +769,23 @@ impl StatusDetector {
             //     shows its spinner → settle skipped → stays Active.
             //   * spinner absent long enough — once a spinner has been seen this
             //     turn, it must have been gone ≥ SPINNER_SETTLE; when it has NOT
-            //     yet been seen (a just-submitted prompt whose spinner has not
-            //     drawn), fall back to the pty-quiet CANCEL_SETTLE gate so the
-            //     still-echoing turn START is never flipped to Idle early.
+            //     yet been seen (`spinner_last_seen == None`), settle iff EITHER
+            //     the pty has settled quiet (`last_pty.elapsed() >= CANCEL_SETTLE`,
+            //     the original single-Esc-cancel / crash gate) OR we have been
+            //     WATCHING this session ≥ SPINNER_SETTLE (`watching_since`, a
+            //     roster-proof wall-clock the per-second Agent-Teams roster repaint
+            //     cannot refresh). The watching-clock disjunct is the ADDED case:
+            //     it widens the settle to a swarm LEAD whose subagents' PreToolUse/
+            //     PostToolUse hooks (POSTed on the shared parent token) keep
+            //     `turn_start` fresh → `classify()` = Active, while a per-second
+            //     roster repaint keeps `last_pty` fresh so the pty-quiet gate never
+            //     trips (the live stuck `ipc`, main idle at its prompt, no spinner
+            //     EVER drawn). A genuinely-active MAIN turn keeps its `esc to
+            //     interrupt` spinner in view the ENTIRE time, so it would have set
+            //     `spinner_last_seen` within a tick and taken the seen
+            //     (`t.elapsed() >= SPINNER_SETTLE`) path above; the still-echoing
+            //     turn START (pty NOT yet quiet) within the watch window is still
+            //     protected — both disjuncts are false, so it is never idled early.
             //   * non-empty capture — a truly blank capture (cold start, or a
             //     crash that cleared the pane) HOLDS the current status rather
             //     than forcing a premature Idle (matches the codex cold-start
@@ -761,7 +796,12 @@ impl StatusDetector {
             // INTERRUPT_MARKER (→ Waiting); this covers the single-Esc cancel,
             // crash, and lost-`Stop`, whose screens are ordinary at-rest tails.
             if s == Status::Active
-                && self.spinner_absent_settled(spinner, capture, last_pty.elapsed() >= CANCEL_SETTLE)
+                && self.spinner_absent_settled(
+                    spinner,
+                    capture,
+                    last_pty.elapsed() >= CANCEL_SETTLE
+                        || self.watching_since.elapsed() >= SPINNER_SETTLE,
+                )
             {
                 return Status::Idle;
             }
@@ -1603,6 +1643,115 @@ mod tests {
             d.detect("✻ Working… (esc to interrupt)", neutral_pty(), turn, true),
             Status::Active,
             "a subagent stop with a live spinner must NOT end the turn"
+        );
+    }
+
+    // ── swarm-lead step-1 reconcile (watching wall-clock) ────────────────────
+    // The live stuck `ipc` is a swarm LEAD: its subagents (fc-ziggo-a etc.)
+    // share the parent session token, so THEIR PreToolUse/PostToolUse hooks POST
+    // on `ipc` and fold into `turn_start` — keeping `turn.classify()` == Active
+    // even though the MAIN agent is idle at its prompt and never drew a spinner.
+    // That reaches the STEP-1 reconcile (not the step-5 stale-hook branch), whose
+    // spinner-NEVER-seen settle now keys off `watching_since` (a wall-clock the
+    // per-second roster repaint cannot refresh), not the pty-quiet CANCEL_SETTLE.
+
+    #[test]
+    fn swarm_lead_subagent_bumped_active_settles_via_watching_clock() {
+        // (a) THE literal live `ipc`. A fresh subagent PreToolUse bumps
+        // `turn_start` (turn.classify == Active → step-1 branch), the capture is
+        // the spinner-free ticking roster, `last_pty` is perpetually fresh (roster
+        // repaint), and the MAIN agent never drew a spinner (spinner_last_seen ==
+        // None). With this detector having watched the session longer than
+        // SPINNER_SETTLE, the step-1 reconcile settles it to Idle — the old
+        // pty-quiet gate could not, because the roster keeps `last_pty` fresh.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        assert!(d.spinner_last_seen.is_none());
+        d.watching_since = Instant::now() - (SPINNER_SETTLE + Duration::from_secs(5));
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_millis(200));
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), turn, true),
+            Status::Idle,
+            "a swarm lead pinned Active by subagent hooks, main idle (no spinner \
+             ever), watched > SPINNER_SETTLE, must settle to Idle despite a fresh pty"
+        );
+    }
+
+    #[test]
+    fn swarm_lead_just_restarted_within_watch_window_stays_active() {
+        // (b) The guard on (a): a just-restarted detector (watching_since younger
+        // than SPINNER_SETTLE) has NOT yet given a genuinely-active main turn's
+        // spinner time to draw. With spinner_last_seen == None and the watch
+        // window not yet elapsed, the step-1 reconcile must NOT settle — the turn
+        // machine's Active is held until the spinner draws or the window elapses.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        assert!(d.spinner_last_seen.is_none());
+        d.watching_since = Instant::now(); // fresh: within the watch window
+        let turn = turn_with(HookEvent::PostToolUse, Duration::from_millis(200));
+        assert_eq!(
+            d.detect(TICKING_ROSTER, Instant::now(), turn, true),
+            Status::Active,
+            "a just-restarted lead (watched < SPINNER_SETTLE) must hold Active so a \
+             real main spinner has time to draw"
+        );
+    }
+
+    #[test]
+    fn swarm_lead_with_visible_spinner_stays_active_over_ticking_pane() {
+        // (c) A silent-think guard over the step-1 branch: the SAME subagent-bumped
+        // Active turn, but this capture DOES carry the `esc to interrupt` spinner
+        // (the main agent is genuinely mid-think). The spinner refreshes
+        // spinner_last_seen THIS tick and `!spinner` is false, so the settle never
+        // fires — Active holds, even with a fully-elapsed watch window and a fresh,
+        // ticking pty.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - (SPINNER_SETTLE + Duration::from_secs(60));
+        let cap = "✻ Thinking… (esc to interrupt · 8s)\n  ● main\n  ◯ fc-ziggo-a   1d 0h 6m";
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_millis(200));
+        assert_eq!(
+            d.detect(cap, Instant::now(), turn, true),
+            Status::Active,
+            "a visible esc-to-interrupt spinner keeps the lead Active regardless of \
+             the watch clock"
+        );
+    }
+
+    #[test]
+    fn fresh_turn_start_with_spinner_over_step1_stays_active() {
+        // (d) A genuinely in-flight fresh MAIN turn reaching step-1: a recent
+        // turn_start (turn machine → Active) AND its spinner drawn. spinner_last_seen
+        // is refreshed and `!spinner` is false, so the settle is skipped — Active.
+        let mut d = StatusDetector::new();
+        d.watching_since = Instant::now() - (SPINNER_SETTLE + Duration::from_secs(5));
+        let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_secs(1));
+        let cap = "✻ Working… (esc to interrupt · 1s · ↑ 0.3k tokens)";
+        assert_eq!(
+            d.detect(cap, Instant::now(), turn, true),
+            Status::Active,
+            "a fresh main turn with its spinner drawn must stay Active even past the \
+             watch window"
+        );
+    }
+
+    #[test]
+    fn swarm_lead_subagent_stop_still_does_not_finish_turn() {
+        // (e) The false-finished invariant holds through the new settle: a subagent
+        // SubagentStop on the shared token does NOT advance turn_end, so with a
+        // still-open turn_start (a later PreToolUse) turn.classify stays Active. A
+        // visible spinner keeps spinner_last_seen fresh, so even inside the watch
+        // window the lead must NOT read finished.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - (SPINNER_SETTLE + Duration::from_secs(5));
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::SubagentStop);
+        turn.apply(Instant::now() - Duration::from_millis(200), HookEvent::PreToolUse);
+        assert_eq!(
+            d.detect("✻ Working… (esc to interrupt)", Instant::now(), turn, true),
+            Status::Active,
+            "a subagent stop under a still-open turn must NOT finish the lead's turn"
         );
     }
 
