@@ -36,6 +36,7 @@ import {
 import { Link } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
+import { modelOptions } from '@/lib/model-options'
 import { SessionFace } from '@/components/roster/session-face'
 import { GrantedConnectors } from '@/components/roster/granted-connectors'
 import { LearnedNotes } from '@/components/roster/learned-notes'
@@ -101,30 +102,6 @@ function relTime(iso?: string): string {
   if (hrs < 24) return `${hrs}h`
   const days = Math.round(hrs / 24)
   return days === 1 ? 'Yesterday' : `${days}d`
-}
-
-/** The per-provider model allowlist — MUST mirror the server's
- *  `resolve_model_flag` (lifecycle.rs); an unknown id is a 400. `''` = the
- *  provider default. Providers with no selection (shell) return `[]`. */
-function modelOptions(provider?: string): { value: string; label: string }[] {
-  const p = (provider || '').toLowerCase()
-  if (p === 'codex')
-    return [
-      { value: '', label: 'Default' },
-      { value: 'gpt-5-codex', label: 'gpt-5-codex' },
-      { value: 'gpt-5', label: 'gpt-5' },
-      { value: 'o3', label: 'o3' },
-      { value: 'o4-mini', label: 'o4-mini' },
-    ]
-  // Claude is the default provider (and the empty/unknown launcher case).
-  if (p === 'claude' || p === '')
-    return [
-      { value: '', label: 'Default' },
-      { value: 'opus', label: 'opus' },
-      { value: 'sonnet', label: 'sonnet' },
-      { value: 'haiku', label: 'haiku' },
-    ]
-  return []
 }
 
 /** Role presets that PREFILL the role/desc textarea (the durable job). Picking

@@ -666,7 +666,28 @@ const BUDGET_ENTRY_JS = 160 * KB
 //            session list, and the connect() target-resolution + seal-once-reuse
 //            loop. The bot-scope (Tools-tab) flow is byte-identical — the picker
 //            renders in the library scope only.
-const BUDGET_APP_JS = 299 * KB
+// RATCHETED 299 → 301 by the task-first create-a-bot sheet (Plan 1, Workflow A).
+// `new-session-sheet.tsx` went from a flat ~10-control launch form to a two-step
+// hire: a goal hero + example chips + a drafted name + a Role field on Step 1
+// with EVERY infra control (model, folder, host, worktree, instructions, tags,
+// permissions) tucked behind an animated Advanced disclosure, then a skippable
+// Step 2 that reuses the already-lazy bot-scoped `StoreView grantTarget={slug}`
+// for connector onboarding. It also finally wires the per-bot MODEL into the
+// create payload (extracted to `lib/model-options.ts`, shared with the bot
+// panel's live picker so the allowlist can't drift). Measured 300.86 against
+// 298.99 for the base at this branch head — +1.87 KB, ALL of it the new sheet:
+//   ~1.6 KB  the Step-1 describe surface (goal hero + chips + drafted-name
+//            derivation + Role field), the two-step state machine (create at the
+//            Step1→Step2 transition, deferred start()), the goal→prompt /
+//            role→desc launch split, and the animated Advanced disclosure.
+//   ~0.3 KB  the create-time `CreateModelPicker` + the Step-2 connector body
+//            (empty-vault teaching tile; `StoreView` itself stays in the lazy
+//            /store chunk it already occupied — no bytes added there).
+// The base was already at 298.99/299 (100%), so this feature COULD NOT land
+// without a ratchet. The ENTRY gate — the hard limit protecting first paint —
+// stays green and unmoved in headroom at 157.17/160 (98%). ceil(measured)=301,
+// the same rule every fase/merge above used.
+const BUDGET_APP_JS = 301 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -122,6 +122,12 @@ const DevBrowserTakeover = import.meta.env.DEV
 const DevStore = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-store'))
   : null
+// Task-first create-a-bot bench (Plan 1 / Workflow A): the real "Hire a new bot"
+// sheet open with `botVoiced`, both steps, offline. The page the create-sheet
+// shots come from.
+const DevNewSession = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-new-session'))
+  : null
 // iOS keyboard DIAGNOSTIC readout (fix/ios-zoom-composer). A self-contained,
 // live-updating page that reads the real iOS-WebKit viewport/keyboard numbers
 // off the device so the black-bar fix can be device-verified. Lazy + DEV-gated
@@ -310,6 +316,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevStore />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevNewSession && (
+                <Route
+                  path="/dev/new-session"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevNewSession />
                     </Suspense>
                   }
                 />

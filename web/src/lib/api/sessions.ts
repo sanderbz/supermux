@@ -583,6 +583,12 @@ export interface NewSession {
    *  bypassPermissions`) — it runs tools without asking. A typed boolean: the
    *  server builds the trusted flag, the web never sends raw launch flags. */
   bypass_permissions?: boolean
+  /** Per-bot MODEL selection (migration 0030), e.g. `"opus"` / `"sonnet"` /
+   *  `"gpt-5-codex"`. NOT free text — resolved server-side against the provider's
+   *  allowlist (`lifecycle::resolve_model_flag`) and stored on the row, so it
+   *  rides the launch line as `--model <id>`. Absent = provider default. The
+   *  create sheet's Advanced → Model picker is the one place the web sends it. */
+  model?: string
 }
 
 /** A failed sessions request; carries the HTTP status so callers can branch on
