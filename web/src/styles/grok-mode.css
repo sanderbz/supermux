@@ -1744,6 +1744,47 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 55%, transparent);
 }
 
+/* ── restored per-session actions: the ⋯ menu trigger on an inbox row ──────────
+   <SessionActionsMenu variant="tile"> ships a top-right overlay tuned for the
+   card grid (always-on on coarse). On the grok inbox row that would sit over the
+   timestamp / cost, so grok re-homes it: vertically centred at the right edge,
+   HOVER/FOCUS-revealed on desktop, and — crucially — `pointer-events: none` at
+   rest so an invisible trigger never eats a row tap or the start of a scroll on
+   touch (there the long-press IS the affordance). It re-appears while the menu
+   is open (`data-state="open"`) so the anchor stays put under the open sheet. */
+[data-grok] .grok-roster .gr-rowA .gr-tile-kebab {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  opacity: 0;
+  pointer-events: none;
+  color: var(--gr-meta);
+  background: color-mix(in srgb, var(--gr-bg) 82%, transparent);
+  transition: opacity 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-grok] .grok-roster .gr-rowA:hover .gr-tile-kebab,
+[data-grok] .grok-roster .gr-rowA:focus-within .gr-tile-kebab,
+[data-grok] .grok-roster .gr-rowA .gr-tile-kebab:focus-visible,
+[data-grok] .grok-roster .gr-rowA .gr-tile-kebab[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-grok] .grok-roster .gr-rowA .gr-tile-kebab:hover {
+  color: var(--sm-text);
+  background: var(--gr-sel);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] .grok-roster .gr-rowA .gr-tile-kebab {
+    transition: none;
+  }
+}
+
 /* ── the persistent HIRE ghost row (pinned above Teams) ─────────────────────── */
 [data-grok] .grok-roster .gr-ghost {
   display: flex;

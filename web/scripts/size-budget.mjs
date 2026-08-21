@@ -718,7 +718,31 @@ const BUDGET_ENTRY_JS = 160 * KB
 // mount (no consumer wiring yet: this step only publishes the vars, a visual
 // no-op). The ENTRY gate stays green and unmoved at 157.58/160 (98%).
 // ceil(measured)=303, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 303 * KB
+// RATCHETED 303 → 305 by the overview press-and-hold restore (feat/grok-mode).
+// The grok overview row shed its session lifecycle actions in the WS5/WS6
+// rewrite — the inbox `GrokRow` had NO context menu at all, so restart / stop /
+// archive were unreachable from a tile (only the classic tile still carried
+// them, via the hover kebab + the mobile quick-peek drawer). This fase restores
+// them on the grok row: a ~480 ms press-and-hold (and desktop right-click, and
+// Shift+F10) opens the SHARED <SessionActionsMenu> anchored to the tile, with an
+// iOS-context-menu dim (the opt-in `backdrop`) and the menu's own scale+fade,
+// both with a reduced-motion fallback. Measured 304.90 against 302.08 for the
+// base at this branch head — +2.82 KB, apportioned:
+//   ~1.6 KB  the grok row wiring: <SessionActionsMenu> mounted per row (its body
+//            already existed, but the grok chunk had never referenced it, so its
+//            projection lands in that lazy chunk now), the long-press gesture,
+//            the right-click / Shift+F10 seams, and the row-menu-bus import.
+//   ~0.7 KB  `restart` in `use-session-actions` — the stop→start resume the
+//            mobile quick-peek always had, lifted into the shared hook so the
+//            kebab and the drawer run one code path (the drawer keeps its own
+//            live-pane nonce; the kebab has no terminal to remount).
+//   ~0.5 KB  the menu's Restart item + the opt-in backdrop portal + the
+//            reduced-motion classes.
+// The ENTRY gate — the one that guards the hero path — is UNMOVED as a gate and
+// actually fell in absolute terms to 152.27/160 (95%) from the base's 157.57,
+// because the grok chunk is lazy and the rebalance pushed weight off the entry
+// path. ceil(measured)=305, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 305 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -25,9 +25,16 @@ import { useConfirm } from '@/components/ui/confirm-dialog'
 import { CONFIRM, LIFECYCLE, killTeamLeadConfirm } from '@/brand/copy'
 
 export interface UseSessionActions {
-  /** True while either action is mid-flight. Callers should disable their
+  /** True while any action is mid-flight. Callers should disable their
    *  triggers on `busy` to prevent double-fire. */
   busy: boolean
+  /** Restart the session: `POST /stop` (errors ignored — a stopped session has
+   *  nothing to stop) then `POST /start`, which resumes the SAME conversation.
+   *  The overview cache is invalidated so the row reflects the relaunch. No
+   *  confirm — it resumes the same chat rather than discarding it. No-op on
+   *  busy. Mirrors the mobile quick-peek's Restart, minus the live-pane nonce
+   *  (the overview kebab has no terminal to remount). */
+  restart: () => Promise<void>
   /** Stop the session via `POST /api/focus/sessions/:name/stop`. Confirms
    *  first (team-lead-aware copy when applicable). No-op on busy. */
   stop: () => Promise<void>
@@ -54,6 +61,36 @@ export function useSessionActions(sessionName: string): UseSessionActions {
   const { teams } = useTeams()
   const confirm = useConfirm()
   const [busy, setBusy] = React.useState(false)
+
+  const restart = React.useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    // Optimistic head-start: flip the cached row to `starting` so the overview
+    // reads "relaunching" the instant Restart is tapped (the server also
+    // broadcasts the fresh status over SSE; this is only the head-start).
+    qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
+      (prev ?? []).map((s) =>
+        s.name === sessionName ? { ...s, status: 'starting' as const } : s,
+      ),
+    )
+    try {
+      // Restart = stop (ignored/no-op if already stopped) then start; the
+      // server resumes the SAME conversation. No live pane here, so — unlike
+      // the mobile quick-peek — there is no `restartNonce` remount to bump.
+      await focusApi.stopSession(sessionName).catch(() => {})
+      await focusApi.startSession(sessionName)
+      void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+      toast({ message: 'Session restarting', tone: 'active' })
+    } catch (e) {
+      void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+      toast({
+        message: e instanceof Error ? e.message : 'Restart failed.',
+        tone: 'error',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, sessionName, qc, toast])
 
   const stop = React.useCallback(async () => {
     if (busy) return
@@ -157,5 +194,5 @@ export function useSessionActions(sessionName: string): UseSessionActions {
     [busy, qc, sessionName, toast, confirm],
   )
 
-  return { busy, stop, archive }
+  return { busy, restart, stop, archive }
 }

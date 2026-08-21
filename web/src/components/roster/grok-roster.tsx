@@ -42,6 +42,10 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import { restSessionInput } from '@/lib/session-input'
+import { useLongPress } from '@/hooks/use-long-press'
+import { useMediaQuery } from '@/hooks/use-media-query'
+import { SessionActionsMenu } from '@/components/session-tile/session-actions-menu'
+import { isRowMenuKey, requestRowMenu } from '@/components/session-tile/row-menu-bus'
 import type { TileSession } from '@/components/session-tile/types'
 import { useTeams } from '@/hooks/use-teams'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
@@ -264,6 +268,19 @@ export const GrokRow = React.memo(function GrokRow({ session, group, active, onO
   const pct = ctxPct(session.tokens)
   const tags = session.tags?.slice(0, 2) ?? []
 
+  // PRESS-AND-HOLD → the restored session actions (restart / stop / archive / …).
+  // On a coarse pointer a ~480ms hold opens the anchored <SessionActionsMenu>
+  // (via the row-menu bus the menu subscribes to by name); a short tap still
+  // opens the thread, and a finger drift past the tolerance cancels the hold so
+  // a scroll never fires it. On a fine pointer the hold gesture is off (a mouse
+  // uses right-click / the hover kebab), so `onClick` opens the thread directly.
+  const coarse = useMediaQuery('(pointer: coarse)')
+  const longPress = useLongPress({
+    onLongPress: () => requestRowMenu(session.name),
+    onClick: () => onOpen(session),
+    ms: 480,
+  })
+
   return (
     // Split hit target (§2.1): the row is a POSITIONING context, not itself a
     // button — a full-bleed base button opens the thread (the fast, default
@@ -276,12 +293,41 @@ export const GrokRow = React.memo(function GrokRow({ session, group, active, onO
       className="gr-rowA grok-row-enter"
       data-active={active || undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
+      // DESKTOP PARITY: right-click anywhere on the row (name included) opens the
+      // same actions menu the touch long-press does. The menu owns the dismiss.
+      onContextMenu={(e) => {
+        if (requestRowMenu(session.name)) e.preventDefault()
+      }}
     >
       <button
         type="button"
         className="gr-row-open"
-        onClick={() => onOpen(session)}
+        // Coarse pointers route the tap through the long-press detector's
+        // `onClick` (so a hold opens the menu instead); fine pointers keep the
+        // plain click. Never both, or a touch tap would double-fire.
+        onClick={coarse ? undefined : () => onOpen(session)}
+        {...(coarse ? longPress : null)}
+        onKeyDown={(e) => {
+          // Shift+F10 / the Menu key — the platform's own "secondary action on
+          // the focused row", parity with the classic overview tile.
+          if (isRowMenuKey(e) && requestRowMenu(session.name)) {
+            e.preventDefault()
+            e.stopPropagation()
+          }
+        }}
+        aria-keyshortcuts="Shift+F10"
         aria-label={`Open ${name} — ${sw.word}`}
+      />
+      {/* The anchored actions menu (restored). Its hover kebab is the desktop
+          affordance; on touch it is opened by the long-press above and by
+          right-click on desktop, both through the name-keyed row-menu bus. The
+          `backdrop` gives it the iOS-context-menu dim; `gr-tile-kebab` positions
+          the ⋯ trigger for the grok row (see grok-mode.css). */}
+      <SessionActionsMenu
+        session={session}
+        variant="tile"
+        backdrop
+        className="gr-tile-kebab"
       />
       <span className="gr-top">
         <SessionFace

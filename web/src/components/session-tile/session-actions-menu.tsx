@@ -40,6 +40,7 @@
  * through deterministically.
  */
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import {
   Archive,
   Check,
@@ -49,6 +50,7 @@ import {
   MoveRight,
   PencilLine,
   Pin,
+  RotateCcw,
   Square,
 } from 'lucide-react'
 
@@ -126,6 +128,12 @@ export interface SessionActionsMenuProps {
   moveTargets?: readonly MoveTarget[]
   onMoveToGroup?: (destGroupId: string) => void
   className?: string
+  /** iOS-context-menu feel (grok overview long-press / right-click): while the
+   *  menu is open, dim the rest of the screen behind it with a fading backdrop.
+   *  Off by default so the classic overview kebab is unchanged (a hover menu
+   *  wants no scrim). The scale+fade on the menu itself is the shared
+   *  DropdownMenuContent transition; this only adds the backdrop. */
+  backdrop?: boolean
 }
 
 export function SessionActionsMenu({
@@ -134,6 +142,7 @@ export function SessionActionsMenu({
   moveTargets,
   onMoveToGroup,
   className,
+  backdrop,
 }: SessionActionsMenuProps) {
   const sessionName = session.name
   const sessionLabel = sessionTitle(session as ApiSession)
@@ -142,7 +151,7 @@ export function SessionActionsMenu({
   // mobile quick-peek (busy guard, team-lead-aware confirm, optimistic cache
   // update, toasts). The menu's gating decides whether to SHOW the item; the
   // hook decides whether to RUN it.
-  const { busy, stop, archive } = useSessionActions(sessionName)
+  const { busy, restart, stop, archive } = useSessionActions(sessionName)
 
   // FASE A5 T5 — the per-session renderer override. The whole submenu is hidden
   // for an INELIGIBLE session and while the experiment is off: a control that
@@ -214,6 +223,25 @@ export function SessionActionsMenu({
 
   return (
     <>
+      {/* iOS-context-menu backdrop (opt-in via `backdrop`, grok overview only).
+          Dims the roster behind the menu while it is open, with a fade that
+          reduced-motion users don't get (`motion-reduce:animate-none`). Portaled
+          to <body> so the row's own `isolation: isolate` stacking context can't
+          trap it beneath sibling rows; it sits below the Radix menu content
+          (z-50) which portals to <body> after it. Radix already dismisses the
+          menu on an outside pointer-down; the explicit close is belt-and-braces. */}
+      {backdrop &&
+        open &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            aria-hidden
+            data-vr="tile-menu-backdrop"
+            onPointerDown={() => setOpen(false)}
+            className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] animate-in fade-in-0 duration-150 motion-reduce:animate-none motion-reduce:duration-0"
+          />,
+          document.body,
+        )}
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <button
@@ -246,6 +274,10 @@ export function SessionActionsMenu({
         <DropdownMenuContent
           align="end"
           sideOffset={6}
+          // The scale+fade is the shared DropdownMenuContent transition; add the
+          // reduced-motion fallback so it appears instantly for those users
+          // (the iOS-context-menu mandate) — harmless for the classic kebab too.
+          className="motion-reduce:animate-none motion-reduce:duration-0"
           // Stop the dnd-kit sensors / tile click from firing when the user
           // interacts with the menu content.
           onPointerDown={(e) => e.stopPropagation()}
@@ -308,6 +340,20 @@ export function SessionActionsMenu({
             <Pin className="size-4" aria-hidden />
             <span>{session.pinned ? 'Unpin' : 'Pin'}</span>
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {/* Restart (restored overview action) — stop→start, resuming the SAME
+              conversation. The mobile quick-peek has always carried this; the
+              grok overview long-press / right-click restores it here. Shown for
+              every session: a running one is relaunched fresh, a stopped one is
+              simply resumed. */}
+          <DropdownMenuItem
+            data-vr="tile-restart"
+            disabled={busy}
+            onSelect={() => void restart()}
+          >
+            <RotateCcw className="size-4" aria-hidden />
+            <span>Restart</span>
+          </DropdownMenuItem>
           {canStop && (
             <DropdownMenuItem
               data-vr="tile-stop"
@@ -335,7 +381,9 @@ export function SessionActionsMenu({
           )}
           {showRenderer && (
             <>
-              {(canStop || canArchive) && <DropdownMenuSeparator />}
+              {/* Restart always precedes this, so the lifecycle group is never
+                  empty — always divide it from the renderer submenu. */}
+              <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger data-vr="tile-renderer">
                   <MessageSquare className="size-4" aria-hidden />
@@ -372,7 +420,8 @@ export function SessionActionsMenu({
           )}
           {canMove && (
             <>
-              {(canStop || canArchive || showRenderer) && <DropdownMenuSeparator />}
+              {/* Restart always precedes the move submenu too. */}
+              <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   data-vr="tile-move-to"
