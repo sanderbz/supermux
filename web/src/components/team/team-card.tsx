@@ -92,6 +92,12 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
   // cache by `lead_supermux_session`. Null when unmapped this tick or not yet in
   // the cache (the card still renders its header + teammates).
   const leadSession = useSession(team.lead_supermux_session ?? '').session
+  // Visible label for the card: the host session's REAL display name (e.g.
+  // "supermux"), not the on-disk auto team-dir name (`session-<id8>`) the
+  // watcher writes into `team_name`. Falls back to `team_name` only while the
+  // lead is momentarily unmapped (leadSession null). The stores + aria ids stay
+  // keyed on the stable `team_name` identity — only the visible TEXT changes.
+  const leadName = leadSession?.display_name ?? team.team_name
 
   const members = team.members
   // The teammates are a roster of colleagues like any other, so they get the
@@ -163,10 +169,11 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
         open={issuesOpen}
         onOpenChange={setIssuesOpen}
         boardId={teamBoardId ?? ''}
-        title={team.team_name}
+        title={leadName}
       />
       <TeamRollup
         team={team}
+        leadName={leadName}
         onOpenIssues={teamBoardId ? () => setIssuesOpen(true) : undefined}
         density={density}
         onDensityChange={setDensity}
@@ -304,6 +311,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
 
 function TeamRollup({
   team,
+  leadName,
   density,
   onDensityChange,
   width,
@@ -311,6 +319,10 @@ function TeamRollup({
   onOpenIssues,
 }: {
   team: Team
+  /** The host session's real display name (resolved in TeamCard), shown as the
+   *  visible heading. `team_name` (the on-disk dir name) is the fallback + the
+   *  stable identity the stores/aria ids stay keyed on. */
+  leadName: string
   density: TeamDensity
   onDensityChange: (d: TeamDensity) => void
   width: TeamWidth
@@ -346,7 +358,7 @@ function TeamRollup({
       {/* Team name — the stable identity. min-w keeps a few characters always
           visible so the name never collapses to 0 even when chrome is dense. */}
       <h2 className="min-w-[5ch] shrink truncate text-sm font-semibold tracking-tight">
-        {team.team_name}
+        {leadName}
       </h2>
 
       {/* "Lead" tag — inline here (not overlaid on the tile) so it labels the
