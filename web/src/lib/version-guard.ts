@@ -91,8 +91,10 @@ export function isNewerServedSha(served: unknown, built: unknown): boolean {
 }
 
 /** Ask the live server which sha it is running. Returns null on any failure
- *  (offline, 401, malformed) so a transient blip never surfaces a false bar. */
-async function fetchServedSha(): Promise<string | null> {
+ *  (offline, 401, malformed) so a transient blip never surfaces a false bar.
+ *  Exported so the Settings → Advanced → Diagnostics "Build" row can run the
+ *  same probe on demand (a manual mirror of the background heartbeat). */
+export async function fetchServedSha(): Promise<string | null> {
   try {
     const base = (window._SUPERMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(/\/$/, '')
     const res = await fetch(`${base}/api/version`, {

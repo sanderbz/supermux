@@ -8,21 +8,34 @@ const AUTO_HEAL_KEY = 'recovery.auto_heal'
 import * as React from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
+  AnimatePresence,
   MotionConfig,
   motion,
   useScroll,
   useTransform,
+  type Variants,
 } from 'framer-motion'
 import {
+  ArrowUpCircle,
   Check,
+  CheckCircle2,
+  ChevronDown,
   ChevronsUpDown,
+  Loader2,
   PlayCircle,
   RefreshCw,
   SlidersHorizontal,
   Store as StoreIcon,
 } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
+import {
+  adoptNewBuild,
+  fetchServedSha,
+  isNewerServedSha,
+  isRealSha,
+} from '@/lib/version-guard'
 import { appVersion, authToken, baseUrl } from '@/env'
 import { MISC, ONBOARDING } from '@/brand/copy'
 import {
@@ -914,6 +927,239 @@ function NotificationsSection() {
   )
 }
 
+/** The running-bundle status line for the Diagnostics "Build" row. Four states,
+ *  driven by the version-guard served-sha compare so it can never contradict the
+ *  reload bar the background heartbeat surfaces. */
+type BuildStatus = 'checking' | 'latest' | 'stale' | 'unknown'
+
+function BuildStatusLine({
+  status,
+  onReload,
+  onRecheck,
+}: {
+  status: BuildStatus
+  onReload: () => void
+  onRecheck: () => void
+}) {
+  switch (status) {
+    case 'checking':
+      return (
+        <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Checking for a newer version…
+        </span>
+      )
+    case 'latest':
+      return (
+        <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
+          <CheckCircle2 className="size-4 text-emerald-500" />
+          You are on the latest version
+        </span>
+      )
+    case 'stale':
+      return (
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 text-[13px] font-medium text-amber-600 dark:text-amber-400">
+            <ArrowUpCircle className="size-4" />
+            Update available
+          </span>
+          <Button asChild onClick={onReload} className="h-9 gap-1.5">
+            <motion.button whileTap={{ scale: 0.96 }} transition={springs.buttonPress}>
+              <RefreshCw className="size-4" />
+              Reload
+            </motion.button>
+          </Button>
+        </div>
+      )
+    case 'unknown':
+      return (
+        <button
+          type="button"
+          onClick={onRecheck}
+          className="flex items-center gap-1.5 text-[13px] text-muted-foreground underline-offset-2 hover:underline"
+        >
+          <RefreshCw className="size-3.5" />
+          Couldn’t compare — check again
+        </button>
+      )
+  }
+}
+
+/** Advanced → Diagnostics → Build. Which frontend bundle THIS install is
+ *  actually running (short `__APP_BUILD_SHA__`) and whether the live server has
+ *  already shipped a newer one. Reuses `fetchServedSha` + `isNewerServedSha`
+ *  from the version guard, and the guard's `adoptNewBuild` for the one-tap
+ *  reload — so this manual surface and the background heartbeat always agree. */
+function BuildVersionRow() {
+  const built = __APP_BUILD_SHA__
+  const real = isRealSha(built)
+  const shortSha = real ? built.slice(0, 7) : 'dev'
+  const [status, setStatus] = React.useState<BuildStatus>(real ? 'checking' : 'unknown')
+
+  const check = React.useCallback(() => {
+    if (!real) return
+    setStatus('checking')
+    void fetchServedSha().then((served) => {
+      if (served == null) setStatus('unknown')
+      else setStatus(isNewerServedSha(served, built) ? 'stale' : 'latest')
+    })
+  }, [real, built])
+
+  React.useEffect(() => {
+    check()
+  }, [check])
+
+  return (
+    <>
+      <Row
+        label="Build"
+        hint={
+          real
+            ? 'The frontend bundle this device is running, compared against the live server.'
+            : 'Local development build — there is no server version to compare against.'
+        }
+        control={
+          <span className="font-mono text-[13px] text-muted-foreground">{shortSha}</span>
+        }
+      />
+      {real ? (
+        <Row>
+          <div className="flex min-h-[2rem] items-center py-1">
+            <BuildStatusLine status={status} onReload={() => void adoptNewBuild()} onRecheck={check} />
+          </div>
+        </Row>
+      ) : null}
+    </>
+  )
+}
+
+/** Advanced → Diagnostics → Keyboard debug overlay. A DIAGNOSTIC opt-in: it sets
+ *  `localStorage.kbdebug` (read once at shell mount by `lib/kbdebug-flag.ts`) so
+ *  the on-device visualViewport/composer overlay (`components/dev/kbdebug-
+ *  overlay.tsx`) mounts. Inert (off) by default; a reload is required either way
+ *  because the flag is read once at mount, never live. This toggle ONLY flips the
+ *  flag — it does not touch the overlay or the flag-reader. */
+function KeyboardDebugRow() {
+  const [on, setOn] = React.useState(() => {
+    try {
+      return window.localStorage.getItem('kbdebug') === '1'
+    } catch {
+      return false
+    }
+  })
+
+  function toggle(next: boolean) {
+    try {
+      if (next) window.localStorage.setItem('kbdebug', '1')
+      else window.localStorage.removeItem('kbdebug')
+    } catch {
+      // storage blocked (private mode) — nothing to persist; skip the reload.
+      return
+    }
+    setOn(next)
+    // The overlay is decided ONCE at shell mount, so it can only mount/unmount
+    // on a fresh load.
+    window.location.reload()
+  }
+
+  return (
+    <Row
+      label="Keyboard debug overlay"
+      hint="Diagnostic. Overlays the live keyboard/viewport geometry on the composer so you can screenshot it on-device. Reloads to apply."
+      control={
+        <Switch
+          ariaLabel="Keyboard debug overlay (diagnostic)"
+          checked={on}
+          onCheckedChange={toggle}
+        />
+      }
+    />
+  )
+}
+
+/** Advanced → Diagnostics. Operator-only tools: which bundle is running (+ a
+ *  one-tap update when the server is newer) and the keyboard-geometry overlay. */
+function DiagnosticsSection() {
+  return (
+    <Section
+      title="Diagnostics"
+      footnote="Which frontend bundle this install is running, and an on-device keyboard-geometry overlay for debugging the composer."
+    >
+      <BuildVersionRow />
+      <KeyboardDebugRow />
+    </Section>
+  )
+}
+
+/** Per-section spring-in for the Advanced disclosure header (mirrors the
+ *  `sectionItem` variant the grouped sections use, kept local so `primitives`
+ *  stays untouched). */
+const advItem: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  visible: { opacity: 1, y: 0, transition: springs.cardExpand },
+}
+
+/** The disclosure body's reveal. Expressed as VARIANT LABELS (not inline style
+ *  objects) on purpose: the moved sections are themselves `motion.section`s with
+ *  a `hidden`/`visible` variant, and framer resolves a child's variant by the
+ *  LABEL its ancestor is animating to. An object-based `animate` here would break
+ *  that propagation and leave the children stuck at their `hidden` opacity, so
+ *  the group's `hidden`/`visible` labels must match theirs. */
+const advBody: Variants = {
+  hidden: { height: 0, opacity: 0 },
+  visible: { height: 'auto', opacity: 1, transition: springs.cardExpand },
+}
+
+/** The ADVANCED disclosure — a collapsible group at the foot of Settings that
+ *  holds the power-user / set-once / diagnostic sections so the everyday surface
+ *  (Appearance, Notifications, …) stays short. Collapsed by default; nothing is
+ *  removed, only regrouped. Deep-linked sections (`#hosts`, `#schedules`,
+ *  `#recovery`) are deliberately kept OUTSIDE so their fragment scroll still
+ *  resolves against the always-rendered tree. */
+function AdvancedGroup({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false)
+  return (
+    <motion.section variants={advItem} className="flex flex-col">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3.5 text-left transition-colors hover:bg-accent/40"
+      >
+        <span className="flex items-center gap-3">
+          <SlidersHorizontal className="size-[18px] text-muted-foreground" />
+          <span className="flex flex-col">
+            <span className="text-[15px] leading-tight text-foreground">Advanced</span>
+            <span className="text-[13px] leading-snug text-muted-foreground">
+              Power-user, diagnostic, and rarely-touched settings
+            </span>
+          </span>
+        </span>
+        <ChevronDown
+          className={cn(
+            'size-5 shrink-0 text-muted-foreground transition-transform duration-200',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            key="advanced-body"
+            variants={advBody}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+            className="overflow-hidden"
+          >
+            <div className="flex flex-col gap-7 pt-7">{children}</div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </motion.section>
+  )
+}
+
 export function Settings() {
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
@@ -1104,24 +1350,34 @@ export function Settings() {
 
           <ConnectorsSection />
 
-          <OnboardingSection />
-
-          <ApiKeysSection />
-
-          <ConnectionSection />
-
           <RecoverySection />
 
-          <ExperimentalSection />
+          {/* B-advanced — declutter. The everyday surface above stays short;
+              the power-user / set-once / diagnostic sections fold into one
+              collapsed group. Nothing is removed and every toggle keeps its
+              exact same wiring — only the grouping changed. Deep-linked sections
+              (Hosts #hosts, Schedules #schedules, Recovery #recovery) stay above
+              so their fragment scroll still finds an always-rendered target. */}
+          <AdvancedGroup>
+            <DiagnosticsSection />
 
-          <SnippetsSection />
+            <OnboardingSection />
 
-          <Section
-            title="Audit log"
-            footnote="The last 200 recorded actions. Secrets are never logged."
-          >
-            <AuditLog />
-          </Section>
+            <ApiKeysSection />
+
+            <ConnectionSection />
+
+            <ExperimentalSection />
+
+            <SnippetsSection />
+
+            <Section
+              title="Audit log"
+              footnote="The last 200 recorded actions. Secrets are never logged."
+            >
+              <AuditLog />
+            </Section>
+          </AdvancedGroup>
         </motion.div>
       </MotionConfig>
     </div>

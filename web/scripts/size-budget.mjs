@@ -769,7 +769,17 @@ const BUDGET_ENTRY_JS = 160 * KB
 // the ENTRY gate, the real hero-path guard, stays green with headroom. It reuses
 // the existing adoption store (no second reload mechanism) so no data-loss path
 // changes. ceil(measured)=309, the same rule every fase/merge above used.
-const BUDGET_APP_JS = 309 * KB
+// RATCHETED 309 → 310 by Settings → Advanced (feat/grok-mode). The Settings
+// route (a lazy chunk, off the hero path) gains a collapsed "Advanced"
+// disclosure that regroups the power-user / set-once / diagnostic sections, plus
+// a Diagnostics section: a "Build" row that reuses `version-guard`'s
+// `fetchServedSha`/`isNewerServedSha`/`adoptNewBuild` to show the running bundle
+// sha + a one-tap reload when the server is newer, and a keyboard-debug toggle
+// that flips `localStorage.kbdebug`. Measured 309.46 against 309.00 at this
+// branch head — +0.46 KB, entirely on the lazy `settings` chunk (the ENTRY
+// hero-path gate is UNMOVED and green). ceil(measured)=310, the same rule every
+// fase/merge above used.
+const BUDGET_APP_JS = 310 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
