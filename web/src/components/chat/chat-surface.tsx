@@ -284,7 +284,17 @@ export function ChatSurface({
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[3]">{float}</div>
       )}
 
-      {footer != null && <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div>}
+      {/* Footer (composer) anchors its bottom edge to the keyboard TOP, not the
+          layout-viewport bottom (which iOS never shrinks for the keyboard). `--kb`
+          is the coordinator's measured keyboard inset (0 when closed), so a closed
+          keyboard yields `bottom:0` — today's resting state — and an open keyboard
+          lifts the pill flush onto the accessory bar. Value change only; the slot
+          stays `absolute inset-x-0` inside the `relative` surface. */}
+      {footer != null && (
+        <div className="absolute inset-x-0 z-[4]" style={{ bottom: 'var(--kb, 0px)' }}>
+          {footer}
+        </div>
+      )}
 
       {/* Above both floating layers (header z-3, composer z-4): the card is
           telling the user that one of them just refused to do something. */}

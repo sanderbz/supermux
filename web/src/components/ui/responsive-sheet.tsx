@@ -100,10 +100,28 @@ function MobileBody({
           data-testid="responsive-sheet"
           {...(contentTheme ? { 'data-theme': contentTheme } : {})}
           className={cn(
-            'glass fixed inset-x-0 bottom-0 z-[60] flex max-h-[92vh] flex-col',
-            'rounded-t-[10px] border-t border-border/60 pb-safe outline-none',
+            'glass fixed inset-x-0 z-[60] flex flex-col',
+            'rounded-t-[10px] border-t border-border/60 outline-none',
             contentTheme === 'dark' && 'dark',
           )}
+          // Anchor the sheet to the VISUAL viewport, not the layout viewport.
+          // Vaul only shrinks the content height for the keyboard; it never moves
+          // `bottom`, so the un-moved `bottom:0` left a keyboard-height black band
+          // below the sheet. `bottom:var(--kb)` lifts the sheet's bottom edge onto
+          // the keyboard top (0 when closed — resting state unchanged). The height
+          // is capped at `min(var(--vvh), 92vh)`: keyboard OPEN ⇒ `--vvh` is the
+          // visible height (e.g. 480px) so the sheet fits ABOVE the keyboard;
+          // keyboard CLOSED ⇒ `--vvh` is 100dvh and the `92vh` arm wins, keeping
+          // the closed cap byte-identical to the old `max-h-[92vh]` (so the ≥8%
+          // top gap the drag-handle relies on — see below — is preserved and the
+          // notch stays clear). The bottom pad swaps `pb-safe` for the gated
+          // `--kb-safe-bottom` (env when closed, 0 above the keyboard). Additive
+          // to Vaul's drag transform — drag-to-dismiss is unaffected.
+          style={{
+            bottom: 'var(--kb, 0px)',
+            maxHeight: 'min(var(--vvh, 100dvh), 92vh)',
+            paddingBottom: 'var(--kb-safe-bottom)',
+          }}
         >
           {/* Drag indicator — 36×5, 2.5px radius, tertiary tint.
               NO `pt-safe` wrapper: the sheet is capped at `max-h-[92vh]` so the
