@@ -247,6 +247,59 @@ export function useKeyboardViewport(): KeyboardViewport {
 }
 
 /**
+ * useKeyboardOpen — a TRIMMED keyboard-open boolean for the mobile focus route.
+ *
+ * The native-column focus layout (mobile-sheet.tsx is a plain `100dvh` flex
+ * column; the browser's `interactive-widget=resizes-content` shrinks the
+ * viewport when the keyboard opens) needs NO height/offset/inset math — the
+ * only signal the route still consumes is a single boolean: the terminal dock's
+ * accessory key strip (`dock.tsx:598`) and the ⌨ toggle label (`:668`) render
+ * only while the keyboard is up. This hook runs the SAME dual-signal
+ * `createKeyboardOpenDetector` (iOS = visual-viewport shrink; Android =
+ * layout-viewport shrink with editable focus) as `useKeyboardViewport`, but
+ * publishes ONLY `open` — dropping the fragile visualViewport-height sheet-
+ * sizing path that floated the composer above the keyboard on iOS.
+ */
+export function useKeyboardOpen(): boolean {
+  const [open, setOpen] = React.useState(false)
+
+  React.useEffect(() => {
+    const visual =
+      typeof window !== 'undefined' ? window.visualViewport : undefined
+    if (!visual) return
+
+    let raf = 0
+    const detect = createKeyboardOpenDetector()
+    const measure = () => {
+      raf = 0
+      const { open: keyboardOpen } = detect(visual)
+      setOpen((prev) => (prev === keyboardOpen ? prev : keyboardOpen))
+    }
+    const schedule = () => {
+      if (raf) return
+      raf = window.requestAnimationFrame(measure)
+    }
+
+    measure()
+    visual.addEventListener('resize', schedule)
+    visual.addEventListener('scroll', schedule)
+    window.addEventListener('resize', schedule)
+    document.addEventListener('focusin', schedule)
+    document.addEventListener('focusout', schedule)
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf)
+      visual.removeEventListener('resize', schedule)
+      visual.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+      document.removeEventListener('focusin', schedule)
+      document.removeEventListener('focusout', schedule)
+    }
+  }, [])
+
+  return open
+}
+
+/**
  * useViewportShellVars — the SINGLE keyboard/safe-area coordinator (layout
  * foundation, Piece 1). Mount it ONCE at the shell (layout.tsx). It REUSES the
  * already-correct `useKeyboardViewport` observer (same rAF-coalesced updates,

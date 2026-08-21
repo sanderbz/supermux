@@ -5,12 +5,14 @@
 // a non-`none` `backdrop-filter` / `filter` / `transform` / `perspective` /
 // `contain: paint` / `will-change: transform` on ANY ancestor promotes that
 // element to the CONTAINING BLOCK for every `position: fixed` descendant. The
-// mobile focus route is built out of fixed chrome — `<MobileSheet>`
-// (`[data-testid="focus-sheet"]`, sized from `visualViewport`), the floating
-// KeyBar, the joystick, the tour overlay. If a shell column above them grows
-// one of those properties, `fixed` starts resolving against the column instead
-// of the viewport: the sheet's keyboard math silently measures the wrong box
-// and the bar drifts. Nothing throws; it just looks broken on a phone.
+// mobile focus route is built out of fixed chrome — the floating KeyBar, the
+// joystick, the tour overlay — that sits OUTSIDE `<MobileSheet>`
+// (`[data-testid="focus-sheet"]`, now a plain `h-[100dvh]` flex column). If a
+// shell column above them grows one of those properties, `fixed` starts
+// resolving against the column instead of the viewport and the bar drifts.
+// Nothing throws; it just looks broken on a phone. (The sheet itself no longer
+// carries a `transform`, so it can never be that containing block — this spec
+// proves nothing else newly becomes one either.)
 //
 // So: fase B1's painted substrate is OPAQUE PAINT, never blur — and this spec
 // lands BEFORE the substrate does, passes on pre-substrate code, and is
@@ -102,12 +104,13 @@ test.describe('shell: no ancestor may become a containing block for fixed chrome
           keys: ['Left', 'Up', 'Down', 'Right', 'Enter', 'Esc'],
         }),
       )
-      // Playwright cannot open a soft keyboard, so shim the visual viewport the
-      // way iOS reports one: the LAYOUT viewport keeps its height,
-      // `visualViewport.height` shrinks. `useKeyboardViewport` reads
-      // `innerHeight - vv.height - vv.offsetTop` as the overlap inset and
-      // publishes a concrete sheet height once it crosses
-      // KEYBOARD_OPEN_THRESHOLD (80px). Installed closed; the test flips it.
+      // Playwright cannot open a soft keyboard. Under the native-column model the
+      // sheet ignores `visualViewport.height` entirely (it is `100dvh`), so the
+      // real shrink is driven by `setViewportSize` in the test body. This shim is
+      // secondary: it moves `visualViewport.height` the way iOS reports an
+      // overlay keyboard so the keyboard-OPEN detector (accessory strip / ⌨
+      // label) crosses KEYBOARD_OPEN_THRESHOLD (80px). Installed closed; the test
+      // flips it.
       const KEYBOARD = 320
       const vv = window.visualViewport
       if (!vv) return
@@ -212,14 +215,27 @@ test.describe('shell: no ancestor may become a containing block for fixed chrome
     expect(zOrder.hitIsInsideBar, 'nothing paints over the KeyBar').toBe(true)
 
     // ── T1.2 (phase 2): raise the simulated keyboard ─────────────────────────
+    // NATIVE-COLUMN MODEL (Plan A): the sheet is a plain `h-[100dvh]` flex
+    // column, NOT a visualViewport-sized fixed box. `interactive-widget=
+    // resizes-content` (index.html) makes the BROWSER shrink the layout viewport
+    // when the keyboard opens, `100dvh` re-resolves smaller, and the flex column
+    // reflows — no JS height math. The faithful headless simulation of that is
+    // to shrink the actual viewport (`setViewportSize`), which re-resolves
+    // `dvh`; the old `__smFakeKeyboard` visualViewport shim only moved
+    // `visualViewport.height`, which the native column deliberately ignores. We
+    // still flip the shim so the keyboard-open detector (accessory strip / ⌨
+    // label) sees "open", but the LOAD-BEARING shrink is the viewport resize.
+    const vp = page.viewportSize()!
+    const KEYBOARD_PX = 320
     const heightBefore = await sheet.evaluate((el) => el.getBoundingClientRect().height)
     await page.evaluate(() =>
       (
         window as unknown as { __smFakeKeyboard: (v: boolean) => void }
       ).__smFakeKeyboard(true),
     )
+    await page.setViewportSize({ width: vp.width, height: vp.height - KEYBOARD_PX })
 
-    // The sheet's height is CSS-transitioned (0.28s) — poll for the settle.
+    // `100dvh` re-resolves against the shrunk viewport — poll for the settle.
     await expect(async () => {
       const h = await sheet.evaluate((el) => el.getBoundingClientRect().height)
       expect(

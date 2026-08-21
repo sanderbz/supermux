@@ -114,7 +114,7 @@ import {
 } from '@/components/focus-mode/last-send-recall'
 import { MobileDock } from '@/components/focus-mode/dock'
 import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
-import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
+import { useKeyboardOpen } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { KeyBar, useKeyBar } from '@/components/focus-mode/key-bar'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
@@ -369,17 +369,14 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
     }
   }, [])
 
-  // ── Keyboard-viewport layout (the "page slides weirdly" fix) ────────────────
-  // visualViewport drives the sheet's exact height so the terminal shrinks to
-  // sit DIRECTLY above the soft keyboard (no page scroll), and the accessory
-  // dock rides the keyboard top. No-op on desktop / closed keyboard (height is
-  // null → the sheet falls back to its 100dvh CSS height).
-  const {
-    height: vvHeight,
-    keyboardInset,
-    keyboardOffsetTop,
-    keyboardOpen,
-  } = useKeyboardViewport()
+  // ── Keyboard-open signal (native-column layout) ─────────────────────────────
+  // MobileSheet is now a plain `100dvh` flex column that the browser shrinks via
+  // `interactive-widget=resizes-content` when the keyboard opens — no JS sheet
+  // sizing. The only signal the route still needs is a single boolean: the dock's
+  // accessory key strip + the ⌨ toggle label render only while the keyboard is
+  // up. `useKeyboardOpen` runs the same dual-signal detector as the old hook but
+  // publishes ONLY `open`, dropping the visualViewport height/offset machinery.
+  const keyboardOpen = useKeyboardOpen()
 
   // Imperative summon/dismiss of the keyboard. Tapping the terminal must focus
   // xterm INSIDE the user gesture (iOS only opens the keyboard on a real touch),
@@ -686,11 +683,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
         transition={reduceMotion ? motionOff : springs.sheetDetent}
         className="h-full w-full"
       >
-        <MobileSheet
-          contentHeight={vvHeight}
-          keyboardInset={keyboardInset}
-          keyboardOffsetTop={keyboardOffsetTop}
-        >
+        <MobileSheet>
           {/* The title-bar "···" overflow was removed: it opened the SAME
               SessionPickerSheet the bottom-left session pill already opens (the
               pill is the richer, more discoverable affordance — name + status +
