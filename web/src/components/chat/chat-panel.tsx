@@ -57,6 +57,7 @@ import { attachmentSentence } from './composer-insert'
 import { useStagedAttachments } from '../focus-mode/use-staged-attachments'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
+import type { KbLayoutComponent } from '@/components/focus-mode/kb-modes/contract'
 import { useComposer } from './use-composer'
 import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
@@ -95,6 +96,7 @@ export default function ChatPanel({
   headerLeading,
   headerTrailing,
   actions,
+  layout,
 }: {
   name: string
   session: TileSession | null
@@ -139,6 +141,13 @@ export default function ChatPanel({
    * pair, no sheet (desktop split, bench).
    */
   actions?: ChatComposerActions
+  /**
+   * The active keyboard-layout MODE (`KbLayout`), forwarded straight to
+   * `ChatConversation` → `ChatSurface`. Set only by the MOBILE focus route (the
+   * `kbMode` setting resolves to the registry's lazy loader); omitted by the
+   * desktop seam and benches, where the surface DOM stays unchanged.
+   */
+  layout?: KbLayoutComponent
 }) {
   // The turn state machine (anchor, supersede gate, teardown, the turn's
   // edge-scheduled thresholds) lives in `use-chat-turn.ts` — this component is
@@ -766,6 +775,9 @@ export default function ChatPanel({
       turnStart={turnStart}
       overlay={overlay}
       surface={phone ? 'phone' : 'desktop'}
+      // The active keyboard-layout MODE — forwarded from the mobile route; the
+      // surface arranges its regions through it when present.
+      layout={layout}
       headerLeading={headerLeading}
       // The honesty chip rides in the header's own STATUS slot (grouped with the
       // mode chip and presence dot), not bundled onto the renderer toggle — so the

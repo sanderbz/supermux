@@ -34,6 +34,9 @@ import * as React from 'react'
 import type { MarkPin } from '../../brand/marks'
 import type { SessionStatus } from '../../lib/api'
 import type { TileSession } from '../session-tile/types'
+// Type-only (erased before resolution) — keeps this module free of the `@/` alias
+// the unit runner's root tsconfig cannot resolve (see this file's header rule 2).
+import type { KbLayoutComponent } from '../focus-mode/kb-modes/contract'
 
 import { sessionAccentVarsFor } from './session-accent'
 
@@ -110,6 +113,20 @@ export interface ChatSurfaceProps {
    * renderer-switch e2e asserts on it.
    */
   testId?: string
+  /**
+   * The active keyboard-layout MODE (`KbLayout`), threaded from the mobile focus
+   * route (`kbMode` → `kbModeEntry(...).load`). The mode owns how the composer
+   * stays flush above the soft keyboard on the owner's device — the app ships
+   * eleven implementations he A/B-tests and keeps the one with zero black band.
+   *
+   * WHEN ABSENT (desktop, unit tests, `/dev/chat-live`) this surface renders its
+   * CURRENT DOM byte-for-byte — no regression to any existing test. WHEN PRESENT
+   * (mobile focus route) the surface computes its header / body / composer nodes
+   * and hands them to the mode INSTEAD of arranging them itself; the mode places
+   * them. Mode 0 (`baseline`) is a transparent passthrough, so passing it is a
+   * true no-op relative to no layout at all. See `focus-mode/kb-modes/`.
+   */
+  layout?: KbLayoutComponent
 }
 
 /**
@@ -192,6 +209,7 @@ export function ChatSurface({
   scrollRef,
   onScroll,
   testId = 'chat-surface',
+  layout: Layout,
 }: ChatSurfaceProps) {
   const top = header ?? (
     <div className="flex items-center gap-2 px-5 py-2">
@@ -209,43 +227,38 @@ export function ChatSurface({
   // a template literal instead of a hook.
   const hid = `chat-title-${name}`
   const title = session?.display_name?.trim() ? session.display_name : name
-  return (
-    <div
-      data-testid={testId}
-      data-surface="chat"
-      data-session={name}
-      // The ONE accent write on this subtree. Seeded by the slug, never the
-      // display name — a rename must not change a session's colour.
-      style={sessionAccentVarsFor({ name }, pin)}
-      // `paper-raised`, not `paper`: the boards' conversation pane sits ONE step
-      // above the roster's paper (globals.css names the token "conversation pane
-      // — above the paper"), and that step is the whole elevation ladder the
-      // bubbles and the glass bars are read against. `relative` is what lets the
-      // header and the composer float (see the props above).
-      className="relative flex h-full w-full flex-col bg-paper-raised text-ink"
-    >
-      <h2 id={hid} className="sr-only">
-        Conversation with {title}
-      </h2>
-      {/* The top slot owns its own box: the A3 T6 header pill has a safe-area
-          inset and a height floor of its own, and a padded wrapper here would
-          inset it twice. The DEFAULT occupant keeps the padding it always had,
-          so a surface rendered without a header looks exactly as it did. */}
-      {headerOverlay ? (
-        <div
-          className="absolute inset-x-0 z-[3]"
-          // The notch reserved ONCE: on the phone the wrapper drops the card
-          // below the safe area (`calc(var(--safe-top) + 12px)`); off-phone it
-          // sits flush at the pane top. `top` (not padding) so the card keeps
-          // its own 60px height instead of growing to swallow the inset.
-          style={{ top: headerOverlayInsetTop ?? 0 }}
-        >
-          {top}
-        </div>
-      ) : (
-        <div className="shrink-0">{top}</div>
-      )}
 
+  // The three semantic regions, computed ONCE so both the default arrangement
+  // and a delegated `KbLayout` render the identical subtrees. When no `layout`
+  // is passed they are dropped straight into the accent root in this order —
+  // byte-identical to the pre-KbLayout DOM (a React fragment creates no box, so
+  // `bodyNode`'s children stay direct flex children of the root and the track's
+  // `flex-1` still sizes against it).
+  //
+  // The top slot owns its own box: the A3 T6 header pill has a safe-area inset
+  // and a height floor of its own, and a padded wrapper here would inset it
+  // twice. The DEFAULT occupant keeps the padding it always had, so a surface
+  // rendered without a header looks exactly as it did.
+  const headerNode = headerOverlay ? (
+    <div
+      className="absolute inset-x-0 z-[3]"
+      // The notch reserved ONCE: on the phone the wrapper drops the card below
+      // the safe area (`calc(var(--safe-top) + 12px)`); off-phone it sits flush
+      // at the pane top. `top` (not padding) so the card keeps its own 60px
+      // height instead of growing to swallow the inset.
+      style={{ top: headerOverlayInsetTop ?? 0 }}
+    >
+      {top}
+    </div>
+  ) : (
+    <div className="shrink-0">{top}</div>
+  )
+
+  // The scroll region + its float layer — the `body` the mode is handed. Kept as
+  // a fragment so, in the default arrangement, track and float remain the same
+  // two siblings of the root they always were.
+  const bodyNode = (
+    <>
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -283,8 +296,43 @@ export function ChatSurface({
       {float != null && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[3]">{float}</div>
       )}
+    </>
+  )
 
-      {footer != null && <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div>}
+  const composerNode =
+    footer != null ? <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div> : null
+
+  return (
+    <div
+      data-testid={testId}
+      data-surface="chat"
+      data-session={name}
+      // The ONE accent write on this subtree. Seeded by the slug, never the
+      // display name — a rename must not change a session's colour.
+      style={sessionAccentVarsFor({ name }, pin)}
+      // `paper-raised`, not `paper`: the boards' conversation pane sits ONE step
+      // above the roster's paper (globals.css names the token "conversation pane
+      // — above the paper"), and that step is the whole elevation ladder the
+      // bubbles and the glass bars are read against. `relative` is what lets the
+      // header and the composer float (see the props above).
+      className="relative flex h-full w-full flex-col bg-paper-raised text-ink"
+    >
+      <h2 id={hid} className="sr-only">
+        Conversation with {title}
+      </h2>
+      {Layout ? (
+        // Delegated: the active keyboard-layout MODE arranges the three regions
+        // and owns keyboard-avoidance. `chatActive` is always true here — the
+        // terminal path does not mount a KbLayout (only the chat surface does).
+        <Layout header={headerNode} body={bodyNode} composer={composerNode} chatActive />
+      ) : (
+        // Default arrangement — the pre-KbLayout DOM, byte-for-byte.
+        <>
+          {headerNode}
+          {bodyNode}
+          {composerNode}
+        </>
+      )}
 
       {/* Above both floating layers (header z-3, composer z-4): the card is
           telling the user that one of them just refused to do something. */}

@@ -84,6 +84,7 @@ import { SchedulesSection } from '@/components/settings/schedules-section'
 import { AuditLog } from '@/components/settings/audit-log'
 import { UpdatesSection } from '@/components/settings/updates-panel'
 import { Button } from '@/components/ui/button'
+import { KB_MODES, kbModeEntry } from '@/components/focus-mode/kb-modes/registry'
 import {
   Dialog,
   DialogClose,
@@ -344,6 +345,51 @@ function RecoverySection() {
   )
 }
 
+/** Settings → Experimental → "Keyboard layout". A dropdown listing all eleven
+ *  keyboard-avoidance MODES (from `KB_MODES`) by label; selecting one sets
+ *  `kbMode` LIVE (persisted). The owner cycles the ids on his real iPhone and
+ *  keeps whichever gives zero black band above the soft keyboard. A dropdown, not
+ *  a `SegmentedControl`: eleven options are far too many for a segment. */
+function KbModeDropdown() {
+  const kbMode = useUI((s) => s.kbMode)
+  const setKbMode = useUI((s) => s.setKbMode)
+  const active = kbModeEntry(kbMode)
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="min-w-[11rem] justify-between gap-2"
+          aria-label="Keyboard layout mode"
+        >
+          <span className="truncate">{active.label}</span>
+          <ChevronDown className="size-4 shrink-0 opacity-60" aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-w-[min(20rem,90vw)]">
+        {KB_MODES.map((m) => (
+          <DropdownMenuItem
+            key={m.id}
+            onSelect={() => setKbMode(m.id)}
+            className="flex flex-col items-start gap-0.5"
+          >
+            <span className="flex w-full items-center gap-2 text-[13px] font-medium">
+              {m.id === kbMode && <Check className="size-3.5 shrink-0" aria-hidden />}
+              <span className={m.id === kbMode ? '' : 'pl-[calc(0.875rem+0.5rem)]'}>
+                {m.label}
+              </span>
+            </span>
+            <span className="pl-[calc(0.875rem+0.5rem)] text-[11px] leading-snug text-muted-foreground">
+              {m.description}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 function ExperimentalSection() {
   const { data, isError } = useAgentTeams()
   const patch = usePatchAgentTeams()
@@ -378,6 +424,11 @@ function ExperimentalSection() {
             onCheckedChange={setBotMode}
           />
         }
+      />
+      <Row
+        label="Keyboard layout"
+        hint="Which technique keeps the mobile chat composer flush above the soft keyboard. Try each on your device and keep the one with no black band. Takes effect immediately."
+        control={<KbModeDropdown />}
       />
     </Section>
   )

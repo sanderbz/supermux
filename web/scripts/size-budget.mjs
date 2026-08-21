@@ -818,7 +818,27 @@ const BUDGET_ENTRY_JS = 160 * KB
 // hero-path gate is UNMOVED and green at 153.36/160 (96%). Measured 312.22
 // against 311.91 at this branch head. ceil(measured)=313, the same rule every
 // fase/merge above used.
-const BUDGET_APP_JS = 313 * KB
+// RATCHETED 313 → 316 by the keyboard-layout MODE system (feat/grok-mode). The
+// owner's real iPhone floats a ~68px black band above the soft keyboard on the
+// mobile CHAT composer, and the simulator cannot reproduce it — so instead of
+// guessing one fix the app ships ELEVEN independently-selectable keyboard-
+// avoidance implementations (a Settings > Experimental dropdown, a `kbMode`
+// setting, the `KbLayout` contract, a lazy registry, and eleven mode files) that
+// the owner A/B-tests on-device and keeps whichever gives zero band. The weight:
+//   ~1.5 KB  the registry (eleven {label, description} rows + lazy loaders) plus
+//            the Settings dropdown that renders it — both on the LAZY settings /
+//            mobile-focus route chunks, never the hero path.
+//   ~1.5 KB  the eleven per-mode lazy chunks (`mode-0`..`mode-10`) — each its own
+//            `import()` split so only the ACTIVE mode's code loads, and the
+//            parallel implement agents can each fill one without touching a
+//            shared file. Today all eleven are baseline passthroughs (they fill
+//            out as the owner picks a winner on-device).
+// The `KbLayout` seam through ChatSurface is a passthrough when no layout prop is
+// passed, so desktop / benches / unit tests are byte-identical. All of the weight
+// lands OFF the hero path: the ENTRY gate — the one that actually guards cold
+// load — stays green at 154.57/160 (97%). Measured 315.35 against 313 at this
+// branch head. ceil(measured)=316, the same rule every fase/merge above used.
+const BUDGET_APP_JS = 316 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

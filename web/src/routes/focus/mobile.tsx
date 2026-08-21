@@ -96,6 +96,7 @@ import {
 import { useRenderer } from '@/components/chat/use-renderer-pref'
 import { BackIcon } from '@/components/chat/ui'
 import { useUI } from '@/stores/ui-store'
+import { kbModeEntry } from '@/components/focus-mode/kb-modes/registry'
 import { useSessions } from '@/hooks/use-sessions'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { useTeams } from '@/hooks/use-teams'
@@ -257,6 +258,18 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // input plane and the tap gate, because both of them fork on `chatActive`.
   const chatSetting = useUI((s) => s.botMode)
   const chatOn = useChatRenderer(row)
+  // The active keyboard-layout MODE for the mobile chat composer (experimental).
+  // `kbMode` (persisted, default 0) selects one of the eleven `KbLayout`
+  // implementations from the registry; the surface arranges its header/body/
+  // composer through it. Lazily loaded so only the active mode's chunk is
+  // fetched, and re-created only when the id changes — mode 0 (baseline) is a
+  // transparent passthrough, so the default is a true no-op. Wrapped in the same
+  // `<React.Suspense>` that already surrounds `<ChatPanel>` below.
+  const kbMode = useUI((s) => s.kbMode)
+  const KbLayout = React.useMemo(
+    () => React.lazy(() => kbModeEntry(kbMode).load()),
+    [kbMode],
+  )
   // The ONLY state is the user's manual tap, keyed by session name so it resets
   // on navigation and cannot be stomped by a late flag/eligibility resolve.
   // Fase A5 T1/T2: a PERSISTED pin, not `React.useState`. `row != null` (not
@@ -825,6 +838,10 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
                     name={name}
                     session={row}
                     surface="phone"
+                    // The active keyboard-layout MODE — the surface arranges its
+                    // header/body/composer through it (mode 0 = current
+                    // behaviour). Chat-only: the terminal path keeps MobileSheet.
+                    layout={KbLayout}
                     // The RAW plane. The panel is the one place that may write to
                     // the session under chat, and it does it through its own gates
                     // (peek-verify, the slash gate, the pending echo + watchdog).

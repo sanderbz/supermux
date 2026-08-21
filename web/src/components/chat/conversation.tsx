@@ -39,6 +39,10 @@ import type { HarnessEvent } from '../../lib/api/harness'
 import { motionOff, tweens } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import type { TileSession } from '../session-tile/types'
+// Type-only (erased before resolution) — no `@/` alias, same reason as
+// `chat-surface.tsx`: this module is rendered by `bun test` (root tsconfig has
+// no `paths`).
+import type { KbLayoutComponent } from '../focus-mode/kb-modes/contract'
 
 import type { AttentionCause, AttentionContext } from './attention'
 import { AttentionOverlay, AttentionRow } from './attention-card'
@@ -287,6 +291,11 @@ export interface ChatConversationProps {
   scrollRef?: React.Ref<HTMLDivElement>
   onScroll?: React.UIEventHandler<HTMLDivElement>
   testId?: string
+  /** The active keyboard-layout MODE (`KbLayout`), threaded straight through to
+   *  `ChatSurface`. The MOBILE focus route passes it (`kbMode` → the registry's
+   *  lazy loader); every other caller (desktop, benches, unit tests) omits it and
+   *  the surface renders its current DOM byte-for-byte. */
+  layout?: KbLayoutComponent
 
   // ── back-pagination (daily-driver QA #3) ─────────────────────────────────
   // Data + callbacks, not a slot: the whole affordance is one of four states
@@ -358,6 +367,7 @@ export function ChatConversation({
   scrollRef,
   onScroll,
   testId = 'chat-surface',
+  layout,
   hasOlder = false,
   loadingOlder = false,
   olderError = false,
@@ -452,6 +462,9 @@ export function ChatConversation({
       name={name}
       session={session}
       pin={pin}
+      // The active keyboard-layout MODE — only the mobile focus route sets it;
+      // absent everywhere else, so the surface DOM is unchanged there.
+      layout={layout}
       scrollRef={scrollRef}
       onScroll={onScroll}
       // The header FLOATS, on both compositions. That is what the boards draw:
