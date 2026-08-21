@@ -35,6 +35,7 @@ import {
   markInlineOwned,
   reconcile,
   settleReceipted,
+  settleUndelivered,
   watchdogState,
   WATCHDOG_MS,
   type PendingSend,
@@ -210,22 +211,35 @@ export function usePendingSends({
     update(name, (cur) => applyReceipt(cur, { text: receiptText, atS: receiptAtS }))
   }, [name, receiptText, receiptAtS])
 
-  // SETTLE receipted rows the transcript has moved past (a queued mid-turn send,
-  // delivered AND answered, whose promoted echo fell out of the recall window
-  // before `reconcile` could match it — #45), THEN reconcile the in-window echoes
-  // away. Both only ever REMOVE, so they compose in one pass; `settleReceipted`
-  // reads `active` so a genuinely-still-queued row keeps its "queued behind that
-  // turn" indicator until the turn ends. Done in RENDER (so a confirmed send
-  // never survives a frame as an echo) and pruned into the store in an effect —
-  // the guard in `update` stops the loop.
-  const live = reconcile(settleReceipted(acked, entries, { active }), entries, nowMs)
+  // SETTLE the rows the transcript has moved past — a queued mid-turn send whose
+  // promoted echo fell out of the recall window before `reconcile` could match it
+  // (`settleReceipted`, #45), AND a LOST-RESPONSE `undelivered` row whose echo was
+  // likewise evicted on a long turn but whose delivery the answer + aliveness
+  // prove (`settleUndelivered`, IMG_2451) — THEN reconcile the in-window echoes
+  // away. All three only ever REMOVE, so they compose in one pass; the settles
+  // read `active`/`sawActiveSince` so a genuinely-still-queued or genuinely-lost
+  // send keeps its indicator until the transcript actually proves otherwise. Done
+  // in RENDER (so a confirmed send never survives a frame as an echo) and pruned
+  // into the store in an effect — the guard in `update` stops the loop.
+  const live = reconcile(
+    settleUndelivered(settleReceipted(acked, entries, { active }), entries, {
+      active,
+      sawActiveSince,
+    }),
+    entries,
+    nowMs,
+  )
   React.useEffect(() => {
     update(name, (cur) => {
-      const settled = settleReceipted(cur, entries, { active })
+      const settled = settleUndelivered(
+        settleReceipted(cur, entries, { active }),
+        entries,
+        { active, sawActiveSince },
+      )
       const next = reconcile(settled, entries, serverNowMs())
       return next.length === cur.length ? cur : next
     })
-  }, [name, entries, active])
+  }, [name, entries, active, sawActiveSince])
 
   // What is ALREADY on screen, for the clock-free half of reconciliation. A ref
   // rather than a dependency: it is read at the moment Enter is pressed, and a
@@ -330,7 +344,11 @@ export function usePendingSends({
         // this is the same rule, applied where the clock actually starts.
         patch(name, id, { state: 'unconfirmed', atMs: serverNowMs() })
       } catch (err) {
-        patch(name, id, { state: 'undelivered', note: errorNote(err) })
+        patch(name, id, {
+          state: 'undelivered',
+          note: errorNote(err),
+          transportError: isTransportError(err),
+        })
         // Rethrown so the composer still knows the send failed (it keeps the
         // draft in the box on this path), but MARKED: this failure is already
         // stated on the row above, with the server's sentence and a Retry, so
@@ -359,6 +377,9 @@ export function usePendingSends({
         state: 'sending',
         atMs: serverNowMs(),
         note: undefined,
+        // A fresh attempt: drop the previous verdict's transport flag so the
+        // eviction exit re-decides on THIS attempt's outcome, never the last.
+        transportError: false,
         // A retry is a new delivery: it needs its own receipt baseline, or the
         // receipt for the FIRST attempt would confirm it instantly — and its own
         // reading of whether a turn was already running, for the same reason.
@@ -392,7 +413,11 @@ export function usePendingSends({
             note: gate.notice ? refusalNote(gate.notice) : undefined,
           })
         } catch (err) {
-          patch(name, id, { state: 'undelivered', note: errorNote(err) })
+          patch(name, id, {
+            state: 'undelivered',
+            note: errorNote(err),
+            transportError: isTransportError(err),
+          })
         }
       })()
     },
@@ -424,6 +449,27 @@ export function usePendingSends({
 
 function errorNote(err: unknown): string | undefined {
   return err instanceof Error ? err.message : undefined
+}
+
+/**
+ * Was this a TRANSPORT failure — the POST left but no response came back — as
+ * opposed to a server REFUSAL with a definite verdict?
+ *
+ * `sessions.ts` throws `SessionError('Can’t reach supermux-server.', 0)` when
+ * `fetch` itself rejects (network down, server restarting, the reply lost on a
+ * flaky link): status 0 is exactly the ambiguous "may have been delivered" case
+ * `settleUndelivered` is allowed to clear on later transcript proof. A refusal
+ * (409 and friends) carries its real HTTP status and is NEVER treated as one:
+ * the server answered, and the answer was "no". A rejection with no numeric
+ * `status` (a bare `fetch` `TypeError`, a thrown string) is likewise a transport
+ * failure — it never reached a server that could refuse it.
+ */
+function isTransportError(err: unknown): boolean {
+  if (typeof err === 'object' && err !== null && 'status' in err) {
+    const status = (err as { status: unknown }).status
+    return typeof status === 'number' && status === 0
+  }
+  return true
 }
 
 /** Why a RETRY was refused, in the row itself — the retry path has no composer

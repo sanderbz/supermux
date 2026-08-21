@@ -29,6 +29,7 @@ import {
   PROMPT_CLAMP_CHARS,
   reconcile,
   settleReceipted,
+  settleUndelivered,
   watchdogState,
   WATCHDOG_MS,
   type PendingSend,
@@ -217,6 +218,110 @@ describe('settleReceipted — the window-eviction exit (#45)', () => {
     const done = receiptedQueued('revert', 10_000)
     const out = settleReceipted([done, inflight], [entry('ok', 40_000, 'assistant')], { active: false })
     expect(out).toEqual([inflight])
+  })
+})
+
+describe('settleUndelivered — the lost-response eviction exit (IMG_2451)', () => {
+  /** A LOST-RESPONSE row: the POST left but no reply came back (status-0
+   *  transport failure), sent into an IDLE session, escalated to undelivered
+   *  with the "Can't reach supermux-server" line. `seen` carries the pre-send
+   *  window; the echo that would clear it has been evicted from a long turn. */
+  function lostResponse(text: string, atMs: number, over: Partial<PendingSend> = {}): PendingSend {
+    return {
+      ...mk(text, atMs, 'undelivered'),
+      transportError: true,
+      activeAtSend: false,
+      seen: new Set(['old']),
+      note: 'Can’t reach supermux-server.',
+      ...over,
+    }
+  }
+  /** The aliveness ledger: the session was last observed active at `at`. */
+  const aliveAt = (at: number) => (ms: number) => at >= ms
+
+  test('clears once idle + answered + the session went active after the send, echo evicted', () => {
+    // Delivered and ANSWERED — the assistant reply is in the window — but this
+    // send's own prompt echo was evicted before reconcile could match it. The
+    // aliveness ledger witnessed the turn this send started. The false failure
+    // and its duplicating Retry go away with no transcript echo to match.
+    const p = lostResponse('deploy now', 10_000)
+    const answered = [entry('done', 40_000, 'assistant')]
+    const out = settleUndelivered([p], answered, { active: false, sawActiveSince: aliveAt(30_000) })
+    expect(out).toEqual([])
+  })
+
+  test('a GENUINELY-LOST send into an idle session STILL shows the error', () => {
+    // POST failed, nothing was typed, so the idle session produced no turn: no
+    // agent output after the send AND the ledger never saw it go active. The row
+    // keeps "Can't reach supermux-server. Retry".
+    const p = lostResponse('deploy now', 10_000)
+    // No agent entry after the send at all.
+    expect(settleUndelivered([p], [], { active: false, sawActiveSince: aliveAt(0) })).toEqual([p])
+    // An agent turn exists but the ledger never saw the session go active AFTER
+    // this send (the answer predates it / belongs to an older turn).
+    const stale = [entry('old reply', 5_000, 'assistant')]
+    expect(settleUndelivered([p], stale, { active: false, sawActiveSince: aliveAt(0) })).toEqual([p])
+  })
+
+  test('does NOT clear while a turn is still running', () => {
+    const p = lostResponse('deploy now', 10_000)
+    const midTurn = [entry('working', 20_000, 'tool_use')]
+    expect(
+      settleUndelivered([p], midTurn, { active: true, sawActiveSince: aliveAt(30_000) }),
+    ).toEqual([p])
+  })
+
+  test('never clears a send made MID-TURN — the running turn’s output proves nothing', () => {
+    // `activeAtSend` true: a previous turn was already running, so agent output
+    // after the send is that turn’s, not evidence THIS send landed. Only the
+    // receipt or the echo may clear such a row.
+    const p = lostResponse('deploy now', 10_000, { activeAtSend: true })
+    const answered = [entry('done', 40_000, 'assistant')]
+    expect(
+      settleUndelivered([p], answered, { active: false, sawActiveSince: aliveAt(30_000) }),
+    ).toEqual([p])
+  })
+
+  test('never clears a server REFUSAL (409) — the server said no', () => {
+    // A hard refusal is not a transport error, so later agent output cannot
+    // confirm a delivery the server itself declined.
+    const p = lostResponse('deploy now', 10_000, { transportError: false })
+    const answered = [entry('done', 40_000, 'assistant')]
+    expect(
+      settleUndelivered([p], answered, { active: false, sawActiveSince: aliveAt(30_000) }),
+    ).toEqual([p])
+  })
+
+  test('defers to reconcile whenever a user echo is visible after the send', () => {
+    // This send’s OWN echo is in the window — reconcile owns that case, so the
+    // eviction exit keeps its hands off (and reconcile then clears it).
+    const p = lostResponse('deploy now', 10_000)
+    const withEcho = [entry('deploy now', 12_000, 'prompt'), entry('done', 40_000, 'assistant')]
+    expect(
+      settleUndelivered([p], withEcho, { active: false, sawActiveSince: aliveAt(30_000) }),
+    ).toEqual([p])
+    // …and reconcile does clear it, leaving the transcript copy as sole survivor.
+    expect(reconcile([p], withEcho, 60_000)).toEqual([])
+  })
+
+  test('a LATER send’s turn is never mistaken for this one’s', () => {
+    // The lost send X (idle), then a SUCCESSFUL send Y whose echo is in the
+    // window. The visible answer may be Y’s, so X must NOT be cleared here — its
+    // own delivery is still unproven. `hasUserEntryAfter` sees Y’s echo and
+    // defers. (Y’s own row is cleared by reconcile elsewhere.)
+    const x = lostResponse('first', 10_000)
+    const entries = [entry('second', 30_000, 'prompt'), entry('answer', 40_000, 'assistant')]
+    expect(
+      settleUndelivered([x], entries, { active: false, sawActiveSince: aliveAt(35_000) }),
+    ).toEqual([x])
+  })
+
+  test('same reference back when nothing settled', () => {
+    const cur = [lostResponse('x', 10_000, { transportError: false })]
+    expect(settleUndelivered(cur, [entry('a', 40_000, 'assistant')], {
+      active: false,
+      sawActiveSince: () => true,
+    })).toBe(cur)
   })
 })
 

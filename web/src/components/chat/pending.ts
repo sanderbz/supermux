@@ -38,6 +38,22 @@ export interface PendingSend {
    *  "undelivered" when the reason is known (a rejected POST, a refused retry). */
   note?: string
   /**
+   * The failure was a TRANSPORT failure — the POST left this client but no
+   * response came back (`SessionError` status 0: `fetch` threw, or the server
+   * went away mid-request). Unlike a server REFUSAL (a 409 with a definite
+   * body), a status-0 failure is genuinely AMBIGUOUS about delivery: the
+   * request may have reached the pty and been typed, with only the reply lost
+   * on the flaky link — the exact lost-response case behind the false
+   * "Can't reach supermux-server" over a message that was delivered AND
+   * answered.
+   *
+   * It is what lets `settleUndelivered` clear ONLY a lost-response row on
+   * transcript evidence while a hard refusal keeps its verdict: a 409 said
+   * "no", so no amount of later agent output confirms a delivery that the
+   * server itself declined.
+   */
+  transportError?: boolean
+  /**
    * The uuids of the confirmed entries that were ALREADY on screen when this
    * send left — the clock-free half of reconciliation (A4 review).
    *
@@ -416,6 +432,90 @@ export function settleReceipted(
       return false
     }
     return true
+  })
+  return changed ? next : pending
+}
+
+/** Is any USER-initiated entry stamped at/after this send (within the wire's
+ *  truncation skew)? Then a matching echo — this send's OWN, or a LATER send's —
+ *  is visible, and `reconcile` is the one allowed to act on it. Used to keep the
+ *  eviction exit below OUT of every case `reconcile` can already decide, so it
+ *  fires only in the true window-eviction gap. */
+function hasUserEntryAfter(entries: readonly ChatEntry[], atMs: number): boolean {
+  return entries.some(
+    (e) => USER_KINDS.includes(e.kind) && e.ts * 1000 >= atMs - CONFIRM_SKEW_MS,
+  )
+}
+
+/**
+ * Settle-and-REMOVE a LOST-RESPONSE row whose delivery the transcript has since
+ * proven, when its own echo has been EVICTED from the recall window — the
+ * transport-error twin of `settleReceipted`, and the core of the second false
+ * "Can't reach supermux-server" (IMG_2451).
+ *
+ * The stuck state: a send whose POST reached the server (typed, queued, ANSWERED)
+ * but whose HTTP RESPONSE was lost on a flaky link. `input.submit` rejects with a
+ * status-0 `SessionError`, so the row escalates to `undelivered` with the
+ * "Can't reach supermux-server. Retry / Dismiss" line — over a message that
+ * landed and was answered. `applyReceipt` clears this the moment the server's
+ * `last_send` receipt still names the text; `reconcile` clears it the moment the
+ * echo is in the window. Both are defeated together on a long, tool-heavy turn
+ * (Claude runs 30–100 calls/turn): the promoted user echo is evicted from the
+ * bounded window before `reconcile` sees it, and a LATER send has overwritten the
+ * single last-writer-wins receipt scalar. The row then parks forever with a false
+ * failure and a duplicating Retry, exactly the #45 eviction gap — but for the
+ * undelivered state `settleReceipted` deliberately never touches.
+ *
+ * The exit, and why each gate is load-bearing for the ONE guarantee that must
+ * not bend — a genuinely-lost send (POST failed, never delivered) STILL says so:
+ *   · `transportError` — ONLY a status-0 lost-response row. A hard refusal (409)
+ *     is a definite server "no"; later agent output never confirms a delivery the
+ *     server itself declined.
+ *   · `activeAtSend === false` — the send was made into an IDLE session. A
+ *     genuinely-lost send into an idle session types nothing, so the session
+ *     produces NO turn and no agent output after it — the row correctly stays.
+ *     A send made MID-TURN is excluded outright: the running turn's own output is
+ *     trivially "after the send" and proves nothing about THIS message.
+ *   · `!ctx.active` + `agentMs > p.atMs` — the session has returned to idle AND
+ *     an agent turn produced output after the send: something ran and finished.
+ *   · `ctx.sawActiveSince(p.atMs)` — the aliveness ledger witnessed the session
+ *     go active AFTER the send. Delivery into idle is what turns the session
+ *     active; a lost send into idle never does (nothing was typed), so this is
+ *     false and the row stays.
+ *   · `!hasUserEntryAfter` — the decisive attribution guard. If ANY user echo is
+ *     visible after the send (this send's own, or a LATER send's), the answer may
+ *     belong to that other send, and `reconcile` — not this — owns that case. So
+ *     this fires ONLY when no user echo is in the window at all, i.e. the true
+ *     eviction gap, and can never mistake a later message's turn for this one's.
+ *
+ * The residual it does NOT cover, stated plainly: a lost idle send whose turn was
+ * started instead by a `teammate` handoff (the one user-ish kind outside
+ * `USER_KINDS`) landing in the same window could be cleared on that turn's
+ * output. That is a rare cross-author coincidence, not the reported bug; every
+ * self-authored path (prompt / command / delegation / schedule / notification /
+ * image) is caught by `hasUserEntryAfter` and deferred to `reconcile`.
+ *
+ * Same reference back when nothing settled — the caller runs this off its own
+ * output and must not loop.
+ */
+export function settleUndelivered(
+  pending: readonly PendingSend[],
+  entries: readonly ChatEntry[],
+  ctx: { active: boolean; sawActiveSince: (ms: number) => boolean },
+): readonly PendingSend[] {
+  if (ctx.active) return pending
+  const agentMs = newestAgentTs(entries) * 1000
+  if (agentMs === 0) return pending
+  let changed = false
+  const next = pending.filter((p) => {
+    if (p.state !== 'undelivered' || !p.transportError) return true
+    if (p.activeAtSend !== false) return true
+    if (agentMs <= p.atMs) return true
+    if (!ctx.sawActiveSince(p.atMs)) return true
+    // Any user echo in the window (this send's or a later one's) → reconcile's.
+    if (hasUserEntryAfter(entries, p.atMs)) return true
+    changed = true
+    return false
   })
   return changed ? next : pending
 }
