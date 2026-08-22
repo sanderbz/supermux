@@ -287,6 +287,11 @@ export function acceptRow(
 export interface MentionableSession {
   name: string
   display_name?: string
+  /** Companies (Bot Mode): the peer's company. Carried so the `@`-picker can
+   *  scope who a company session may name (`scopeMentionPeers`), keyed off the
+   *  typing session's OWN company_id. Absent = a main/PA bot (reachable by all).
+   *  The shared `useSessions()` rows already carry it; the bench fixture may. */
+  company_id?: number | null
 }
 
 /** One row of `GET /api/slash-commands` (skills.rs::SlashCommand), restated

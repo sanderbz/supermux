@@ -21,6 +21,7 @@ import {
 import { springs } from '@/lib/springs'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useTeams, TEAMS_KEY } from '@/hooks/use-teams'
+import { COMPANIES_KEY } from '@/hooks/use-companies'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
 import { TeamCard } from '@/components/team'
 import { useArchivedSessions } from '@/hooks/use-archived-sessions'
@@ -1091,13 +1092,17 @@ function useDevMockSeed() {
     void Promise.all([
       import('@/components/session-tile/mock'),
       import('@/routes/dev-teams.fixture'),
-    ]).then(([{ MOCK_TILES }, { MOCK_TEAMS, MOCK_LEAD_SESSIONS }]) => {
+    ]).then(([{ MOCK_TILES, MOCK_COMPANIES }, { MOCK_TEAMS, MOCK_LEAD_SESSIONS }]) => {
       if (!alive) return
       qc.setQueryData(SESSIONS_KEY, [
         ...(MOCK_TILES as ApiSession[]),
         ...MOCK_LEAD_SESSIONS,
       ])
       qc.setQueryData(TEAMS_KEY, MOCK_TEAMS)
+      // Companies (Bot Mode): seed the switcher's ['companies'] cache so the
+      // HQ/company switcher + scoping are exercisable at `/?mock` offline. The
+      // hook disables its live fetch under `?mock`, so this seed is the source.
+      qc.setQueryData(COMPANIES_KEY, MOCK_COMPANIES)
     })
     return () => {
       alive = false

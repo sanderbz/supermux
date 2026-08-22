@@ -3,6 +3,17 @@
 // renders so the visual critic can check all states in one screen.
 
 import type { TileSession } from './types'
+import type { Company } from '@/lib/companies'
+
+// Companies (Bot Mode) DEV seed — 3 mock companies so `/?mock` exercises the
+// HQ/company switcher + whole-app scoping offline. Ids match the `company_id`
+// tags on the tiles above (Acme=1: web-app, api-server · Globex=2: docs-writer,
+// cso-review · Initech=3: empty, to show the identity-coloured empty state).
+export const MOCK_COMPANIES: Company[] = [
+  { id: 1, slug: 'acme', display_name: 'Acme', root_dir: '/opt/projects/acme', archived: 0 },
+  { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/opt/projects/globex', archived: 0 },
+  { id: 3, slug: 'initech', display_name: 'Initech', root_dir: '/opt/projects/initech', archived: 0 },
+]
 
 const claudeBoot = (task: string): string[] => [
   '● Read package.json (1 file)',
@@ -88,6 +99,9 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'web-app',
+    // Companies (Bot Mode) DEV seed: this bot lives in Acme (company id 1), so
+    // `/?mock` exercises the switcher's scoping offline. See `useDevMockSeed`.
+    company_id: 1,
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',
     dir: '/opt/projects/web-app',
@@ -112,6 +126,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'api-server',
+    company_id: 1, // Acme
     task_summary: 'Add Range support to the file streaming endpoint',
     status: 'waiting',
     dir: '/opt/projects/api-server',
@@ -130,6 +145,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'docs-writer',
+    company_id: 2, // Globex
     task_summary: 'Draft the upcoming acceptance notes',
     status: 'active',
     dir: '/opt/projects/supermux',
@@ -144,6 +160,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'cso-review',
+    company_id: 2, // Globex
     task_summary: 'Security audit of the WS auth handshake',
     status: 'waiting',
     dir: '/opt/projects/supermux/server',

@@ -65,6 +65,20 @@ export function companyFilesRoot(
   return c ? c.root_dir : null
 }
 
+/** The company the ⌘/Ctrl+1..9 power-user shortcut jumps to: `digit` is 1-based
+ *  (the key the user pressed), so it selects `companies[digit - 1]`. Out-of-range
+ *  digits (no Nth company) resolve to `undefined` = no-op, so the switcher never
+ *  jumps to a company that isn't there. Pure + unit-tested. The `Company | null`
+ *  return is the *scope value* (`.id`) the caller writes; this helper hands back
+ *  the row so the caller can read its id and name. */
+export function companyForDigit(
+  companies: readonly Company[],
+  digit: number,
+): Company | undefined {
+  if (!Number.isInteger(digit) || digit < 1) return undefined
+  return companies[digit - 1]
+}
+
 /** Stable "space-first" ordering for GLOBAL search results: sessions in the
  *  ACTIVE space keep their incoming relative order but sort ahead of every
  *  out-of-space match, which stays visible below. The active space is HQ when

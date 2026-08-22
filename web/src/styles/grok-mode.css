@@ -1564,6 +1564,116 @@
   }
 }
 
+/* ── company identity mark + HQ/company switcher (Companies, Bot Mode) ───────── */
+/* The rounded-SQUARE monogram tile — the company shape (agent = mascot face,
+   person = circle later). Fill + ink are inline (per-slug pigment via the hue
+   engine); this rule owns only the geometry + the 0.5px keyline so the tile
+   separates on any ground. `--sm-r-md` (10px). */
+[data-grok] .gr-cmark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: var(--sm-r-md);
+  box-shadow: inset 0 0 0 0.5px var(--sm-border);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  user-select: none;
+}
+
+/* The trigger — an always-visible scope chip in `.gr-head`, matching the
+   `.gr-search` / `.gr-seg` hairline family (34px, `--sm-r-md`, surf2, 0.5px
+   line). It reads as one of the header's quiet controls, not a loud button. */
+[data-grok] .grok-roster .gr-company {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  min-width: 34px;
+  padding: 4px 10px 4px 6px;
+  border-radius: var(--sm-r-md);
+  border: 0.5px solid var(--gr-line);
+  background: var(--gr-surf2);
+  cursor: pointer;
+  font: inherit;
+  color: var(--sm-text-primary);
+  transition: background-color 0.12s, border-color 0.12s;
+}
+[data-grok] .grok-roster .gr-company:hover {
+  background: var(--gr-surf);
+}
+[data-grok] .grok-roster .gr-company:focus-visible {
+  outline: none;
+  border-color: transparent;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
+}
+[data-grok] .grok-roster .gr-company .gr-company-lbl {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-grok] .grok-roster .gr-company .gr-company-cv {
+  color: var(--sm-text-tertiary);
+  flex: none;
+}
+/* HQ's rainbow spark reuses the brand tile at the chip scale (20px). */
+[data-grok] .grok-roster .gr-company .gr-spark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--sm-r-md);
+}
+/* below 520px the name folds; the 44×44 tap survives via padding */
+@media (max-width: 520px) {
+  [data-grok] .grok-roster .gr-company .gr-company-lbl {
+    display: none;
+  }
+  [data-grok] .grok-roster .gr-company {
+    min-height: 44px;
+    padding: 4px 8px;
+  }
+}
+
+/* the anchored menu — the SAME raw idiom the team-overflow menu uses (costs the
+   token budget nothing). Only the mount animation is bespoke. */
+@keyframes gr-cmenu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+[data-grok] .gr-cmenu {
+  transform-origin: top left;
+  animation: gr-cmenu-in 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] .gr-cmenu {
+    animation: none;
+  }
+}
+
+/* the ≤6% company pigment wash at the rail HEAD (fades over `--sm-list-fade`).
+   Anchored to the list's border box (default `background-attachment`), so it
+   stays at the top as rows scroll under it. HQ writes no `data-company`, so its
+   rail is byte-identically neutral — the firewall's "no company hue on a status
+   surface" made visible as the difference between HQ and a company. */
+[data-grok] .grok-roster .gr-rail[data-company] .gr-list {
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in oklab, var(--sm-agent-tint) 6%, transparent) 0,
+    transparent var(--sm-list-fade)
+  );
+  background-repeat: no-repeat;
+}
+
 /* ── two-pane body — rail (list) + detail pane ─────────────────────────────── */
 [data-grok] .grok-roster .gr-two {
   display: flex;

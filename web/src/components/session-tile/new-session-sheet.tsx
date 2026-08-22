@@ -75,6 +75,10 @@ export interface NewSessionSheetProps {
    *  Opt-in (the Grok roster passes it) so the base overview's sheet copy stays
    *  byte-identical. */
   botVoiced?: boolean
+  /** Companies (Bot Mode): the company a new bot lands in. `null`/undefined = a
+   *  main/PA bot (HQ) — the entire existing fleet. The Grok roster passes the
+   *  active company scope so a bot hired inside a company is tagged to it. */
+  companyId?: number | null
   /** DEV-bench seam (offline screenshots). Undefined in production. */
   bench?: NewSessionBench
 }
@@ -89,6 +93,7 @@ export function NewSessionSheet({
   defaultDir,
   onCreated,
   botVoiced,
+  companyId,
   bench,
 }: NewSessionSheetProps) {
   return (
@@ -102,6 +107,7 @@ export function NewSessionSheet({
         <NewSessionPanel
           defaultDir={defaultDir}
           botVoiced={botVoiced}
+          companyId={companyId}
           bench={bench}
           onCancel={() => onOpenChange(false)}
           onCreated={(name) => {
@@ -130,12 +136,14 @@ export interface NewSessionBench {
 export function NewSessionPanel({
   defaultDir,
   botVoiced,
+  companyId,
   onCancel,
   onCreated,
   bench,
 }: {
   defaultDir: string | undefined
   botVoiced?: boolean
+  companyId?: number | null
   onCancel: () => void
   onCreated: (name: string) => void
   bench?: NewSessionBench
@@ -149,6 +157,7 @@ export function NewSessionPanel({
       onKindChange={setKind}
       botVoiced={botVoiced}
       defaultDir={defaultDir}
+      companyId={companyId}
       onCancel={onCancel}
       onCreated={onCreated}
       bench={bench}
@@ -219,6 +228,7 @@ function AgentForm({
   onKindChange,
   botVoiced,
   defaultDir,
+  companyId,
   onCancel,
   onCreated,
   bench,
@@ -228,6 +238,7 @@ function AgentForm({
   onKindChange: (k: Kind) => void
   botVoiced?: boolean
   defaultDir: string | undefined
+  companyId?: number | null
   onCancel: () => void
   onCreated: (name: string) => void
   bench?: NewSessionBench
@@ -343,6 +354,9 @@ function AgentForm({
       // provider default, omitted so the launch line stays byte-identical.
       model: model || undefined,
       host_id: hostId ?? undefined,
+      // Companies (Bot Mode): tag the new bot to the active company. `null` (HQ)
+      // is omitted so the launch/create body stays byte-identical for main bots.
+      company_id: companyId ?? undefined,
       bypass_permissions:
         provider === 'claude' && bypassPermissions ? true : undefined,
     })

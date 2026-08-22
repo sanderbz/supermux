@@ -49,6 +49,8 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { useUI } from '@/stores/ui-store'
+import { useCompanies } from '@/hooks/use-companies'
+import { companyFilesRoot } from '@/lib/companies'
 import type { FsEntry } from '@/lib/api'
 
 type SortKey = 'name' | 'size' | 'modified'
@@ -80,8 +82,16 @@ export function Files() {
   const effectiveName = name ?? (lastActiveExists ? lastActive! : undefined)
   const sessionDir = useSessionDir(effectiveName)
 
+  // Companies (Bot Mode): a company roots the browser at its `root_dir` when the
+  // route lands with no explicit session and no `?path=`. HQ (activeCompany null)
+  // and a stale id fail open to null → the historical $HOME. Only the STARTING
+  // cwd — an explicit `?path=` and a session pick still win (manual nav intact).
+  const activeCompany = useUI((s) => s.activeCompany)
+  const { companies } = useCompanies()
+  const companyRoot = companyFilesRoot(activeCompany, companies)
+
   const pathParam = searchParams.get('path')
-  const currentPath = pathParam ?? sessionDir.data ?? HOME_PATH
+  const currentPath = pathParam ?? sessionDir.data ?? companyRoot ?? HOME_PATH
 
   // Mirror the URL-driven session into the shared cell so a deep link
   // (`/files/foo`) or a focus→files breadcrumb persists the pick. The route's

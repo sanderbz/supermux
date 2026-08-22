@@ -76,6 +76,17 @@ import {
   totalBotCount,
   type LeadSignal,
 } from '@/lib/team-attention'
+import { useUI } from '@/stores/ui-store'
+import { useCompanies } from '@/hooks/use-companies'
+import {
+  resolveActiveCompany,
+  inCompanyScope,
+  companyFirstOrder,
+} from '@/lib/companies'
+import { CompanySwitcher } from '@/components/roster/company-switcher'
+import { agentHueVars } from '@/lib/grok-agent-hue'
+import { characterFromSeed } from '@/brand/marks'
+import { useTheme } from '@/components/theme-provider'
 
 // The per-bot settings page. Lazy — it only mounts once a bot is selected (a
 // detail pane on desktop), so its section bodies (issues, schedules, git,
@@ -640,6 +651,38 @@ export default function GrokRoster() {
     [allSessions, teams],
   )
 
+  // ── Companies (Bot Mode) — the active company scope the whole rail reads ──────
+  const { resolvedTheme } = useTheme()
+  const { companies } = useCompanies()
+  const activeCompany = useUI((s) => s.activeCompany)
+  const setActiveCompany = useUI((s) => s.setActiveCompany)
+  // Reconcile a stale persisted `activeCompany` against the live set: an id that
+  // no longer maps to a company (deleted/archived, or a localStorage value from
+  // another install) falls back to HQ. Runs as an effect off the live ids, never
+  // in render (pure guard is `resolveActiveCompany`, unit-tested).
+  React.useEffect(() => {
+    if (activeCompany === null) return
+    const resolved = resolveActiveCompany(
+      activeCompany,
+      companies.map((c) => c.id),
+    )
+    if (resolved !== activeCompany) setActiveCompany(resolved)
+  }, [activeCompany, companies, setActiveCompany])
+  // The active company's slug → its identity hue → the `--sm-agent-*` write on
+  // the RAIL only (so it never overrides the chat pane's per-session hue). HQ
+  // writes nothing → a byte-identically neutral rail (the firewall's tell).
+  const activeCompanyRow = companies.find((c) => c.id === activeCompany) ?? null
+  const railHueStyle = React.useMemo<React.CSSProperties>(
+    () =>
+      activeCompanyRow
+        ? agentHueVars(
+            characterFromSeed(activeCompanyRow.slug).hue,
+            resolvedTheme === 'dark',
+          )
+        : {},
+    [activeCompanyRow, resolvedTheme],
+  )
+
   const [rawQuery, setRawQuery] = React.useState('')
   const [sort, setSort] = React.useState<'smart' | 'alpha'>('smart')
   const [density, setDensity] = React.useState<Density>(readDensity)
@@ -673,24 +716,52 @@ export default function GrokRoster() {
   }, [])
 
   const needle = rawQuery.trim().toLowerCase()
+  // A non-empty search LIFTS the company browse-scope: search stays GLOBAL (you
+  // can always find a bot in another company), and `companyFirstOrder` floats the
+  // active-space matches to the top instead of hiding the rest.
+  const hasQuery = needle.length > 0
 
   const filtered = React.useMemo(
-    () => sessions.filter((s) => matches(s, needle)),
-    [sessions, needle],
+    () =>
+      sessions.filter(
+        (s) =>
+          matches(s, needle) &&
+          (hasQuery || inCompanyScope(s.company_id, activeCompany)),
+      ),
+    [sessions, needle, hasQuery, activeCompany],
   )
+  // Team scope follows the LEAD's company (a team is its lead's crew). Build a
+  // name→company_id map off the UNSPLIT roster (the lead is pulled out of
+  // `sessions`), then keep a team only if its lead is in scope — mirroring the
+  // session predicate. Search lifts it exactly as it lifts the session scope.
+  const companyByName = React.useMemo(() => {
+    const m = new Map<string, number | null>()
+    for (const s of allSessions) m.set(s.name, s.company_id ?? null)
+    return m
+  }, [allSessions])
   const filteredTeams = React.useMemo(() => {
-    if (!needle) return teams
-    return teams.filter(
-      (t) =>
-        t.team_name.toLowerCase().includes(needle) ||
-        t.members.some((m) => m.name.toLowerCase().includes(needle)),
+    const bySearch = !needle
+      ? teams
+      : teams.filter(
+          (t) =>
+            t.team_name.toLowerCase().includes(needle) ||
+            t.members.some((m) => m.name.toLowerCase().includes(needle)),
+        )
+    if (hasQuery) return bySearch
+    return bySearch.filter((t) =>
+      inCompanyScope(
+        companyByName.get(t.lead_supermux_session ?? '') ?? null,
+        activeCompany,
+      ),
     )
-  }, [teams, needle])
+  }, [teams, needle, hasQuery, activeCompany, companyByName])
 
-  const sorted = React.useMemo(
-    () => (sort === 'alpha' ? nameSort(filtered) : smartSort(filtered)),
-    [filtered, sort],
-  )
+  const sorted = React.useMemo(() => {
+    const base = sort === 'alpha' ? nameSort(filtered) : smartSort(filtered)
+    // GLOBAL search: keep every match visible but float the active-space rows to
+    // the top (space-first ranking). No search: the list is already scoped.
+    return hasQuery ? companyFirstOrder(base, activeCompany) : base
+  }, [filtered, sort, hasQuery, activeCompany])
 
   // Group into the four attention-ordered sections (overview.md §6). The `needs`
   // set comes from the app-wide provider's PRECOMPUTED rollup — the same list the
@@ -914,6 +985,9 @@ export default function GrokRoster() {
           <span className="gr-spark" aria-hidden />
           supermux
         </span>
+        {/* The HQ/company scope chip — leftmost identity, right after the
+            wordmark: a scope reads as "above" the sort/density/search controls. */}
+        <CompanySwitcher />
         <span className="gr-count">
           {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
           {crewCount > 0 && ` · ${crewCount} ${crewCount === 1 ? 'crew' : 'crews'}`}
@@ -1028,7 +1102,12 @@ export default function GrokRoster() {
       </header>
 
       <div className="gr-two">
-        <div className="gr-rail" data-solo={hasDetail ? undefined : ''}>
+        <div
+          className="gr-rail"
+          data-solo={hasDetail ? undefined : ''}
+          data-company={activeCompanyRow ? '' : undefined}
+          style={railHueStyle}
+        >
           <div
             className="gr-list"
             ref={listRef}
@@ -1259,6 +1338,8 @@ export default function GrokRoster() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         botVoiced
+        // A new bot defaults into the ACTIVE company (HQ = null = a main bot).
+        companyId={activeCompany}
         onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
       />
 

@@ -82,6 +82,13 @@ interface UIStore {
    *  per-surface localStorage flag folds into this). Default `false`: stopped
    *  sessions are shown until the user opts to hide them. */
   hideStopped: boolean
+  /** Companies (Bot Mode) — the ACTIVE company scope the whole roster reads.
+   *  `null` = HQ (the main/PA space that shows only `company_id`-null bots); a
+   *  number scopes to that company. Additive persisted field — a brand-new key
+   *  defaults cleanly for existing `version:1` blobs, so no `migrate` change is
+   *  needed. Mirrors `hideStopped`'s field+setter shape. */
+  activeCompany: number | null
+  setActiveCompany: (id: number | null) => void
   /** Bot mode — the ONE unified flag (merges the former `chatRenderer` +
    *  `grokMode`). When ON: (1) the shell root carries `data-grok` and the
    *  scoped token layer (styles/grok-mode.css) restyles the whole app in Grok's
@@ -134,6 +141,7 @@ export const useUI = create<UIStore>()(
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
       hideStopped: false,
+      activeCompany: null,
       botMode: false,
       setBotMode: (botMode) => set({ botMode }),
       defaultRenderer: 'chat',
@@ -169,6 +177,7 @@ export const useUI = create<UIStore>()(
         set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
       setShowHidden: (showHidden) => set({ showHidden }),
       setHideStopped: (hideStopped) => set({ hideStopped }),
+      setActiveCompany: (activeCompany) => set({ activeCompany }),
     }),
     {
       name: 'supermux-ui',

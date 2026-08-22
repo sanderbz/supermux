@@ -38,6 +38,7 @@ import * as React from 'react'
 import { EntityPickerView } from '../ui/entity-picker'
 
 import { acceptRow, atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
+import { scopeMentionPeers } from '@/lib/mention-scope'
 import { jumpTarget } from './composer-keys'
 import type { EntityPickerData, EntityRow } from './slash'
 import type { ComposerPickerApi } from './use-composer'
@@ -84,13 +85,18 @@ export default function EntityPicker({
   bind,
   onActive,
 }: EntityPickerProps) {
-  const rows = React.useMemo(
-    () =>
-      kind === '@'
-        ? atRows(files, sessions ?? [], name, query)
-        : slashRows(commands, query),
-    [commands, files, kind, name, query, sessions],
-  )
+  const rows = React.useMemo(() => {
+    if (kind !== '@') return slashRows(commands, query)
+    // Companies (Bot Mode): scope the `@`-mentionable peers to the TYPING
+    // session's own company — a company bot may name only same-company peers; a
+    // main/PA bot (self company_id null) reaches everyone. Keyed off self's
+    // company_id, looked up from the peer list (self is filtered out by `atRows`
+    // by name; here we only READ its company). Defense-in-depth: the real jail
+    // is the server delegation gate.
+    const all = sessions ?? []
+    const selfCompanyId = all.find((s) => s.name === name)?.company_id ?? null
+    return atRows(files, scopeMentionPeers(all, selfCompanyId), name, query)
+  }, [commands, files, kind, name, query, sessions])
 
   // The highlight is keyed by the QUERY, so it resets to the best match on
   // every keystroke (Spotlight's rule, and the palette's) without an effect
