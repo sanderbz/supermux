@@ -489,6 +489,13 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
                 Some((label, kind)) => state.set_activity(session, label, kind),
                 None => false,
             };
+            // A subagent's own tool calls POST on the shared parent token
+            // (anthropics/claude-code#7881). While a subagent is outstanding this
+            // keeps its liveness fresh across a long tool call, so a background
+            // workflow does not lapse out of `subagents_live` mid-work. No-op (and
+            // no allocation) when no subagent is outstanding — a plain turn is
+            // unaffected.
+            state.touch_subagent_tool_hook(session);
             connect || takeover || label
         }
         // A tool FAILED → transient `✗ {tool} failed`. Claude DOES have a
@@ -518,6 +525,8 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             } else {
                 false
             };
+            // Keep an outstanding subagent's liveness fresh (see the pre-tool arm).
+            state.touch_subagent_tool_hook(session);
             cleared || failed
         }
         // Claude is DISPLAYING a permission dialog for this tool call and is
@@ -584,12 +593,18 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // display-only parallelism signal). Never touches the turn boundary.
         "subagent_start" | "SubagentStart" => state.inc_subagents(session),
         // The MAIN turn ended → clear the live activity (the error, if any,
-        // persists until the next prompt/start) AND force-0 the subagent count
-        // (the authoritative turn end; makes the finished-notification gate
-        // fail-safe — a lost SubagentStop can't permanently suppress a finish).
+        // persists until the next prompt/start). The subagent count is DELIBERATELY
+        // NOT force-0'd here any more: a session that dispatched a BACKGROUND
+        // workflow keeps its subagents running after the main agent returns to its
+        // prompt, and zeroing the count (and tearing down every "still busy"
+        // signal) is exactly what made such a session read done/idle while its
+        // subagents worked. The count now drains only on `SubagentStop`, and the
+        // finished-notification gate is kept fail-safe by
+        // `AppState::has_open_subagents` (an outstanding count corroborated by a
+        // hook fresh within `SUBAGENT_LIVE_WINDOW`) rather than by this force-0 —
+        // so a lost `SubagentStop` still cannot permanently suppress a finish.
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
-            let sub = state.reset_subagents(session);
             let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
@@ -599,7 +614,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // this push's replacement of a pending "needs you" banner causally
             // correct: by the time it lands, the dialog is provably resolved.
             notify::notify_event(state, session, NotifEvent::TurnFinished);
-            act || sub || perm
+            act || perm
         }
         // A Task sub-agent finished. It shares the parent session token and the
         // MAIN agent is still working, so do NOT wipe the main activity label or
@@ -806,6 +821,10 @@ pub(crate) fn broadcast_activity_delta(state: &AppState, session: &str) {
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
+            // Is a BACKGROUND workflow provably running right now? Always present
+            // so the roster updates the "working" bucket/word/face live (and
+            // clears it) without a refetch when the signal flips.
+            "subagents_live": state.subagents_live(session),
             // Server-clock ms stamp: the fase-A1 hook→UI latency anchor AND
             // the chat client's clock-skew source — every chat supersede
             // comparison runs in this clock domain (a0-findings §1 item 3).
@@ -882,6 +901,65 @@ mod tests {
             }
         }
         assert_eq!(last_count, Some(2), "the sessions delta must carry subagents: 2");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn main_stop_no_longer_force_zeroes_the_subagent_count() {
+        // The subagents_live fix: a session that dispatched a BACKGROUND workflow
+        // keeps its outstanding-subagent count past the MAIN `Stop` (the count now
+        // drains only on `SubagentStop`), so the roster + status can still read it
+        // as WORKING. Before, `Stop` force-0'd it and the session read done/idle.
+        let (state, dir) = test_state().await;
+        let s = "lead-stop";
+
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        assert_eq!(state.session_activity(s).map(|a| a.subagents), Some(2));
+        // The workflow is provably live (open subagent hooks).
+        assert!(state.subagents_live(s));
+
+        // The MAIN turn ends. The count MUST survive.
+        apply_payload(&state, s, "stop", &p("{}"));
+        assert_eq!(
+            state.session_activity(s).map(|a| a.subagents),
+            Some(2),
+            "main Stop must NOT force-0 a live background workflow's count"
+        );
+        assert!(state.subagents_live(s), "the workflow still reads live after main Stop");
+
+        // A SubagentStop drains it — the honest way the count now falls.
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert!(
+            !state.subagents_live(s),
+            "draining every subagent (SubagentStop) ends the live signal"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_subagent_tool_hook_keeps_liveness_fresh_after_stop() {
+        // A subagent's own tool calls POST PreToolUse on the parent token after the
+        // main Stop; `touch_subagent_tool_hook` keeps the open-subagent liveness
+        // fresh through a long subagent tool call, but ONLY while a subagent is
+        // outstanding — a plain turn with no subagent is untouched.
+        let (state, dir) = test_state().await;
+
+        // No outstanding subagent → a tool hook allocates nothing / not live.
+        apply_payload(&state, "plain", "pre_tool", &p(r#"{"tool_name":"Read"}"#));
+        assert!(!state.subagents_live("plain"));
+
+        // With a subagent outstanding, a parent tool hook refreshes liveness.
+        let s = "lead-tool";
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "stop", &p("{}"));
+        apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Bash","tool_input":{"command":"x"}}"#));
+        assert!(state.subagents_live(s), "a parent tool hook keeps the workflow live");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
@@ -983,9 +1061,11 @@ mod tests {
 
     #[tokio::test]
     async fn subagent_start_stop_track_the_outstanding_count() {
-        // Display-only parallelism signal: SubagentStart increments, SubagentStop
-        // decrements (saturating), a new prompt resets, and the main Stop force-0s
-        // (the authoritative turn end — bounds any drift to one turn).
+        // Parallelism signal: SubagentStart increments, SubagentStop decrements
+        // (saturating), a new prompt resets. The main Stop NO LONGER force-0s it
+        // (subagents_live fix) — a background workflow's count survives the main
+        // turn; a lost SubagentStop is instead reaped by SUBAGENT_LIVE_WINDOW
+        // freshness in `subagents_live`, not by zeroing the count here.
         let (state, dir) = test_state().await;
         let s = "lead-2";
 
@@ -1010,13 +1090,19 @@ mod tests {
         apply_payload(&state, s, "user_prompt", &p("{}"));
         assert_eq!(subagents(&state, s), 0, "a new prompt resets the count");
 
-        // The main Stop force-0s any stragglers (makes the notification gate
-        // fail-safe: a lost SubagentStop can never permanently suppress a finish).
+        // The main Stop leaves the count INTACT now: a session that dispatched a
+        // background workflow keeps a truthful count after the main agent returns
+        // to its prompt (this is what lets the roster read it as WORKING). The
+        // count falls only when its SubagentStops arrive.
         apply_payload(&state, s, "subagent_start", &p("{}"));
         apply_payload(&state, s, "subagent_start", &p("{}"));
         assert_eq!(subagents(&state, s), 2);
         apply_payload(&state, s, "stop", &p("{}"));
-        assert_eq!(subagents(&state, s), 0, "main Stop force-0s the count");
+        assert_eq!(subagents(&state, s), 2, "main Stop must NOT force-0 the count");
+        // Its SubagentStops drain it the honest way.
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert_eq!(subagents(&state, s), 0, "SubagentStop drains the count to 0");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

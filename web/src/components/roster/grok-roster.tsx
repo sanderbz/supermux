@@ -56,7 +56,7 @@ import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { SessionFace } from '@/components/roster/session-face'
 import { TeamCrewChip } from '@/components/team/team-crew-chip'
 import { SessionMark } from '@/brand/marks'
-import { attentionFor, markStateForSession } from '@/lib/mark-status'
+import { attentionFor, markStateForSession, subagentsClause } from '@/lib/mark-status'
 import { smartSort, nameSort } from '@/lib/overview-layout'
 import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { useToast } from '@/components/ui/use-toast'
@@ -230,9 +230,13 @@ function stateWordFor(s: ApiSession, group: GroupKey): StateWord {
     if (s.status === 'error' || s.blocked) return { word: 'blocked', cls: 'st-block' }
     return { word: 'needs you', cls: 'st-need' }
   }
-  if (s.status === 'active' || s.status === 'starting') return { word: 'working', cls: 'st-work' }
+  if (s.status === 'active' || s.status === 'starting') return { word: 'working' + subagentsClause(s.subagents), cls: 'st-work' }
   if (s.status === 'error') return { word: 'blocked', cls: 'st-block' }
   if (s.status === 'stopped') return { word: 'stopped', cls: 'st-idle' }
+  // A background workflow still running after the main turn settled: the row is
+  // bucketed active by `groupSessions`, so say WORKING (with the parallelism
+  // clause when it is available) rather than done/idle.
+  if (s.subagents_live) return { word: 'working' + subagentsClause(s.subagents), cls: 'st-work' }
   if (group === 'done') return { word: 'done', cls: 'st-done' }
   return { word: 'idle', cls: 'st-idle' }
 }

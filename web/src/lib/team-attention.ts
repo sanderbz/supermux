@@ -119,6 +119,15 @@ export function groupSessions(
       buckets.active.push(s)
       continue
     }
+    // A background workflow is provably running even though the main agent
+    // returned to its prompt: bucket it ACTIVE, never done/idle. This is the
+    // frontend half of the `subagents_live` signal — the server holds an Active
+    // turn while subagents churn, and here a left-open workflow whose server
+    // status has already settled still reads as working.
+    if (s.subagents_live) {
+      buckets.active.push(s)
+      continue
+    }
     const t = s.updated_at ? Date.parse(s.updated_at) : NaN
     if (s.status === 'idle' && !Number.isNaN(t) && isSameDay(t, now)) {
       buckets.done.push(s)

@@ -623,14 +623,15 @@ pub fn provider_emits_hooks(provider: &str) -> bool {
 /// idle between subagent dispatches, and would cry "finished" mid-turn, once
 /// per dispatch.
 ///
-/// Fail-safe by construction: the count is force-0'd on the main `Stop`
-/// (`hooks.rs`), so a lost `SubagentStop` can never permanently suppress a real
-/// finish — the worst case is one late notification, never a missing one.
+/// Fail-safe by construction: the count is no longer force-0'd on the main
+/// `Stop`, so the gate keys off [`AppState::has_open_subagents`] — an outstanding
+/// count CORROBORATED by a subagent hook fresh within `SUBAGENT_LIVE_WINDOW`.
+/// A lost `SubagentStop` pins the count but its hook signal goes stale, so within
+/// that window the gate opens and the finish fires — the worst case is one late
+/// notification, never a missing one. A genuinely-live background workflow keeps
+/// the gate closed (correct: the turn is not really finished).
 fn finish_gated_by_subagents(state: &AppState, session: &str) -> bool {
-    state
-        .session_activity(session)
-        .map(|a| a.subagents > 0)
-        .unwrap_or(false)
+    state.has_open_subagents(session)
 }
 
 pub fn notify_event(state: &AppState, session: &str, ev: NotifEvent) {

@@ -107,6 +107,9 @@ export interface AttentionInput {
   permission_request?: unknown | null
   elicitation?: unknown | null
   blocked?: unknown | null
+  /** A background workflow is provably running right now (server `subagents_live`).
+   *  Draws the `working` face even after the main turn's status has settled. */
+  subagents_live?: boolean | null
 }
 
 /**
@@ -127,6 +130,13 @@ export function attentionFor(s: AttentionInput | null | undefined): AttentionTie
   if (s.error || s.blocked || s.permission_request || s.elicitation) return 'blocked'
   if (s.status === 'waiting') return 'needs'
   return null
+}
+
+/** The calm ` · N subagents` parallelism clause, shared by the chat WorkingRow
+ *  and the Grok roster's state word so the two never drift. Empty below 2 — one
+ *  subagent is not "parallel", and the clause is a parallelism tell, not a count. */
+export function subagentsClause(subagents: number | undefined | null): string {
+  return subagents && subagents >= 2 ? ` · ${subagents} subagents` : ''
 }
 
 /** Live hints a caller may know that the status field cannot spell. */
@@ -159,6 +169,10 @@ export function markStateForSession(
   if (hints.done) return MARK_STATE_WITHOUT_STATUS
   if (hints.streaming) return 'streaming'
   if (hints.thinking) return 'thinking'
+  // A live background workflow reads WORKING even once the main turn's status has
+  // settled to idle — the face half of `subagents_live` (the row is bucketed
+  // active by `groupSessions`, so it never wears the `done` moment above).
+  if (s?.subagents_live) return 'working'
   const status = s?.status as SessionStatus | undefined
   if (status && GROK_STATE_FOR[status]) return GROK_STATE_FOR[status]!
   return markStateFor(s?.status)

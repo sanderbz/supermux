@@ -350,6 +350,16 @@ pub struct SessionView {
     /// when 0 (the common case) so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "is_zero", default)]
     pub subagents: u32,
+    /// TRUE when a BACKGROUND workflow is provably running RIGHT NOW — a
+    /// `subagents/agent-*.jsonl` append (the tailer ground truth) OR an open
+    /// subagent hook within `SUBAGENT_LIVE_WINDOW`
+    /// ([`crate::state::AppState::subagents_live`]). Unlike `subagents` (the raw
+    /// count, torn down historically on the main `Stop`) this SURVIVES the main
+    /// agent returning to its prompt, so the roster + notifications can read a
+    /// left-open workflow as WORKING rather than done/idle. Omitted when false (the
+    /// common case) so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub subagents_live: bool,
     /// The LIVE permission dialog, from the `PermissionRequest` hook: Claude is
     /// displaying a permission prompt for this tool call and is blocked on a
     /// human. In-memory only; cleared as soon as anything proves the dialog
@@ -546,6 +556,12 @@ fn view(
     s: &Session,
     rt: Option<&SessionRuntime>,
     act: Option<SessionActivity>,
+    // Is a background workflow provably running right now
+    // ([`crate::state::AppState::subagents_live`])? Threaded in like `act` /
+    // `statusline` so `view` stays a pure function of its arguments (its ground
+    // truth — the tailer's `subagent_active_at` map — lives on the state the
+    // caller holds, not on `act`).
+    subagents_live: bool,
     // The statusline snapshot, when the opt-in tap is installed AND has fired
     // for this session. Threaded in rather than fetched here so `view` stays a
     // pure function of its arguments (every caller already holds the state).
@@ -617,6 +633,7 @@ fn view(
         activity: act.as_ref().and_then(|a| a.activity.clone()),
         activity_kind: act.as_ref().and_then(|a| a.activity_kind.clone()),
         subagents: act.as_ref().map(|a| a.subagents).unwrap_or(0),
+        subagents_live,
         permission_request: act.as_ref().and_then(|a| {
             a.permission.as_ref().map(|ask| PermissionRequestInfo {
                 tool: ask.tool.clone(),
@@ -936,6 +953,7 @@ pub async fn list(state: &AppState) -> Result<Vec<SessionView>, AppError> {
                 s,
                 rt_map.get(&s.name),
                 state.session_activity(&s.name),
+                state.subagents_live(&s.name),
                 state.statusline(&s.name),
             )
         })
@@ -951,6 +969,7 @@ pub async fn get(state: &AppState, name: &str) -> Result<SessionView, AppError> 
         &s,
         rt.as_ref(),
         state.session_activity(name),
+        state.subagents_live(name),
         state.statusline(name),
     ))
 }
@@ -973,6 +992,7 @@ pub async fn list_archived(state: &AppState) -> Result<Vec<SessionView>, AppErro
                 s,
                 rt_map.get(&s.name),
                 state.session_activity(&s.name),
+                state.subagents_live(&s.name),
                 state.statusline(&s.name),
             )
         })

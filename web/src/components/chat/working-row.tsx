@@ -22,6 +22,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
 import { motionOff, springs } from '../../lib/springs'
+import { subagentsClause } from '@/lib/mark-status'
 
 import { stripEmojiPrefix } from './entries'
 import { ELAPSED_AFTER_MS, LiveElapsed, useElapsedShown } from './live-elapsed'
@@ -56,7 +57,7 @@ export function WorkingRow({
   // row's `gap`/`ml-auto` geometry is unchanged on the first rung.
   const showElapsed = useElapsedShown(turnStartMs, ELAPSED_AFTER_MS)
 
-  const clause = subagents && subagents >= 2 ? ` · ${subagents} subagents` : ''
+  const clause = subagentsClause(subagents)
   // The emoji taxonomy stays terminal/tile-only, so the label is stripped here
   // exactly as the confirmed receipt it will become is (`stripEmojiPrefix`).
   const label = (activity ? stripEmojiPrefix(activity) : 'Thinking…') + clause

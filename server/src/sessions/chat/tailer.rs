@@ -292,6 +292,36 @@ pub fn newest_sibling_mtime_ms(project_dir: &Path, conversation_id: &str) -> Opt
     newest
 }
 
+/// Newest mtime (ms) among `<project>/<conv>/subagents/agent-*.jsonl` — the
+/// GROUND TRUTH for "a background subagent is producing output right now". Unlike
+/// the hook count it survives the main `Stop`, needs no hook, and a per-second
+/// idle roster repaint cannot fake it. `None` when there is no subagents dir or
+/// no agent file. The caller compares it against `now` under a freshness window
+/// (`SUBAGENT_LIVE_WINDOW`) to decide `subagents_live`.
+pub fn newest_subagent_append_ms(project_dir: &Path, conversation_id: &str) -> Option<i64> {
+    let dir = project_dir.join(conversation_id).join("subagents");
+    let mut newest: Option<i64> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        // Only `agent-*.jsonl` transcripts (skip the `.meta.json` sidecars, which
+        // are not `.jsonl` anyway, and any stray file).
+        if !path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.starts_with("agent-"))
+        {
+            continue;
+        }
+        if let Some(ms) = entry.metadata().ok().and_then(|m| mtime_ms(&m)) {
+            newest = Some(newest.map_or(ms, |n: i64| n.max(ms)));
+        }
+    }
+    newest
+}
+
 fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
     let d = meta
         .modified()
@@ -802,6 +832,11 @@ struct Pass {
     pointer_exists: bool,
     pointer_mtime_ms: Option<i64>,
     newest_sibling_mtime_ms: Option<i64>,
+    /// Did this pass DRAIN at least one subagent (sidechain) line? A drained
+    /// sidechain entry is proof a `subagents/agent-*.jsonl` grew since the last
+    /// poll — the live ground truth for `AppState::mark_subagent_active`. Free:
+    /// read off the entries the pass already produced, no extra filesystem work.
+    subagent_appended: bool,
 }
 
 /// One filesystem pass. `want_siblings` gates the project-dir scan: it is a
@@ -814,12 +849,14 @@ struct Pass {
 fn blocking_pass(mut core: Tailer, want_siblings: bool) -> (Tailer, Pass) {
     let poll = core.poll();
     let meta = std::fs::metadata(core.transcript_path()).ok();
+    let subagent_appended = poll.entries.iter().any(|e| e.is_sidechain);
     let pass = Pass {
         entries: poll
             .entries
             .iter()
             .map(super::model::WireEntry::seal_pending)
             .collect(),
+        subagent_appended,
         resync: poll.resync,
         pointer_exists: meta.is_some(),
         pointer_mtime_ms: meta.as_ref().and_then(mtime_ms),
@@ -936,6 +973,13 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
                 // a cold first attach never spends an epoch on a no-op.
                 resync_epoch += 1;
             }
+        }
+        // A drained sidechain line is proof a background subagent wrote THIS
+        // poll: stamp the ground-truth liveness the status classifier + roster
+        // read via `AppState::subagents_live`. This survives the main `Stop`, so a
+        // left-open session whose workflow is still churning keeps reading WORKING.
+        if pass.subagent_appended {
+            state.mark_subagent_active(&name);
         }
         store.publish_sealed(pass.entries);
 
@@ -2044,6 +2088,51 @@ mod tests {
         assert_eq!(newest_sibling_mtime_ms(&dir, "conv-a"), None);
         std::fs::write(dir.join("conv-b.jsonl"), "").unwrap();
         assert!(newest_sibling_mtime_ms(&dir, "conv-a").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn newest_subagent_append_ms_derives_the_freshest_agent_write() {
+        let dir = tmp_project("subappend");
+        // No subagents dir → no append instant (the common, non-workflow case).
+        assert_eq!(newest_subagent_append_ms(&dir, "conv-a"), None);
+        // A subagent transcript appears and grows → an append instant surfaces,
+        // fresh relative to now (the ground truth for `subagents_live`).
+        let f = dir.join("conv-a").join("subagents").join("agent-x1.jsonl");
+        append(&f, &[user_line("s1")]);
+        let ms = newest_subagent_append_ms(&dir, "conv-a").expect("an append instant");
+        let now = chrono::Utc::now().timestamp_millis();
+        assert!(
+            (now - ms).abs() < 60_000,
+            "the newest agent append should read as fresh (within a minute of now)"
+        );
+        // The `.meta.json` sidecar is not a transcript append and is ignored.
+        std::fs::write(
+            dir.join("conv-a").join("subagents").join("agent-x1.meta.json"),
+            "{}",
+        )
+        .unwrap();
+        assert!(newest_subagent_append_ms(&dir, "conv-a").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_drained_sidechain_line_flags_a_subagent_append() {
+        // The live path: `blocking_pass` sets `subagent_appended` iff the poll
+        // drained a sidechain (subagent) line — what `run()` turns into
+        // `state.mark_subagent_active`. A main-only poll must NOT flag it.
+        let dir = tmp_project("drainflag");
+        let f = dir.join("conv-a.jsonl");
+        append(&f, &[user_line("u1")]);
+        let core = Tailer::new(&dir, "conv-a");
+        let (core, pass) = blocking_pass(core, false);
+        assert!(!pass.subagent_appended, "a main-only poll flags no subagent append");
+        // A subagent file appears and writes → the next pass drains its sidechain
+        // line and flags the append.
+        let sub = dir.join("conv-a").join("subagents").join("agent-x1.jsonl");
+        append(&sub, &[user_line("s1")]);
+        let (_core, pass) = blocking_pass(core, false);
+        assert!(pass.subagent_appended, "a drained subagent line flags an append");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

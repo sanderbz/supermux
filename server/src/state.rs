@@ -29,6 +29,19 @@ use crate::ws::streamer::PtyStreamer;
 /// freshly-booted server never reads `Active` off a stale heartbeat.
 const COLD_START_PTY_IDLE: Duration = Duration::from_secs(300);
 
+/// How recently a background subagent must have shown activity — a
+/// `subagents/agent-*.jsonl` APPEND (the tailer's ground truth) OR an OPEN
+/// subagent hook (`SubagentStart`/a parent tool hook while the count is >0) — for
+/// the session to still read as WORKING. Ten seconds, matching
+/// [`crate::sessions::status`]'s `SPINNER_SETTLE` and the tailer's
+/// `HOOK_ACTIVITY_WINDOW_MS`: it is also the STALENESS REAPER for the subagent
+/// count. Because a lost `SubagentStop` pins the count but stops producing any
+/// fresh subagent signal, the count alone can never keep a session `subagents_live`
+/// past this window — so it can no longer permanently pin the status `Active`
+/// (nor suppress a finish notification), the property the old force-0-on-`Stop`
+/// used to guarantee.
+const SUBAGENT_LIVE_WINDOW: Duration = Duration::from_secs(10);
+
 /// A per-session status snapshot pushed through [`AppState::status_watch`]:
 /// `(status, version)`. The channel + version counter form the
 /// multi-signal-status groundwork; the status payload is the
@@ -62,8 +75,20 @@ pub struct SessionActivity {
     /// status classifier's turn boundary ([`super::sessions::status::TurnState`]
     /// `turn_end` = main `Stop` only), so it cannot regress the false-finished
     /// fix. Best-effort (subagents share the parent token, no per-subagent id):
-    /// saturating, reset on a new prompt, force-0 on the main `Stop`.
+    /// saturating, reset on a new prompt. NO LONGER force-0'd on the main `Stop`
+    /// (so a session left with a live background workflow keeps a truthful count);
+    /// a lost `SubagentStop` can no longer pin it forever because
+    /// [`AppState::subagents_live`] gates it on [`SUBAGENT_LIVE_WINDOW`] freshness
+    /// (the staleness reaper).
     pub subagents: u32,
+    /// The instant of the last OPEN-subagent hook signal — a `SubagentStart`, a
+    /// `SubagentStop`, or a parent tool hook (`PreToolUse`/`PostToolUse`) that
+    /// arrived while [`subagents`](Self::subagents) was > 0. Paired with the count
+    /// in [`AppState::has_open_subagents`] / [`AppState::subagents_live`]: an
+    /// outstanding count is only "live" while this stays fresh, so a lost
+    /// `SubagentStop` decays out of live within [`SUBAGENT_LIVE_WINDOW`]. `None`
+    /// until the first subagent hook. In-memory only.
+    pub subagent_hook_at: Option<Instant>,
     /// The LIVE permission request: Claude is displaying a permission dialog for
     /// this tool call and is blocked on a human. Set by the `PermissionRequest`
     /// hook (which fires when the dialog DISPLAYS, before any decision) and
@@ -324,6 +349,17 @@ pub struct AppState {
     /// window of the last hook. Each timestamp is the server-side receive
     /// `Instant`, so freshness is judged locally (clock-skew safe).
     pub last_hook: Arc<DashMap<String, TurnState>>,
+    /// Per-session "a background subagent last did something" instant — the
+    /// ground-truth clock behind [`AppState::subagents_live`]. Bumped by the chat
+    /// TAILER on every `subagents/agent-*.jsonl` APPEND (survives the main `Stop`,
+    /// independent of hooks, un-fakeable by an idle roster repaint) and, as the
+    /// no-chat backstop, by every `SubagentStart`/`SubagentStop` and by a parent
+    /// tool hook that arrives while the outstanding-subagent count is > 0. A
+    /// separate map (not on `SessionActivity`) so it survives the count draining
+    /// to 0 — a hook-less Workflow subagent writing its transcript is live even
+    /// though it never bumped the count. Memory-only; cleared on delete/rename;
+    /// naturally decays via [`SUBAGENT_LIVE_WINDOW`] (no reaper task needed).
+    pub subagent_active_at: Arc<DashMap<String, Instant>>,
     /// Per-session "hooks are LIVE" flag. Set the moment ANY authenticated hook
     /// POST arrives from the session (`/api/_internal/hook`), so it goes true
     /// within the boot window — the `SessionStart` hook fires when Claude
@@ -601,6 +637,7 @@ impl AppState {
             hook_tokens: Arc::new(DashMap::new()),
             pane_conversations: Arc::new(DashMap::new()),
             last_hook: Arc::new(DashMap::new()),
+            subagent_active_at: Arc::new(DashMap::new()),
             hooks_live: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
             chat_pointer_wake: Arc::new(DashMap::new()),
@@ -1063,6 +1100,10 @@ impl AppState {
     /// the detector classifies the new session from scratch (content + heartbeat).
     pub fn reset_turn_state(&self, name: &str) {
         self.last_hook.remove(name);
+        // A brand-new process inherits no background-workflow liveness either, so
+        // a restart cannot leave a stale `subagents_live` pinning the fresh,
+        // idle session `Active` (the restart-stuck-loading class of bug).
+        self.subagent_active_at.remove(name);
     }
 
     /// Mark `name`'s Claude hooks as LIVE — called by `/api/_internal/hook` on
@@ -1182,6 +1223,8 @@ impl AppState {
     pub fn inc_subagents(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.subagents = a.subagents.saturating_add(1);
+            // A `SubagentStart` is itself fresh open-subagent evidence.
+            a.subagent_hook_at = Some(Instant::now());
         })
     }
 
@@ -1191,16 +1234,92 @@ impl AppState {
     pub fn dec_subagents(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.subagents = a.subagents.saturating_sub(1);
+            a.subagent_hook_at = Some(Instant::now());
         })
     }
 
+    /// Stamp a parent-session HOOK (`PreToolUse`/`PostToolUse`) as open-subagent
+    /// evidence, but ONLY while a subagent is outstanding (`subagents > 0`). After
+    /// the main `Stop`, a subagent's own tool calls still POST on the shared
+    /// parent token (anthropics/claude-code#7881); this keeps
+    /// [`subagent_hook_at`](SessionActivity::subagent_hook_at) fresh through a
+    /// long subagent tool call, so `subagents_live` does not lapse mid-work. A
+    /// no-op (never allocates an entry) when no subagent is outstanding, so a
+    /// plain single-agent turn is byte-identical. Returns whether it changed a
+    /// broadcastable field (always `false` — the timestamp is not one).
+    pub fn touch_subagent_tool_hook(&self, name: &str) {
+        // Read-only guard first: never create an activity entry for a session
+        // that has no outstanding subagent (the common case).
+        let outstanding = self
+            .session_activity
+            .get(name)
+            .map(|a| a.subagents > 0)
+            .unwrap_or(false);
+        if outstanding {
+            self.mutate_activity(name, |a| {
+                a.subagent_hook_at = Some(Instant::now());
+            });
+        }
+    }
+
+    /// Mark `name` as having live BACKGROUND-subagent activity RIGHT NOW — a
+    /// `subagents/agent-*.jsonl` append the chat tailer observed. This is the
+    /// GROUND TRUTH for [`subagents_live`](Self::subagents_live): it survives the
+    /// main `Stop`, needs no hook, and a per-second idle roster repaint cannot
+    /// fake it. Stored off `SessionActivity` (its own map) so it is not pruned
+    /// when the outstanding count is 0.
+    pub fn mark_subagent_active(&self, name: &str) {
+        self.subagent_active_at
+            .insert(name.to_string(), Instant::now());
+    }
+
+    /// Is there an OPEN subagent — an outstanding count paired with a FRESH
+    /// subagent hook (within [`SUBAGENT_LIVE_WINDOW`])? The count alone is not
+    /// enough: a lost `SubagentStop` pins it, so it must be corroborated by recent
+    /// hook activity. This is the "finished" notification gate's fail-safe (a
+    /// stale pinned count no longer suppresses a finish) — the property the old
+    /// force-0-on-`Stop` provided.
+    pub fn has_open_subagents(&self, name: &str) -> bool {
+        self.session_activity
+            .get(name)
+            .map(|a| {
+                a.subagents > 0
+                    && a.subagent_hook_at
+                        .is_some_and(|t| t.elapsed() < SUBAGENT_LIVE_WINDOW)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Does `name` have a live BACKGROUND WORKFLOW — a subagent that did something
+    /// within [`SUBAGENT_LIVE_WINDOW`]? True when EITHER a
+    /// `subagents/agent-*.jsonl` APPEND is that fresh (the tailer ground truth,
+    /// [`mark_subagent_active`](Self::mark_subagent_active)) OR there is an OPEN
+    /// subagent hook ([`has_open_subagents`](Self::has_open_subagents)). Default
+    /// FALSE for every session with no recent subagent signal — so a plain idle
+    /// Claude session is unaffected (the stuck-`active` fix stays intact) and the
+    /// status classifier's golden fixtures are byte-identical. Threaded into
+    /// [`crate::sessions::status::StatusDetector::detect`] and surfaced on
+    /// `SessionView` so the roster + notifications read a running workflow as
+    /// WORKING, not done/idle.
+    pub fn subagents_live(&self, name: &str) -> bool {
+        let append_fresh = self
+            .subagent_active_at
+            .get(name)
+            .is_some_and(|t| t.elapsed() < SUBAGENT_LIVE_WINDOW);
+        append_fresh || self.has_open_subagents(name)
+    }
+
     /// Reset the outstanding-subagent count to 0 — on a new prompt (a fresh turn)
-    /// and force-applied on the main `Stop`/`SessionEnd` (the authoritative turn
-    /// end, which bounds any drift to a single turn and makes the "finished"
-    /// notification gate fail-safe). Returns whether it changed.
+    /// and on `SessionStart`/`SessionEnd`. NO LONGER called on the main `Stop`: a
+    /// session that left a background workflow running keeps a truthful count past
+    /// its main turn, and [`SUBAGENT_LIVE_WINDOW`] freshness (not a force-0) is now
+    /// what keeps a lost `SubagentStop` from pinning it. Returns whether it
+    /// changed.
     pub fn reset_subagents(&self, name: &str) -> bool {
+        self.subagent_active_at.remove(name);
         self.mutate_activity(name, |a| {
             a.subagents = 0;
+            a.subagent_hook_at = None;
         })
     }
 
@@ -1455,6 +1574,7 @@ impl AppState {
         // session leaves no pane rows behind for a later session reusing the name.
         self.pane_conversations.retain(|(s, _), _| s != name);
         self.last_hook.remove(name);
+        self.subagent_active_at.remove(name);
         self.hooks_live.remove(name);
         self.detector_wake.remove(name);
         self.chat_pointer_wake.remove(name);
@@ -1555,6 +1675,9 @@ impl AppState {
         }
         if let Some((_, v)) = self.last_hook.remove(old) {
             self.last_hook.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.subagent_active_at.remove(old) {
+            self.subagent_active_at.insert(new.to_string(), v);
         }
         if let Some((_, v)) = self.hooks_live.remove(old) {
             self.hooks_live.insert(new.to_string(), v);
@@ -1872,6 +1995,76 @@ mod pending_edit_tests {
         state.clear_edit_if("w1", "req-2");
         assert!(!state.resolve_edit("w1", "req-2", EditResult::Cancelled));
 
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn subagents_live_from_a_tailer_append() {
+        let (state, dir) = test_state().await;
+        // No signal → not live (the default for every plain session).
+        assert!(!state.subagents_live("s"));
+        // A tailer-observed subagent transcript append marks it live, with NO hook
+        // count involved — a hook-less Workflow subagent writing its transcript.
+        state.mark_subagent_active("s");
+        assert!(state.subagents_live("s"), "a fresh subagent append reads live");
+        assert!(!state.has_open_subagents("s"), "append alone is not an open-hook count");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn subagents_live_from_an_open_subagent_hook_survives_stop() {
+        let (state, dir) = test_state().await;
+        // SubagentStart → an OPEN subagent (count>0 + fresh hook) reads live.
+        state.inc_subagents("s");
+        assert!(state.has_open_subagents("s"));
+        assert!(state.subagents_live("s"));
+        // The main `Stop` no longer force-0s the count (hooks.rs) — the count and
+        // its liveness survive, so a left-open workflow keeps reading working.
+        // (Simulate the Stop side effects that DO run: clear_activity only.)
+        state.clear_activity("s");
+        assert!(state.has_open_subagents("s"), "the count survives the main Stop");
+        assert!(state.subagents_live("s"));
+        // Draining it (SubagentStop) drops both — a clean multi-agent finish.
+        state.dec_subagents("s");
+        assert!(!state.has_open_subagents("s"), "count 0 → no open subagent");
+        assert!(!state.subagents_live("s"));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn staleness_reaper_a_pinned_count_alone_is_not_live() {
+        let (state, dir) = test_state().await;
+        // A lost `SubagentStop` pins the count > 0…
+        state.inc_subagents("s");
+        // …but if the hook signal is stale (older than SUBAGENT_LIVE_WINDOW) the
+        // count alone can no longer keep it live — the reaper that replaces the old
+        // force-0-on-Stop fail-safe. Age the stamp past the window.
+        if let Some(mut a) = state.session_activity.get_mut("s") {
+            a.subagent_hook_at = Some(Instant::now() - Duration::from_secs(30));
+        }
+        assert!(
+            !state.has_open_subagents("s"),
+            "a pinned count with a stale hook is NOT an open subagent"
+        );
+        assert!(!state.subagents_live("s"), "so the session is not subagents_live");
+        // The raw count is still there (display), but it can no longer pin status.
+        assert_eq!(state.session_activity("s").map(|a| a.subagents), Some(1));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn reset_subagents_clears_liveness() {
+        let (state, dir) = test_state().await;
+        state.inc_subagents("s");
+        state.mark_subagent_active("s");
+        assert!(state.subagents_live("s"));
+        // A new prompt / SessionStart resets both the count and the append clock.
+        state.reset_subagents("s");
+        assert!(!state.subagents_live("s"), "a fresh turn inherits no stale liveness");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

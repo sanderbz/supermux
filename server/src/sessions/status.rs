@@ -578,7 +578,38 @@ impl StatusDetector {
         turn: TurnState,
         has_hooks: bool,
     ) -> Status {
-        let status = self.classify(capture, last_pty, turn, has_hooks);
+        // The DEFAULT-FALSE entry: no background-subagent signal. Every existing
+        // caller (and every golden fixture) keeps this exact behavior — a session
+        // with no live workflow settles exactly as before.
+        self.detect_with_subagents(capture, last_pty, turn, has_hooks, false)
+    }
+
+    /// [`detect`](Self::detect) with the background-workflow signal threaded in.
+    ///
+    /// * `subagents_live` — is a BACKGROUND workflow provably running right now (a
+    ///   `subagents/agent-*.jsonl` append or an open subagent hook within
+    ///   `SUBAGENT_LIVE_WINDOW`, per [`crate::state::AppState::subagents_live`])?
+    ///   A DEFAULT-FALSE input: it only ever PREVENTS the spinner-absence settle
+    ///   from downgrading a `turn_start > turn_end` (or held-) `Active` to `Idle`,
+    ///   so a session whose main agent returned to its prompt while its subagents
+    ///   keep working stays `Active` instead of reading done/idle. False for every
+    ///   session with no live subagent — so a plain idle Claude session still
+    ///   settles (the stuck-`active` fix is intact) and calling this with `false`
+    ///   is identical to [`detect`](Self::detect) (every golden fixture passes
+    ///   `false`). It is deliberately NOT a positive `Active` signal: it can only
+    ///   hold an already-`Active` turn, never manufacture one, because its ground
+    ///   truth (a live subagent) is precisely the thing the main spinner cannot
+    ///   distinguish from a dead one. The status tick uses this form with
+    ///   [`crate::state::AppState::subagents_live`].
+    pub fn detect_with_subagents(
+        &mut self,
+        capture: &str,
+        last_pty: Instant,
+        turn: TurnState,
+        has_hooks: bool,
+        subagents_live: bool,
+    ) -> Status {
+        let status = self.classify(capture, last_pty, turn, has_hooks, subagents_live);
         self.last_status = status;
         status
     }
@@ -619,7 +650,7 @@ impl StatusDetector {
                 .map_or(if_unseen, |t| t.elapsed() >= SPINNER_SETTLE)
     }
 
-    fn classify(&mut self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool) -> Status {
+    fn classify(&mut self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool, subagents_live: bool) -> Status {
         // ── spinner-last-seen bookkeeping ────────────────────────────────────
         // Compute the ACTIVE_BANK (`esc to interrupt`) match ONCE and stamp the
         // instant it was last seen. This is the pty-independent clock the
@@ -795,7 +826,17 @@ impl StatusDetector {
             // The Esc-Esc rewind prompt is already handled earlier by
             // INTERRUPT_MARKER (→ Waiting); this covers the single-Esc cancel,
             // crash, and lost-`Stop`, whose screens are ordinary at-rest tails.
+            // `!subagents_live`: a background workflow provably running right now
+            // (a subagent transcript appended / an open subagent hook within
+            // SUBAGENT_LIVE_WINDOW) is the ONE thing the main spinner cannot tell
+            // from a dead turn — so when it IS live, do NOT settle this
+            // `turn_start > turn_end` Active to Idle. This is what keeps a session
+            // whose main agent returned to its prompt (subagent tool hooks keep
+            // `turn_start` fresh here) reading WORKING while its subagents churn.
+            // Default-false keeps the stuck-`active` `ipc` case (subagents long
+            // done → not live) settling exactly as before.
             if s == Status::Active
+                && !subagents_live
                 && self.spinner_absent_settled(
                     spinner,
                     capture,
@@ -878,6 +919,7 @@ impl StatusDetector {
         let silent = last_pty.elapsed();
         if !has_hooks && silent < PTY_ACTIVE_WINDOW {
             let claude_roster_tick_at_rest = self.provider == "claude"
+                && !subagents_live
                 && self.spinner_absent_settled(
                     spinner,
                     capture,
@@ -912,6 +954,7 @@ impl StatusDetector {
         // `Active` after a restart) settles too. The non-empty-capture guard
         // inside still holds a blank pane at its current status.
         if self.last_status == Status::Active
+            && !subagents_live
             && self.spinner_absent_settled(spinner, capture, true)
         {
             return Status::Idle;
@@ -2275,6 +2318,86 @@ mod tests {
             d.detect(TICKING_ROSTER, Instant::now(), TurnState::default(), false),
             Status::Active,
             "a just-restarted claude (watched < SPINNER_SETTLE) must hold Active until the absence is sustained"
+        );
+    }
+
+    /// A turn whose main `Stop` fired long ago but whose subagent tool hooks keep
+    /// `turn_start` fresh on the parent token: `turn_start (PreToolUse) > turn_end
+    /// (Stop)` ⇒ the turn machine reads Active, and with the spinner absent over a
+    /// ticking roster (watched > SPINNER_SETTLE) branch 1b would normally settle it.
+    fn workflow_turn() -> TurnState {
+        let mut t = TurnState::default();
+        t.apply(Instant::now() - Duration::from_secs(40), HookEvent::Stop);
+        t.apply(Instant::now() - Duration::from_secs(3), HookEvent::PreToolUse);
+        t
+    }
+
+    #[test]
+    fn subagents_live_holds_a_stopped_main_turn_active() {
+        // The headline case: the MAIN turn Stopped but a background workflow is
+        // still appending to `subagents/agent-*.jsonl` (subagents_live=true). The
+        // spinner is absent and we have watched past SPINNER_SETTLE, so WITHOUT the
+        // signal branch 1b settles to Idle — that is the reported done/idle bug.
+        // WITH subagents_live=true the settle stands down and the session reads
+        // WORKING.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert!(d.spinner_last_seen.is_none());
+        assert_eq!(
+            d.detect_with_subagents(TICKING_ROSTER, Instant::now(), workflow_turn(), true, true),
+            Status::Active,
+            "a Stopped main turn with a provably-live background workflow must stay Active"
+        );
+    }
+
+    #[test]
+    fn no_subagents_settles_a_stopped_main_turn_idle() {
+        // The SAME inputs with subagents_live=false (no live workflow — the default)
+        // MUST settle to Idle exactly as before: the stuck-`active` fix is intact,
+        // and a plain session whose subagents are done does not linger Active.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert!(d.spinner_last_seen.is_none());
+        assert_eq!(
+            d.detect_with_subagents(TICKING_ROSTER, Instant::now(), workflow_turn(), true, false),
+            Status::Idle,
+            "with no live subagent the settle must still fire (stuck-active fix intact)"
+        );
+        // And the plain 4-arg `detect` is identical to the false case — the
+        // property every golden fixture relies on.
+        let mut d2 = StatusDetector::for_provider("claude");
+        d2.force(Status::Active);
+        d2.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d2.detect(TICKING_ROSTER, Instant::now(), workflow_turn(), true),
+            Status::Idle,
+            "detect() defaults subagents_live=false → byte-identical to the false path"
+        );
+    }
+
+    #[test]
+    fn subagents_live_holds_the_step5_stale_hook_residual() {
+        // Branch 5 (held-Active, stale hooks → turn machine returns None): the
+        // `ipc`-class settle. subagents_live=true must also hold THIS Active (a live
+        // workflow whose parent hooks have aged past TURN_SAFETY) instead of idling.
+        let mut d = StatusDetector::for_provider("claude");
+        d.force(Status::Active);
+        d.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d.detect_with_subagents(TICKING_ROSTER, Instant::now(), TurnState::default(), true, true),
+            Status::Active,
+            "a live workflow holds the step-5 held-Active residual against the settle"
+        );
+        // …and false still settles it (the exact stuck-`active` zombie kill).
+        let mut d2 = StatusDetector::for_provider("claude");
+        d2.force(Status::Active);
+        d2.watching_since = Instant::now() - Duration::from_secs(30);
+        assert_eq!(
+            d2.detect_with_subagents(TICKING_ROSTER, Instant::now(), TurnState::default(), true, false),
+            Status::Idle,
+            "no live workflow → the held-Active residual still settles to Idle"
         );
     }
 }

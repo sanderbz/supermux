@@ -298,6 +298,14 @@ export interface ApiSession {
    *  agent is working and this is ≥ 2. Never a status signal. Omitted (absent)
    *  when 0, which the SSE delta sends as `0` to clear the clause. */
   subagents?: number
+  /** TRUE when a BACKGROUND workflow is provably running RIGHT NOW — a
+   *  `subagents/agent-*.jsonl` append (the tailer ground truth) OR an open
+   *  subagent hook within ~10s. Unlike `subagents` (the raw count, historically
+   *  torn down on the main `Stop`) this SURVIVES the main agent returning to its
+   *  prompt, so the roster + notifications read a left-open workflow as WORKING
+   *  rather than done/idle. Omitted (absent → falsy) when there is no live
+   *  workflow, which is the common case. */
+  subagents_live?: boolean
   /** The latest unrecovered agent error from a `StopFailure` hook (hooks-10x):
    *  `{type, message}` (e.g. `rate_limit` / `billing_error`). In-memory only;
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
