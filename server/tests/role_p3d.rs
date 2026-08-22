@@ -440,6 +440,88 @@ async fn admin_human_bypasses_every_gate() {
         StatusCode::OK, "admin may grant globally");
 }
 
+/// `CLAUDE_CONFIG_DIR` is a process-global; only this test in the file touches
+/// `claude_tools`, but serialize its env mutation for hygiene (a poisoned lock is
+/// fine to recover from here).
+static CLAUDE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// P3d regression: the Claude MCP registry router is owner/admin-only. A scoped
+/// MEMBER must NOT be able to inject a GLOBAL MCP server (`scope=user`, arbitrary
+/// command) into `~/.claude.json` — that server would launch inside EVERY
+/// subsequently-spawned agent across ALL companies (cross-company RCE). Every
+/// route of the router (registry read included) returns a uniform 404 for a
+/// member; the owner reaches the handler and the write lands (owner-neutral).
+#[tokio::test]
+async fn member_cannot_touch_claude_mcp_registry() {
+    let _guard = CLAUDE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Point ~/.claude.json at a throwaway dir so a REGRESSION (member reaching the
+    // handler) cannot pollute this box's real config, and so we can inspect it.
+    let cdir = std::env::temp_dir().join(format!("supermux-p3d-mcp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&cdir).unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", &cdir);
+    let claude_json = cdir.join(".claude.json");
+
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let nf = StatusCode::NOT_FOUND;
+
+    // Member POST: inject a global user-scope MCP that shells out. Must 404.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/claude/mcp", &alice, &csrf,
+            serde_json::json!({
+                "name": "member-inject",
+                "scope": "user",
+                "config": { "type": "stdio", "command": "/bin/sh", "args": ["-c", "id > /tmp/pwn"] }
+            })).await,
+        nf, "member 404s POST /api/claude/mcp (global MCP-injection)");
+
+    // …and NOTHING was written to the global ~/.claude.json (gate fires before the
+    // handler's atomic write). No file, or a file with no such server, both prove it.
+    if claude_json.exists() {
+        let root: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&claude_json).unwrap()).unwrap();
+        assert!(
+            root.get("mcpServers").and_then(|m| m.get("member-inject")).is_none(),
+            "member's rejected MCP-injection must NOT have been written to ~/.claude.json");
+    }
+
+    // Member DELETE (sabotage an existing server): uniform 404.
+    assert_eq!(
+        send_cookie(&f.app, "DELETE", "/api/claude/mcp/whatever?scope=user", &alice, &csrf,
+            serde_json::json!({})).await,
+        nf, "member 404s DELETE /api/claude/mcp/{{name}}");
+
+    // Member enable/disable (project-trust sabotage): uniform 404.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/claude/mcp/whatever/disable", &alice, &csrf,
+            serde_json::json!({})).await,
+        nf, "member 404s POST /api/claude/mcp/{{name}}/disable");
+
+    // The registry READ is gated too (we chose to hide the whole global registry
+    // from a member — their connectors are company-scoped via the store).
+    assert_eq!(get_cookie(&f.app, "/api/claude/registry", &alice).await, nf,
+        "member 404s GET /api/claude/registry");
+
+    // Owner reaches the handler: the same injection SUCCEEDS and the write lands —
+    // proving the gate is owner-neutral (AuthContext::Owner ⇒ require_admin no-op).
+    assert_ne!(
+        send_bearer(&f.app, "POST", "/api/claude/mcp",
+            serde_json::json!({
+                "name": "owner-ok",
+                "scope": "user",
+                "config": { "type": "stdio", "command": "/bin/true" }
+            })).await,
+        nf, "owner reaches the MCP add handler (not gated)");
+    let root: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&claude_json).unwrap()).unwrap();
+    assert_eq!(
+        root["mcpServers"]["owner-ok"]["command"], serde_json::json!("/bin/true"),
+        "owner's MCP add wrote through to ~/.claude.json (owner-neutral)");
+
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    std::fs::remove_dir_all(&cdir).ok();
+}
+
 #[tokio::test]
 async fn owner_bearer_bypasses_every_gate() {
     let f = fixture().await;

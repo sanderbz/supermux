@@ -174,8 +174,16 @@ fn protected_router(state: AppState) -> Router {
         .merge(sse::router_for(state.clone())) // GET /api/events SSE stream
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
-        // Claude tools registry + MCP CRUD (bearer-protected).
-        .merge(claude_tools::router_for(state.clone()))
+        // Claude tools registry + MCP CRUD — P3d owner/admin-only. The MCP
+        // mutators write GLOBAL config (`~/.claude.json` `mcpServers`) that Claude
+        // loads into EVERY subsequently-spawned agent across ALL companies, so an
+        // ungated member POST here is cross-company MCP-injection (RCE) and a
+        // DELETE/disable is cross-company sabotage. Gate the WHOLE sub-router (the
+        // registry GET included): a member has no need for the global MCP registry
+        // — their connectors are company-scoped via the connectors store — so the
+        // safer choice hides its existence entirely (uniform 404). Same shared
+        // guard, same route-layer, as hosts/scheduler/audit/push/updates.
+        .merge(claude_tools::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // Connector store: manifest CRUD + .mcpb import + per-agent grants +
         // write-only credential→vault (bearer-protected). P3d: the mutation
         // handlers gate a member to their company scope INSIDE the handlers
