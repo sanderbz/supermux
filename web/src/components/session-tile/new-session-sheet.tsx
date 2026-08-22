@@ -26,6 +26,7 @@ import {
 import { createProjectFolder } from '@/lib/create-project-folder'
 import { SessionMark } from '@/brand/marks'
 import { useRosterMarks } from '@/hooks/use-roster-marks'
+import { useCompanies } from '@/hooks/use-companies'
 import { encodeMarkPin, freeTokens } from '@/lib/roster-marks'
 import type { ConnectorCard } from '@/lib/api/connectors'
 
@@ -245,6 +246,15 @@ function AgentForm({
 }) {
   const reduce = useReducedMotion()
 
+  // Active company (Bot Mode): resolve its label so the "runs in" hint can name
+  // the company folder honestly. `null` id / HQ → no label, plain-folder copy.
+  const { companies } = useCompanies()
+  const companyLabel = React.useMemo(() => {
+    if (companyId == null) return undefined
+    const c = companies.find((co) => co.id === companyId)
+    return c ? c.display_name || c.slug : undefined
+  }, [companies, companyId])
+
   // ── Step 1 (Describe) fields ───────────────────────────────────────────────
   const [goal, setGoal] = React.useState('')
   const [role, setRole] = React.useState('')
@@ -322,10 +332,18 @@ function AgentForm({
   // never routes through Step 2.
   const ensureCreated = async (): Promise<string | null> => {
     if (createdName) return createdName
-    // Resolve the working directory. Default: auto-create a folder named after
-    // the slug under the projects root; opt-in: the picked WherePicker dir.
-    let dir: string
-    if (ownFolder) {
+    // Resolve the working directory.
+    //  - In a COMPANY (companyId set): the server OWNS the dir — it forces
+    //    `<company root>/<name>/` and ignores anything we send. So we omit `dir`
+    //    entirely and skip the client-side folder-create dance; hiring a bot in
+    //    a company just works, the client never has to get the path right.
+    //  - HQ / no company: auto-create a folder named after the slug under the
+    //    projects root (default), or the picked WherePicker dir (opt-in).
+    const inCompany = companyId != null
+    let dir: string | undefined
+    if (inCompany) {
+      dir = undefined
+    } else if (ownFolder) {
       dir = where.dir.trim()
     } else {
       const folder = await createProjectFolder(slug)
@@ -346,6 +364,7 @@ function AgentForm({
     const created = await sessionsApi.create({
       name: slug,
       display_name: name.trim(),
+      // Omitted for a company session (server derives it); a folder path for HQ.
       dir,
       provider,
       worktree,
@@ -476,6 +495,7 @@ function AgentForm({
                 setRole={setRole}
                 nameValue={name}
                 slug={slug}
+                companyLabel={companyLabel}
                 onNameChange={(v) => {
                   setNameTouched(true)
                   setNameInput(v)
@@ -594,6 +614,9 @@ function DescribeStep(props: {
   setRole: (v: string) => void
   nameValue: string
   slug: string
+  /** When set (a company is active), the "runs in" hint names the company
+   *  folder `<company>/<slug>` instead of the plain `<slug>`. */
+  companyLabel?: string
   onNameChange: (v: string) => void
   pickedPin: ReturnType<typeof freeTokens>[number] | undefined
   onReroll: () => void
@@ -626,6 +649,7 @@ function DescribeStep(props: {
     setRole,
     nameValue,
     slug,
+    companyLabel,
     onNameChange,
     pickedPin,
     onReroll,
@@ -709,9 +733,19 @@ function DescribeStep(props: {
         <div className="flex items-center justify-between gap-3 pl-[56px]">
           <p className="truncate text-[11px] text-muted-foreground">
             {slug ? (
-              <>
-                Runs in a folder <code className="font-mono">{slug}</code> — drafted, edit anytime.
-              </>
+              companyLabel ? (
+                <>
+                  Runs in{' '}
+                  <code className="font-mono">
+                    {companyLabel}/{slug}
+                  </code>{' '}
+                  — drafted, edit anytime.
+                </>
+              ) : (
+                <>
+                  Runs in a folder <code className="font-mono">{slug}</code> — drafted, edit anytime.
+                </>
+              )
             ) : (
               <>Give it a short name to hire.</>
             )}

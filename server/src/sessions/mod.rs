@@ -1122,7 +1122,8 @@ pub struct CreateInput {
     pub model: Option<String>,
     /// The company a new session is created into (migration 0032). Absent /
     /// null => a main bot (`company_id` NULL). When set, the create path forces
-    /// `dir` under the company's `root_dir/<name>/` and rejects any other dir.
+    /// `dir` under the company's `root_dir/<name>/`, IGNORING (overriding, never
+    /// rejecting) any client-supplied `dir`.
     /// Membership is fixed at create — `ConfigInput` deliberately has no
     /// `company_id`, so `PATCH …/config` cannot reassign it.
     #[serde(default)]
@@ -1181,12 +1182,11 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         )));
     }
 
-    // Capture the caller-supplied dir BEFORE the default derivation — the
-    // company dir-forcing branch below needs the raw value, and `Option::filter`
-    // takes `self` by value (consuming `input.dir` would move it out; the
-    // use-after-move caveat).
-    let supplied_dir = input.dir.clone();
-    let default_dir = supplied_dir
+    // The main/HQ default dir: the caller-supplied dir, or $HOME. Used only for
+    // main bots (`company_id` NULL) — a company bot's dir is server-owned and
+    // OVERRIDES this below.
+    let default_dir = input
+        .dir
         .clone()
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| {
@@ -1195,35 +1195,22 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
                 .unwrap_or_else(|| ".".into())
         });
 
-    // Company sessions live under their company's `root_dir/<name>/` and cannot
-    // be pointed outside it, even by a raw curl. Main bots (`company_id` NULL)
-    // keep the free-form default-to-$HOME dir above, byte-identical.
+    // Company sessions live under their company's `root_dir/<name>/`. The server
+    // OWNS this dir: hiring a bot in a company just works, so ANY client-supplied
+    // `input.dir` is IGNORED and the dir is FORCED to `<root_dir>/<name>/` — the
+    // client never has to get it right, and a company bot can never land outside
+    // its company root. Main bots (`company_id` NULL) keep the free-form
+    // default-to-$HOME dir above, byte-identical.
     let dir = if let Some(cid) = input.company_id {
         let company = db::companies::get(&state.pool, cid)
             .await?
-            .ok_or_else(|| AppError::BadRequest(format!("no company {cid}")))?;
+            .ok_or_else(|| AppError::NotFound(format!("no company {cid}")))?;
         if company.archived != 0 {
             return Err(AppError::BadRequest("company is archived".into()));
         }
-        let root = std::path::Path::new(&company.root_dir);
-        let forced = root.join(&name);
-        // If the caller supplied a dir, it must canonicalize under `root_dir`
-        // (or be the not-yet-created forced path itself).
-        if let Some(sup) = supplied_dir.as_ref().filter(|d| !d.trim().is_empty()) {
-            let sp = std::path::Path::new(sup);
-            let ok = sp
-                .canonicalize()
-                .ok()
-                .zip(root.canonicalize().ok())
-                .map(|(a, r)| a.starts_with(&r))
-                .unwrap_or(false)
-                || sp == forced.as_path();
-            if !ok {
-                return Err(AppError::BadRequest(
-                    "dir must be under the company's root_dir".into(),
-                ));
-            }
-        }
+        // OVERRIDE, never compare/reject: whatever the client sent (or nothing),
+        // the derived dir is `<root_dir>/<name>/`.
+        let forced = std::path::Path::new(&company.root_dir).join(&name);
         std::fs::create_dir_all(&forced).map_err(|e| {
             AppError::Internal(anyhow::anyhow!("mkdir {}: {e}", forced.display()))
         })?;
@@ -2716,11 +2703,12 @@ mod tests {
         (c.id, root)
     }
 
-    /// §4.1 — a company session's `dir` is FORCED under `<root_dir>/<name>/`; a
-    /// caller-supplied dir outside the root is a 400; a main bot (no company)
-    /// keeps its free-form dir.
+    /// §4.1 — a company session's `dir` is FORCED under `<root_dir>/<name>/`.
+    /// The server OWNS the company session dir: any client-supplied `dir` is
+    /// IGNORED (overridden, never a 400) so hiring a bot in a company just
+    /// works. A main bot (no company) keeps its free-form dir.
     #[tokio::test]
-    async fn company_session_dir_is_forced_under_root_and_rogue_dir_is_400() {
+    async fn company_session_dir_is_forced_under_root_ignoring_client_dir() {
         let (state, dir) = test_state().await;
         let (acme, root) = seed_company(&state, "acme").await;
 
@@ -2734,14 +2722,16 @@ mod tests {
         assert_eq!(view.company_id, Some(acme));
         assert!(std::path::Path::new(&want).is_dir(), "forced folder mkdir'd");
 
-        // A rogue supplied dir outside the root → 400.
+        // A bogus client dir outside the root is IGNORED, not rejected: the bot
+        // is created (200) and its dir is overridden to <root>/bot-b.
         let mut b = input("bot-b");
-        b.dir = Some("/etc".into());
+        b.dir = Some("/tmp/whatever-not-under-root".into());
         b.company_id = Some(acme);
-        match create(&state, b).await {
-            Err(AppError::BadRequest(_)) => {}
-            other => panic!("expected BadRequest, got {other:?}"),
-        }
+        let bview = create(&state, b).await.expect("create bot-b (client dir ignored)");
+        let want_b = std::path::Path::new(&root).join("bot-b").display().to_string();
+        assert_eq!(bview.dir, want_b, "client dir ignored, forced under root_dir/<name>");
+        assert_eq!(bview.company_id, Some(acme));
+        assert!(std::path::Path::new(&want_b).is_dir(), "forced folder mkdir'd");
 
         // A main bot (no company) keeps its supplied dir, unchanged.
         let mut m = input("main-x");
@@ -2750,7 +2740,16 @@ mod tests {
         assert_eq!(mview.dir, "/tmp");
         assert_eq!(mview.company_id, None);
 
+        // An unknown company id is a 404, not a silent create.
+        let mut g = input("ghost");
+        g.company_id = Some(999_999);
+        match create(&state, g).await {
+            Err(AppError::NotFound(_)) => {}
+            other => panic!("expected NotFound for unknown company, got {other:?}"),
+        }
+
         crate::sessions::native::forget("bot-a");
+        crate::sessions::native::forget("bot-b");
         crate::sessions::native::forget("main-x");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

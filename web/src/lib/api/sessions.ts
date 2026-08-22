@@ -594,7 +594,11 @@ export interface NewSession {
    *  `name` server-side when omitted. The create sheet derives `name` (slug)
    *  from this typed text. */
   display_name?: string
-  dir: string
+  /** Working directory. Optional: omit it for a COMPANY session (`company_id`
+   *  set) — the server OWNS that dir and forces it to `<company root>/<name>/`,
+   *  ignoring anything sent here, so we send nothing. For a main/HQ bot it is
+   *  the folder to run in (server defaults to `$HOME` when absent). */
+  dir?: string
   provider?: 'claude' | 'codex' | 'shell'
   desc?: string
   worktree?: boolean
