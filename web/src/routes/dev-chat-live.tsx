@@ -586,7 +586,7 @@ function PhoneFrame({ state, nowMs, conn, gone, showActions = false }: {
           // both onto the toggle.
           headerStatus={conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} compact /> : undefined}
           headerTrailing={
-            <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
+            <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => {}} />
           }
         />
       </div>

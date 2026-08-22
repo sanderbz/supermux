@@ -1,35 +1,25 @@
 /**
- * Fase A5 T2 — the switch grows a third value.
+ * The renderer switch — a binary Chat ⇄ Terminal toggle.
  * ─────────────────────────────────────────────────────────────────────────────
- * `auto` is not a third renderer; it is a third CHOICE. The control therefore
- * has to say two things at once without becoming two controls:
+ * `auto` was retired: the control shows and drives the ACTIVE renderer. `value`
+ * is the mounted surface, a tap pins the other one. The thumb + `aria-selected`
+ * sit on the active cell; there is no separate "resolved" marker.
  *
- *   · what you chose  → the thumb + `aria-selected`, on the PREF cell;
- *   · what you get    → a 1.5px accent underline on the RESOLVED cell, and only
- *                       while the pref is `auto` (with an explicit pin the two
- *                       are the same cell and a second marker would be noise).
- *
- * Plus the grep-level guard the A1 e2e depends on: the two original testids
- * must survive a renaming pass.
+ * Plus the grep-level guard the A1 e2e depends on: the two testids
+ * (`renderer-chat`, `renderer-terminal`) must survive a renaming pass.
  */
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { RendererSwitch } from '../../src/components/chat/renderer-switch'
-import type { Renderer, RendererPref } from '../../src/components/chat/renderer-pref'
+import type { Renderer } from '../../src/components/chat/renderer-pref'
 
 const html = (
-  value: RendererPref,
-  resolved: Renderer = 'chat',
+  value: Renderer,
   props: { size?: 'md' | 'sm'; labels?: 'both' | 'selected' } = {},
 ) =>
   renderToStaticMarkup(
-    <RendererSwitch
-      value={value}
-      resolved={resolved}
-      onChange={() => undefined}
-      {...props}
-    />,
+    <RendererSwitch value={value} onChange={() => undefined} {...props} />,
   )
 
 const text = (out: string) =>
@@ -38,155 +28,97 @@ const text = (out: string) =>
     .replace(/\s+/g, ' ')
     .trim()
 
-describe('three cells', () => {
-  test('full renders the three WORDS', () => {
-    const out = html('auto')
-    expect(text(out)).toBe('Auto Chat Terminal')
-    expect(out).toContain('data-testid="renderer-auto"')
+describe('two cells', () => {
+  test('full renders the two WORDS, no Auto', () => {
+    const out = html('chat')
+    expect(text(out)).toBe('Chat Terminal')
+    expect(out).not.toContain('data-testid="renderer-auto"')
     expect(out).toContain('data-testid="renderer-chat"')
     expect(out).toContain('data-testid="renderer-terminal"')
   })
 
   test('the A1 e2e testids survive (grep-level guard against a rename)', () => {
     // `tests/e2e/smoke/chat-renderer-switch.spec.ts` clicks exactly these.
-    for (const v of ['auto', 'chat', 'terminal'] as const) {
+    for (const v of ['chat', 'terminal'] as const) {
       expect(html(v)).toContain(`data-testid="renderer-${v}"`)
     }
   })
 
-  test('compact (size=sm, labels=selected) keeps three cells and the A glyph', () => {
-    const out = html('chat', 'chat', { size: 'sm', labels: 'selected' })
+  test('compact (size=sm, labels=selected) keeps two cells, one word + a glyph', () => {
+    const out = html('chat', { size: 'sm', labels: 'selected' })
     expect(out).toContain('h-[26px]')
-    // The word survives only on the chosen cell; the other two are glyphs, and
-    // the auto glyph is the bare `A`.
-    expect(text(out)).toBe('A Chat')
-    expect(out).toContain('data-testid="renderer-auto"')
+    // The word survives only on the active cell; the other is a glyph.
+    expect(text(out)).toBe('Chat')
     expect(out).toContain('data-testid="renderer-terminal"')
-    // …and the dropped WORDS never drop the NAMES.
+    // …and the dropped WORD never drops the NAME.
     expect(out).toContain('aria-label="Terminal"')
   })
 })
 
-describe('the compact rail never spells Auto', () => {
-  test('the auto cell is the bare A even when SELECTED', () => {
-    // Measured on the 390px phone header card: with the word, "Auto" truncated
-    // to "A…" and the session's name lost the difference — the QA #6 rule the
-    // third cell would otherwise undo.
-    const out = html('auto', 'chat', { size: 'sm', labels: 'selected' })
-    expect(text(out)).toBe('A')
-    expect(out).not.toContain('>Auto<')
-    // …and the thumb still sits on it, so the choice is still legible.
-    expect(out).toMatch(/aria-selected="true"[^>]*data-testid="renderer-auto"/)
-    expect(out).toMatch(/renderer-auto[\s\S]*?bg-fill-soft-2/)
+describe('aria-selected sits on the ACTIVE cell', () => {
+  test('chat mounted → chat is selected', () => {
+    const out = html('chat')
+    expect(out).toMatch(/aria-selected="true" data-testid="renderer-chat"/)
+    expect(out).toMatch(/aria-selected="false" data-testid="renderer-terminal"/)
   })
 
-  test('the FULL rail still spells all three', () => {
-    expect(text(html('auto'))).toBe('Auto Chat Terminal')
-  })
-})
-
-describe('aria-selected is on the PREF cell, never the resolved one', () => {
-  test('at auto, `auto` is selected even though chat is mounted', () => {
-    const out = html('auto', 'chat')
-    // React emits attributes in JSX order, so `aria-selected` leads.
-    expect(out).toMatch(/aria-selected="true" data-testid="renderer-auto"/)
+  test('terminal mounted → terminal is selected', () => {
+    const out = html('terminal')
+    expect(out).toMatch(/aria-selected="true" data-testid="renderer-terminal"/)
     expect(out).toMatch(/aria-selected="false" data-testid="renderer-chat"/)
   })
 
-  test('at an explicit pin, the pin is selected', () => {
-    const out = html('terminal', 'terminal')
-    expect(out).toMatch(/aria-selected="true" data-testid="renderer-terminal"/)
-    expect(out).toMatch(/aria-selected="false" data-testid="renderer-auto"/)
-  })
-
   test('the moving capsule sits on the selected cell', () => {
-    expect(html('auto')).toMatch(/renderer-auto[\s\S]*?bg-fill-soft-2/)
-    expect(html('terminal', 'terminal')).toMatch(
-      /renderer-terminal[\s\S]*?bg-fill-soft-2/,
-    )
+    expect(html('chat')).toMatch(/renderer-chat[\s\S]*?bg-fill-soft-2/)
+    expect(html('terminal')).toMatch(/renderer-terminal[\s\S]*?bg-fill-soft-2/)
   })
 })
 
-describe('the resolved underline appears ONLY at auto', () => {
-  test('auto + resolved chat underlines the chat cell', () => {
-    const out = html('auto', 'chat')
-    expect(out).toMatch(/data-testid="renderer-chat"[^>]*data-resolved="true"/)
-    expect(out).toContain('bg-agent')
-    expect(out).not.toMatch(/data-testid="renderer-terminal"[^>]*data-resolved/)
+describe('no auto machinery survives', () => {
+  test('there is no resolved underline and no accent token', () => {
+    expect(html('chat')).not.toContain('data-resolved')
+    expect(html('chat')).not.toContain('bg-agent')
+    expect(html('terminal')).not.toContain('data-resolved')
   })
 
-  test('auto + resolved terminal underlines the terminal cell', () => {
-    const out = html('auto', 'terminal')
-    expect(out).toMatch(/data-testid="renderer-terminal"[^>]*data-resolved="true"/)
-    expect(out).not.toMatch(/data-testid="renderer-chat"[^>]*data-resolved/)
-  })
-
-  test('an explicit pin shows NO underline (the thumb already says it)', () => {
-    expect(html('chat', 'chat')).not.toContain('data-resolved')
-    expect(html('terminal', 'terminal')).not.toContain('data-resolved')
-    expect(html('chat', 'chat')).not.toContain('bg-agent')
-  })
-
-  test('"Auto, currently Chat" is one announcement, not an unexplained mark', () => {
-    expect(html('auto', 'chat')).toContain(
-      'aria-label="Renderer: Auto (currently Chat)"',
-    )
-    expect(html('auto', 'terminal')).toContain(
-      'aria-label="Renderer: Auto (currently Terminal)"',
-    )
-    expect(html('chat', 'chat')).toContain('aria-label="Session renderer"')
+  test('the aria-label is the plain "Session renderer"', () => {
+    expect(html('chat')).toContain('aria-label="Session renderer"')
+    expect(html('terminal')).toContain('aria-label="Session renderer"')
+    expect(html('chat')).not.toContain('Auto (currently')
   })
 })
 
 describe('A3 clothes are unchanged', () => {
-  test('the 30px hairline pill and 13.4px labels survive the third cell', () => {
-    const out = html('auto')
+  test('the 30px hairline pill and 13.4px labels survive', () => {
+    const out = html('chat')
     expect(out).toContain('h-[30px]')
     expect(out).toContain('border-hairline')
     expect(out).toContain('text-[13.4px]')
     expect(out).toContain('role="tablist"')
   })
 
-  test('no colour literals — the underline is a B0 token', () => {
-    expect(html('auto')).not.toMatch(/#[0-9a-fA-F]{6}/)
+  test('no colour literals', () => {
+    expect(html('chat')).not.toMatch(/#[0-9a-fA-F]{6}/)
   })
 })
 
 /**
- * The hit target is not the rail.
- *
- * Measured at 390×844 on the phone header card, the `sm` cells are 27×20,
- * 31×20 and 31×20 — about a fifth of the 44pt floor by area, on the control the
- * whole Chat⇄Terminal toggle runs through. The rail's 26px is a VISUAL decision
- * (the header card's geometry is built around it), so the VERTICAL axis is
- * grown with an `::after` expander that changes no layout: 44px tall, centred.
- *
- * THE HORIZONTAL AXIS CANNOT BE FAKED, and pretending otherwise is what this
- * control shipped. It read `after:min-w-[40px]`, and the claim beside it —
- * "adjacent targets cannot overlap into a mis-tap (verified with
- * elementFromPoint at ±20px)" — had been verified only VERTICALLY. At a 27–31px
- * cell pitch a 40px expander spills ~10px into each neighbour, elementFromPoint
- * resolves the overlap to the LATER sibling, and the exclusive own-hit spans
- * measured 28 / 30 / 40px: the middle of "Chat" could press Terminal.
- *
- * So on a coarse pointer the PITCH grows (`min-w-11` on the cell) and the
- * expander is capped to the cell (`after:w-full`), which makes the targets tile
- * instead of overlap. A mouse keeps the compact rail exactly as it was. The
- * measurement itself now lives in
- * `tests/e2e/smoke/chat-touch-targets.spec.ts`, which scans BOTH axes.
+ * The hit target is not the rail. Measured at 390×844 on the phone header card,
+ * the `sm` cells are ~27–31×20 — about a fifth of the 44pt floor by area. The
+ * rail's 26px is a VISUAL decision, so the VERTICAL axis is grown with an
+ * `::after` expander that changes no layout: 44px tall, centred; on a coarse
+ * pointer the PITCH grows (`min-w-11`) and the expander is capped to the cell
+ * (`after:w-full`) so neighbours tile instead of overlap.
  */
 describe('every cell owns a 44pt hit target', () => {
   for (const size of ['md', 'sm'] as const) {
     test(`size=${size} carries the ::after expander on every cell`, () => {
-      const out = html('auto', 'chat', { size, labels: 'selected' })
+      const out = html('chat', { size, labels: 'selected' })
       const buttons = out.split('<button').slice(1)
-      expect(buttons.length).toBe(3)
+      expect(buttons.length).toBe(2)
       for (const b of buttons) {
         expect(b).toContain('after:h-11') // 44px tall
-        // The cell itself carries the width on touch…
         expect(b).toContain('[@media(pointer:coarse)]:min-w-11')
-        // …and the expander is capped to it, so two neighbours cannot claim the
-        // same pixel. A `min-w` on the EXPANDER is the regression.
         expect(b).toContain('after:w-full')
         expect(b).not.toContain('after:min-w-')
         expect(b).toContain('after:-translate-y-1/2')
@@ -197,7 +129,7 @@ describe('every cell owns a 44pt hit target', () => {
   }
 
   test('the visual rail is untouched — 26px compact, 30px full', () => {
-    expect(html('auto', 'chat', { size: 'sm' })).toContain('h-[26px]')
-    expect(html('auto', 'chat', { size: 'md' })).toContain('h-[30px]')
+    expect(html('chat', { size: 'sm' })).toContain('h-[26px]')
+    expect(html('chat', { size: 'md' })).toContain('h-[30px]')
   })
 })

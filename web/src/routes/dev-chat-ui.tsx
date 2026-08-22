@@ -665,21 +665,18 @@ function Parts({ theme }: { theme: BenchTheme }) {
         </div>
       </Section>
 
-      {/* FASE A5 T8 — the switch in all three values × both variants, in one
-          frame. The state a screenshot catches lying: a compact rail that clips,
-          or an `auto` whose resolved marker is invisible. */}
+      {/* The binary switch in both values × both variants, in one frame. The
+          state a screenshot catches lying: a compact rail that clips. */}
       <Section
         id="switch-tri"
-        title="RendererSwitch (Auto · Chat · Terminal)"
-        note="A5 adds the third value. `auto` is a CHOICE, not a third renderer, so the control says two things at once without becoming two controls: the sliding capsule and aria-selected sit on the PREF cell, and a 1.5px accent underline marks the RESOLVED cell — only while the pref is auto, because with an explicit pin the two are the same cell. The compact rail (size=sm, labels=selected) is the phone header card's: one word for what you are looking at, glyphs for the rest, and the auto cell's glyph is a bare A."
+        title="RendererSwitch (Chat · Terminal)"
+        note="A binary toggle over the ACTIVE renderer: `value` is the mounted surface and a tap pins the other. The compact rail (size=sm, labels=selected) is the phone header card's: one word for what you are looking at, a glyph for the rest."
       >
         <div className="flex flex-wrap items-start gap-8">
           <Plate label="full">
             <div className="flex flex-col items-start gap-3">
-              <RendererSwitch value="auto" resolved="chat" onChange={() => undefined} />
-              <RendererSwitch value="auto" resolved="terminal" onChange={() => undefined} />
-              <RendererSwitch value="chat" resolved="chat" onChange={() => undefined} />
-              <RendererSwitch value="terminal" resolved="terminal" onChange={() => undefined} />
+              <RendererSwitch value="chat" onChange={() => undefined} />
+              <RendererSwitch value="terminal" onChange={() => undefined} />
             </div>
           </Plate>
           <Plate label="compact (phone header)">
@@ -687,22 +684,13 @@ function Parts({ theme }: { theme: BenchTheme }) {
               <RendererSwitch
                 size="sm"
                 labels="selected"
-                value="auto"
-                resolved="chat"
-                onChange={() => undefined}
-              />
-              <RendererSwitch
-                size="sm"
-                labels="selected"
                 value="chat"
-                resolved="chat"
                 onChange={() => undefined}
               />
               <RendererSwitch
                 size="sm"
                 labels="selected"
                 value="terminal"
-                resolved="terminal"
                 onChange={() => undefined}
               />
             </div>

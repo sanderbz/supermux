@@ -98,9 +98,9 @@ test.describe('touch targets on the chat surface', () => {
       'this spec only means anything on a coarse pointer',
     ).toBe(true)
 
-    // The renderer switch — three cells, side by side, in the phone header
+    // The renderer switch — two cells, side by side, in the phone header
     // card's compact rail. The tightest geometry the control ever has.
-    for (const id of ['renderer-auto', 'renderer-chat', 'renderer-terminal']) {
+    for (const id of ['renderer-chat', 'renderer-terminal']) {
       const span = await ownHitSpan(page, id)
       expect(span.x, `${id}: horizontal own-hit span`).toBeGreaterThanOrEqual(FLOOR)
       expect(span.y, `${id}: vertical own-hit span`).toBeGreaterThanOrEqual(FLOOR)

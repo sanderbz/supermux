@@ -357,7 +357,6 @@ export function DesktopSplit({
   // choice changed.
   const {
     resolved: renderer,
-    pref: rendererPref,
     setPref: setRendererPref,
   } = useRenderer(name, chatOn, current != null)
   const setRenderer = React.useCallback(
@@ -802,8 +801,7 @@ export function DesktopSplit({
         {chatOn && !chatActive && (
           <div className="flex h-8 shrink-0 items-center justify-end border-b border-border/60 px-3">
             <RendererSwitch
-              value={rendererPref}
-              resolved={renderer ?? 'chat'}
+              value={renderer ?? 'chat'}
               onChange={setRendererPref}
             />
           </div>

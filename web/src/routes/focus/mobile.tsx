@@ -278,7 +278,6 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   // difference.
   const {
     resolved: renderer,
-    pref: rendererPref,
     setPref: setRendererPref,
   } = useRenderer(name, chatOn, row != null)
   const setRenderer = React.useCallback(
@@ -752,10 +751,9 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
             >
               <RendererSwitch
                 size="sm"
-                // The rail has the full row's width, so all three words fit —
-                // this is the one place the switch does NOT have to shrink.
-                value={rendererPref}
-                resolved={renderer ?? 'terminal'}
+                // The rail has the full row's width, so both words fit — this is
+                // the one place the switch does NOT have to shrink.
+                value={renderer ?? 'terminal'}
                 onChange={setRendererPref}
               />
             </div>
@@ -882,8 +880,7 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
                           // that goes is the one naming the surface you are not
                           // looking at, and the session's name gets it back.
                           labels="selected"
-                          value={rendererPref}
-                          resolved={renderer ?? 'chat'}
+                          value={renderer ?? 'chat'}
                           onChange={setRendererPref}
                         />
                       ) : undefined

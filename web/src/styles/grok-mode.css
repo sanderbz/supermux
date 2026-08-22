@@ -1868,6 +1868,25 @@
   color: var(--gr-meta);
   flex: none;
   font-weight: 500;
+  transition: opacity 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* De-overlap the ⋯ kebab and the "13h" timestamp: both sit at the row's right
+   edge (kebab vertically centered, `.tm` on the top line), and in Compact
+   density the row collapses to one ~34px line so the kebab paints directly over
+   the timestamp. Step `.tm` aside exactly when the kebab is revealed — the SAME
+   selectors as the kebab's reveal (1771–1777) — so no overlap in any density.
+   The kebab is a sibling that PRECEDES `.gr-top`, so `~ .gr-top .tm` reaches the
+   timestamp for the menu-open state. Mirrors the base tile fading its Stopped
+   pill / ⌘N chip for the Archive icon. */
+[data-grok] .grok-roster .gr-rowA:hover .tm,
+[data-grok] .grok-roster .gr-rowA:focus-within .tm,
+[data-grok] .grok-roster .gr-rowA .gr-tile-kebab[data-state='open'] ~ .gr-top .tm {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] .grok-roster .gr-rowA .tm {
+    transition: none;
+  }
 }
 /* container-query: the timestamp is the FIRST thing to drop as the row narrows */
 @container (max-width: 168px) {

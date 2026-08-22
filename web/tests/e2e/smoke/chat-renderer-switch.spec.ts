@@ -290,19 +290,14 @@ test.describe('chat renderer switch (fase A1)', () => {
       'true',
     )
 
-    // Pin Auto, reload, land on the default (chat, with the experiment on).
-    await page.getByTestId('renderer-auto').click()
+    // Pin Chat, reload, land on Chat — the binary toggle drives + persists the
+    // active renderer, and the Chat cell reports itself selected.
+    await page.getByTestId('renderer-chat').click()
     await expect(page.getByTestId('chat-panel')).toBeVisible()
     await page.reload()
     await expect(page.getByTestId('chat-panel')).toBeVisible()
-    await expect(page.getByTestId('renderer-auto')).toHaveAttribute(
-      'aria-selected',
-      'true',
-    )
-    // …and Auto MARKS what it resolved to, so "Auto, currently Chat" is one
-    // glance rather than two controls.
     await expect(page.getByTestId('renderer-chat')).toHaveAttribute(
-      'data-resolved',
+      'aria-selected',
       'true',
     )
   })
@@ -335,6 +330,6 @@ test.describe('chat renderer switch (fase A1)', () => {
     await expect(page.getByTestId('chat-panel')).toHaveCount(0)
     // …and no switch at all: an ineligible session has exactly one renderer.
     await expect(page.getByTestId('renderer-chat')).toHaveCount(0)
-    await expect(page.getByTestId('renderer-auto')).toHaveCount(0)
+    await expect(page.getByTestId('renderer-terminal')).toHaveCount(0)
   })
 })

@@ -1,33 +1,21 @@
 /**
- * Auto ⇄ Chat ⇄ Terminal — the renderer switch (A1 behaviour, A3 T6 clothes,
- * A5 T2 third value).
+ * Chat ⇄ Terminal — the renderer switch (A1 behaviour, A3 T6 clothes).
  * ─────────────────────────────────────────────────────────────────────────────
- * A1 shipped two cells and a tap that lived in `React.useState`. A5 makes the
- * choice a PREFERENCE (`components/chat/renderer-pref.ts`), which needs a third
- * value: `auto` — "follow the global default", a real stored state that must be
- * distinguishable from "happens to equal the default today", because the
- * default moves (Settings now, fase A7 for everyone).
- *
- * The two vocabularies stay separate and both are on screen at once:
- *   · the THUMB and `aria-selected` sit on the **pref** cell — what you chose;
- *   · a 1.5px accent underline marks the **resolved** cell while the pref is
- *     `auto` — what you are therefore looking at. "Auto, currently Chat" is one
- *     glance and one control, not two.
+ * A binary toggle over the ACTIVE renderer: `value` is the mounted surface and
+ * a tap pins the other one. (The `auto` cell was retired — an unpinned session
+ * resolves to the `chat` default and the toggle simply shows/drives whatever is
+ * mounted; the first tap writes a concrete pin.)
  *
  * A3's clothes are unchanged: the hairline capsule rail, the `bg-fill-soft-2`
  * thumb that SLIDES via a shared `layoutId`, `springs.snappy`, and reduced
  * motion keeping the cell while dropping the travel.
  *
- * #66's width knobs are unchanged and NOT replaced by a `variant` axis — they
- * already solve the same problem the plan's `full`/`compact` split was invented
- * for, and one axis is cheaper than two: `size` ('md' | 'sm') and `labels`
- * ('both' | 'selected'). With three cells the phone header card runs
- * `size="sm" labels="selected"`, which renders as `A · Chat · ⌨` — the leading
- * glyph cell the plan asks for, out of the mechanism that was already there.
+ * #66's width knobs are unchanged: `size` ('md' | 'sm') and `labels`
+ * ('both' | 'selected'). On the phone header card it runs `size="sm"
+ * labels="selected"`, which renders as `Chat · ⌨`.
  *
  * `data-testid="renderer-chat|terminal"`, `role="tablist"` and `aria-selected`
  * are load-bearing — `tests/e2e/smoke/chat-renderer-switch.spec.ts` clicks them.
- * The new cell is `data-testid="renderer-auto"`.
  */
 import { motion, useReducedMotion } from 'framer-motion'
 import { useId } from 'react'
@@ -38,23 +26,10 @@ import { useId } from 'react'
 import { motionOff, springs } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 
-import type { Renderer, RendererPref } from './renderer-pref'
+import type { Renderer } from './renderer-pref'
 import { ChatGlyph, TerminalGlyph } from './ui'
 
-/** The `auto` cell's glyph — a bare `A`, the same 13px metrics the word labels
- *  use, so the rail's three cells sit on one baseline. Not an icon: every icon
- *  that means "automatic" (a wand, a sparkle, a circular arrow) reads as an
- *  ACTION on a control whose other two cells are nouns. */
-function AutoGlyph() {
-  return (
-    <span aria-hidden className="block font-medium leading-none">
-      A
-    </span>
-  )
-}
-
 const OPTIONS = [
-  { value: 'auto', label: 'Auto', Glyph: AutoGlyph },
   { value: 'chat', label: 'Chat', Glyph: ChatGlyph },
   { value: 'terminal', label: 'Terminal', Glyph: TerminalGlyph },
 ] as const
@@ -73,17 +48,14 @@ const SIZE = {
 
 export function RendererSwitch({
   value,
-  resolved,
   onChange,
   size = 'md',
   labels = 'both',
 }: {
-  /** What the USER chose — including `auto`. */
-  value: RendererPref
-  /** What is actually MOUNTED right now. Only consulted while `value` is
-   *  `auto`, to underline the cell the default currently lands on. */
-  resolved: Renderer
-  onChange: (v: RendererPref) => void
+  /** The renderer that is actually MOUNTED — the switch shows and drives the
+   *  active surface. A binary Chat ⇄ Terminal control (Auto retired). */
+  value: Renderer
+  onChange: (v: Renderer) => void
   size?: 'md' | 'sm'
   /**
    * `selected` shows the word only on the chosen side and a glyph on the others
@@ -127,13 +99,7 @@ export function RendererSwitch({
       // your finger is literally on this control is a stray keystroke, not a
       // shortcut.
       data-renderer-switch=""
-      // Spelled out so "Auto, currently Chat" is one announcement rather than
-      // a selected tab plus an unexplained underline.
-      aria-label={
-        value === 'auto'
-          ? `Renderer: Auto (currently ${resolved === 'chat' ? 'Chat' : 'Terminal'})`
-          : 'Session renderer'
-      }
+      aria-label="Session renderer"
       // The rail is a hairline and nothing else: filling it would put
       // `bg-fill-soft` under a `bg-fill-soft-2` cell — 4.5% ink under 7% ink —
       // and the selection would have to be read off the label colour instead of
@@ -149,17 +115,7 @@ export function RendererSwitch({
     >
       {OPTIONS.map((o) => {
         const selected = value === o.value
-        // In the compact rail the `auto` cell is ALWAYS the bare `A`, even when
-        // it is the selected one. Measured on the phone header card (390px):
-        // with the word it truncated to `A…`, which is the QA #6 regression the
-        // third cell would otherwise reintroduce — and "Auto" spelled out buys
-        // nothing the underline on the resolved cell does not already say.
-        const glyph =
-          labels === 'selected' && (!selected || o.value === 'auto')
-        // The resolved marker is meaningful only under `auto`: with an explicit
-        // pin the thumb already sits on the mounted renderer, and a second
-        // marker on the same cell would be noise.
-        const marksResolved = value === 'auto' && o.value === resolved
+        const glyph = labels === 'selected' && !selected
         return (
           <button
             key={o.value}
@@ -173,7 +129,6 @@ export function RendererSwitch({
             aria-label={glyph ? o.label : undefined}
             title={glyph ? o.label : undefined}
             data-testid={`renderer-${o.value}`}
-            data-resolved={marksResolved ? 'true' : undefined}
             onClick={() => onChange(o.value)}
             className={cn(
               'relative h-full min-w-0 rounded-full font-medium tracking-[-0.05px]',
@@ -218,15 +173,6 @@ export function RendererSwitch({
             <span className="relative block truncate">
               {glyph ? <o.Glyph /> : o.label}
             </span>
-            {marksResolved && (
-              // 1.5px of the session accent under the cell the default lands on.
-              // Inside the button's padding box, so it cannot change the rail's
-              // height or the cell's width at any size.
-              <span
-                aria-hidden
-                className="absolute inset-x-2 bottom-[3px] h-[1.5px] rounded-full bg-agent"
-              />
-            )}
           </button>
         )
       })}

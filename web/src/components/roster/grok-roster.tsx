@@ -251,14 +251,10 @@ interface RowProps {
   group: GroupKey
   active: boolean
   onOpen: (s: ApiSession) => void
-  /** The NAME's own click target — opens THIS bot's settings panel (§2.1). Split
-   *  from `onOpen` so the avatar/body still opens the thread while the name text
-   *  opens the panel. */
-  onOpenSettings: (s: ApiSession) => void
   index: number
 }
 
-export const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, onOpenSettings, index }: RowProps) {
+export const GrokRow = React.memo(function GrokRow({ session, group, active, onOpen, index }: RowProps) {
   const name = displayLabel(session)
   const time = relativeTime(session.updated_at)
   const sw = stateWordFor(session, group)
@@ -340,15 +336,11 @@ export const GrokRow = React.memo(function GrokRow({ session, group, active, onO
         />
         <span className="col">
           <span className="l1">
-            <button
-              type="button"
-              className="nm gr-nm-btn"
-              onClick={() => onOpenSettings(session)}
-              aria-label={`Open ${name} settings`}
-              title="Open settings"
-            >
-              {name}
-            </button>
+            {/* Inert text: the name is NOT its own click target. A tap on it
+                falls through the pointer-transparent `.col` to the full-bleed
+                `gr-row-open` base button and opens the thread. Settings stay
+                reachable via the ⋯ actions menu / long-press / right-click. */}
+            <span className="nm">{name}</span>
             {/* compact-only inline preview (Row C) */}
             <span className="cprev">{preview}</span>
             {time && <span className="tm">{time}</span>}
@@ -890,28 +882,6 @@ export default function GrokRoster() {
     setPaneTab('overview')
     setPaneView('settings')
   }, [])
-  // NAME-AS-CLICK (§2.1): select THIS bot and show its settings panel, optionally
-  // deep-linked to a tab. On phone there is no side pane, so it routes to the
-  // bot's focus screen and hands the mobile panel a tab hint via history state.
-  const openBotSettings = React.useCallback(
-    (s: ApiSession, tab: BotTab = 'overview') => {
-      attention.markRead(s)
-      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
-        navigate(`/focus/${encodeURIComponent(s.name)}`, {
-          state: { openPanel: true, panelTab: tab },
-        })
-        return
-      }
-      const next: Sel = { kind: 'bot', name: s.name }
-      setSelected(next)
-      // Pre-ack the new selection so the "reset the pane to the thread" render
-      // guard does NOT fire and stomp our 'settings' view back to 'thread'.
-      setPaneSelSeen(selKey(next))
-      setPaneTab(tab)
-      setPaneView('settings')
-    },
-    [attention, navigate],
-  )
   // The terminal escape hatch + the ineligible-bot fallback: honestly LEAVE the
   // roster for the still-present /focus route, which owns the live terminal (and
   // its keyboard capture). Phase 1 does not reproduce the terminal in the pane.
@@ -1131,7 +1101,6 @@ export default function GrokRoster() {
                       group={key}
                       active={selected?.kind === 'bot' && selected.name === s.name}
                       onOpen={openSession}
-                      onOpenSettings={openBotSettings}
                       index={rowIndex++}
                     />
                   ))}

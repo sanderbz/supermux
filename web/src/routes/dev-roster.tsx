@@ -404,7 +404,6 @@ function GrokRowBench() {
                 group={group}
                 active={idx === 1}
                 onOpen={() => {}}
-                onOpenSettings={() => {}}
                 index={i++}
               />
             ))}
