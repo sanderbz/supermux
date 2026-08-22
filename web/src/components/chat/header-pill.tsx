@@ -115,39 +115,6 @@ function ModeChip({ children, className }: { children: React.ReactNode; classNam
 }
 
 /**
- * The permission mode, CONDENSED — the phone header's icon-only mode dot. On a
- * 390px card the worded "Bypass" chip + a "Not up to date" chip + the three-cell
- * toggle overran the width and pushed the toggle off the right edge (owner's
- * IMG_2348); the mode drops to a small dot so the essentials stay on-screen. The
- * specific mode rides `title`/`aria-label`; the ONE mode worth a colour —
- * `bypass`, which turns approvals off — is coloured so it is not a silent grey
- * dot.
- *
- * DISTINCT FROM THE CONNECTION DOT (sweep fix). The bypass dot used to reuse
- * `bg-status-error` — the EXACT token the compact `<ConnectionNote>` paints its
- * alarming (terminal/gone) connection dot with. Side by side in this cluster the
- * two read as one indistinguishable token meaning two different things (mode vs
- * connection). The risky dot now carries its own `data-mode-risk` hook: off grok
- * it keeps `bg-status-error` (base app byte-identical), and under the grok skin
- * `grok-mode.css` re-points it to the calm WARNING amber — a MODE caution that
- * parts cleanly from the connection dot in both renderings (the neutral tertiary
- * the grok connection chip carries, and the app's danger orange in the base),
- * with AA-clean graphical contrast in both themes.
- */
-function ModeGlyphChip({ label }: { label: string }) {
-  const risky = label === 'Bypass'
-  return (
-    <span
-      role="img"
-      aria-label={`${label} mode`}
-      title={`${label} mode`}
-      data-mode-risk={risky ? '' : undefined}
-      className={cn('size-2 flex-none rounded-full', risky ? 'bg-status-error' : 'bg-ink-2')}
-    />
-  )
-}
-
-/**
  * Status → the face's presence.
  *
  * The face and the status dot answer the same question at two volumes, so they
@@ -411,25 +378,20 @@ export function SessionHeaderPill({
                   On the desktop nothing moves: the chip keeps its `ml-auto`, then
                   the connection chip, then the toggle. */}
               {phone ? (
-                (presence || mode || connection || trailing) && (
-                  // ONE ROW, AND THE TOGGLE ALWAYS FITS (owner's IMG_2348).
-                  // At 390px the trailing cluster overran the card: a worded
-                  // "Bypass" chip + a "Not up to date" chip + the three-cell
-                  // segmented toggle (whose touch cells are floored at 44px each,
-                  // ~138px total) summed past 366px, so the toggle — the one
-                  // control that MUST stay reachable — hung off the right edge,
-                  // clipped to "Ch…". The fix is to CONDENSE the secondary status
-                  // to its signal: the mode is a glyph-only dot-pill (its word on
-                  // `title`/`aria`) and the connection chip is passed `compact`,
-                  // so `mode · connection · presence` shrink from ~150px of words
-                  // to ~50px of dots and the whole cluster — with the toggle —
-                  // now fits inside the card, essentials (back · name · toggle)
-                  // always on-screen. `flex-none` keeps the cluster's intrinsic
-                  // width; the name (flex-1) is what yields.
+                // THE MOBILE CHAT HEADER SHOWS NO STATUS DOTS (owner's call).
+                // The trailing cluster used to carry three condensed dots — the
+                // glyph-only mode dot, the compact connection dot and the
+                // presence dot — beside the renderer toggle. The owner wants the
+                // header stripped to its essentials: back · avatar · name · the
+                // binary Chat/Console pill, and NO dots. So the phone cluster now
+                // renders only the renderer switch (`trailing`); mode, connection
+                // and presence are dropped from this render path (the presence
+                // dot and connection chip still live on other surfaces — the
+                // desktop name row below, and the overview tile — untouched).
+                // `flex-none` keeps the toggle's intrinsic width; the name
+                // (flex-1) is what yields when the row is tight.
+                trailing && (
                   <div className="flex flex-none items-center justify-end gap-1.5">
-                    {mode && <ModeGlyphChip label={mode} />}
-                    {connection}
-                    {presence}
                     {trailing}
                   </div>
                 )

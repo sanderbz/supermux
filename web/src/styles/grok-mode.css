@@ -1755,9 +1755,13 @@
 [data-grok] .grok-roster .gr-rowA .gr-tile-kebab {
   position: absolute;
   right: 12px;
-  top: 50%;
-  bottom: auto;
-  transform: translateY(-50%);
+  /* Multi-line densities (comfortable + cards): BOTTOM-anchor the 34px kebab so
+     it sits on the lower half of the row, its top edge clearly below the top-line
+     timestamp — the two never overlap and the timestamp stays fully visible.
+     Compact (single-line ~34px row) has no lower half, so it re-centres below. */
+  top: auto;
+  bottom: 10px;
+  transform: none;
   z-index: 3;
   width: 34px;
   height: 34px;
@@ -1767,6 +1771,15 @@
   color: var(--gr-meta);
   background: color-mix(in srgb, var(--gr-bg) 82%, transparent);
   transition: opacity 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* COMPACT (ultra-compact single-line): the row collapses to ~34px with no lower
+   half for the kebab to drop into — keep it vertically centred at the right edge
+   (the timestamp steps aside for it instead; see the compact-scoped `.tm` fade
+   below). */
+[data-grok] .grok-roster[data-density='compact'] .gr-rowA .gr-tile-kebab {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
 }
 [data-grok] .grok-roster .gr-rowA:hover .gr-tile-kebab,
 [data-grok] .grok-roster .gr-rowA:focus-within .gr-tile-kebab,
@@ -1870,17 +1883,17 @@
   font-weight: 500;
   transition: opacity 0.12s cubic-bezier(0.4, 0, 0.2, 1);
 }
-/* De-overlap the ⋯ kebab and the "13h" timestamp: both sit at the row's right
-   edge (kebab vertically centered, `.tm` on the top line), and in Compact
-   density the row collapses to one ~34px line so the kebab paints directly over
-   the timestamp. Step `.tm` aside exactly when the kebab is revealed — the SAME
-   selectors as the kebab's reveal (1771–1777) — so no overlap in any density.
-   The kebab is a sibling that PRECEDES `.gr-top`, so `~ .gr-top .tm` reaches the
-   timestamp for the menu-open state. Mirrors the base tile fading its Stopped
-   pill / ⌘N chip for the Archive icon. */
-[data-grok] .grok-roster .gr-rowA:hover .tm,
-[data-grok] .grok-roster .gr-rowA:focus-within .tm,
-[data-grok] .grok-roster .gr-rowA .gr-tile-kebab[data-state='open'] ~ .gr-top .tm {
+/* COMPACT-ONLY: de-overlap the ⋯ kebab and the "13h" timestamp. Only in the
+   ultra-compact single-line density does the row collapse to ~34px so the
+   centred kebab paints directly over the top-line timestamp — there the
+   timestamp steps aside exactly when the kebab is revealed (the SAME selectors
+   as the kebab's reveal). In comfortable + cards the kebab is bottom-anchored
+   (above) and clears the timestamp on its own, so the timestamp stays fully
+   visible and is NOT faded. The kebab is a sibling that PRECEDES `.gr-top`, so
+   `~ .gr-top .tm` reaches the timestamp for the menu-open state. */
+[data-grok] .grok-roster[data-density='compact'] .gr-rowA:hover .tm,
+[data-grok] .grok-roster[data-density='compact'] .gr-rowA:focus-within .tm,
+[data-grok] .grok-roster[data-density='compact'] .gr-rowA .gr-tile-kebab[data-state='open'] ~ .gr-top .tm {
   opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {

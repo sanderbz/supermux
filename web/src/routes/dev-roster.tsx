@@ -341,12 +341,14 @@ function TeamRowBench() {
   )
 }
 
-/* ── the grok BOT-row bench (name-as-click, §2.1) ────────────────────────────
-   The inbox row now splits its hit target: the avatar/body opens the thread, the
-   NAME text is its own button opening the settings panel. Both are real sibling
-   buttons (never nested), so each is a tab stop. Rendered here as a still frame
-   in the `[data-grok] .grok-roster` skin its CSS keys off, so the split target,
-   the name's hover/focus affordance and the row hover can be reviewed offline. */
+/* ── the grok BOT-row bench (inert title, §2.1) ──────────────────────────────
+   The inbox row is ONE hit target: a tap anywhere — the avatar, the body, the
+   name — opens the thread. The NAME is inert text (a plain `<span className="nm">`,
+   not its own button): a tap on it falls through the pointer-transparent `.col`
+   to the full-bleed `gr-row-open` base button (f5f0a97). Settings stay reachable
+   via the ⋯ actions menu / long-press / right-click. Rendered here as a still
+   frame in the `[data-grok] .grok-roster` skin its CSS keys off, so the single
+   open target, the ⋯ kebab reveal and the row hover can be reviewed offline. */
 const GROK_ROW_BOTS: { session: ApiSession; group: 'needs' | 'active' | 'done' | 'idle' }[] = [
   {
     group: 'needs',

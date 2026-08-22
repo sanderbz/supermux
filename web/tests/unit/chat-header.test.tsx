@@ -333,40 +333,40 @@ describe('the phone header gives its width to the name (QA #6)', () => {
   })
 
   test('the trailing cluster is ONE inline row, not a stacked column', () => {
-    // The header is a single iOS-style bar: the status bits (mode, connection,
-    // presence) and the renderer toggle sit INLINE on the one row, so a
-    // connection chip no longer grows the card to a second tier (the reconnecting
-    // money-shot: a 60px card that had ballooned to ~80px with the name floating
-    // in a half-empty top). `flex-none` keeps the cluster's intrinsic width and
-    // the name gives first.
+    // The header is a single iOS-style bar: the renderer toggle sits inline on
+    // the one row, `flex-none` keeping the cluster's intrinsic width so the name
+    // gives first.
     const out = phone(session({ display_name: 'ipc', mode: 'bypass' }))
     expect(out).not.toContain('flex-col')
     expect(out).toContain('flex-none')
     expect(text(out)).toContain('ipc')
-    // The mode CONDENSES to an icon-only chip on the phone (owner's IMG_2348: a
-    // worded "Bypass" chip + a "Not up to date" chip + the three-cell toggle
-    // overran 390px and shoved the toggle off the right edge). The word now
-    // rides the chip's `title`/`aria-label`, so the state still reaches
-    // assistive tech and the VR rig while the glyph keeps the row narrow enough
-    // for the toggle to stay on-screen — never a bare, unlabelled dot.
-    expect(out).toContain('Bypass mode')
+  })
+
+  test('the mobile chat header shows NO mode dot (owner: back · avatar · name · pill, no dots)', () => {
+    // The owner stripped the phone chat header to its essentials — the mode dot
+    // (condensed glyph or worded chip) no longer rides this cluster at all. Even
+    // a `bypass` session paints no mode affordance in the header; the mode still
+    // reaches the desktop header's worded `ModeChip` (below) and every other
+    // caller, just not this bar.
+    const out = phone(session({ display_name: 'ipc', mode: 'bypass' }))
+    expect(out).not.toContain('Bypass mode')
     expect(text(out)).not.toContain('Bypass')
   })
 
-  test('the presence dot joins the inline status cluster on the phone (mobile polish #1)', () => {
-    // The dot used to float alone on the name row, mid-header; it now sits in the
-    // trailing status cluster with the mode/connection chips, so the "status bits
-    // (bypass, version, dot)" read as one quiet group beside the toggle on the one
-    // row. A bare idle session (no mode, no trailing) therefore DOES grow a
-    // cluster — but only for the dot, which is meaningful, not empty.
+  test('the mobile chat header shows NO presence dot (owner: no dots)', () => {
+    // The presence dot was dropped from the phone chat header along with the mode
+    // and connection dots — the header is back · avatar · name · Chat/Console
+    // pill, nothing else. The dot survives on the desktop name row (next test)
+    // and on the overview tile.
     const out = renderToStaticMarkup(
       <SessionHeaderPill name={FOCUS} session={session()} surface="phone" />,
     )
-    expect(out).toContain('bg-status-ready')
+    expect(out).not.toContain('bg-status-ready')
+    expect(out).not.toContain('sm-status-spinner')
   })
 
   test('the desktop keeps the presence dot on the name row', () => {
-    // Only the phone regroups; the desktop header is unchanged, dot inline.
+    // Only the phone strips its dots; the desktop header is unchanged, dot inline.
     const out = pill(session())
     expect(out).not.toContain('flex-col')
     expect(out).toContain('bg-status-ready')
