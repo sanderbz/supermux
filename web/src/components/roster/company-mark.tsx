@@ -17,11 +17,15 @@
  * rides ONLY this non-semantic surface; status keeps its own `--sm-tone-*`
  * family elsewhere.
  *
- * HQ is NOT a `<CompanyMark>` — it is the brand `.gr-spark` conic tile (the
- * "above all companies" home signal), rendered by the switcher directly.
+ * HQ is NOT a `<CompanyMark>` — it has no slug/hue. It is `<HqMark>` (below):
+ * the real supermux brand `<Logo>` (the blue angular "S") centred on a neutral
+ * rounded-square tile. It keeps the rounded-square silhouette (so HQ still reads
+ * as "a space") but shows the actual brand mark, not the invented rainbow spark
+ * it used to. `<HqMark>` is the HQ analogue of `<CompanyMark>`.
  */
 import { characterFromSeed, bodyColor, accentInk } from '@/brand/marks'
 import { useTheme } from '@/components/theme-provider'
+import { Logo } from '@/components/logo'
 
 /** 1–2 letters from the display name: initials of the first two words, or the
  *  first 1–2 characters of a single word. Uppercased; always ≥1 char for any
@@ -81,6 +85,52 @@ export function CompanyMark({
       }}
     >
       {mono}
+    </span>
+  )
+}
+
+export interface HqMarkProps {
+  /** Tile edge in px. Matches the CompanyMark scale: trigger 22, rows 24/28. */
+  size?: number
+  className?: string
+  style?: React.CSSProperties
+}
+
+/**
+ * `<HqMark>` — the HQ identity mark: the real supermux brand `<Logo>` centred on
+ * a neutral rounded-square tile. HQ has no slug/hue (it is not a company), so it
+ * gets no monogram wash; it keeps the rounded-square silhouette of the identity
+ * system (company = rounded square) so it still reads as "a space", but shows the
+ * actual blue-S brand mark instead of the invented conic rainbow spark it used to.
+ * Used by the CompanySwitcher trigger (HQ scope) and its HQ option row.
+ *
+ * Styled inline (not via a `[data-grok]`-scoped class) so it renders identically
+ * in the header trigger, the desktop anchored menu, AND the mobile bottom sheet —
+ * the sheet is portaled to `document.body`, outside the `[data-grok]` subtree, so
+ * grok-only tokens/classes would not reach it. `currentColor`-mix tints keep the
+ * tile theme-aware anywhere; `--sm-r-md` falls back to 10px off grok. The `<Logo>`
+ * SVG's default `preserveAspectRatio` keeps the S un-stretched inside the square.
+ */
+export function HqMark({ size = 24, className, style }: HqMarkProps) {
+  return (
+    <span
+      aria-hidden
+      className={className}
+      style={{
+        boxSizing: 'border-box',
+        display: 'grid',
+        placeItems: 'center',
+        flex: 'none',
+        width: size,
+        height: size,
+        padding: Math.round(size * 0.15),
+        borderRadius: 'var(--sm-r-md, 10px)',
+        background: 'color-mix(in srgb, currentColor 6%, transparent)',
+        boxShadow: 'inset 0 0 0 0.5px color-mix(in srgb, currentColor 12%, transparent)',
+        ...style,
+      }}
+    >
+      <Logo title="HQ" className="block h-full w-full" />
     </span>
   )
 }

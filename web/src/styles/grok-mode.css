@@ -1418,25 +1418,11 @@
 [data-grok][data-standalone] .grok-roster .gr-head {
   padding-top: max(14px, env(safe-area-inset-top));
 }
-[data-grok] .grok-roster .gr-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  flex: none;
-}
-[data-grok] .grok-roster .gr-spark {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  flex: none;
-  background: conic-gradient(
-    from 210deg,
-    #3a63e8, #8b5cf6, #e5628a, #e8a33d, #1fa598, #3a63e8
-  );
-}
+/* `.gr-brand` (the "supermux" wordmark block) and the roster `.gr-spark` (its
+   invented conic rainbow tile) were retired: the overview title is now the
+   CompanySwitcher (active team name), and HQ renders the real blue-S `<HqMark>`
+   (component `company-mark.tsx`, styled inline) instead of the spark. No `.gr-brand`
+   / `.gr-spark` markup remains. */
 [data-grok] .grok-roster .gr-count {
   font-size: 13px;
   /* AA fix: the '… bots' subtitle was tertiary ink — 2.41:1 light / 3.35:1 dark,
@@ -1621,17 +1607,14 @@
   color: var(--sm-text-tertiary);
   flex: none;
 }
-/* HQ's rainbow spark reuses the brand tile at the chip scale (20px). */
-[data-grok] .grok-roster .gr-company .gr-spark {
-  width: 22px;
-  height: 22px;
-  border-radius: var(--sm-r-md);
-}
-/* below 520px the name folds; the 44×44 tap survives via padding */
+/* HQ's mark is now the real blue-S `<HqMark>` (sized inline at 22px on the
+   trigger), not a `.gr-spark` tile — the old `.gr-company .gr-spark` sizing rule
+   is retired with the spark. */
+/* The switcher is now the SOLE overview title, so its label stays visible at
+   every width (it used to fold below 520px when the `.gr-brand` wordmark still
+   carried the identity) — the active team name (HQ by default) must always read
+   next to the mark. The 44×44 tap target is preserved on the phone. */
 @media (max-width: 520px) {
-  [data-grok] .grok-roster .gr-company .gr-company-lbl {
-    display: none;
-  }
   [data-grok] .grok-roster .gr-company {
     min-height: 44px;
     padding: 4px 8px;
@@ -2168,8 +2151,11 @@
   flex: none;
 }
 /* Header-consistent ghost icon button (also the phone `+`'s sibling: the phone
-   block below grows every `.gr-icon-btn` to a 44×44 HIG tap target). */
-[data-grok] .grok-roster .gr-icon-btn {
+   block below grows every `.gr-icon-btn` to a 44×44 HIG tap target). Reused by
+   the Settings route's close-X (`.gk-settings .gr-icon-btn`) — Settings left the
+   grok nav, so its header grows this same ghost button as the exit affordance. */
+[data-grok] .grok-roster .gr-icon-btn,
+[data-grok] .gk-settings .gr-icon-btn {
   appearance: none;
   border: 0;
   background: transparent;
@@ -2183,11 +2169,13 @@
   border-radius: 9px;
   transition: color 0.12s, background-color 0.12s;
 }
-[data-grok] .grok-roster .gr-icon-btn:hover {
+[data-grok] .grok-roster .gr-icon-btn:hover,
+[data-grok] .gk-settings .gr-icon-btn:hover {
   color: var(--sm-text-primary);
   background: var(--sm-bg-hover);
 }
-[data-grok] .grok-roster .gr-icon-btn:focus-visible {
+[data-grok] .grok-roster .gr-icon-btn:focus-visible,
+[data-grok] .gk-settings .gr-icon-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
 }
@@ -2201,6 +2189,9 @@
   cursor: pointer;
   border-radius: 50%;
   flex: none;
+  /* `relative` anchors the re-homed update-available dot (`NavBadgeDot`) to the
+     avatar's corner — it used to live on the now-hidden Settings nav item. */
+  position: relative;
   display: grid;
   place-items: center;
 }
@@ -2639,7 +2630,8 @@
      — was a 34px plate, under the 44pt HIG minimum. Grow it (and any sibling
      icon-btn) to a full 44×44 on the phone; the 10px plate + soft-accent wash are
      unchanged, only the hit box grows. */
-  [data-grok] .grok-roster .gr-icon-btn {
+  [data-grok] .grok-roster .gr-icon-btn,
+  [data-grok] .gk-settings .gr-icon-btn {
     width: 44px;
     height: 44px;
   }

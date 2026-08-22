@@ -61,12 +61,13 @@ interface NavItem {
    *  lets the user jump straight back to the last-focused session from any
    *  route. */
   desktopOnly?: boolean
-  /** Hide this item under the Grok skin (`[data-grok]`). Set on the Focus entry:
-   *  under grok the roster IS the way into a thread (roster row → thread-in-pane),
-   *  so the rail's Focus item — which redirects to the last-active session's
-   *  second /focus shell — is redundant. Base app (grok off) keeps it. Only the
-   *  desktop SideNav honours it; the mobile BottomNav already drops Focus via
-   *  `desktopOnly`, so mobile is untouched either way. */
+  /** Hide this item under the Grok skin (`[data-grok]`). BOTH nav surfaces honour
+   *  it — the desktop SideNav (filter) and the mobile BottomNav (filter) — so a
+   *  `grokHidden` item drops from the rail AND the phone tab bar under grok.
+   *  Base app (grok off) keeps it. Set on the Focus entry (under grok the roster
+   *  IS the way into a thread, so the rail's Focus redirect is redundant — and
+   *  Focus is `desktopOnly` so mobile drops it either way) and on Settings
+   *  (under grok the top-right `.gr-me` avatar is the Settings doorway). */
   grokHidden?: boolean
   /** Render this item ONLY under the Grok skin (`[data-grok]`), on BOTH the
    *  desktop SideNav and the mobile BottomNav. The inverse of `grokHidden`:
@@ -107,6 +108,15 @@ const NAV: NavItem[] = [
     icon: SettingsIcon,
     tour: 'settings',
     badgeKind: 'updates',
+    // Under grok the roster's top-right `.gr-me` avatar IS the Settings doorway
+    // (grok-roster.tsx — `onClick navigate('/settings')`), and the Settings
+    // route grows its own close-X, so a redundant nav slot only crowds the
+    // grok rail/tab bar. Both nav surfaces honour `grokHidden`, so the item
+    // drops from the rail AND the phone tabs under grok; the base app (grok
+    // off) keeps Settings in nav exactly as before (byte-identical). The
+    // update-available dot this item used to host is re-homed onto the avatar
+    // (grok-roster.tsx) so the update tell survives its removal.
+    grokHidden: true,
   },
 ]
 
@@ -114,7 +124,7 @@ const NAV: NavItem[] = [
  *  "available + clean" (primary tint, classic blue dot) from "available but
  *  action needed" (amber, matches the panel's blocked-state pill). Sized so
  *  it overlaps the icon by ~2px without obscuring it. */
-function NavBadgeDot({ state }: { state: UpdateBadgeState }) {
+export function NavBadgeDot({ state }: { state: UpdateBadgeState }) {
   if (state === 'none') return null
   return (
     <span

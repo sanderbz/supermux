@@ -26,6 +26,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Store as StoreIcon,
+  X,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -52,6 +53,8 @@ import {
   type OverviewPreview,
 } from '@/stores/ui-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
+import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { useConnectors } from '@/stores/connectors-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import { pushApi, type NotifCategory, type PushAttempt, type PushPrefs } from '@/lib/api'
@@ -1116,6 +1119,23 @@ function AdvancedGroup({ children }: { children: React.ReactNode }) {
 }
 
 export function Settings() {
+  const navigate = useNavigate()
+  // Grok hides Settings from the nav (layout.tsx `grokHidden`), so under grok
+  // this route grows its own exit affordance — a top-right close X. Detected the
+  // same way the shell does (store botMode + the two kill-switches) so the
+  // button appears ONLY under grok; the base app (grok off) keeps Settings in
+  // the nav and this route stays byte-identical (no extra button in its header).
+  const [grok] = React.useState(() =>
+    botModeOn(
+      useUI.getState().botMode,
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(BOT_KILL_SWITCH_KEY),
+      typeof localStorage === 'undefined'
+        ? null
+        : localStorage.getItem(GROK_KILL_SWITCH_KEY),
+    ),
+  )
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
@@ -1197,6 +1217,28 @@ export function Settings() {
         className="glass safe-header pointer-events-none sticky top-0 z-20 flex items-center justify-center border-b border-hairline sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Settings</span>
+        {/* Close X — the exit affordance. Under grok, Settings is dropped from
+            the nav (layout.tsx `grokHidden`) and reached via the roster avatar,
+            so this route needs its own way out (the mirror of that top-right
+            entry point, and the iOS sheet-dismiss convention). The header is
+            `pointer-events-none` (a scroll-reveal glass bar) and `justify-center`
+            (centred title), so the button is `pointer-events-auto` and absolutely
+            pinned to the right edge, leaving the title centred. It reuses the
+            roster's `.gr-icon-btn` ghost style. `navigate('/')` returns to the
+            overview deterministically (vs. a fragile `navigate(-1)` on a
+            deep-link / cold load). Rendered ONLY under grok, so the base app's
+            header is byte-identical. */}
+        {grok && (
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            aria-label="Close settings"
+            title="Close"
+            className="gr-icon-btn pointer-events-auto absolute right-3 top-1/2 -translate-y-1/2 sm:right-4"
+          >
+            <X size={20} aria-hidden />
+          </button>
+        )}
       </motion.header>
 
       <MotionConfig reducedMotion="user">

@@ -1,9 +1,11 @@
 /**
  * `<CompanySwitcher>` — the HQ/company scope selector, grok-native (Companies,
- * Bot Mode). It lives leftmost in `.gr-head`, right after the `.gr-brand`
- * wordmark: a scope reads as "above" the sort/density/search controls, and the
- * TRIGGER *is* the always-visible identity chip (Slack/Notion pattern — the
- * active tenant is never hidden behind a click).
+ * Bot Mode). It is the leftmost identity in `.gr-head` and IS the overview title
+ * (the old `.gr-brand` "supermux" wordmark was dropped — the active scope name
+ * leads instead): the TRIGGER is the always-visible identity chip (Slack/Notion
+ * pattern — the active tenant is never hidden behind a click), showing the mark
+ * (HQ = the real blue-S `<HqMark>`, a company = its `<CompanyMark>`) next to the
+ * active scope's name.
  *
  * Selecting a row writes `activeCompany` in the UI store, which scopes the whole
  * roster (see `grok-roster.tsx`). `null` = HQ, the main/PA space that shows only
@@ -37,7 +39,7 @@ import { useCompanies } from '@/hooks/use-companies'
 import { useUI } from '@/stores/ui-store'
 import { companyForDigit } from '@/lib/companies'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { CompanyMark } from '@/components/roster/company-mark'
+import { CompanyMark, HqMark } from '@/components/roster/company-mark'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 
 const CreateCompanySheet = React.lazy(() =>
@@ -236,8 +238,8 @@ export function CompanySwitcher({
       : 'gap-2.5 px-3 py-2 text-[13px] hover:bg-accent/50'
     const hl = (on: boolean) => (!sheet && on ? 'bg-accent/50' : '')
     const markSize = sheet ? 28 : 24
+    // HQ mark matches the company-mark scale in each shell (sheet 28 / menu 24).
     const sparkSize = sheet ? 28 : 24
-    const sparkRadius = sheet ? 12 : 10
 
     return (
       <>
@@ -251,16 +253,7 @@ export function CompanySwitcher({
           onMouseEnter={() => !sheet && setCursor(0)}
           onClick={() => select(null)}
         >
-          <span
-            className="gr-spark"
-            aria-hidden
-            style={{
-              width: sparkSize,
-              height: sparkSize,
-              borderRadius: sparkRadius,
-              flex: 'none',
-            }}
-          />
+          <HqMark size={sparkSize} />
           <span className="flex min-w-0 flex-col">
             <span className="font-semibold text-foreground">HQ</span>
             <span
@@ -405,7 +398,7 @@ export function CompanySwitcher({
               className="grok-identity"
             />
           ) : (
-            <span className="gr-spark" aria-hidden />
+            <HqMark size={22} />
           )}
           <span className="gr-company-lbl">{label}</span>
           <ChevronsUpDown size={15} className="gr-company-cv" aria-hidden />

@@ -85,6 +85,8 @@ import {
   companiesNeedingAttention,
 } from '@/lib/companies'
 import { CompanySwitcher } from '@/components/roster/company-switcher'
+import { NavBadgeDot } from '@/components/layout'
+import { useUpdateBadge } from '@/hooks/use-update-badge'
 import { agentHueVars } from '@/lib/grok-agent-hue'
 import { characterFromSeed } from '@/brand/marks'
 import { useTheme } from '@/components/theme-provider'
@@ -645,6 +647,10 @@ export function TeamRow({
 
 export default function GrokRoster() {
   const navigate = useNavigate()
+  // The update-available tell, re-homed onto the top-right avatar (the grok
+  // Settings doorway) now that the Settings nav item — its former host — is
+  // hidden under grok.
+  const { state: updateBadge } = useUpdateBadge()
   const { sessions: allSessions } = useSessions()
   const { teams } = useTeams()
   const attention = useAttentionContext()
@@ -1008,12 +1014,13 @@ export default function GrokRoster() {
   return (
     <div className="grok-roster" data-detail={hasDetail ? '1' : '0'} data-density={density}>
       <header className="gr-head">
-        <span className="gr-brand">
-          <span className="gr-spark" aria-hidden />
-          supermux
-        </span>
-        {/* The HQ/company scope chip — leftmost identity, right after the
-            wordmark: a scope reads as "above" the sort/density/search controls. */}
+        {/* The HQ/company scope chip is the overview TITLE — the leftmost
+            identity. The old `.gr-brand` wordmark (a rainbow spark tile + the
+            literal "supermux") was dropped: the switcher already renders the
+            active scope's name (`active.display_name` or "HQ") next to its mark,
+            so the active TEAM name leads instead of a static wordmark. HQ now
+            shows the real blue-S brand `<Logo>` (via `<HqMark>`), not the
+            invented spark. */}
         <CompanySwitcher attention={companyAttention} />
         <span className="gr-count">
           {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
@@ -1117,12 +1124,23 @@ export default function GrokRoster() {
           <button
             type="button"
             className="gr-me"
-            aria-label="Sander — settings"
+            aria-label={
+              updateBadge !== 'none'
+                ? 'Sander — settings (update available)'
+                : 'Sander — settings'
+            }
             title="Settings"
             onClick={() => navigate('/settings')}
           >
             <span className="av" aria-hidden>
               SB
+            </span>
+            {/* Re-homed update-available dot. It used to hang off the Settings
+                nav item, which grok drops (`grokHidden`); the avatar is the grok
+                Settings doorway, so the "update available" tell rides here now.
+                Absolutely pinned to the avatar's top-right corner. */}
+            <span className="pointer-events-none absolute -right-0.5 -top-0.5">
+              <NavBadgeDot state={updateBadge} />
             </span>
           </button>
         </span>
