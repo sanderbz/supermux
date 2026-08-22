@@ -141,6 +141,7 @@ impl Harness {
                 worktree: false,
                 worktree_repo: String::new(),
                 host_id: None,
+                company_id: None,
                 runtime: "native".to_string(),
             },
         )

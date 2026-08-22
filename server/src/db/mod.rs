@@ -14,6 +14,7 @@ use crate::config::Config;
 pub mod audit;
 pub mod board;
 pub mod boards;
+pub mod companies;
 pub mod hosts;
 pub mod prefs;
 pub mod push;
@@ -113,8 +114,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 27,
-            "expected twenty-seven applied migrations (0001-0005, 0007-0024, 0026-0029)"
+            applied, 28,
+            "expected twenty-eight applied migrations (0001-0005, 0007-0024, 0026-0030)"
         );
 
         pool.close().await;
@@ -212,6 +213,173 @@ mod tests {
                 .await
                 .unwrap();
         assert!(team_card.is_none(), "team board delete cascades its cards");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Migration 0030 regression, mirroring the board_id backfill/cascade proof
+    /// above: an existing (legacy) session — inserted with a column list that
+    /// omits `company_id` — backfills to NULL (= a main bot, byte-identical
+    /// behaviour); deleting a company NULLs its member sessions
+    /// (`trg_company_delete_sessions`) and drops its connectors
+    /// (`trg_company_delete_connectors`); and the seeded owner row exists
+    /// exactly once.
+    #[tokio::test]
+    async fn migration_0030_backfills_null_company_and_cascades_on_delete() {
+        let (pool, dir) = test_pool().await;
+        let now = chrono::Utc::now().timestamp();
+
+        // A legacy session (no company_id in the INSERT column list) backfills to NULL.
+        sqlx::query(
+            "INSERT INTO sessions (name, dir, desc, provider, flags, pinned, archived,
+                 auto_continue, auto_continue_msg, rate_limit_resume_text, tags, creator,
+                 branch, worktree, worktree_repo, mcp, created_at, start_count, last_started,
+                 last_send, last_send_text, task_summary, cc_session_name, cc_conversation_id,
+                 codex_session_id, start_error)
+             VALUES ('legacy', '/home/x', '', 'claude', '', 0, 0, 0, 'continue', 'continue',
+                     '[]', '', '', 0, '', '', ?, 0, 0, 0, '', '', '', '', '', '')",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cid: Option<i64> =
+            sqlx::query_scalar("SELECT company_id FROM sessions WHERE name = 'legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(cid, None, "existing fleet backfills to NULL = main bot");
+
+        // Create a company + a member session + a connector row.
+        sqlx::query(
+            "INSERT INTO companies (slug, display_name, root_dir, created_at, updated_at)
+             VALUES ('acme', 'Acme', '/srv/acme', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let acme: i64 = sqlx::query_scalar("SELECT id FROM companies WHERE slug='acme'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = ? WHERE name = 'legacy'")
+            .bind(acme)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO company_connectors (company_id, name, config_json, created_at, updated_at)
+             VALUES (?, 'slack', '{}', ?, ?)",
+        )
+        .bind(acme)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Deleting the company NULLs its sessions and drops its connectors (triggers).
+        sqlx::query("DELETE FROM companies WHERE id = ?")
+            .bind(acme)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let cid_after: Option<i64> =
+            sqlx::query_scalar("SELECT company_id FROM sessions WHERE name = 'legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(cid_after, None, "trg_company_delete_sessions NULLs member sessions");
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM company_connectors WHERE company_id = ?")
+                .bind(acme)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 0, "trg_company_delete_connectors cascades");
+
+        // The seeded owner row exists exactly once.
+        let owners: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM human_users WHERE role='owner'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owners, 1, "exactly one seeded owner row");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `company_id` threads CreateInput → NewSession → INSERT → `Session` row,
+    /// and a `duplicate` INHERITS it (the clone's `company_id` matches the
+    /// source's — the copied column list carries it).
+    #[tokio::test]
+    async fn create_persists_company_id_and_duplicate_inherits_it() {
+        let (pool, dir) = test_pool().await;
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO companies (slug, display_name, root_dir, created_at, updated_at)
+             VALUES ('acme','Acme','/srv/acme',?,?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let acme: i64 = sqlx::query_scalar("SELECT id FROM companies WHERE slug='acme'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let ns = sessions::NewSession {
+            name: "bot-a".into(),
+            display_name: "bot-a".into(),
+            dir: "/srv/acme/bot-a".into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            creator: String::new(),
+            flags: String::new(),
+            tags: "[]".into(),
+            branch: String::new(),
+            mcp: String::new(),
+            worktree: false,
+            worktree_repo: String::new(),
+            host_id: None,
+            runtime: "native".into(),
+            company_id: Some(acme),
+        };
+        sessions::create(&pool, &ns).await.unwrap();
+        let got = sessions::get(&pool, "bot-a").await.unwrap().unwrap();
+        assert_eq!(got.company_id, Some(acme));
+
+        sessions::duplicate(&pool, "bot-a", "bot-a-copy").await.unwrap();
+        let copy = sessions::get(&pool, "bot-a-copy").await.unwrap().unwrap();
+        assert_eq!(copy.company_id, Some(acme), "duplicate inherits company_id");
+
+        // A main-bot session (no company) stays NULL and its duplicate too.
+        let main = sessions::NewSession {
+            name: "main-a".into(),
+            display_name: "main-a".into(),
+            dir: "/home/x".into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            creator: String::new(),
+            flags: String::new(),
+            tags: "[]".into(),
+            branch: String::new(),
+            mcp: String::new(),
+            worktree: false,
+            worktree_repo: String::new(),
+            host_id: None,
+            runtime: "native".into(),
+            company_id: None,
+        };
+        sessions::create(&pool, &main).await.unwrap();
+        let got_main = sessions::get(&pool, "main-a").await.unwrap().unwrap();
+        assert_eq!(got_main.company_id, None);
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

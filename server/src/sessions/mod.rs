@@ -225,6 +225,11 @@ pub struct SessionView {
     pub mcp: String,
     pub worktree: bool,
     pub creator: String,
+    /// The company this session belongs to (migration 0030), or `null` for a
+    /// main/PA bot. This is the read-path addition `host_id` never got — the
+    /// company switcher (§5) reads it to scope the roster client-side. Always
+    /// present on the wire (serialised as `null` for a main bot).
+    pub company_id: Option<i64>,
     /// Which terminal backend drives this session (migration 0024): `"tmux"` or
     /// `"native"`. ADDITIVE field — always present, `"tmux"` for the entire
     /// existing fleet, so no client that ignores it sees any change. Exposed so
@@ -478,6 +483,9 @@ fn view(
         mcp: s.mcp.clone(),
         worktree: s.worktree != 0,
         creator: s.creator.clone(),
+        // The read-path addition host_id never got: the switcher reads this to
+        // scope the roster. NULL for a main bot; the whole existing fleet.
+        company_id: s.company_id,
         // Rows written before migration 0024 (and the test-only
         // `insert_minimal`) can read back empty; present them as the tmux
         // default so the field is never blank on the wire.
@@ -963,6 +971,13 @@ pub struct CreateInput {
     /// they timed out.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// The company a new session is created into (migration 0030). Absent /
+    /// null => a main bot (`company_id` NULL). When set, the create path forces
+    /// `dir` under the company's `root_dir/<name>/` and rejects any other dir
+    /// (§4.1). Membership is fixed at create — `ConfigInput` deliberately has no
+    /// `company_id`, so `PATCH …/config` cannot reassign it (decision #11).
+    #[serde(default)]
+    pub company_id: Option<i64>,
 }
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
@@ -1017,14 +1032,56 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         )));
     }
 
-    let dir = input
-        .dir
+    // Capture the caller-supplied dir BEFORE the default derivation — the
+    // company dir-forcing branch below needs the raw value, and `Option::filter`
+    // takes `self` by value (consuming `input.dir` would move it out; P0.7
+    // use-after-move caveat).
+    let supplied_dir = input.dir.clone();
+    let default_dir = supplied_dir
+        .clone()
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| {
             dirs::home_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| ".".into())
         });
+
+    // Company sessions live under their company's `root_dir/<name>/` and cannot
+    // be pointed outside it, even by a raw curl (§4.1). Main bots (`company_id`
+    // NULL) keep the free-form default-to-$HOME dir above, byte-identical.
+    let dir = if let Some(cid) = input.company_id {
+        let company = db::companies::get(&state.pool, cid)
+            .await?
+            .ok_or_else(|| AppError::BadRequest(format!("no company {cid}")))?;
+        if company.archived != 0 {
+            return Err(AppError::BadRequest("company is archived".into()));
+        }
+        let root = std::path::Path::new(&company.root_dir);
+        let forced = root.join(&name);
+        // If the caller supplied a dir, it must canonicalize under `root_dir`
+        // (or be the not-yet-created forced path itself).
+        if let Some(sup) = supplied_dir.as_ref().filter(|d| !d.trim().is_empty()) {
+            let sp = std::path::Path::new(sup);
+            let ok = sp
+                .canonicalize()
+                .ok()
+                .zip(root.canonicalize().ok())
+                .map(|(a, r)| a.starts_with(&r))
+                .unwrap_or(false)
+                || sp == forced.as_path();
+            if !ok {
+                return Err(AppError::BadRequest(
+                    "dir must be under the company's root_dir".into(),
+                ));
+            }
+        }
+        std::fs::create_dir_all(&forced).map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("mkdir {}: {e}", forced.display()))
+        })?;
+        forced.display().to_string()
+    } else {
+        default_dir
+    };
     let tags = input.tags.unwrap_or_default();
     let display_name = input
         .display_name
@@ -1061,6 +1118,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         worktree: input.worktree.unwrap_or(false),
         worktree_repo: String::new(),
         host_id: input.host_id,
+        company_id: input.company_id,
         runtime: runtime_kind,
     };
     db::sessions::create(&state.pool, &new).await?;
@@ -1214,6 +1272,23 @@ pub async fn duplicate(
         )));
     }
     db::sessions::duplicate(&state.pool, src, new_name).await?;
+    // §3.3#3 / §4.1 — `duplicate()` bypasses `create()`'s dir-forcing and copies
+    // `dir` verbatim. For a clone that INHERITED a non-NULL `company_id`,
+    // re-derive its own `root_dir/<new_name>/` and mkdir it, so two company
+    // agents never share a working folder. A main-bot clone (`company_id` NULL)
+    // keeps the verbatim-copied dir, unchanged.
+    if let Some(row) = db::sessions::get(&state.pool, new_name).await? {
+        if let Some(cid) = row.company_id {
+            if let Some(company) = db::companies::get(&state.pool, cid).await? {
+                let forced = std::path::Path::new(&company.root_dir).join(new_name);
+                std::fs::create_dir_all(&forced).map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("mkdir {}: {e}", forced.display()))
+                })?;
+                db::sessions::set_dir(&state.pool, new_name, &forced.display().to_string())
+                    .await?;
+            }
+        }
+    }
     // T6.2 — the schedules come too, DISABLED. Before B5 no child row was
     // cloned at all, so "duplicate this agent" silently dropped its jobs. They
     // arrive disabled because a copy that immediately starts firing cron jobs
@@ -2296,7 +2371,109 @@ mod tests {
             worktree: None,
             host_id: None,
             runtime: None,
+            company_id: None,
         }
+    }
+
+    /// Seed a company row directly in the DB and return `(id, root_dir)`. The
+    /// `root_dir` is a real temp dir so the create-path `mkdir` + canonicalize
+    /// checks operate on an existing tree.
+    async fn seed_company(state: &AppState, slug: &str) -> (i64, String) {
+        let root = std::env::temp_dir()
+            .join(format!("supermux-co-root-{}", uuid::Uuid::new_v4()))
+            .join(slug);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.display().to_string();
+        let c = db::companies::create(&state.pool, slug, slug, &root)
+            .await
+            .unwrap();
+        (c.id, root)
+    }
+
+    /// §4.1 — a company session's `dir` is FORCED under `<root_dir>/<name>/`; a
+    /// caller-supplied dir outside the root is a 400; a main bot (no company)
+    /// keeps its free-form dir.
+    #[tokio::test]
+    async fn company_session_dir_is_forced_under_root_and_rogue_dir_is_400() {
+        let (state, dir) = test_state().await;
+        let (acme, root) = seed_company(&state, "acme").await;
+
+        // No supplied dir → forced to <root>/bot-a.
+        let mut a = input("bot-a");
+        a.dir = None;
+        a.company_id = Some(acme);
+        let view = create(&state, a).await.expect("create bot-a");
+        let want = std::path::Path::new(&root).join("bot-a").display().to_string();
+        assert_eq!(view.dir, want, "dir forced under root_dir/<name>");
+        assert_eq!(view.company_id, Some(acme));
+        assert!(std::path::Path::new(&want).is_dir(), "forced folder mkdir'd");
+
+        // A rogue supplied dir outside the root → 400.
+        let mut b = input("bot-b");
+        b.dir = Some("/etc".into());
+        b.company_id = Some(acme);
+        match create(&state, b).await {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+
+        // A main bot (no company) keeps its supplied dir, unchanged.
+        let mut m = input("main-x");
+        m.dir = Some("/tmp".into());
+        let mview = create(&state, m).await.expect("create main-x");
+        assert_eq!(mview.dir, "/tmp");
+        assert_eq!(mview.company_id, None);
+
+        crate::sessions::native::forget("bot-a");
+        crate::sessions::native::forget("main-x");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// §3.3#3 / §4.1 — `duplicate()` bypasses `create()`'s dir-forcing; a
+    /// duplicated COMPANY session gets its own re-derived `<root_dir>/<new>/`
+    /// (never the source's folder), while a main-bot duplicate copies `dir`
+    /// verbatim.
+    #[tokio::test]
+    async fn duplicate_of_company_session_gets_its_own_forced_dir() {
+        let (state, dir) = test_state().await;
+        let (acme, root) = seed_company(&state, "acme").await;
+
+        let mut a = input("bot-a");
+        a.dir = None;
+        a.company_id = Some(acme);
+        let src_dir = create(&state, a).await.expect("create bot-a").dir;
+
+        let copy = duplicate(&state, "bot-a", "bot-a-copy")
+            .await
+            .expect("duplicate");
+        let want = std::path::Path::new(&root)
+            .join("bot-a-copy")
+            .display()
+            .to_string();
+        assert_eq!(copy.dir, want, "clone dir re-derived under root_dir/<new>");
+        assert_ne!(copy.dir, src_dir, "clone does NOT share the source dir");
+        assert_eq!(copy.company_id, Some(acme));
+        assert!(std::path::Path::new(&want).is_dir(), "clone folder mkdir'd");
+
+        // A main-bot duplicate copies `dir` verbatim.
+        let mut m = input("main-x");
+        m.dir = Some("/tmp".into());
+        create(&state, m).await.expect("create main-x");
+        let mcopy = duplicate(&state, "main-x", "main-x-copy")
+            .await
+            .expect("duplicate main");
+        assert_eq!(mcopy.dir, "/tmp", "main-bot clone copies dir verbatim");
+        assert_eq!(mcopy.company_id, None);
+
+        crate::sessions::native::forget("bot-a");
+        crate::sessions::native::forget("bot-a-copy");
+        crate::sessions::native::forget("main-x");
+        crate::sessions::native::forget("main-x-copy");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The column threads CreateInput → NewSession → INSERT → `Session` row →

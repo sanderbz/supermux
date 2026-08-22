@@ -10,6 +10,7 @@ pub mod auth;
 pub mod board;
 pub mod claude_config;
 pub mod claude_tools;
+pub mod companies;
 pub mod config;
 pub mod db;
 pub mod error;

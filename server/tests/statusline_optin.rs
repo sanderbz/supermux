@@ -94,6 +94,7 @@ async fn session_create_and_start_never_install_the_statusline() {
             mcp: None,
             worktree: None,
             host_id: None,
+            company_id: None,
             bypass_permissions: None,
             // tmux, so the pin does not depend on a native holder binary.
             runtime: Some("tmux".into()),

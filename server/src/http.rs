@@ -20,6 +20,7 @@ use crate::audit;
 use crate::auth;
 use crate::board;
 use crate::claude_tools;
+use crate::companies;
 use crate::external_edit;
 use crate::files;
 use crate::hooks;
@@ -153,6 +154,7 @@ fn protected_router(state: AppState) -> Router {
         .merge(sse::router_for(state.clone())) // GET /api/events SSE stream
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
+        .merge(companies::router_for(state.clone())) // companies CRUD (migration 0030)
         // Claude tools registry + MCP CRUD (bearer-protected).
         .merge(claude_tools::router_for(state.clone()))
         .merge(prefs::router_for(state.clone())) // snippets + kbd-groups

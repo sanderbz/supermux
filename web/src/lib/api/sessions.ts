@@ -54,6 +54,9 @@ export interface SessionSummary {
   /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0030); null / absent = a
+   *  main/PA bot. The company switcher (P1) reads this to scope the roster. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars), captured by `set_last_send` on
    *  both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. */
@@ -297,6 +300,10 @@ export interface ApiSession {
    *  row). The session tile renders a small globe badge when this is set; the
    *  new-session sheet picks it via <HostPicker>. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0030); null = a main/PA
+   *  bot (the entire existing fleet). The read-path addition `host_id` never
+   *  got — the switcher (P1) reads it to scope the roster client-side. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars, control chars stripped), captured
    *  on both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. Pairs with
@@ -509,6 +516,10 @@ export interface NewSession {
   worktree?: boolean
   command?: string
   host_id?: number | null
+  /** The company to create this session into (migration 0030). Absent / null =
+   *  a main bot; when set, the server forces `dir` under the company's
+   *  `root_dir/<name>/` and rejects any other dir. */
+  company_id?: number | null
   /** Boot Claude in bypass-permissions mode (`--permission-mode
    *  bypassPermissions`) — it runs tools without asking. A typed boolean: the
    *  server builds the trusted flag, the web never sends raw launch flags. */
