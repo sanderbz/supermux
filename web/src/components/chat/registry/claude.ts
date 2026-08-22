@@ -334,7 +334,17 @@ function questionEntry(sighting: DialogSighting): RegistryEntry | null {
   return {
     id: 'question.ask',
     family: 'question',
+    // AskUserQuestion's rows are the MODEL'S, not Claude Code's — a static CC
+    // version number certifies nothing about them (see the doc block above and
+    // the `RegistryEntry.pinExempt` type at :110). The real guard is the
+    // per-row literal fingerprint (`shapeHolds` + `sightingKey`) plus
+    // `answerDialog`'s verify-before-send / caret-drift checks, none of which a
+    // version pin adds to. So this family claims the exemption, exactly like
+    // `startup.apikey` (:461) and `paused.overage_consent` (:548) — otherwise
+    // every option is vetoed at `index.ts:106` on any build != 2.1.233.
+    // `verifiedVersions` stays as the display-only record of what was captured.
     verifiedVersions: ASK_QUESTION_VERSIONS,
+    pinExempt: true,
     options: sighting.options.map((label, i) => {
       const free = FREE_TEXT_ROW.test(label)
       return {

@@ -415,6 +415,48 @@ describe('the card the surface draws', () => {
     expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232', '2.1.233'])
   })
 
+  // AskUserQuestion is `pinExempt`: its rows are the MODEL'S, so a Claude Code
+  // version number certifies nothing about them (the guard is the per-row
+  // literal fingerprint + answerDialog's live caret checks, not a version pin).
+  // Before the exemption every option was vetoed at index.ts:106 on any build
+  // != 2.1.233 and the card said "answer in the terminal"; the fleet runs
+  // 2.1.227, so the card was permanently dead. These assert it is now ENABLED on
+  // a non-2.1.233 pin (and with no pin at all), while the free-text row and Esc
+  // stay refused.
+  const QUESTION: PeekLens = {
+    ...CLEAR,
+    dialog: {
+      family: 'question',
+      options: ['Apple', 'Banana', 'Cherry', 'Type something.'],
+      caretIndex: 0,
+      question: 'Which fruit do you want?',
+      header: 'Fruit choice',
+      freeTextIndex: 3,
+    },
+  }
+
+  test('AskUserQuestion is answerable on a version that is not 2.1.233', () => {
+    // The exact build that used to disable it — the fleet pin (memory:
+    // grok-ui-masterplan, CC pinned 2.1.227).
+    const view = dialogCardView(QUESTION, '2.1.227')!
+    expect(view.id).toBe('question.ask')
+    expect(view.disabled).toBeFalsy()
+    expect(view.attention).toBeNull()
+    // The three real answers are live…
+    expect(view.options.slice(0, 3).every((o) => o.actOn)).toBe(true)
+    // …and the safety guards are intact: the free-text row and Esc stay refused.
+    expect(view.options[3].actOn).toBe(false)
+    expect(view.escape?.actOn).toBe(false)
+    expect(view.note).toBeUndefined()
+  })
+
+  test('AskUserQuestion is answerable with no version pin at all', () => {
+    const view = dialogCardView(QUESTION, null)!
+    expect(view.disabled).toBeFalsy()
+    expect(view.attention).toBeNull()
+    expect(view.options.slice(0, 3).every((o) => o.actOn)).toBe(true)
+  })
+
   test('no dialog, no card', () => {
     expect(dialogCardView(CLEAR, '2.1.231')).toBeNull()
   })

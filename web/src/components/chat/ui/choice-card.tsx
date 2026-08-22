@@ -152,6 +152,14 @@ export function DialogShell({
     <div
       role="group"
       aria-labelledby={qid}
+      // One hook for the whole modal-dialog family (ChoiceCard / PermissionCard
+      // / FormCard all route through DialogShell) so grok can reskin them from a
+      // single selector — see grok-mode.css `[data-grok] [data-dialog-shell]`,
+      // which restores an opaque elevated fill + popover shadow the WS8 token
+      // re-point stripped (the card was left blur-dependent, and iOS WebKit
+      // mis-composites the nested backdrop-filter, bleeding the transcript
+      // through). Base app ignores the attribute — byte-safe off grok.
+      data-dialog-shell=""
       className={cn(
         'ml-11 mt-3 max-w-[592px] rounded-[16px] px-[17px] py-3.5',
         'border-[0.5px] border-hairline bg-surface backdrop-blur-[30px] backdrop-saturate-[170%]',

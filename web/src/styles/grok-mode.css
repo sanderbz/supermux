@@ -3159,6 +3159,22 @@
   background-color: var(--sm-bg-hover);
 }
 
+/* 4c-bis. The modal-dialog family (AskUserQuestion / permission / form cards, all
+   via `DialogShell`, keyed by `data-dialog-shell`). WS8 re-pointed `--sm-surface`
+   to a ~78%-translucent title-fill (:2892) and `--sm-card-shadow: none` (:2900),
+   which left the card legible ONLY while its own `backdrop-filter` composites.
+   iOS WebKit mis-composites that nested blur inside the grok stacking contexts,
+   so the translucent fill can't cover the transcript and the prior text bleeds
+   through as unreadable overlap. Same fix WS9 gave the expanded attention card:
+   an OPAQUE elevated fill + the popover overlay shadow (a modal dialog is a true
+   overlay, tokens.md §11), so the card reads whether or not the blur lands. Scope
+   is the dialog family only — `--sm-surface`/`--sm-card-shadow` stay untouched
+   globally (correct for bubbles/composer). Base app is byte-identical off grok. */
+[data-grok] [data-dialog-shell] {
+  background: var(--sm-bg-elevated);
+  box-shadow: var(--sm-shadow-popover);
+}
+
 /* 4d. The connection chip — reconnecting / stale / no-chat-here / gone-for-good.
    The healthy case renders nothing. The calm not-yet-current states are a neutral
    tertiary chip (a dropped link may come back — not an error). The ONE state that

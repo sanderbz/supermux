@@ -332,6 +332,12 @@ export default function ChatPanel({
   // pin (the shrink transiently reads distance>48).
   const wasAtBottomRef = React.useRef(false)
   const anchoringRef = React.useRef(false)
+  // STICKY user-scrolled-away: the durable memory the per-render `pinnedRef`
+  // cannot be, because the keyboard-open anchor keeps overwriting the pin the
+  // whole time the keyboard is up. A real finger/wheel gesture sets it; it holds
+  // auto-follow stood down across every stream tick until the reader returns to
+  // the bottom (onScroll) or taps the jump pill (jumpToBottom).
+  const userScrolledAwayRef = React.useRef(false)
   // The pill's visibility is STATE, not the pin's ref: it has to re-render.
   // Its threshold is its own (`JUMP_AWAY_PX`) — see `backlog.ts`.
   const [showJump, setShowJump] = React.useState(false)
@@ -372,11 +378,25 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (!el) return
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    // DETERMINISM LOCK: while the keyboard-open anchor is armed, do not let the
-    // transient mid-shrink distance>48 frames flip the pin to false (that race is
-    // exactly what made the first open inconsistent). showJump/loadOlder stay
-    // unguarded — they are position read-outs, not the follow decision.
-    if (!anchoringRef.current) pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    // STICKY OVERRIDE: once a real user gesture parked the view away from the
+    // bottom, follow stays false regardless of the anchoring lock — until the
+    // reader scrolls back within threshold, which clears the flag and re-pins.
+    // This is what stops a keyboard-open stream from re-snapping a scrolled-up
+    // reader (the anchoring lock never releases while the keyboard is up).
+    if (userScrolledAwayRef.current) {
+      if (distance < FOLLOW_THRESHOLD_PX) {
+        userScrolledAwayRef.current = false
+        pinnedRef.current = true
+      } else {
+        pinnedRef.current = false
+      }
+    } else if (!anchoringRef.current) {
+      // DETERMINISM LOCK: while the keyboard-open anchor is armed, do not let the
+      // transient mid-shrink distance>48 frames flip the pin to false (that race is
+      // exactly what made the first open inconsistent). showJump/loadOlder stay
+      // unguarded — they are position read-outs, not the follow decision.
+      pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    }
     setShowJump(jumpVisible(distance))
     if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
       requestOlder()
@@ -387,6 +407,9 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (!el) return
     pinnedRef.current = true
+    // The explicit "get me back to live" gesture re-engages auto-follow: drop
+    // the sticky scrolled-away flag so the stream is followed again.
+    userScrolledAwayRef.current = false
     setShowJump(false)
     if (typeof el.scrollTo === 'function') {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
@@ -522,7 +545,11 @@ export default function ChatPanel({
       raf = 0
       const { open } = detect(visual)
       if (open) {
-        if (anchoringRef.current && wasAtBottomRef.current) {
+        if (
+          anchoringRef.current &&
+          wasAtBottomRef.current &&
+          !userScrolledAwayRef.current
+        ) {
           follow(() => {
             const el = scrollRef.current
             if (el) el.scrollTop = el.scrollHeight - el.clientHeight
@@ -538,14 +565,29 @@ export default function ChatPanel({
       raf = window.requestAnimationFrame(measure)
     }
 
+    // A real user drag/wheel on the scroller is an unambiguous "I took over":
+    // disarm the anchoring lock (so onScroll's pin downgrade stops being
+    // suppressed) and set the sticky flag, so a scrolled-away reader is no
+    // longer yanked to the bottom on every stream tick while the keyboard is
+    // still open. Passive — this never blocks the scroll, only observes it.
+    const onUserDrag = () => {
+      anchoringRef.current = false
+      userScrolledAwayRef.current = true
+    }
+    const scroller = scrollRef.current
+
     document.addEventListener('focusin', onFocusIn)
     visual.addEventListener('resize', schedule)
     visual.addEventListener('scroll', schedule)
+    scroller?.addEventListener('touchmove', onUserDrag, { passive: true })
+    scroller?.addEventListener('wheel', onUserDrag, { passive: true })
     return () => {
       if (raf) window.cancelAnimationFrame(raf)
       document.removeEventListener('focusin', onFocusIn)
       visual.removeEventListener('resize', schedule)
       visual.removeEventListener('scroll', schedule)
+      scroller?.removeEventListener('touchmove', onUserDrag)
+      scroller?.removeEventListener('wheel', onUserDrag)
     }
   }, [coarse, follow])
 
