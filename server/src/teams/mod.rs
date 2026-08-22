@@ -134,9 +134,52 @@ async fn convert_to_team_handler(
 /// [`scan::archive_team_config`] move `sessions::lifecycle::archive` performs.
 /// The helper already no-ops on empty/dot-prefixed/missing names (never moves an
 /// arbitrary path), so the path segment needs no extra guarding here.
-async fn dismiss_team_handler(Path(name): Path<String>) -> Result<impl IntoResponse, AppError> {
+async fn dismiss_team_handler(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    authorize_team_for_human(&state, ctx.0.as_ref(), &name).await?;
     scan::archive_team_config(&name).map_err(|e| AppError::Internal(e.into()))?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// P3b — gate a name-addressed, state-mutating team handler by the team's
+/// resolved LEAD session company (mirrors the pty/team WS gate in
+/// `sessions::chat::ws`, which scopes by lead company). Owner / admin-all
+/// ([`crate::scope::Scope::All`]) bypass entirely — behaviour-neutral, and (for
+/// the owner) it never even scans, exactly like [`crate::scope::
+/// authorize_session_for_human`]. A scoped human may act ONLY on a team whose
+/// resolved lead session belongs to their company; every OTHER outcome — the
+/// team is not on disk, it has no resolvable lead session, or that lead belongs
+/// to another company — collapses to the uniform `team '{team_name}'` 404
+/// (fail-closed), so a member can neither enumerate nor mutate another
+/// company's teams (and cannot kill/dismiss through them).
+async fn authorize_team_for_human(
+    state: &AppState,
+    ctx: Option<&crate::auth_human::AuthContext>,
+    team_name: &str,
+) -> Result<(), AppError> {
+    let hc = match crate::scope::Scope::of(ctx) {
+        crate::scope::Scope::All => return Ok(()),
+        crate::scope::Scope::Company(c) => c,
+    };
+    // Uniform 404 for every fail-closed branch — indistinguishable from a team
+    // that simply does not exist, so a scoped member gets no existence oracle.
+    let not_found = || AppError::NotFound(format!("team '{team_name}'"));
+    let teams = scan_and_enrich_raw(state).await;
+    let team = teams
+        .iter()
+        .find(|t| t.team_name == team_name)
+        .ok_or_else(not_found)?;
+    let lead = team.lead_supermux_session.as_deref().ok_or_else(not_found)?;
+    let sess = db::sessions::get(&state.pool, lead)
+        .await?
+        .ok_or_else(not_found)?;
+    if sess.company_id != Some(hc) {
+        return Err(not_found());
+    }
+    Ok(())
 }
 
 /// `DELETE /api/teams/{team_name}/members/{agent_id}`: remove ONE teammate
@@ -153,8 +196,13 @@ async fn dismiss_team_handler(Path(name): Path<String>) -> Result<impl IntoRespo
 ///     recorded, so a still-running agent is never silently hidden.
 async fn remove_member_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path((team_name, agent_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Gate BEFORE the destructive kill/dismiss: a scoped human targeting a team
+    // outside their company (or any unresolvable team) is refused here and
+    // never reaches the kill-then-dismiss path.
+    authorize_team_for_human(&state, ctx.0.as_ref(), &team_name).await?;
     remove_member(&state, &team_name, &agent_id).await?;
     Ok(Json(json!({ "ok": true })))
 }

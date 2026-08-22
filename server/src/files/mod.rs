@@ -164,10 +164,31 @@ struct AutocompleteQuery {
 /// unknown session → local FS (the legacy behaviour, byte-for-byte). A known
 /// session whose `host_id` is `NULL` is also local. Only when the session
 /// row has a non-NULL `host_id` do we dispatch via `SshFileTransport`.
+///
+/// **P3b — the single company choke point for the files plane.** Every file
+/// handler resolves its transport here, so this is where a scoped human is
+/// fenced (mirroring the sessions scope layer's single-choke-point discipline):
+///
+///   1. **Session ownership.** A scoped human may only NAME a session in their
+///      own company. A foreign-company (or nonexistent) `session` collapses to
+///      the uniform `session '{name}'` 404 via
+///      [`crate::scope::authorize_session_for_human`], so a member can never
+///      target another company's host or session through the `session` field.
+///   2. **No remote hosts for a scoped human.** The local `company_root` jail
+///      ([`jail_for`]) confines paths on the LOCAL filesystem only — it cannot
+///      confine a remote host's filesystem. So a scoped human is REFUSED any
+///      remote transport in v1 (owner/admin keep full remote access, exactly as
+///      before): a session with a non-NULL `host_id` yields the same uniform
+///      404. A scoped member therefore gets LOCAL company-root files only.
 async fn transport_for_session(
     state: &AppState,
+    ctx: &crate::scope::OptCtx,
     session: Option<&str>,
 ) -> Result<Arc<dyn FileTransport>, AppError> {
+    // (1) A scoped human may only name a session in their own company.
+    if let Some(name) = session {
+        crate::scope::authorize_session_for_human(state, ctx.0.as_ref(), name).await?;
+    }
     let host_id = match session {
         None => None,
         Some(name) => match db::sessions::get(&state.pool, name).await {
@@ -179,6 +200,21 @@ async fn transport_for_session(
             Err(e) => return Err(AppError::Internal(e.into())),
         },
     };
+    // (2) A scoped human is refused remote transports entirely — the local
+    // company_root jail cannot confine a remote host filesystem. Uniform 404,
+    // so the host's existence is never revealed. Owner/admin (Scope::All) fall
+    // through unchanged with full remote access.
+    if host_id.is_some()
+        && matches!(
+            crate::scope::Scope::of(ctx.0.as_ref()),
+            crate::scope::Scope::Company(_)
+        )
+    {
+        return Err(AppError::NotFound(match session {
+            Some(name) => format!("session '{name}'"),
+            None => "session".to_string(),
+        }));
+    }
     Ok(transport::resolve(&state.host_pool, host_id))
 }
 
@@ -266,7 +302,7 @@ async fn ls(
     ctx: crate::scope::OptCtx,
     Query(q): Query<LsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, q.session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     let abs = safe_path_scoped(&transport, &to_abs(&q.path, None), jail.as_deref()).await?;
     let show_hidden = is_truthy(q.hidden.as_deref());
@@ -306,7 +342,7 @@ async fn get_file(
     ctx: crate::scope::OptCtx,
     Query(q): Query<FileQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, q.session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     let abs = safe_path_scoped(&transport, &to_abs(&q.path, q.cwd.as_deref()), jail.as_deref()).await?;
     let stat = transport.stat(&abs).await.map_err(map_transport)?;
@@ -384,7 +420,7 @@ async fn put_file(
         return Err(AppError::Forbidden("file extension is not writable".into()));
     }
 
-    let transport = transport_for_session(&state, body.session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, body.session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     // resolve_safe canonicalizes the nearest existing ancestor, so a brand-new
     // (non-existent) target resolves without 500ing. The jail confines a scoped
@@ -438,7 +474,7 @@ async fn get_raw(
     headers: HeaderMap,
     Query(q): Query<FileQuery>,
 ) -> Result<Response<Body>, AppError> {
-    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, q.session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     let abs = safe_path_scoped(&transport, &to_abs(&q.path, q.cwd.as_deref()), jail.as_deref()).await?;
     let stat = transport.stat(&abs).await.map_err(map_transport)?;
@@ -557,7 +593,7 @@ async fn fs_upload(
     }
 
     let dir = dir.ok_or_else(|| AppError::BadRequest("missing `dir` field".into()))?;
-    let transport = transport_for_session(&state, session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     let dir_abs = safe_path_scoped(&transport, &to_abs(&dir, None), jail.as_deref()).await?;
     let dir_stat = transport.stat(&dir_abs).await.map_err(map_transport)?;
@@ -599,7 +635,7 @@ async fn fs_delete(
     ctx: crate::scope::OptCtx,
     Json(body): Json<DeleteBody>,
 ) -> Result<Json<Value>, AppError> {
-    let transport = transport_for_session(&state, body.session.as_deref()).await?;
+    let transport = transport_for_session(&state, &ctx, body.session.as_deref()).await?;
     let jail = jail_for(&state, &ctx).await?;
     let abs = safe_path_scoped(&transport, &to_abs(&body.path, body.cwd.as_deref()), jail.as_deref()).await?;
 

@@ -94,6 +94,38 @@ async fn make_session(state: &AppState, name: &str, company: Option<i64>, dir: &
     .expect("create session");
 }
 
+async fn make_remote_session(
+    state: &AppState,
+    name: &str,
+    company: Option<i64>,
+    dir: &std::path::Path,
+    host_id: i64,
+) {
+    db::sessions::create(
+        &state.pool,
+        &NewSession {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            dir: dir.to_string_lossy().to_string(),
+            desc: String::new(),
+            provider: "claude".to_string(),
+            creator: "test".to_string(),
+            flags: String::new(),
+            tags: "[]".to_string(),
+            branch: String::new(),
+            mcp: String::new(),
+            worktree: false,
+            worktree_repo: String::new(),
+            host_id: Some(host_id),
+            runtime: "native".to_string(),
+            model: String::new(),
+            company_id: company,
+        },
+    )
+    .await
+    .expect("create remote session");
+}
+
 async fn fixture() -> Fixture {
     let dir = std::env::temp_dir().join(format!("supermux-p3b-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -150,6 +182,19 @@ async fn fixture() -> Fixture {
     make_session(&state, "sess-a", Some(1), &root_a).await;
     make_session(&state, "sess-b", Some(2), &root_b).await;
     make_session(&state, "main-null", None, &dir).await;
+
+    // A host row so remote sessions satisfy the sessions.host_id FK. It is never
+    // dialed: the scoped-human gate refuses remote transports BEFORE resolving
+    // the SSH transport, so this row only has to exist, not be reachable.
+    let host = db::hosts::create(&state.pool, "remote-box", "user@remote.invalid", None)
+        .await
+        .expect("create host");
+
+    // REMOTE-host sessions (host_id set) for the files-jail-bypass matrix: one in
+    // company 1 (alice's own) and one in company 2 (foreign). The scoped-human
+    // gate refuses BOTH before any transport is resolved.
+    make_remote_session(&state, "sess-a-remote", Some(1), &root_a, host.id).await;
+    make_remote_session(&state, "sess-b-remote", Some(2), &root_b, host.id).await;
 
     let app = http::router(state.clone());
     Fixture { app, state, root_a, root_b }
@@ -273,6 +318,65 @@ async fn post_cookie(
     status_body(resp).await
 }
 
+async fn delete_cookie(
+    app: &axum::Router,
+    uri: &str,
+    cookie: &str,
+    csrf: &str,
+) -> (StatusCode, Vec<u8>) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .header(header::COOKIE, format!("supermux_hsess={cookie}"))
+                .header("x-supermux-csrf", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    status_body(resp).await
+}
+
+async fn post_bearer(
+    app: &axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, Vec<u8>) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    status_body(resp).await
+}
+
+async fn delete_bearer(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    status_body(resp).await
+}
+
 // ── the matrix ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -358,6 +462,121 @@ async fn files_jail_confines_scoped_human_to_company_root() {
     let (sto, bodyo) = get_bearer(&f.app, &format!("/api/file/raw?path={}", secret.to_string_lossy())).await;
     assert_eq!(sto, StatusCode::OK, "owner reads any path");
     assert_eq!(bodyo, b"bravo-company-b");
+}
+
+/// HIGH — the remote-transport files-jail bypass. The company jail is a LOCAL
+/// concept; on the REMOTE branch `safe_path` discarded it (blocklist only), and
+/// `transport_for_session` derived the host from ANY caller-named `session`. A
+/// scoped human could therefore point a file query at a foreign-company session
+/// (or any remote-host session) and read outside their company root. Fix: the
+/// named `session` must pass the company gate, AND a scoped human is refused any
+/// remote transport — both collapse to a uniform 404, never bytes.
+#[tokio::test]
+async fn scoped_human_files_remote_and_foreign_session_are_404() {
+    let f = fixture().await;
+    let (alice, _csrf) = login(&f.app, HOST_A, "alice-code").await;
+
+    // A path that IS under alice's own company root — so any leak would be a
+    // real bypass, not just an out-of-jail path failure.
+    let own = f.root_a.join("ok.txt");
+    let own_path = own.to_string_lossy().into_owned();
+
+    // (i) alice's OWN company but a REMOTE-host session → refused. Remote-host
+    // file browsing stays owner/admin (the local jail can't confine a remote FS).
+    let (st1, b1) = get_cookie(
+        &f.app,
+        &format!("/api/file/raw?session=sess-a-remote&path={own_path}"),
+        &alice,
+    )
+    .await;
+    assert_eq!(st1, StatusCode::NOT_FOUND, "own-company REMOTE session → 404");
+    assert_ne!(b1, b"alpha-company-a", "a remote session never yields bytes");
+
+    // (ii) a FOREIGN-company REMOTE session → 404 (never targets company-2's host).
+    let (st2, _) = get_cookie(
+        &f.app,
+        &format!("/api/file/raw?session=sess-b-remote&path={own_path}"),
+        &alice,
+    )
+    .await;
+    assert_eq!(st2, StatusCode::NOT_FOUND, "foreign-company REMOTE session → 404");
+
+    // (iii) a FOREIGN-company LOCAL session NAMED in a file query → 404, even
+    // though the requested PATH is under alice's own root. The session-ownership
+    // gate fires regardless of the path.
+    let (st3, b3) = get_cookie(
+        &f.app,
+        &format!("/api/file/raw?session=sess-b&path={own_path}"),
+        &alice,
+    )
+    .await;
+    assert_eq!(st3, StatusCode::NOT_FOUND, "foreign-company LOCAL session in a file query → 404");
+    assert_ne!(b3, b"alpha-company-a", "naming a foreign session never yields bytes");
+
+    // Sanity: with NO session named, alice still reads her own company root (the
+    // P3b local jail path is unchanged) — proves the gate didn't break the norm.
+    let (stok, bok) = get_cookie(&f.app, &format!("/api/file/raw?path={own_path}"), &alice).await;
+    assert_eq!(stok, StatusCode::OK, "alice still reads her own company-root file");
+    assert_eq!(bok, b"alpha-company-a");
+
+    // Owner still reads any LOCAL path (jail None), unchanged.
+    let secret = f.root_b.join("secret.txt");
+    let (sto, bo) =
+        get_bearer(&f.app, &format!("/api/file/raw?path={}", secret.to_string_lossy())).await;
+    assert_eq!(sto, StatusCode::OK, "owner reads any local path");
+    assert_eq!(bo, b"bravo-company-b");
+}
+
+/// MEDIUM — the unguarded team-management handlers. `dismiss` and
+/// `remove_member` (destructive: KillThenDismiss kills the lead's tmux pane)
+/// accepted human cookies with NO scope gate. Fix: gate both by the resolved
+/// lead session's company; a scoped human whose target team is unresolvable /
+/// foreign gets a uniform 404 and NOTHING is killed or dismissed; owner bypasses.
+///
+/// The test env has no on-disk teams, so for a scoped human EVERY team name is
+/// unresolvable → the fail-closed 404 (a member can neither enumerate nor mutate
+/// any team). The owner bypasses the gate and reaches the handler.
+#[tokio::test]
+async fn scoped_human_cannot_dismiss_or_remove_team_owner_bypasses() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+
+    // dismiss: scoped human → uniform 404 (fail-closed, no resolvable lead).
+    let (ad, _) = post_cookie(
+        &f.app,
+        "/api/teams/acme-team/dismiss",
+        &alice,
+        &csrf,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(ad, StatusCode::NOT_FOUND, "scoped human 404s a team dismiss");
+
+    // dismiss: owner bypasses the gate → archive no-ops a missing team → ok.
+    let (od, ob) = post_bearer(&f.app, "/api/teams/acme-team/dismiss", serde_json::json!({})).await;
+    assert_eq!(od, StatusCode::OK, "owner dismiss succeeds (scope gate bypassed)");
+    assert_eq!(String::from_utf8(ob).unwrap(), r#"{"ok":true}"#);
+
+    // remove_member: scoped human → 404 at the gate, BEFORE the kill/dismiss path.
+    let (ar, _) = delete_cookie(
+        &f.app,
+        "/api/teams/acme-team/members/x@acme-team",
+        &alice,
+        &csrf,
+    )
+    .await;
+    assert_eq!(ar, StatusCode::NOT_FOUND, "scoped human 404s a member removal");
+    // …and it recorded NO dismissal — nothing was killed or dismissed.
+    let dismissed = db::teams_dismissed::list_for_team(&f.state.pool, "acme-team")
+        .await
+        .unwrap();
+    assert!(dismissed.is_empty(), "a scoped human's blocked removal dismisses nothing");
+
+    // remove_member: owner bypasses the gate and REACHES the handler — which
+    // returns its own UnknownTeam 404 for a genuinely-absent team. Proves the
+    // gate scoped by identity, not by breaking the route for everyone.
+    let (or_, _) = delete_bearer(&f.app, "/api/teams/acme-team/members/x@acme-team").await;
+    assert_eq!(or_, StatusCode::NOT_FOUND, "owner reaches the handler (UnknownTeam), not the scope gate");
 }
 
 #[tokio::test]
