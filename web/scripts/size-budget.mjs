@@ -842,7 +842,16 @@ const BUDGET_ENTRY_JS = 160 * KB
 // keyboard-avoidance layout, no longer baseline passthroughs) push the measured
 // main-app JS to 318.36; ceil(measured)+margin=320. Still all off the hero path;
 // ENTRY gate unchanged at 154.73/160.
-const BUDGET_APP_JS = 320 * KB
+// RATCHETED 320 → 321 by the Companies onboarding wizard (feat/companies-grok):
+// the guided invite flow — `<InviteWizardSheet>` (Cloudflare tunnel + Google
+// login + colleague invite, resumable via `GET …/status`), its five tiny new
+// primitives (`wizard-primitives.tsx`), the `use-external-access` hooks and the
+// `external-access` client. Measured 320.54 against 320. ALL of it lands OFF the
+// hero path: the sheet is `React.lazy`-loaded (its only entry-graph edge is the
+// switcher's "Invite to <company>" trigger) and the DEV mock is dynamic-imported
+// behind the `?mock` guard — so the ENTRY gate, the one that guards cold load,
+// stays green at 156.40/160 (98%), unmoved by this fase.
+const BUDGET_APP_JS = 321 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

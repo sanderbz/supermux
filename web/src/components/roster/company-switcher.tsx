@@ -31,7 +31,7 @@
  * focus to the trigger (the combobox pattern).
  */
 import * as React from 'react'
-import { Check, ChevronsUpDown, Plus } from 'lucide-react'
+import { Check, ChevronsUpDown, Plus, UserPlus } from 'lucide-react'
 
 import { useCompanies } from '@/hooks/use-companies'
 import { useUI } from '@/stores/ui-store'
@@ -43,6 +43,14 @@ import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 const CreateCompanySheet = React.lazy(() =>
   import('@/components/roster/create-company-sheet').then((m) => ({
     default: m.CreateCompanySheet,
+  })),
+)
+
+// The onboarding wizard is lazy so none of its weight — or its DEV mock — lands
+// on the cold-load hero path; the switcher trigger is the only entry graph edge.
+const InviteWizardSheet = React.lazy(() =>
+  import('@/components/companies/invite-wizard-sheet').then((m) => ({
+    default: m.InviteWizardSheet,
   })),
 )
 
@@ -98,6 +106,7 @@ export function CompanySwitcher({
 
   const [open, setOpen] = React.useState(false)
   const [createOpen, setCreateOpen] = React.useState(false)
+  const [inviteOpen, setInviteOpen] = React.useState(false)
   // The roving highlight index into the flat option list (0 = HQ, then each
   // company, then the New-company action last). −1 = nothing highlighted yet.
   // Only used by the desktop menu; the touch sheet ignores it.
@@ -323,6 +332,31 @@ export function CompanySwitcher({
           <div className="my-1 h-px bg-border" role="separator" />
         )}
 
+        {/* Invite to the ACTIVE company — the onboarding-wizard entry point
+            (owner dashboard only; the endpoints are owner/admin-only). Shown only
+            when a company is in scope, since it invites into THAT company. */}
+        {active && (
+          <button
+            type="button"
+            role="menuitem"
+            className={`${rowBase} ${rowSkin} text-foreground`}
+            onMouseEnter={() => !sheet && setCursor(-1)}
+            onClick={() => {
+              setOpen(false)
+              setInviteOpen(true)
+            }}
+          >
+            <span
+              className="grid place-items-center"
+              aria-hidden
+              style={{ width: markSize, height: markSize, flex: 'none' }}
+            >
+              <UserPlus size={sheet ? 18 : 15} />
+            </span>
+            Invite to {active.display_name}
+          </button>
+        )}
+
         {/* New company — always-pinned bottom action, lower emphasis */}
         <button
           type="button"
@@ -432,6 +466,16 @@ export function CompanySwitcher({
               setActiveCompany(id)
               setCreateOpen(false)
             }}
+          />
+        </React.Suspense>
+      )}
+
+      {inviteOpen && active && (
+        <React.Suspense fallback={null}>
+          <InviteWizardSheet
+            open={inviteOpen}
+            onOpenChange={setInviteOpen}
+            company={{ id: active.id, slug: active.slug, display_name: active.display_name }}
           />
         </React.Suspense>
       )}

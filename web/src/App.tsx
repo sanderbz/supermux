@@ -142,6 +142,12 @@ const DevNewSession = import.meta.env.DEV
 const DevKbdProbe = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-kbd-probe'))
   : null
+// Companies onboarding wizard bench (feat/companies-grok). Exercises the full
+// resumable stepper against the in-memory mock (`?mock`) with no live Cloudflare
+// token / Google app / server. Lazy + DEV-gated — absent from production.
+const DevInvite = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-invite'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -492,6 +498,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevKbdProbe />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevInvite && (
+                <Route
+                  path="/dev/invite"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevInvite />
                     </Suspense>
                   }
                 />
