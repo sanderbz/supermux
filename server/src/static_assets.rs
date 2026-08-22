@@ -126,13 +126,13 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
 /// injection is byte-identical to the pre-P3a behavior (the owner's
 /// tailnet/localhost transport always received the token).
 fn should_splice_admin_token(state: &AppState, headers: &HeaderMap) -> bool {
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     // Feature off ⇒ byte-identical to pre-P3a: always splice the token.
     if !cfg.enabled() {
         return true;
     }
     match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
-        Some(host) => is_trusted_owner_transport(cfg, host),
+        Some(host) => is_trusted_owner_transport(&cfg, host),
         // A missing / HeaderParse-failing `Host` is NOT a recognised owner
         // transport ⇒ fail closed, withhold the token.
         None => false,

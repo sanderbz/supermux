@@ -23,8 +23,21 @@
 /// Placeholder substituted for any redacted value.
 pub const REDACTED: &str = "<redacted>";
 
-/// Query keys whose *values* are secrets (case-insensitive, exact match).
-const SECRET_QUERY_KEYS: &[&str] = &["_token", "token", "key", "auth"];
+/// Query keys whose *values* are secrets (case-insensitive, exact match). The
+/// onboarding-wizard secrets extend the set: the Cloudflare API token
+/// (`cf_token`), the Google OAuth `client_secret`, and the connector
+/// (`cloudflared`) token all pass through here so a future `TraceLayer` never
+/// lands them in the journal.
+const SECRET_QUERY_KEYS: &[&str] = &[
+    "_token",
+    "token",
+    "key",
+    "auth",
+    "cf_token",
+    "client_secret",
+    "secret",
+    "connector_token",
+];
 
 /// Redact any secret-bearing substring from `input`.
 ///
@@ -37,6 +50,25 @@ const SECRET_QUERY_KEYS: &[&str] = &["_token", "token", "key", "auth"];
 pub fn redact(input: &str) -> String {
     let mut s = redact_query(input);
     s = redact_bearer(&s);
+    s
+}
+
+/// Scrub `input` through [`redact`] AND additionally replace every literal secret
+/// value in `secrets` with [`REDACTED`].
+///
+/// The onboarding wizard holds live credentials (the Cloudflare API token, the
+/// Google client secret, the connector token) whose VALUES have no fixed query-key
+/// shape — they can appear anywhere a diagnostic string is built. This variant
+/// takes the known secret literals and removes them outright, so a value that was
+/// read from a 0600 file can never survive into a log line. Empty secrets are
+/// ignored (an unconfigured credential must not blank-scrub the whole string).
+pub fn redact_secrets(input: &str, secrets: &[&str]) -> String {
+    let mut s = redact(input);
+    for sec in secrets {
+        if !sec.is_empty() {
+            s = s.replace(sec, REDACTED);
+        }
+    }
     s
 }
 
@@ -139,6 +171,28 @@ mod tests {
         assert_eq!(redact("/api/sessions"), "/api/sessions");
         assert_eq!(redact("/api/file?path=/tmp/x"), "/api/file?path=/tmp/x");
         assert_eq!(redact("plain log line, nothing here"), "plain log line, nothing here");
+    }
+
+    #[test]
+    fn wizard_cf_token_and_google_secret_never_survive_redaction() {
+        // The two live wizard credentials, read from their 0600 files.
+        let cf_token = "cf-live-9f8a7b6c5d4e3f2a1b0c";
+        let google_secret = "GOCSPX-super-secret-value-xyz";
+        // A diagnostic line that (buggily) interpolated both.
+        let line = format!(
+            "provisioning failed: token={cf_token} secret={google_secret} at /api/external-access"
+        );
+        let scrubbed = redact_secrets(&line, &[cf_token, google_secret]);
+        assert!(!scrubbed.contains(cf_token), "cf token leaked: {scrubbed}");
+        assert!(!scrubbed.contains(google_secret), "google secret leaked: {scrubbed}");
+        assert!(scrubbed.contains(REDACTED));
+        // As a query pair the new keys are scrubbed by shape too.
+        assert_eq!(
+            redact("/api/x?cf_token=abc&client_secret=def&ok=1"),
+            format!("/api/x?cf_token={REDACTED}&client_secret={REDACTED}&ok=1")
+        );
+        // An empty (unconfigured) secret must NOT blank-scrub the whole string.
+        assert_eq!(redact_secrets("nothing secret here", &[""]), "nothing secret here");
     }
 
     #[test]

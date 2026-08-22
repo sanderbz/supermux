@@ -70,6 +70,71 @@ pub async fn bind_owner_email(pool: &SqlitePool, email: &str) -> sqlx::Result<bo
     Ok(res.rows_affected() > 0)
 }
 
+/// A colleague row plus its derived onboarding status (Invited → Pending →
+/// Active), computed by joining `human_sessions`. Used by the invite wizard's
+/// `GET /api/companies/{id}/humans` roster.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct HumanInvitee {
+    pub id: i64,
+    pub email: String,
+    pub display_name: String,
+    pub company_id: Option<i64>,
+    pub role: String,
+    pub created_at: i64,
+    /// `active` (a live, non-revoked, non-expired session exists), `pending`
+    /// (logged in at least once but no live session), or `invited` (never logged
+    /// in). Derived, not stored.
+    pub status: String,
+}
+
+/// List every colleague fenced to `company_id`, newest first, each tagged with a
+/// derived Invited/Pending/Active status (a left-join over `human_sessions`,
+/// bucketed against `now`). Owner/admin rows (`company_id NULL`) are never
+/// returned here — this is the per-company invite roster.
+pub async fn list_by_company(
+    pool: &SqlitePool,
+    company_id: i64,
+    now: i64,
+) -> sqlx::Result<Vec<HumanInvitee>> {
+    sqlx::query_as::<_, HumanInvitee>(
+        "SELECT u.id, u.email, u.display_name, u.company_id, u.role, u.created_at, \
+                CASE \
+                  WHEN EXISTS (SELECT 1 FROM human_sessions s \
+                                 WHERE s.user_id = u.id \
+                                   AND s.revoked_at IS NULL AND s.expires_at > ?) \
+                       THEN 'active' \
+                  WHEN EXISTS (SELECT 1 FROM human_sessions s WHERE s.user_id = u.id) \
+                       THEN 'pending' \
+                  ELSE 'invited' \
+                END AS status \
+         FROM human_users u \
+         WHERE u.company_id = ? \
+         ORDER BY u.created_at DESC, u.id DESC",
+    )
+    .bind(now)
+    .bind(company_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Delete a colleague row by id, but ONLY when it is fenced to `company_id`
+/// (a defense-in-depth guard so an admin cannot revoke a row outside the company
+/// they addressed, and so an owner/admin `company_id NULL` row can never be
+/// deleted through the per-company invite surface). Returns `true` if a row was
+/// removed. The caller revokes the user's live `human_sessions` separately.
+pub async fn delete_in_company(
+    pool: &SqlitePool,
+    id: i64,
+    company_id: i64,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query("DELETE FROM human_users WHERE id = ? AND company_id = ?")
+        .bind(id)
+        .bind(company_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Insert a colleague (used by the owner-only seeding path / tests). `role` must
 /// be one of `owner|admin|member` (enforced by the 0032 CHECK). Returns the new id.
 pub async fn insert(

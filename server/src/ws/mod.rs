@@ -1506,7 +1506,7 @@ pub(crate) fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         // `company_hosts`) is auto-considered an allowed WS Origin, so an operator
         // never has to duplicate it into `extra_origins` — the same map that binds
         // Host→company for login is the single source of truth for the Origin gate.
-        || state.config.human_auth.host_entry(&host).is_some()
+        || state.human_auth_cfg().host_entry(&host).is_some()
 }
 
 /// Private-range IPv4 (RFC1918) or link-local — i.e. a LAN address. (Loopback is

@@ -65,7 +65,7 @@ async fn login(
     headers: HeaderMap,
     Query(q): Query<LoginQuery>,
 ) -> Response {
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     if !cfg.enabled() {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -111,7 +111,7 @@ async fn callback(
     headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     if !cfg.enabled() {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -216,7 +216,7 @@ async fn callback(
 /// `POST /auth/logout` — revoke the session, clear the cookies. CSRF-protected
 /// (double-submit) since it is a cookie-borne state change.
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     let cookie_header = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -279,7 +279,7 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 
     // Human via cookie.
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     if cfg.enabled() {
         let cookie_header = headers
             .get(header::COOKIE)

@@ -3497,6 +3497,7 @@ version = "3.0.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
  "axum-server",

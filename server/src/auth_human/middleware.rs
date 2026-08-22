@@ -99,7 +99,7 @@ pub async fn auth_context_middleware(
     //    as an OWNED, Send type BEFORE the DB await — holding `&Request` (whose
     //    `Body` is not `Sync`) across the await would make the middleware future
     //    !Send.
-    if state.config.human_auth.enabled() {
+    if state.human_auth_cfg().enabled() {
         let cookie_header = req
             .headers()
             .get(header::COOKIE)
@@ -135,7 +135,7 @@ async fn resolve_human(
     is_mutating: bool,
     csrf_header: Option<String>,
 ) -> Result<Option<AuthContext>, AppError> {
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
 
     // Cookie header → our session cookie → verify HMAC → inner opaque token.
     let cookie_header = match cookie_header {
@@ -194,10 +194,10 @@ pub async fn resolve_cookie_identity(
     state: &AppState,
     cookie_header: Option<&str>,
 ) -> Option<AuthContext> {
-    if !state.config.human_auth.enabled() {
+    if !state.human_auth_cfg().enabled() {
         return None;
     }
-    let cfg = &state.config.human_auth;
+    let cfg = state.human_auth_cfg();
     let raw = cookie_value(cookie_header?, SESSION_COOKIE)?;
     let token = verify_cookie(&cfg.cookie_key, raw)?;
     let now = chrono::Utc::now().timestamp();

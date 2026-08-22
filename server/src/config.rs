@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use base64::Engine;
 use rand::RngCore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Fully-resolved configuration.
 #[derive(Debug, Clone)]
@@ -249,7 +249,7 @@ pub fn company_redirect_uri(slug: &str) -> String {
 
 /// One `host → company_id → redirect_uri` allowlist entry (`[[company_hosts]]`
 /// in `config.toml`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CompanyHost {
     /// Public tunnel hostname a company's colleagues reach (canonical form
     /// `<slug>.s.iwd.nl`, P3d). Also feeds the WS Origin allowlist.
@@ -550,11 +550,22 @@ fn resolve_human_auth(
 }
 
 /// Read a trimmed non-empty secret from a 0600 file, or `None`.
-fn read_secret_file(path: &Path) -> Option<String> {
+pub(crate) fn read_secret_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Ensure the human-auth cookie + CSRF signing keys exist under `data_dir`,
+/// generating + persisting them mode 0600 on first use. Reused by the onboarding
+/// wizard's hot-reload path when a box that had no `google_client_id` at boot
+/// (so empty keys) gains one via `POST /api/external-access/google`.
+pub(crate) fn ensure_signing_keys(data_dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok((
+        resolve_or_generate_key(&data_dir.join("human_cookie_key"))?,
+        resolve_or_generate_key(&data_dir.join("human_csrf_key"))?,
+    ))
 }
 
 /// Read a persisted 32-byte signing key from `path` (base64url), or generate one
@@ -630,7 +641,7 @@ fn generate_token() -> String {
 }
 
 /// Write `token` to `path` with `0o600` permissions on Unix.
-fn write_token_0600(path: &Path, token: &str) -> Result<()> {
+pub(crate) fn write_token_0600(path: &Path, token: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

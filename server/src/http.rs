@@ -194,6 +194,12 @@ fn protected_router(state: AppState) -> Router {
         // DELETE are owner/admin-only. Gated INSIDE the handlers so the member GET
         // can still return their one company (a blanket route-layer would 404 it).
         .merge(crate::companies::router_for(state.clone()))
+        // Companies onboarding wizard — external access (Cloudflare wildcard tunnel
+        // + Google login) + colleague invites. EVERY endpoint is `require_admin`
+        // INSIDE the handler (owner/admin `Scope::All` only); a member is a uniform
+        // 404. Deliberately NOT added to `crate::scope::member_may_reach`, so the
+        // deny-by-default backstop also blocks members at the route layer.
+        .merge(crate::external_access::router_for(state.clone()))
         // Prefs — P3d: a member may READ account prefs but not WRITE them; only the
         // state-changing methods are owner/admin-gated.
         .merge(prefs::router_for(state.clone()).route_layer(from_fn(require_admin_writes_mw)))

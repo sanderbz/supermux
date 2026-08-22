@@ -543,6 +543,20 @@ pub struct AppState {
     /// (swappable-for-tests) Google verifier. Config/keys live on
     /// `config.human_auth`.
     pub human_auth: Arc<crate::auth_human::HumanAuth>,
+    /// The LIVE human-auth config, hot-swappable by the onboarding wizard.
+    ///
+    /// Seeded at boot from `config.human_auth` merged with any
+    /// `<data_dir>/companies_config.toml` companion
+    /// ([`crate::external_access::store::boot_overlay`]); the wizard's
+    /// `POST /api/external-access/google` + `POST /api/companies/{id}/host`
+    /// rewrite the companion and call [`reload_human_auth`](Self::reload_human_auth)
+    /// to swap this WITHOUT a restart. Every human-auth reader consults
+    /// [`human_auth_cfg`](Self::human_auth_cfg) instead of `config.human_auth`, so
+    /// external access goes live in-process.
+    pub human_auth_config: Arc<arc_swap::ArcSwap<crate::config::HumanAuthConfig>>,
+    /// The onboarding wizard's Cloudflare + connector-runtime seams (swappable for
+    /// tests, like [`human_auth`](Self::human_auth)'s verifier).
+    pub external_access: Arc<crate::external_access::ExternalAccess>,
 }
 
 impl AppState {
@@ -565,8 +579,15 @@ impl AppState {
         // Capture the isolation policy before `config` is moved into the Arc.
         let isolation_mode = config.isolation_mode;
         // Build the P3a human-auth runtime (flow store + Google verifier) before
-        // `config` is moved into the Arc.
-        let human_auth = Arc::new(crate::auth_human::HumanAuth::new(&config.human_auth));
+        // `config` is moved into the Arc. The LIVE config is the file baseline
+        // MERGED with any `companies_config.toml` companion the wizard wrote, so a
+        // wizard-configured box comes back configured after a restart. Absent the
+        // companion this is byte-identical to `config.human_auth` (every existing
+        // install + unit test).
+        let live_human_auth =
+            crate::external_access::store::boot_overlay(&config.data_dir, config.human_auth.clone());
+        let human_auth = Arc::new(crate::auth_human::HumanAuth::new(&live_human_auth));
+        let human_auth_config = Arc::new(arc_swap::ArcSwap::from_pointee(live_human_auth));
         Self {
             pool,
             config: Arc::new(config),
@@ -612,7 +633,37 @@ impl AppState {
             )),
             isolation_applied: Arc::new(DashMap::new()),
             human_auth,
+            human_auth_config,
+            external_access: Arc::new(crate::external_access::ExternalAccess::new()),
         }
+    }
+
+    /// The LIVE human-auth config snapshot (hot-swappable by the onboarding
+    /// wizard). Every human-auth reader uses this instead of `config.human_auth`
+    /// so a wizard save takes effect in-process. Cheap `Arc` load.
+    pub fn human_auth_cfg(&self) -> Arc<crate::config::HumanAuthConfig> {
+        self.human_auth_config.load_full()
+    }
+
+    /// Rebuild the live [`crate::config::HumanAuthConfig`] from the companion store
+    /// (`companies_config.toml` + the 0600 secret files) and hot-swap it, then
+    /// point the OIDC verifier at the (possibly new) Google client. Called by the
+    /// wizard after it writes the store, so external access + login go live WITHOUT
+    /// a restart. Idempotent; safe to call repeatedly.
+    pub fn reload_human_auth(&self) -> anyhow::Result<()> {
+        let store = crate::external_access::store::read_or_default(&self.config.data_dir)?;
+        let merged = crate::external_access::store::assemble(
+            &self.config.data_dir,
+            &self.config.human_auth,
+            &store,
+        )?;
+        self.human_auth
+            .set_verifier(Arc::new(crate::auth_human::oidc::GoogleOidcVerifier::new(
+                merged.google_client_id.clone(),
+                merged.google_client_secret.clone(),
+            )));
+        self.human_auth_config.store(Arc::new(merged));
+        Ok(())
     }
 
     // ── external edit: in-flight native-editor handoff registry ───────────────
