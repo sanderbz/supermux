@@ -245,11 +245,24 @@ pub fn member_may_reach(method: &Method, path: &str) -> bool {
     if *method == Method::GET && path.starts_with("/api/agents/") && path.ends_with("/wait") {
         return true;
     }
-    // Companies: READ only — the list is own-filtered and a `{id}` fetch 404s a
-    // foreign id. The POST/PATCH/DELETE lifecycle is `require_admin` company-
-    // management, denied here by admitting only GET.
-    if *method == Method::GET && under(path, "/api/companies") {
-        return true;
+    // Companies: READ only, and only the two OWN-company reads — the list
+    // `/api/companies` (own-filtered) and the `/api/companies/{id}` fetch (404s a
+    // foreign id). Deeper `/api/companies/{id}/**` subpaths (`humans` invitee list,
+    // `host`, `verify-login` — all owner/admin wizard endpoints) are NOT admitted
+    // here: `require_admin` inside already 404s a member, and the OUTER fence denies
+    // them too (defense-in-depth). The POST/PATCH/DELETE lifecycle is likewise
+    // `require_admin`, denied here by admitting only GET.
+    if *method == Method::GET {
+        if path == "/api/companies" {
+            return true;
+        }
+        if let Some(rest) = path.strip_prefix("/api/companies/") {
+            // Exactly ONE segment — the `{id}` — no deeper. A trailing `/`, an empty
+            // `{id}`, or any `{id}/subpath` all fall through to deny.
+            if !rest.is_empty() && !rest.contains('/') {
+                return true;
+            }
+        }
     }
     // Everything else — hosts, scheduler, audit, push, updates, claude_tools (the
     // MCP registry), skills, slash-commands, agents/delegations, teams/* (start,
@@ -448,6 +461,18 @@ mod tests {
         assert!(!member_may_reach(&post, "/api/companies"));
         assert!(!member_may_reach(&put, "/api/companies/1"));
         assert!(!member_may_reach(&del, "/api/companies/2"));
+        // Deny-by-default precision: the own-company GET reads stop at
+        // `/api/companies` and `/api/companies/{id}`. The `{id}/**` subpaths are
+        // owner/admin wizard endpoints — the OUTER fence denies them too, for every
+        // method (defense-in-depth; `require_admin` inside also 404s a member).
+        assert!(!member_may_reach(&get, "/api/companies/1/humans"));
+        assert!(!member_may_reach(&post, "/api/companies/1/humans"));
+        assert!(!member_may_reach(&del, "/api/companies/1/humans/2"));
+        assert!(!member_may_reach(&post, "/api/companies/1/host"));
+        assert!(!member_may_reach(&post, "/api/companies/1/verify-login"));
+        // A trailing slash or empty `{id}` is not the `{id}` read either.
+        assert!(!member_may_reach(&get, "/api/companies/1/"));
+        assert!(!member_may_reach(&get, "/api/companies/"));
         // The global project-root lister is NOT the file jail.
         assert!(!member_may_reach(&get, "/api/projects/repos"));
         // Delegation LOG + skills + slash-commands (agents router, not delegate).

@@ -646,12 +646,17 @@ pub(crate) fn write_token_0600(path: &Path, token: &str) -> Result<()> {
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
             .open(path)?;
+        // `.mode()` only takes effect when the file is CREATED; on an existing file
+        // `truncate(true)` reuses its (possibly loosened) perms. Re-tighten to 0600
+        // explicitly so a pre-existing secret file is re-secured on every rewrite.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         f.write_all(token.as_bytes())?;
         f.write_all(b"\n")?;
         f.flush()?;
@@ -731,5 +736,42 @@ mod tests {
         let e = cfg.host_entry("acme.s.iwd.nl").expect("canonical host resolves");
         assert_eq!(e.company_id, 42);
         assert!(cfg.host_entry("beta.s.iwd.nl").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_token_0600_re_tightens_a_preexisting_loose_file() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Unique path in the OS temp dir (no tempfile dep in this crate).
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "supermux_token_test_{}_{nanos}",
+            std::process::id()
+        ));
+        // Pre-create the file with LOOSE 0644 perms (a world-readable secret).
+        std::fs::write(&path, b"stale\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "precondition: file starts world-readable"
+        );
+
+        // Rewriting must re-tighten the existing file back to 0600.
+        write_token_0600(&path, "fresh-secret").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "secret file must be re-secured to 0600");
+        // Content was rewritten (truncated + new token + newline).
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fresh-secret\n"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
