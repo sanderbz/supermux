@@ -366,11 +366,24 @@ pub struct SkillBody {
 }
 
 /// `POST /api/skills/{name}` — create or update; sync to both fs locations.
+///
+/// **P3d owner/admin-only.** A skill write lands attacker-controlled markdown in
+/// two GLOBAL locations — `~/.supermux/skills/<name>.md` and, load-bearingly,
+/// `~/.claude/commands/<name>.md`, the global Claude Code slash-command namespace
+/// that EVERY agent across ALL companies reads and expands into its prompt (a
+/// command `.md` can carry bash-exec). So a scoped member reaching this would be
+/// cross-company injection. Gate FIRST (before the name check) so a member gets
+/// the uniform `NotFound` a nonexistent route gets — no BadRequest oracle — while
+/// owner/admin (and the no-context unit-test caller) pass unchanged. `delegate`/
+/// `wait` on the same agents sub-router stay company-scoped and reachable — this
+/// gate is skills-specific, not a blanket admin route-layer.
 pub async fn upsert(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(name): Path<String>,
     Json(body): Json<SkillBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/skills/{name}"))?;
     if !valid_skill_name(&name) {
         return Err(AppError::BadRequest(
             "invalid skill name (allowed: letters, digits, '_', '.', '-')".into(),
@@ -382,10 +395,17 @@ pub async fn upsert(
 }
 
 /// `DELETE /api/skills/{name}` — remove from DB + both fs locations.
+///
+/// **P3d owner/admin-only** — same reasoning as [`upsert`]: this removes the
+/// GLOBAL `~/.claude/commands/<name>.md` (+ the supermux copy), so a member could
+/// otherwise sabotage every company's slash-command namespace. Gate first, uniform
+/// 404 for a member (no existence oracle), owner/admin bypass.
 pub async fn delete(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/skills/{name}"))?;
     if !valid_skill_name(&name) {
         return Err(AppError::BadRequest(
             "invalid skill name (allowed: letters, digits, '_', '.', '-')".into(),

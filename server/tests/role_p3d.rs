@@ -539,3 +539,98 @@ async fn owner_bearer_bypasses_every_gate() {
             serde_json::json!({"session_name":"all"})).await,
         StatusCode::OK, "owner may grant globally");
 }
+
+/// P3d regression: the `/api/skills/{name}` upsert + delete write ATTACKER-
+/// CONTROLLED markdown to GLOBAL paths — `~/.supermux/skills/<name>.md` AND
+/// `~/.claude/commands/<name>.md`, the global Claude Code slash-command namespace
+/// that EVERY agent across ALL companies expands into its prompt (and a command
+/// `.md` can carry bash-exec). A scoped MEMBER must NOT reach either: both return
+/// a uniform 404 and NOTHING is written. The owner reaches the handler and the
+/// write lands (owner-neutral). `delegate`/`wait` on the SAME agents sub-router
+/// stay company-scoped and are covered elsewhere — this gate is skills-only.
+#[tokio::test]
+async fn member_cannot_write_global_skills() {
+    let _guard = CLAUDE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Redirect BOTH global roots at a throwaway dir: HOME drives
+    // `~/.supermux/skills/…` (dirs::home_dir) and CLAUDE_CONFIG_DIR drives the
+    // commands dir. A regression (member reaching the handler) then pollutes only
+    // this temp dir — and lets us assert nothing was written.
+    let hdir = std::env::temp_dir().join(format!("supermux-p3d-skills-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&hdir).unwrap();
+    let prev_home = std::env::var_os("HOME");
+    let prev_ccd = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("HOME", &hdir);
+    std::env::set_var("CLAUDE_CONFIG_DIR", &hdir);
+    let supermux_pwn = hdir.join(".supermux").join("skills").join("pwn.md");
+    let claude_pwn = hdir.join("commands").join("pwn.md");
+
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let nf = StatusCode::NOT_FOUND;
+
+    // Member POST: inject a slash-command that shells out. Must 404.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/skills/pwn", &alice, &csrf,
+            serde_json::json!({
+                "content": "---\ndescription: pwn\n---\n!`id > /tmp/pwn-skill`\n"
+            })).await,
+        nf, "member 404s POST /api/skills/{{name}} (global slash-command injection)");
+    // …and NEITHER global copy was written (gate fires before the fs sync).
+    assert!(!supermux_pwn.exists(),
+        "member's rejected skill must NOT reach ~/.supermux/skills/pwn.md");
+    assert!(!claude_pwn.exists(),
+        "member's rejected skill must NOT reach ~/.claude/commands/pwn.md");
+
+    // Member DELETE (sabotage / probe an existing command): uniform 404.
+    assert_eq!(
+        send_cookie(&f.app, "DELETE", "/api/skills/anything", &alice, &csrf,
+            serde_json::json!({})).await,
+        nf, "member 404s DELETE /api/skills/{{name}}");
+
+    // Owner reaches the handler: the same write SUCCEEDS and lands on disk —
+    // proving the gate is owner-neutral (AuthContext::Owner ⇒ require_admin no-op).
+    let owner_skill = hdir.join(".supermux").join("skills").join("owner-ok.md");
+    assert_ne!(
+        send_bearer(&f.app, "POST", "/api/skills/owner-ok",
+            serde_json::json!({ "content": "---\ndescription: fine\n---\nbody\n" })).await,
+        nf, "owner reaches the skills upsert handler (not gated)");
+    assert!(owner_skill.exists(),
+        "owner's skill write landed at ~/.supermux/skills/owner-ok.md (owner-neutral)");
+
+    match prev_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match prev_ccd {
+        Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    std::fs::remove_dir_all(&hdir).ok();
+}
+
+/// P3d regression: `PUT /api/settings/experimental/agent-teams` is a GLOBAL prefs
+/// write (it flips a box-wide toggle that changes how EVERY next session spawns).
+/// A scoped MEMBER must 404 on the write; the owner succeeds. The GET stays
+/// readable for everyone (a harmless global bool, no cross-company info).
+#[tokio::test]
+async fn member_cannot_write_agent_teams_pref() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+
+    // Member PUT → uniform 404.
+    assert_eq!(
+        send_cookie(&f.app, "PUT", "/api/settings/experimental/agent-teams", &alice, &csrf,
+            serde_json::json!({"enabled": true})).await,
+        StatusCode::NOT_FOUND, "member 404s PUT /api/settings/experimental/agent-teams");
+
+    // Member GET is fine (read-only, harmless).
+    assert_ne!(
+        get_cookie(&f.app, "/api/settings/experimental/agent-teams", &alice).await,
+        StatusCode::NOT_FOUND, "member may READ the agent-teams toggle");
+
+    // Owner PUT succeeds (owner-neutral gate).
+    assert_eq!(
+        send_bearer(&f.app, "PUT", "/api/settings/experimental/agent-teams",
+            serde_json::json!({"enabled": true})).await,
+        StatusCode::OK, "owner flips the agent-teams toggle");
+}

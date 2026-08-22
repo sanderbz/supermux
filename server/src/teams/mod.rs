@@ -380,8 +380,14 @@ async fn get_agent_teams(
 /// SSE `settings` event so other tabs reconcile live (no poll).
 async fn put_agent_teams(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(input): Json<AgentTeamsToggle>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // P3d owner/admin-only: this is a GLOBAL prefs write that changes how EVERY
+    // next session spawns (the env var + `teammateMode` at launch). A scoped
+    // member gets the uniform NotFound; owner/admin (and the no-context unit-test
+    // caller) bypass. The GET reader stays open — a harmless global bool.
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/settings/experimental/agent-teams")?;
     db::prefs::set_agent_teams_enabled(&state.pool, input.enabled).await?;
     let _ = state.sse_tx.send(SseEvent {
         event: "settings".to_string(),
