@@ -214,6 +214,11 @@ PrivateDevices=true
 # Confine syscalls to the standard non-privileged set plus exec (needed to
 # spawn tmux/git/claude/codex children).
 SystemCallFilter=@system-service
+# @sandbox unlocks the landlock_* syscalls (blocked by @system-service) so the
+# Companies feature can kernel-confine per-company agent shells via unprivileged
+# Landlock in the child pre_exec. Does NOT open namespaces (RestrictNamespaces
+# stays true), no runtime privilege; the startup probe flips None->Full once this ships.
+SystemCallFilter=@sandbox
 SystemCallFilter=~@privileged @resources @obsolete
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
