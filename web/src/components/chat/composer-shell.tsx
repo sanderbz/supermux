@@ -78,13 +78,13 @@ export function ComposerFrame({
       className={cn(
         // On the phone the composer is now the SINGLE bottom bar (the old dock
         // below it is folded away under chat — mobile polish #4), so it owns the
-        // home-indicator inset: the `max(…, 24px)` (floor was 14px) keeps a 24px
+        // home-indicator inset: the `max(…, 36px)` (floor was 24px) keeps a 36px
         // breathing room on a flat-bottom phone and lifts clear of the indicator
-        // on a notched one. The 24px floor lifts the input ~10px clear of the iOS
+        // on a notched one. The 36px floor lifts the input clear of the iOS
         // keyboard on mode 9 (imperative root resize), where the composer rides
         // flush at bottom:0 and 14px was clipped under the keyboard; at rest the
-        // env(safe-area-inset-bottom)=34px still dominates, so the gutter is
-        // unchanged. The inner gate is `min(--kb-safe-bottom, --safe-bottom)`: BOTH are
+        // env(safe-area-inset-bottom)=34px<36 so pb=36, a harmless 2px more
+        // resting gutter. The inner gate is `min(--kb-safe-bottom, --safe-bottom)`: BOTH are
         // env(safe-area-inset-bottom) at rest, and keyboard-open zeros WHICHEVER
         // signal fires — the JS keyboard detector sets `--kb-safe-bottom=0` on
         // devices where visualViewport SHRINKS, and the globals `:root:has(:focus)`
@@ -95,7 +95,7 @@ export function ComposerFrame({
         // EITHER path detects the open keyboard — so the ~34px home-indicator band
         // cannot survive as a transparent gap between the composer and the keyboard.
         phone
-          ? 'px-[14px] pb-[max(min(var(--kb-safe-bottom,env(safe-area-inset-bottom)),var(--safe-bottom,env(safe-area-inset-bottom))),24px)]'
+          ? 'px-[14px] pb-[max(min(var(--kb-safe-bottom,env(safe-area-inset-bottom)),var(--safe-bottom,env(safe-area-inset-bottom))),36px)]'
           : 'px-8 pb-[18px]',
         className,
       )}

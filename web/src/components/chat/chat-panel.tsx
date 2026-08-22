@@ -66,6 +66,7 @@ import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
 import { useDeferredFollow } from './follow-bottom'
+import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 import { useTapToDismissKeyboard } from './use-tap-to-dismiss'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
@@ -324,6 +325,13 @@ export default function ChatPanel({
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pinnedRef = React.useRef(true)
+  // Keyboard-open scroll anchor (see the effect below): `wasAtBottomRef` is the
+  // atomic capture of "was the transcript at the bottom when the field focused",
+  // read straight off the scroller BEFORE the viewport shrinks; `anchoringRef`
+  // marks the open animation window, during which onScroll must NOT downgrade the
+  // pin (the shrink transiently reads distance>48).
+  const wasAtBottomRef = React.useRef(false)
+  const anchoringRef = React.useRef(false)
   // The pill's visibility is STATE, not the pin's ref: it has to re-render.
   // Its threshold is its own (`JUMP_AWAY_PX`) — see `backlog.ts`.
   const [showJump, setShowJump] = React.useState(false)
@@ -364,7 +372,11 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (!el) return
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    // DETERMINISM LOCK: while the keyboard-open anchor is armed, do not let the
+    // transient mid-shrink distance>48 frames flip the pin to false (that race is
+    // exactly what made the first open inconsistent). showJump/loadOlder stay
+    // unguarded — they are position read-outs, not the follow decision.
+    if (!anchoringRef.current) pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
     setShowJump(jumpVisible(distance))
     if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
       requestOlder()
@@ -452,6 +464,90 @@ export default function ChatPanel({
       if (e) e.scrollTop = e.scrollHeight
     })
   }, [follow])
+
+  // ── Keyboard-open scroll anchor (mode-agnostic; benefits all KbLayout modes) ─
+  // When the soft keyboard opens the visual viewport shrinks (and mode 9 shrinks
+  // #root to match), cutting the scroller's clientHeight by ~keyboardInset — a
+  // transcript that sat exactly at the bottom is suddenly ~keyboardInset px from
+  // it, so the newest message hides behind the composer/keyboard. Worse, onScroll
+  // resamples pinnedRef DURING the shrink + the iOS native focus-scroll, sees
+  // distance>48, and clobbers pinnedRef to false, so the render-gated follow
+  // effect (above) declines to re-pin. The outcome depended on rAF/event ordering
+  // — the inconsistent "sometimes the first open works".
+  //
+  // The fix is an atomic capture-before / re-assert-after bracket:
+  //   1. `focusin` (the earliest deterministic pre-shrink signal, and where
+  //      WebKit collapses any track selection) reads the scroller DIRECTLY to
+  //      record wasAtBottom and arms `anchoringRef`.
+  //   2. every rAF-coalesced visualViewport frame while the detector reads `open`
+  //      && wasAtBottom re-pins to the true bottom through `follow()` (never a raw
+  //      scrollTop= — the selection-preservation deferral is honoured). Re-pinning
+  //      EVERY settling frame makes the final fully-shrunk frame land pinned
+  //      regardless of ordering vs mode 9's shrink.
+  //   3. while armed, onScroll's pinnedRef downgrade is suppressed (see onScroll)
+  //      so no transient frame can flip the pin. On open→false the bracket disarms.
+  // Scrolled up (wasAtBottom false) → the loop writes nothing and scrollTop is
+  // left where the reader parked it. Gated on `coarse`: desktop never attaches
+  // (open never becomes true anyway).
+  React.useEffect(() => {
+    if (!coarse) return
+    const visual =
+      typeof window !== 'undefined' ? window.visualViewport : undefined
+    if (!visual) return
+
+    const detect = createKeyboardOpenDetector()
+
+    // STEP 1 — capture "was at bottom" the instant an editable in this surface
+    // focuses, BEFORE the native focus-scroll settles and BEFORE mode 9's next
+    // rAF shrinks clientHeight. Read the scroller directly, not pinnedRef.
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      const editable =
+        t.tagName === 'TEXTAREA' ||
+        t.tagName === 'INPUT' ||
+        t.isContentEditable === true
+      if (!editable) return
+      const el = scrollRef.current
+      if (!el) return
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      wasAtBottomRef.current = distance < FOLLOW_THRESHOLD_PX
+      anchoringRef.current = true
+    }
+
+    // STEP 2 — re-assert bottom on every settling frame while the keyboard is
+    // open; disarm on close.
+    let raf = 0
+    const measure = () => {
+      raf = 0
+      const { open } = detect(visual)
+      if (open) {
+        if (anchoringRef.current && wasAtBottomRef.current) {
+          follow(() => {
+            const el = scrollRef.current
+            if (el) el.scrollTop = el.scrollHeight - el.clientHeight
+          })
+        }
+      } else if (anchoringRef.current) {
+        anchoringRef.current = false
+        wasAtBottomRef.current = false
+      }
+    }
+    const schedule = () => {
+      if (raf) return
+      raf = window.requestAnimationFrame(measure)
+    }
+
+    document.addEventListener('focusin', onFocusIn)
+    visual.addEventListener('resize', schedule)
+    visual.addEventListener('scroll', schedule)
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf)
+      document.removeEventListener('focusin', onFocusIn)
+      visual.removeEventListener('resize', schedule)
+      visual.removeEventListener('scroll', schedule)
+    }
+  }, [coarse, follow])
 
   // ── The input plane (fase A4 T3) ───────────────────────────────────────────
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft
