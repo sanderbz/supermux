@@ -278,6 +278,7 @@ pub async fn start_team(
             // for. EXPLICIT since the create default became native.
             runtime: Some(crate::sessions::runtime::RUNTIME_TMUX.to_string()),
             model: None,
+            company_id: None,
         },
     )
     .await?;
@@ -696,6 +697,7 @@ mod tests {
                 host_id: None,
                 runtime: Some("native".into()),
                 model: None,
+                company_id: None,
             },
         )
         .await
@@ -746,6 +748,7 @@ mod tests {
                 host_id: None,
                 runtime: None,
                 model: None,
+                company_id: None,
             },
         )
         .await
@@ -785,6 +788,7 @@ mod tests {
                 host_id: None,
                 runtime: None,
                 model: None,
+                company_id: None,
             },
         )
         .await
@@ -831,6 +835,7 @@ mod tests {
                 host_id: None,
                 runtime: None,
                 model: None,
+                company_id: None,
             },
         )
         .await

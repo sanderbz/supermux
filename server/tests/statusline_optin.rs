@@ -98,6 +98,7 @@ async fn session_create_and_start_never_install_the_statusline() {
             // tmux, so the pin does not depend on a native holder binary.
             runtime: Some("tmux".into()),
             model: None,
+            company_id: None,
         },
     )
     .await

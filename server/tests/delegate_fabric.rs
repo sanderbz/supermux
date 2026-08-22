@@ -103,6 +103,7 @@ async fn make_session(h: &Harness, name: &str) {
             host_id: None,
             runtime: "native".to_string(),
             model: String::new(),
+            company_id: None,
         },
     )
     .await

@@ -11,6 +11,7 @@ pub mod board;
 pub mod bot_memory;
 pub mod claude_config;
 pub mod claude_tools;
+pub mod companies;
 pub mod config;
 pub mod connectors;
 pub mod db;

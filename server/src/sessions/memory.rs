@@ -360,6 +360,7 @@ mod tests {
                 host_id: None,
                 runtime: "native".into(),
                 model: String::new(),
+                company_id: None,
             },
         )
         .await

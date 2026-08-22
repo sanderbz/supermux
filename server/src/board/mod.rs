@@ -957,6 +957,7 @@ async fn start_handler(
                 // Board-spawned sessions take the default (tmux) runtime.
                 runtime: None,
                 model: None,
+                company_id: None,
             };
             crate::sessions::create(&state, create_input).await?;
             // Boot it so the steering deliver-loop has a live pane to talk to.

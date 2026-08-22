@@ -54,6 +54,10 @@ export interface SessionSummary {
   /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0032); null / absent = a
+   *  main/PA bot (the entire existing fleet). Additive read/write field; the
+   *  company switcher (P1) reads it to scope the roster client-side. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars), captured by `set_last_send` on
    *  both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. */
@@ -360,6 +364,10 @@ export interface ApiSession {
    *  row). The session tile renders a small globe badge when this is set; the
    *  new-session sheet picks it via <HostPicker>. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0032); null / absent = a
+   *  main/PA bot (the entire existing fleet). Additive read/write field; the
+   *  company switcher (P1) reads it to scope the roster client-side. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars, control chars stripped), captured
    *  on both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. Pairs with
@@ -584,6 +592,10 @@ export interface NewSession {
   worktree?: boolean
   command?: string
   host_id?: number | null
+  /** The company this session belongs to (migration 0032); null / absent = a
+   *  main/PA bot (the entire existing fleet). Additive read/write field; the
+   *  company switcher (P1) reads it to scope the roster client-side. */
+  company_id?: number | null
   /** Boot Claude in bypass-permissions mode (`--permission-mode
    *  bypassPermissions`) — it runs tools without asking. A typed boolean: the
    *  server builds the trusted flag, the web never sends raw launch flags. */
@@ -957,6 +969,55 @@ export const sessionsApi = {
       return []
     }
   },
+}
+
+// ── Companies (Bot Mode, migration 0032) ─────────────────────────────────────
+// Additive CRUD client over `server/src/companies/mod.rs`. Routed through the
+// same `sessReq` (auth + `{ok,data}` envelope unwrap + `SessionError`) as every
+// other call here. P0 exposes the api + types only; the switcher UI is P1.
+
+export type { Company } from '../companies'
+import type { Company } from '../companies'
+
+/** Create body for `POST /api/companies`. The server takes an explicit
+ *  `{slug, display_name, root_dir}` and mkdir's `root_dir`. */
+export interface NewCompany {
+  slug: string
+  display_name: string
+  root_dir: string
+}
+
+export const companiesApi = {
+  /** `GET /api/companies` — live (non-archived) companies, ordered by
+   *  `display_name`. `sessReq` already unwrapped the `{data}` envelope. */
+  list: async (): Promise<Company[]> => {
+    const body = await sessReq<unknown>('/api/companies')
+    return Array.isArray(body) ? (body as Company[]) : []
+  },
+
+  /** `POST /api/companies` — create ({slug, display_name, root_dir}); the server
+   *  mkdir's `root_dir` and returns the row (201). 409 on a slug that collides
+   *  with an existing company OR session slug. */
+  create: (input: NewCompany): Promise<Company> =>
+    sessReq('/api/companies', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /** `PATCH /api/companies/{id}` — archive (soft-hide from the switcher). The row
+   *  and its `root_dir` survive. */
+  archive: (id: number): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    }),
+
+  /** `PATCH /api/companies/{id}` — set the display name. */
+  rename: (id: number, display_name: string): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name }),
+    }),
 }
 
 // ── Project repos endpoint ───────────────────────────────────────────────────

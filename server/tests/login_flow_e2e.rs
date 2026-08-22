@@ -143,6 +143,7 @@ impl Harness {
                 host_id: None,
                 runtime: "native".to_string(),
                 model: String::new(),
+                company_id: None,
             },
         )
         .await

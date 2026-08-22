@@ -54,6 +54,11 @@ pub struct Session {
     /// 0018). The entire pre-remote-host fleet backfills to `NULL` so existing
     /// call sites that don't yet pass a host_id keep their local-only semantics.
     pub host_id: Option<i64>,
+    /// The company this session belongs to (migration 0032), or `NULL` for a
+    /// main/PA/tech-admin bot. A plain nullable filter attribute (no inline FK);
+    /// the whole pre-companies fleet backfills to `NULL` = byte-identical
+    /// behaviour. Fixed at create — there is no reassignment path.
+    pub company_id: Option<i64>,
     /// The user's explicit identity-mark override (migration 0027), as
     /// `"<silhouette>:<hue>"`. `NULL` for every session that has never been
     /// rerolled — which is almost all of them: the face is DERIVED from the slug
@@ -406,6 +411,10 @@ pub struct NewSession {
     /// The full create path (CreateInput → NewSession → INSERT) carries this
     /// through so the API's `POST /api/sessions {host_id: N}` actually persists.
     pub host_id: Option<i64>,
+    /// The company a new session is created into (migration 0032); `None` = a
+    /// main bot. Carried CreateInput → NewSession → INSERT so the create path
+    /// persists it in one INSERT.
+    pub company_id: Option<i64>,
     /// Terminal backend for this session (migration 0024): `"tmux"` or
     /// `"native"`. Validated by `sessions::create` BEFORE it reaches here, so
     /// this is already one of the two literals. Mirrors `host_id`: the create
@@ -424,8 +433,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
-             worktree, worktree_repo, host_id, runtime, model, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             worktree, worktree_repo, host_id, company_id, runtime, model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.display_name)
@@ -440,6 +449,7 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(s.worktree as i64)
     .bind(&s.worktree_repo)
     .bind(s.host_id)
+    .bind(s.company_id)
     .bind(&s.runtime)
     .bind(&s.model)
     .bind(now)
@@ -490,10 +500,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, notif, mark_pin, model, memory, skills, created_at)
+             host_id, company_id, runtime, notif, mark_pin, model, memory, skills, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, notif, mark_pin, model, memory, skills, ?
+                host_id, company_id, runtime, notif, mark_pin, model, memory, skills, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

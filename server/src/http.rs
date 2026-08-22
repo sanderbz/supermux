@@ -169,6 +169,7 @@ fn protected_router(state: AppState) -> Router {
         // Connector store: manifest CRUD + .mcpb import + per-agent grants +
         // write-only credential→vault (bearer-protected).
         .merge(crate::connectors::router_for(state.clone()))
+        .merge(crate::companies::router_for(state.clone())) // /api/companies CRUD
         .merge(prefs::router_for(state.clone())) // snippets + kbd-groups
         .merge(audit::router_for(state.clone())) // audit log read
         // Web-push VAPID key + subscribe/unsubscribe (single-user dashboard,

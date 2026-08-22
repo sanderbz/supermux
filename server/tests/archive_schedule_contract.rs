@@ -73,6 +73,7 @@ fn new_session(name: &str, dir: &std::path::Path) -> db::sessions::NewSession {
         host_id: None,
         runtime: "native".to_string(),
         model: String::new(),
+        company_id: None,
     }
 }
 
@@ -216,7 +217,7 @@ async fn send_text_refuses_an_archived_session_instead_of_starting_it() {
         .await
         .unwrap();
 
-    let err = sessions::lifecycle::send_harness_text(&state, "hidden", "hello", None)
+    let err = sessions::lifecycle::send_harness_text(&state, "hidden", "hello", None, None)
         .await
         .expect_err("an archived session is not a send target");
     let msg = format!("{err:?}");
