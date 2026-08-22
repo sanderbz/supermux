@@ -16,7 +16,9 @@ import {
   type ConnectorCard as Card,
   type SessionConnector,
 } from '@/lib/api/connectors'
+import { companyGrantKey } from '@/lib/api/connectors'
 import { useConnectors, useSessionConnectors } from '@/stores/connectors-store'
+import { useUI } from '@/stores/ui-store'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 
 import { CATEGORIES } from './catalog'
@@ -33,7 +35,7 @@ export interface StoreViewProps {
   /** Offline bench: render these cards instead of the live query. */
   mock?: Card[]
   /** Offline bench: seed the "granted" set (connector ids). */
-  mockGranted?: { bot?: string[]; all?: string[] }
+  mockGranted?: { bot?: string[]; company?: string[]; all?: string[] }
   /** Offline bench: seed the library "Grant to" bot picker (no `GET /api/sessions`). */
   mockBots?: { name: string; display_name?: string; status?: string }[]
   /** `page` (the /store route) or `sheet` (bot-scoped dock). */
@@ -69,13 +71,20 @@ export function StoreView({
   const live = useConnectors(mock ? { source: 'local' } : {})
   const cards: Card[] = mock ?? live.data ?? []
 
-  // Grant state: all-agents grants (library "Added" + the shared tag) and, in a
-  // bot scope, that bot's own grants.
+  // Grant state: all-agents grants (library "Added" + the shared tag), the active
+  // company's grants (the middle tier), and, in a bot scope, that bot's own grants.
+  const activeCompany = useUI((s) => s.activeCompany)
+  const companyKey = !mock && activeCompany !== null ? companyGrantKey(activeCompany) : null
   const allGrants = useSessionConnectors(mock ? null : '*')
+  const companyGrants = useSessionConnectors(companyKey)
   const botGrants = useSessionConnectors(mock ? null : botName)
   const allSet = React.useMemo(
     () => new Set(mockGranted?.all ?? idsOf(allGrants.data)),
     [allGrants.data, mockGranted],
+  )
+  const companySet = React.useMemo(
+    () => new Set(mockGranted?.company ?? idsOf(companyGrants.data)),
+    [companyGrants.data, mockGranted],
   )
   const botSet = React.useMemo(
     () => new Set(mockGranted?.bot ?? idsOf(botGrants.data)),
@@ -84,11 +93,14 @@ export function StoreView({
 
   const grantedFor = React.useCallback(
     (id: string): GrantScope => {
+      // Broadest-first display idiom (matches the all-agents shared treatment):
+      // all > company > this bot.
       if (allSet.has(id)) return 'all'
+      if (companySet.has(id)) return 'company'
       if (botName && botSet.has(id)) return 'bot'
       return null
     },
-    [allSet, botSet, botName],
+    [allSet, companySet, botSet, botName],
   )
 
   // Featured is a curated highlight, not the whole catalog: cap the rail so it

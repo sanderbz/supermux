@@ -15,6 +15,13 @@ use sqlx::SqlitePool;
 /// The sentinel `session_name` in `session_connectors` meaning "all agents".
 pub const ALL_AGENTS: &str = "*";
 
+/// The `session_name` prefix for a COMPANY-scoped grant: `@company:<id>`. A grant
+/// keyed this way applies to every session whose `sessions.company_id` matches the
+/// `<id>` suffix — the middle tier between an own-slug grant and the all-agents
+/// `*` sentinel (precedence: own > company > all). Same free-TEXT sentinel
+/// mechanism as [`ALL_AGENTS`]; no schema column of its own.
+pub const COMPANY_PREFIX: &str = "@company:";
+
 /// A row of the `connectors` table — one installed manifest. The `*_json` columns
 /// are stored verbatim; parsing into the manifest model lives in
 /// [`crate::connectors::manifest`].
@@ -131,29 +138,65 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
 
 // ── grants (session_connectors) ───────────────────────────────────────────────
 
-/// The ENABLED grants that apply to `session_name`: its OWN grants unioned with
-/// the `*` (all-agents) grants. This is the exact set the launch-scoping engine
-/// turns into the session's inline `--mcp-config` (spec §5). A per-session grant
-/// row wins over an `*` row for the same connector (its `secret_ref` is used).
+/// The ENABLED grants that apply to `session_name`, resolved across THREE tiers
+/// with own > company > all-agents precedence:
+///   1. the session's OWN grants (keyed on its slug),
+///   2. its COMPANY grants (keyed `@company:<company_id>`), if the session row
+///      carries a non-NULL `company_id`,
+///   3. the `*` (all-agents) grants.
+/// This is the exact set the launch-scoping engine turns into the session's
+/// inline `--mcp-config` (spec §5). De-dup is by `connector_id`, keeping the
+/// first (highest-precedence) occurrence, so an own grant overrides its
+/// company's and a company grant overrides the global default (its `secret_ref`
+/// is the one used). A main/NULL-company session never picks up the company tier,
+/// and a session in company X never sees company Y's grants.
 pub async fn grants_for_session(pool: &SqlitePool, session_name: &str) -> sqlx::Result<Vec<Grant>> {
-    // Own grants first, then all-agents grants; the caller de-dupes by
-    // connector_id keeping the first (own) occurrence.
-    let mut own = sqlx::query_as::<_, Grant>(
+    // Tier 1 — own grants (highest precedence).
+    let mut out = sqlx::query_as::<_, Grant>(
         "SELECT * FROM session_connectors WHERE session_name = ? AND enabled = 1",
     )
     .bind(session_name)
     .fetch_all(pool)
     .await?;
+
+    // Tier 2 — company grants, only when this session belongs to a company. The
+    // lookup is by the session's own row; a `*`/`@company:` sentinel is not a
+    // real session, so this resolves to NULL and the tier is skipped for them.
+    let company_id: Option<i64> =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT company_id FROM sessions WHERE name = ?")
+            .bind(session_name)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    let company: Vec<Grant> = if let Some(cid) = company_id {
+        sqlx::query_as::<_, Grant>(
+            "SELECT * FROM session_connectors WHERE session_name = ? AND enabled = 1",
+        )
+        .bind(format!("{COMPANY_PREFIX}{cid}"))
+        .fetch_all(pool)
+        .await?
+    } else {
+        Vec::new()
+    };
+
+    // Tier 3 — all-agents grants (lowest precedence).
     let all = sqlx::query_as::<_, Grant>(
         "SELECT * FROM session_connectors WHERE session_name = ? AND enabled = 1",
     )
     .bind(ALL_AGENTS)
     .fetch_all(pool)
     .await?;
-    let owned: std::collections::HashSet<String> =
-        own.iter().map(|g| g.connector_id.clone()).collect();
-    own.extend(all.into_iter().filter(|g| !owned.contains(&g.connector_id)));
-    Ok(own)
+
+    // Fold the lower tiers in, skipping any connector already claimed by a
+    // higher tier (own wins over company wins over all).
+    let mut seen: std::collections::HashSet<String> =
+        out.iter().map(|g| g.connector_id.clone()).collect();
+    for g in company.into_iter().chain(all.into_iter()) {
+        if seen.insert(g.connector_id.clone()) {
+            out.push(g);
+        }
+    }
+    Ok(out)
 }
 
 /// List every grant for a connector (both a card's per-agent grants and its
@@ -283,6 +326,20 @@ mod tests {
             .unwrap();
     }
 
+    /// Minimal `sessions` row so the company tier can resolve a real bot's
+    /// `company_id`. Only `name`/`dir`/`created_at` are NOT NULL without a
+    /// default; `company_id` is the nullable P1 column.
+    async fn insert_session(pool: &SqlitePool, name: &str, company_id: Option<i64>) {
+        sqlx::query("INSERT INTO sessions (name, dir, created_at, company_id) VALUES (?, ?, ?, ?)")
+            .bind(name)
+            .bind("/tmp")
+            .bind(0i64)
+            .bind(company_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn connector_upsert_get_delete() {
         let (pool, dir) = test_pool().await;
@@ -336,6 +393,101 @@ mod tests {
         let mail: Vec<_> = alpha.iter().filter(|g| g.connector_id == "mail").collect();
         assert_eq!(mail.len(), 1, "no duplicate connector in the union");
         assert_eq!(mail[0].secret_ref.as_deref(), Some("alpha-own"));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn company_grant_resolves_for_a_company_bot() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "crm").await;
+        // A bot in company 7, and a grant keyed to that company.
+        insert_session(&pool, "acme-bot", Some(7)).await;
+        grant(&pool, &format!("{COMPANY_PREFIX}7"), "crm", Some("sref-crm"), true)
+            .await
+            .unwrap();
+
+        let bot = grants_for_session(&pool, "acme-bot").await.unwrap();
+        let crm: Vec<_> = bot.iter().filter(|g| g.connector_id == "crm").collect();
+        assert_eq!(crm.len(), 1, "the company grant resolves for its company bot");
+        assert_eq!(crm[0].secret_ref.as_deref(), Some("sref-crm"));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn precedence_own_over_company_over_all() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "mail").await;
+        insert_session(&pool, "acme-bot", Some(7)).await;
+        // Same connector granted at all three tiers with distinct secret_refs.
+        grant(&pool, ALL_AGENTS, "mail", Some("all-sref"), true).await.unwrap();
+        grant(&pool, &format!("{COMPANY_PREFIX}7"), "mail", Some("company-sref"), true)
+            .await
+            .unwrap();
+        grant(&pool, "acme-bot", "mail", Some("own-sref"), true).await.unwrap();
+
+        // Own wins over company wins over all — one row, own's secret.
+        let bot = grants_for_session(&pool, "acme-bot").await.unwrap();
+        let mail: Vec<_> = bot.iter().filter(|g| g.connector_id == "mail").collect();
+        assert_eq!(mail.len(), 1, "no duplicate connector across the three tiers");
+        assert_eq!(mail[0].secret_ref.as_deref(), Some("own-sref"), "own tier wins");
+
+        // Drop the own grant: company must now beat all-agents.
+        revoke(&pool, "acme-bot", "mail").await.unwrap();
+        let bot = grants_for_session(&pool, "acme-bot").await.unwrap();
+        let mail: Vec<_> = bot.iter().filter(|g| g.connector_id == "mail").collect();
+        assert_eq!(mail.len(), 1);
+        assert_eq!(
+            mail[0].secret_ref.as_deref(),
+            Some("company-sref"),
+            "company tier beats all-agents"
+        );
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn company_x_bot_does_not_see_company_y_grants() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "x-only").await;
+        insert_connector(&pool, "y-only").await;
+        insert_session(&pool, "x-bot", Some(1)).await;
+        insert_session(&pool, "y-bot", Some(2)).await;
+        grant(&pool, &format!("{COMPANY_PREFIX}1"), "x-only", Some("x"), true)
+            .await
+            .unwrap();
+        grant(&pool, &format!("{COMPANY_PREFIX}2"), "y-only", Some("y"), true)
+            .await
+            .unwrap();
+
+        let x = grants_for_session(&pool, "x-bot").await.unwrap();
+        let xids: std::collections::HashSet<_> = x.iter().map(|g| g.connector_id.clone()).collect();
+        assert!(xids.contains("x-only"), "company-1 bot gets company-1 grant");
+        assert!(
+            !xids.contains("y-only"),
+            "company-1 bot must NEVER see company-2's grant"
+        );
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn null_company_bot_ignores_the_company_tier() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "crm").await;
+        insert_connector(&pool, "mail").await;
+        // A main/NULL-company bot; a company-7 grant exists but must not reach it.
+        insert_session(&pool, "main-bot", None).await;
+        grant(&pool, &format!("{COMPANY_PREFIX}7"), "crm", Some("c"), true)
+            .await
+            .unwrap();
+        grant(&pool, ALL_AGENTS, "mail", Some("a"), true).await.unwrap();
+
+        let bot = grants_for_session(&pool, "main-bot").await.unwrap();
+        let ids: std::collections::HashSet<_> = bot.iter().map(|g| g.connector_id.clone()).collect();
+        assert!(!ids.contains("crm"), "NULL-company bot ignores the company tier");
+        assert!(ids.contains("mail"), "but still gets the all-agents grant");
         pool.close().await;
         std::fs::remove_dir_all(dir).ok();
     }

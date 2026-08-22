@@ -11,6 +11,7 @@ import { Check, Eye, EyeOff, Loader2, Lock, Trash2 } from 'lucide-react'
 
 import {
   ALL_AGENTS,
+  companyGrantKey,
   connectorHasOAuth,
   plainFields,
   secretField,
@@ -21,6 +22,9 @@ import {
 import { sessionsApi, displayLabel } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useConnectorActions } from '@/stores/connectors-store'
+import { useUI } from '@/stores/ui-store'
+import { useCompanies } from '@/hooks/use-companies'
+import { CompanyMark } from '@/components/roster/company-mark'
 import { cn } from '@/lib/utils'
 
 import { ConnectorIcon } from './connector-icon'
@@ -90,9 +94,19 @@ export function ConnectorDetail({
     () => new Set(),
   )
   const [allAgents, setAllAgents] = React.useState(false)
-  // "All agents" is a superset — when it is on, the per-bot rows show as checked
-  // (and locked), and the grant resolves to a single `*` row.
-  const chosenTargets: string[] = allAgents ? [ALL_AGENTS] : [...selectedBots]
+  // The active company (roster scope) is a third library grant target — "All bots
+  // in this company". Only offered inside a company (`activeCompany !== null`).
+  const activeCompany = useUI((s) => s.activeCompany)
+  const { companies } = useCompanies()
+  const company =
+    activeCompany !== null ? companies.find((c) => c.id === activeCompany) ?? null : null
+  const companyKey = company ? companyGrantKey(company.id) : null
+  const [companyChosen, setCompanyChosen] = React.useState(false)
+  // "All agents" is a superset — when it is on, the per-bot rows AND the company
+  // row show as checked (and locked), and the grant resolves to a single `*` row.
+  const chosenTargets: string[] = allAgents
+    ? [ALL_AGENTS]
+    : [...(companyChosen && companyKey ? [companyKey] : []), ...selectedBots]
   const needChoice = isLibrary && chosenTargets.length === 0
   // What we actually granted to, for the "Added to …" confirmation. Seeded from
   // an already-granted open so re-opening a granted connector still names it.
@@ -167,7 +181,15 @@ export function ConnectorDetail({
       }
       setSecretVal('')
       setAddedTargets(targets)
-      setLocalGrant(targets.includes(ALL_AGENTS) ? 'all' : isLibrary ? null : 'bot')
+      setLocalGrant(
+        targets.includes(ALL_AGENTS)
+          ? 'all'
+          : companyKey && targets.includes(companyKey)
+            ? 'company'
+            : isLibrary
+              ? null
+              : 'bot',
+      )
       setPhase('added')
     } catch {
       setPhase('idle')
@@ -305,9 +327,12 @@ export function ConnectorDetail({
               bots={bots}
               selectedBots={selectedBots}
               allAgents={allAgents}
+              company={company}
+              companyChosen={companyChosen}
               loading={sessionsQuery.isLoading && !botsOverride}
               onToggleBot={toggleBot}
               onToggleAll={() => setAllAgents((v) => !v)}
+              onToggleCompany={() => setCompanyChosen((v) => !v)}
             />
           )}
 
@@ -535,16 +560,23 @@ function GrantPicker({
   bots,
   selectedBots,
   allAgents,
+  company,
+  companyChosen,
   loading,
   onToggleBot,
   onToggleAll,
+  onToggleCompany,
 }: {
   bots: BotChoice[]
   selectedBots: Set<string>
   allAgents: boolean
+  /** The active company, or `null` at HQ (no company tier offered). */
+  company: { id: number; slug: string; display_name: string } | null
+  companyChosen: boolean
   loading: boolean
   onToggleBot: (name: string) => void
   onToggleAll: () => void
+  onToggleCompany: () => void
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -558,6 +590,17 @@ function GrantPicker({
           label="All agents"
           sub="Every bot — now and future"
         />
+        {company && (
+          // "All agents" supersets the company, so lock this row while it is on.
+          <GrantOption
+            checked={allAgents || companyChosen}
+            locked={allAgents}
+            onToggle={onToggleCompany}
+            label={`All bots in ${company.display_name}`}
+            sub="This company"
+            mark={<CompanyMark slug={company.slug} name={company.display_name} size={18} />}
+          />
+        )}
         {(bots.length > 0 || loading) && <span className="mx-2 my-0.5 h-px bg-border" />}
         {loading && bots.length === 0 ? (
           <span className="px-2.5 py-1.5 text-[12px] text-muted-foreground">Loading bots…</span>
@@ -588,12 +631,15 @@ function GrantOption({
   onToggle,
   label,
   sub,
+  mark,
 }: {
   checked: boolean
   locked?: boolean
   onToggle: () => void
   label: string
   sub?: string
+  /** Optional identity glyph (e.g. a `CompanyMark`) shown before the label. */
+  mark?: React.ReactNode
 }) {
   return (
     <button
@@ -619,6 +665,7 @@ function GrantOption({
       >
         {checked && <Check className="size-3" strokeWidth={3} aria-hidden />}
       </span>
+      {mark && <span className="shrink-0">{mark}</span>}
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px] font-medium text-foreground">{label}</span>
         {sub && <span className="truncate text-[11.5px] capitalize text-muted-foreground">{sub}</span>}

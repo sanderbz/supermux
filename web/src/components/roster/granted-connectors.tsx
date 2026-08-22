@@ -8,7 +8,7 @@ import * as React from 'react'
 import { AlertTriangle, Loader2, Plus, RotateCw } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { toolCountLabel, type SessionConnector } from '@/lib/api/connectors'
+import { companyGrantKey, toolCountLabel, type SessionConnector } from '@/lib/api/connectors'
 import { useSessionConnectors, useConnectorActions } from '@/stores/connectors-store'
 import { useSession } from '@/hooks/use-sessions'
 import { useRecovery } from '@/hooks/use-recovery'
@@ -93,12 +93,23 @@ export function GrantedConnectors({ name }: { name: string }) {
   const [store, setStore] = React.useState<string | null>(null)
   const [restartPending, setRestartPending] = React.useState<Set<string>>(new Set())
 
-  // Which of this bot's grants come from a `*` (all-agents) grant. We tell them
-  // apart by also reading the all-agents set.
+  // Which of this bot's grants come via a broader scope, so the row can say WHY
+  // it has each connector. A `*` (all-agents) grant, and — if this bot belongs to
+  // a company — a company grant (`@company:<id>`). We tell them apart by reading
+  // each scope's own set. All-agents wins the label over company (broadest first).
   const { data: allGrants } = useSessionConnectors('*')
   const allSet = React.useMemo(
     () => new Set((allGrants ?? []).filter((g) => g.enabled).map((g) => g.connector_id)),
     [allGrants],
+  )
+  const { session } = useSession(name)
+  const companyId = session?.company_id ?? null
+  const { data: companyGrants } = useSessionConnectors(
+    companyId !== null ? companyGrantKey(companyId) : null,
+  )
+  const companySet = React.useMemo(
+    () => new Set((companyGrants ?? []).filter((g) => g.enabled).map((g) => g.connector_id)),
+    [companyGrants],
   )
 
   const grants = data ?? []
@@ -154,6 +165,7 @@ export function GrantedConnectors({ name }: { name: string }) {
               grant={g}
               botName={name}
               viaAll={allSet.has(g.connector_id)}
+              viaCompany={!allSet.has(g.connector_id) && companySet.has(g.connector_id)}
               restartPending={restartPending.has(g.connector_id)}
               onRestartPending={() => flagRestart(g.connector_id)}
               onSignIn={() => openSignIn(g.connector_id)}
@@ -193,6 +205,7 @@ function ConnectorRow({
   grant,
   botName,
   viaAll,
+  viaCompany,
   restartPending,
   onRestartPending,
   onSignIn,
@@ -200,6 +213,7 @@ function ConnectorRow({
   grant: SessionConnector
   botName: string
   viaAll: boolean
+  viaCompany: boolean
   restartPending: boolean
   onRestartPending: () => void
   onSignIn: () => void
@@ -210,10 +224,14 @@ function ConnectorRow({
   const actions = useConnectorActions()
   const [busy, setBusy] = React.useState(false)
 
+  // A grant reaching this bot via a broader scope (all-agents OR its company) is
+  // read-only on this row — you flip it from the store, at that scope.
+  const shared = viaAll || viaCompany
+
   // Own-grant rows get an at-a-glance enable toggle (lifted out of the ⋯ menu);
-  // a shared `*` grant is read-only here — you flip it from the store, globally.
+  // a shared grant is read-only here — you flip it from the store, globally.
   const toggle = async () => {
-    if (busy || viaAll) return
+    if (busy || shared) return
     setBusy(true)
     try {
       const restart = await actions.setEnabled(grant.connector_id, botName, !grant.enabled)
@@ -239,7 +257,7 @@ function ConnectorRow({
             {tools && <span className="text-[11.5px] tabular-nums text-muted-foreground">{tools}</span>}
           </span>
           <span className="mt-0.5 text-[11.5px] text-muted-foreground">
-            {viaAll ? 'via all agents' : 'this bot'}
+            {viaAll ? 'via all agents' : viaCompany ? 'via company' : 'this bot'}
           </span>
         </div>
 
@@ -248,8 +266,9 @@ function ConnectorRow({
           <StatusChip needsSignIn onSignIn={onSignIn} />
         ) : restartPending ? (
           <StatusChip restartPending />
-        ) : viaAll ? (
-          // Shared grants are read-only here — show state, not a control.
+        ) : shared ? (
+          // Shared grants (all-agents / company) are read-only here — show state,
+          // not a control.
           <StatusChip enabled={grant.enabled} />
         ) : (
           <RowToggle enabled={grant.enabled} busy={busy} onToggle={toggle} />
@@ -269,7 +288,7 @@ function ConnectorRow({
             <GrantControl
               connectorId={grant.connector_id}
               botName={botName}
-              scope={viaAll ? 'all' : 'bot'}
+              scope={viaAll ? 'all' : viaCompany ? 'company' : 'bot'}
               compact
               onGranted={(_t, restart) => restart && onRestartPending()}
               onRevoked={() => onRestartPending()}

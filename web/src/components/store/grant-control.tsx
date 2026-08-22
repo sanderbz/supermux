@@ -12,10 +12,13 @@ import * as React from 'react'
 import { Check, Loader2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { ALL_AGENTS } from '@/lib/api/connectors'
+import { ALL_AGENTS, companyGrantKey } from '@/lib/api/connectors'
 import { useConnectorActions } from '@/stores/connectors-store'
+import { useUI } from '@/stores/ui-store'
+import { useCompanies } from '@/hooks/use-companies'
+import { CompanyMark } from '@/components/roster/company-mark'
 
-export type GrantScope = 'bot' | 'all' | null
+export type GrantScope = 'bot' | 'company' | 'all' | null
 
 export function GrantControl({
   connectorId,
@@ -35,11 +38,21 @@ export function GrantControl({
   compact?: boolean
 }) {
   const actions = useConnectorActions()
-  const [busy, setBusy] = React.useState<'bot' | 'all' | 'revoke' | null>(null)
+  const [busy, setBusy] = React.useState<'bot' | 'company' | 'all' | 'revoke' | null>(null)
 
-  const grantTo = async (which: 'bot' | 'all') => {
+  // The company tier targets the CURRENTLY-ACTIVE company (the roster scope). It
+  // only makes sense inside one company, so at HQ (`activeCompany === null`) the
+  // tier is hidden — a grant to "this company" has no referent there.
+  const activeCompany = useUI((s) => s.activeCompany)
+  const { companies } = useCompanies()
+  const company =
+    activeCompany !== null ? companies.find((c) => c.id === activeCompany) ?? null : null
+  const companyTarget = company ? companyGrantKey(company.id) : null
+
+  const grantTo = async (which: 'bot' | 'company' | 'all') => {
     if (busy) return
-    const target = which === 'all' ? ALL_AGENTS : botName
+    const target =
+      which === 'all' ? ALL_AGENTS : which === 'company' ? companyTarget : botName
     if (!target) return
     setBusy(which)
     try {
@@ -52,7 +65,8 @@ export function GrantControl({
 
   const revoke = async () => {
     if (busy) return
-    const target = scope === 'all' ? ALL_AGENTS : botName
+    const target =
+      scope === 'all' ? ALL_AGENTS : scope === 'company' ? companyTarget : botName
     if (!target) return
     setBusy('revoke')
     try {
@@ -63,7 +77,12 @@ export function GrantControl({
     }
   }
 
-  const sharedGrant = scope === 'all'
+  // A grant reaching this bot via a broader scope (all-agents OR its company) is
+  // read-only here — you revoke it from that scope, never phantom-revoke it from
+  // one bot.
+  const sharedGrant = scope === 'all' || scope === 'company'
+  const sharedVia =
+    scope === 'company' ? company?.display_name ?? 'this company' : 'all agents'
 
   return (
     <div className={cn('flex flex-col gap-2', compact && 'gap-1.5')}>
@@ -83,6 +102,17 @@ export function GrantControl({
           label={botName ? `This bot` : 'This bot'}
           sub={botName ?? undefined}
         />
+        {company && (
+          <ScopeButton
+            selected={scope === 'company'}
+            disabled={busy !== null}
+            busy={busy === 'company'}
+            onClick={() => grantTo('company')}
+            label="This company"
+            sub={company.display_name}
+            mark={<CompanyMark slug={company.slug} name={company.display_name} size={16} />}
+          />
+        )}
         <ScopeButton
           selected={scope === 'all'}
           disabled={busy !== null}
@@ -96,7 +126,7 @@ export function GrantControl({
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
           {sharedGrant && botName ? (
             <span>
-              Shared via <span className="font-medium text-foreground">all agents</span> — revoke it
+              Shared via <span className="font-medium text-foreground">{sharedVia}</span> — revoke it
               from the store to remove it everywhere.
             </span>
           ) : (
@@ -123,6 +153,7 @@ function ScopeButton({
   onClick,
   label,
   sub,
+  mark,
 }: {
   selected: boolean
   disabled?: boolean
@@ -130,6 +161,9 @@ function ScopeButton({
   onClick: () => void
   label: string
   sub?: string
+  /** Optional identity glyph (e.g. a `CompanyMark`), shown at rest in place of
+   *  the selection check. */
+  mark?: React.ReactNode
 }) {
   return (
     <button
@@ -150,6 +184,8 @@ function ScopeButton({
         <Loader2 className="size-3.5 animate-spin" aria-hidden />
       ) : selected ? (
         <Check className="size-3.5" aria-hidden />
+      ) : mark ? (
+        mark
       ) : null}
       <span className="flex flex-col items-start leading-none">
         <span>{label}</span>

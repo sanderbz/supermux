@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::claude_tools::MASKED;
-use crate::db::connectors::{self, ALL_AGENTS};
+use crate::db::connectors::{self, ALL_AGENTS, COMPANY_PREFIX};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::vault::Vault;
@@ -395,12 +395,17 @@ pub async fn session_connectors(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Map the friendly "all" alias onto the `*` all-agents sentinel; pass a real
-/// slug through unchanged.
+/// Normalize a grant scope string onto its stored `session_connectors.session_name`:
+///   * `"all"` / `"*"`            → the `*` all-agents sentinel,
+///   * `"company:<id>"`           → the `@company:<id>` company sentinel,
+///   * an already-`@company:<id>` value passes through unchanged,
+///   * any real slug passes through unchanged.
 fn normalize_session(s: &str) -> String {
     let t = s.trim();
     if t == "all" || t == ALL_AGENTS {
         ALL_AGENTS.to_string()
+    } else if let Some(id) = t.strip_prefix("company:") {
+        format!("{COMPANY_PREFIX}{id}")
     } else {
         t.to_string()
     }
@@ -415,4 +420,26 @@ async fn audit(state: &AppState, action: &str, id: &str, detail: Value) {
     crate::db::audit::log(&state.pool, "user", action, id, detail)
         .await
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_session_maps_aliases() {
+        // all-agents aliases
+        assert_eq!(normalize_session("all"), ALL_AGENTS);
+        assert_eq!(normalize_session("*"), ALL_AGENTS);
+        // company alias → @company:<id> grant key
+        assert_eq!(normalize_session("company:7"), format!("{COMPANY_PREFIX}7"));
+        assert_eq!(normalize_session("  company:42  "), format!("{COMPANY_PREFIX}42"));
+        // an already-normalized company key passes through unchanged
+        assert_eq!(
+            normalize_session("@company:7"),
+            format!("{COMPANY_PREFIX}7")
+        );
+        // a real slug is untouched
+        assert_eq!(normalize_session("acme-bot"), "acme-bot");
+    }
 }

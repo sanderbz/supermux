@@ -103,6 +103,17 @@ export interface Manifest {
 /** The `*` all-agents grant sentinel (server `connectors::ALL_AGENTS`). */
 export const ALL_AGENTS = '*'
 
+/** The `@company:<id>` grant-key prefix (server `connectors::COMPANY_PREFIX`).
+ *  A grant keyed `@company:<id>` applies to every bot in that company — the
+ *  middle scope tier between an own-bot grant and the all-agents `*` sentinel
+ *  (precedence: own > company > all). Build a key with `companyGrantKey(id)`. */
+export const COMPANY_PREFIX = '@company:'
+
+/** The stored `session_name` for a company-scoped grant. */
+export function companyGrantKey(companyId: number): string {
+  return `${COMPANY_PREFIX}${companyId}`
+}
+
 // ── response envelopes (raw server JSON — NOT the `{ ok, data }` wrapper) ──────
 
 interface ListResponse {
