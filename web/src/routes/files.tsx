@@ -50,7 +50,7 @@ import { useSessions } from '@/hooks/use-sessions'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { useUI } from '@/stores/ui-store'
 import { useCompanies } from '@/hooks/use-companies'
-import { companyFilesRoot } from '@/lib/companies'
+import { companyFilesRoot, confineToCompanyRoot } from '@/lib/companies'
 import type { FsEntry } from '@/lib/api'
 
 type SortKey = 'name' | 'size' | 'modified'
@@ -82,16 +82,28 @@ export function Files() {
   const effectiveName = name ?? (lastActiveExists ? lastActive! : undefined)
   const sessionDir = useSessionDir(effectiveName)
 
-  // Companies (Bot Mode): a company roots the browser at its `root_dir` when the
-  // route lands with no explicit session and no `?path=`. HQ (activeCompany null)
-  // and a stale id fail open to null → the historical $HOME. Only the STARTING
-  // cwd — an explicit `?path=` and a session pick still win (manual nav intact).
+  // Companies (Bot Mode): a selected company ROOTS the browser at its `root_dir`
+  // AND CONFINES navigation to it (owner-lens — not the security boundary; the
+  // server-side member files-jail from P3b is separate and unchanged). While a
+  // company is active the company root takes PRECEDENCE over the remembered
+  // session dir, the last-active-session fallback is suppressed, and any path
+  // outside the root (an old `?path=`, a walked-up crumb) CLAMPS back to the root
+  // so the owner sees ONLY that company's files. HQ (activeCompany null) — and a
+  // stale id that fails open to null — is byte-identical to before: HOME_PATH,
+  // unrestricted, sessionDir fallback intact.
   const activeCompany = useUI((s) => s.activeCompany)
   const { companies } = useCompanies()
   const companyRoot = companyFilesRoot(activeCompany, companies)
 
   const pathParam = searchParams.get('path')
-  const currentPath = pathParam ?? sessionDir.data ?? companyRoot ?? HOME_PATH
+  // With a company active: root at `companyRoot` (precedence over sessionDir),
+  // then confine. HQ: the historical resolution, and `confineToCompanyRoot` with
+  // a null root is a pass-through, so HQ stays exactly as it was.
+  const requestedPath =
+    companyRoot !== null
+      ? (pathParam ?? companyRoot)
+      : (pathParam ?? sessionDir.data ?? HOME_PATH)
+  const currentPath = confineToCompanyRoot(requestedPath, companyRoot)
 
   // Mirror the URL-driven session into the shared cell so a deep link
   // (`/files/foo`) or a focus→files breadcrumb persists the pick. The route's
@@ -131,19 +143,25 @@ export function Files() {
 
   // Resolved absolute dir the server reported (drives breadcrumb + child paths).
   const dirPath = listing.data?.path ?? currentPath
+  // With a company active we root at `companyRoot` immediately (no sessionDir
+  // read), so the session-resolving skeleton only applies at HQ.
   const sessionResolving =
-    !!effectiveName && pathParam == null && sessionDir.isLoading
+    companyRoot === null && !!effectiveName && pathParam == null && sessionDir.isLoading
 
   const navigateTo = React.useCallback(
     (path: string) => {
       setSelected(null)
+      // Confine every navigation to the active company's root (breadcrumb floor,
+      // Go-up, deep link) so a request outside it lands back at the root, never
+      // out of the company. A null root (HQ) is a pass-through.
+      const target = confineToCompanyRoot(path, companyRoot)
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev)
-        next.set('path', path)
+        next.set('path', target)
         return next
       })
     },
-    [setSearchParams],
+    [setSearchParams, companyRoot],
   )
 
   const sorted = React.useMemo(() => {
@@ -218,7 +236,7 @@ export function Files() {
           menuLabel="Open files for"
           className="ml-1 mr-1 shrink-0 max-w-[8rem] sm:max-w-[12rem]"
         />
-        <Breadcrumb path={dirPath} onNavigate={navigateTo} />
+        <Breadcrumb path={dirPath} onNavigate={navigateTo} floor={companyRoot} />
 
         <div className="flex shrink-0 items-center gap-0.5">
           <ToolbarButton
@@ -321,7 +339,7 @@ export function Files() {
                   (listing.error as Error)?.message ??
                   'Could not list this directory.'
                 }
-                onHome={() => navigateTo(HOME_PATH)}
+                onHome={() => navigateTo(companyRoot ?? HOME_PATH)}
               />
             ) : sorted.length === 0 ? (
               <div className="flex h-full items-center justify-center">

@@ -7,7 +7,7 @@ interface Crumb {
   path: string
 }
 
-function toCrumbs(abs: string): Crumb[] {
+function toCrumbs(abs: string, floor?: string | null): Crumb[] {
   const parts = abs.split('/').filter(Boolean)
   const out: Crumb[] = [{ label: '', path: '/' }] // root (House icon)
   let cur = ''
@@ -15,19 +15,32 @@ function toCrumbs(abs: string): Crumb[] {
     cur += `/${p}`
     out.push({ label: p, path: cur })
   }
-  return out
+  if (!floor) return out
+  // Company-scoped Files floors the crumbs at the company root: no crumb ABOVE
+  // it is shown, and the floor becomes the House root the owner can return to —
+  // there is no walking out of the company via the breadcrumb.
+  const f = floor.length > 1 ? floor.replace(/\/+$/, '') : floor
+  const idx = out.findIndex((c) => c.path === f)
+  if (idx <= 0) return out // floor not on this chain (or is `/`) → leave as-is
+  const sliced = out.slice(idx)
+  sliced[0] = { label: '', path: sliced[0].path } // floor renders as the House
+  return sliced
 }
 
 export interface BreadcrumbProps {
   /** Resolved absolute directory path. */
   path: string
   onNavigate: (path: string) => void
+  /** When set, the breadcrumb FLOORS here: crumbs above this dir are dropped and
+   *  this dir becomes the House root. Company-scoped Files passes the company
+   *  root so the owner can't walk out of the company folder via the crumbs. */
+  floor?: string | null
 }
 
 /** Horizontally-scrollable path breadcrumb. Each segment is a ≥44 pt
  *  touch target; the trailing segment is the current directory and is inert. */
-export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
-  const crumbs = toCrumbs(path)
+export function Breadcrumb({ path, onNavigate, floor }: BreadcrumbProps) {
+  const crumbs = toCrumbs(path, floor)
   return (
     <nav
       aria-label="Path"

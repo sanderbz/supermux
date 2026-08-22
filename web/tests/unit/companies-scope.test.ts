@@ -17,6 +17,8 @@ import {
   companyFilesRoot,
   companyFirstOrder,
   companyForDigit,
+  confineToCompanyRoot,
+  connectorInCompanyView,
   inCompanyScope,
   resolveActiveCompany,
   type Company,
@@ -200,6 +202,68 @@ describe('companyFilesRoot — the Files-browser starting root', () => {
   test('a stale/unknown active id fails open to null (=HQ, unrestricted)', () => {
     expect(companyFilesRoot(9, companies)).toBe(null)
     expect(companyFilesRoot(1, [])).toBe(null)
+  })
+})
+
+describe('confineToCompanyRoot — the Files-browser confinement clamp', () => {
+  const root = '/opt/projects/companies/acme'
+
+  test('HQ (null root) never clamps — the path passes through unchanged', () => {
+    expect(confineToCompanyRoot('/home/owner', null)).toBe('/home/owner')
+    expect(confineToCompanyRoot('~', null)).toBe('~')
+    expect(confineToCompanyRoot('/etc', null)).toBe('/etc')
+  })
+
+  test('the company root itself is in-bounds (returned as-is)', () => {
+    expect(confineToCompanyRoot(root, root)).toBe(root)
+  })
+
+  test('a descendant path stays put — navigation WITHIN the company is free', () => {
+    expect(confineToCompanyRoot(`${root}/docs`, root)).toBe(`${root}/docs`)
+    expect(confineToCompanyRoot(`${root}/docs/q3/report.md`, root)).toBe(
+      `${root}/docs/q3/report.md`,
+    )
+  })
+
+  test('a path OUTSIDE the company root clamps back to the root', () => {
+    // Walking up to a parent…
+    expect(confineToCompanyRoot('/opt/projects/companies', root)).toBe(root)
+    // …an unrelated absolute…
+    expect(confineToCompanyRoot('/home/owner/.ssh', root)).toBe(root)
+    expect(confineToCompanyRoot('~', root)).toBe(root)
+    // …and the filesystem root.
+    expect(confineToCompanyRoot('/', root)).toBe(root)
+  })
+
+  test('a sibling that merely SHARES the root as a name prefix is NOT in-bounds', () => {
+    // `/…/acme-corp` must not be treated as inside `/…/acme` (no `/` boundary).
+    expect(confineToCompanyRoot('/opt/projects/companies/acme-corp', root)).toBe(root)
+    expect(confineToCompanyRoot('/opt/projects/companies/acme-corp/x', root)).toBe(root)
+  })
+
+  test('trailing slashes on either side do not break the boundary check', () => {
+    expect(confineToCompanyRoot(`${root}/`, root)).toBe(`${root}/`)
+    expect(confineToCompanyRoot(`${root}/docs`, `${root}/`)).toBe(`${root}/docs`)
+    expect(confineToCompanyRoot('/opt/projects', `${root}/`)).toBe(`${root}/`)
+  })
+})
+
+describe('connectorInCompanyView — the store company-filter predicate', () => {
+  test('HQ (null) shows the FULL catalog — every card, whatever its grant', () => {
+    expect(connectorInCompanyView('all', null)).toBe(true)
+    expect(connectorInCompanyView('company', null)).toBe(true)
+    expect(connectorInCompanyView('bot', null)).toBe(true)
+    expect(connectorInCompanyView(null, null)).toBe(true)
+  })
+
+  test('a company scopes the view to what reaches it — company + all-agents + a company bot', () => {
+    expect(connectorInCompanyView('company', 1)).toBe(true)
+    expect(connectorInCompanyView('all', 1)).toBe(true)
+    expect(connectorInCompanyView('bot', 1)).toBe(true)
+  })
+
+  test('a company HIDES un-granted catalog cards (nothing reaches this company)', () => {
+    expect(connectorInCompanyView(null, 1)).toBe(false)
   })
 })
 

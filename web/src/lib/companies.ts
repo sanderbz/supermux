@@ -65,6 +65,51 @@ export function companyFilesRoot(
   return c ? c.root_dir : null
 }
 
+/** CONFINE a requested Files path to the active company's root — the owner-lens
+ *  clamp that keeps the browser inside `companyFilesRoot` once a company is
+ *  selected. `companyRoot === null` (HQ, or a stale id that failed open) never
+ *  clamps: the path passes through untouched, so HQ browsing is byte-identical to
+ *  before. With a root set, a path AT or BELOW the root is returned unchanged
+ *  (free navigation within the company); anything ELSE — a parent, an unrelated
+ *  absolute, `~`, `/`, or a name-prefix sibling like `…/acme-corp` for `…/acme` —
+ *  clamps back to the root. Boundary is `/`-delimited so a shared name prefix is
+ *  NOT mistaken for containment. This is an interface lens, NOT the security
+ *  boundary (the server-side member files-jail is separate and unchanged). Pure +
+ *  unit-tested. */
+export function confineToCompanyRoot(
+  path: string,
+  companyRoot: string | null,
+): string {
+  if (companyRoot === null) return path
+  const rootNorm = stripTrailingSlash(companyRoot)
+  const pathNorm = stripTrailingSlash(path)
+  if (pathNorm === rootNorm) return path
+  if (pathNorm.startsWith(rootNorm + '/')) return path
+  return companyRoot
+}
+
+function stripTrailingSlash(p: string): string {
+  // Collapse a trailing slash (but never the lone filesystem root `/`).
+  return p.length > 1 ? p.replace(/\/+$/, '') : p
+}
+
+/** The store's company-filter predicate — the owner-lens over the connector grid.
+ *  HQ (`activeCompany === null`) shows the FULL catalog (`true` for every card,
+ *  whatever its grant). With a company active, the grid is SCOPED to what reaches
+ *  that company: a `company`-tier grant (`@company:<id>`), an `all`-agents grant
+ *  (applies everywhere, including here), or a `bot` grant on a bot inside the
+ *  company. An un-granted catalog card (`null`) is hidden while a company is the
+ *  active lens. `granted` is the store's own `GrantScope` (broadest-first: `all`
+ *  > `company` > `bot`). Pure + unit-tested; the store view applies it as a grid
+ *  filter. */
+export function connectorInCompanyView(
+  granted: 'bot' | 'company' | 'all' | null,
+  activeCompany: number | null,
+): boolean {
+  if (activeCompany === null) return true
+  return granted !== null
+}
+
 /** Which companies (by id; `null` = HQ) have at least one bot in the NEEDS-YOU
  *  state — the set the switcher's per-company attention dots read.
  *
