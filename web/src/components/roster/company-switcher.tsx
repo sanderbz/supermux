@@ -1,13 +1,14 @@
 /**
  * `<CompanySwitcher>` — the overview header's company scope selector (Bot Mode,
- * migration 0030). A compact dropdown: "All companies" + each live company, plus
- * a "New company…" action that opens a small create dialog. Selecting a company
- * sets `activeCompany` in the UI store, which scopes the whole app (roster, team
+ * migration 0030). A compact dropdown: "HQ" + each live company, plus a "New
+ * company…" action that opens a small create dialog. Selecting an option sets
+ * `activeCompany` in the UI store, which scopes the whole app (roster, team
  * cards, the new-agent default) — see `routes/overview.tsx`.
  *
  * Visual language matches `<DisplayControls>`: a ghost `<Button>` trigger in a
- * `<Popover>`, a check-marked option list. "All companies" is the omniscient
- * default; a main/PA bot (`company_id == null`) shows in it and only it.
+ * `<Popover>`, a check-marked option list. "HQ" (`activeCompany === null`) is
+ * the default landing — the main/PA space that shows ONLY the main bots
+ * (`company_id == null`). There is NO "All" option that mixes HQ with a company.
  *
  * The create dialog is LAZY-loaded (radix Dialog stays out of the overview's
  * eager chunk until "New company…" is clicked — size-budget gate).
@@ -31,7 +32,7 @@ export function CompanySwitcher() {
   const [createOpen, setCreateOpen] = React.useState(false)
 
   const active = companies.find((c) => c.id === activeCompany) ?? null
-  const label = active ? active.display_name : 'All companies'
+  const label = active ? active.display_name : 'HQ'
 
   return (
     <>
@@ -65,7 +66,7 @@ export function CompanySwitcher() {
         <PopoverContent align="start" className="w-56 p-1">
           <ul className="max-h-72 overflow-y-auto" role="listbox" aria-label="Companies">
             <OptionRow
-              label="All companies"
+              label="HQ"
               selected={activeCompany === null}
               onSelect={() => {
                 setActiveCompany(null)

@@ -56,7 +56,11 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { DisplayControls } from '@/components/roster/display-controls'
 import { useCompanies, COMPANIES_KEY } from '@/hooks/use-companies'
-import { companyFirstOrder, resolveActiveCompany } from '@/lib/companies'
+import {
+  companyFirstOrder,
+  inCompanyScope,
+  resolveActiveCompany,
+} from '@/lib/companies'
 
 // The company switcher UI is lazy-loaded so its dropdown/dialog code stays OUT
 // of the hero-path (entry) chunk that the overview compiles into — the entry
@@ -151,10 +155,11 @@ export function Overview() {
   const setViewMode = useUI((s) => s.setViewMode)
   const hideStopped = useUI((s) => s.hideStopped)
   const setHideStopped = useUI((s) => s.setHideStopped)
-  // Company scope (Bot Mode, migration 0030). `null` = "All companies". When a
-  // company is active it scopes the whole overview (roster + team cards) and the
-  // new-agent default; a global search escapes the scope but ranks in-company
-  // hits first (see `filtered`/`flatSorted`).
+  // Company scope (Bot Mode, migration 0030). `null` = HQ, the main/PA space
+  // that shows ONLY sessions with a null `company_id` (the main bots) — the
+  // default landing. A number scopes the whole overview (roster + team cards)
+  // and the new-agent default to that company. A global search escapes the
+  // scope but ranks the ACTIVE space's hits first (see `filtered`/`flatSorted`).
   const activeCompany = useUI((s) => s.activeCompany)
   const setActiveCompany = useUI((s) => s.setActiveCompany)
   const { companies } = useCompanies()
@@ -273,9 +278,10 @@ export function Overview() {
 
   // Filter once. Tags are ANDed with the search, ORed among themselves: picking
   // two tags shows sessions carrying EITHER, which is what a chip row reads as.
-  // The company predicate keeps only the active company's sessions while
-  // browsing (a main/PA bot, `company_id == null`, only shows in the "All"
-  // scope); it is lifted while searching so search stays global.
+  // The company predicate keeps only the ACTIVE space's sessions while browsing:
+  // HQ (`activeCompany === null`) keeps ONLY main bots (`company_id == null`), a
+  // company keeps only its own (see `inCompanyScope`). It is lifted while
+  // searching so search stays global.
   const filtered = React.useMemo(
     () =>
       sessions.filter(
@@ -283,7 +289,7 @@ export function Overview() {
           matches(s, query) &&
           (!hideStopped || s.status !== 'stopped') &&
           (activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t))) &&
-          (activeCompany === null || hasQuery || s.company_id === activeCompany),
+          (hasQuery || inCompanyScope(s.company_id, activeCompany)),
       ),
     [sessions, query, hideStopped, activeTags, activeCompany, hasQuery],
   )
@@ -506,15 +512,17 @@ export function Overview() {
     return m
   }, [allSessions])
 
-  // Teams that survive the search box AND the company scope. The company scope
-  // (by the lead session's `company_id`) is lifted while searching, mirroring
-  // the session filter — search stays global.
+  // Teams that survive the search box AND the company scope. A team scopes by
+  // its LEAD session's `company_id` (null => HQ); the scope is lifted while
+  // searching, mirroring the session filter — search stays global.
   const filteredTeams = React.useMemo(() => {
     const needle = query.trim().toLowerCase()
     const inScope = (t: (typeof teams)[number]) =>
-      activeCompany === null ||
       needle.length > 0 ||
-      companyByName.get(t.lead_supermux_session ?? '') === activeCompany
+      inCompanyScope(
+        companyByName.get(t.lead_supermux_session ?? ''),
+        activeCompany,
+      )
     return teams.filter(
       (t) =>
         inScope(t) &&
@@ -550,10 +558,11 @@ export function Overview() {
         : layout.mode === 'alpha'
           ? nameSort(filtered)
           : filtered
-    // §4c — while searching GLOBALLY with a company active, stably float the
-    // active company's matches to the top; cross-company matches stay visible
-    // below. A no-op when browsing (no query) or in the "All" scope.
-    if (hasQuery && activeCompany !== null) {
+    // §4c — while searching GLOBALLY, stably float the ACTIVE space's matches to
+    // the top; out-of-space matches stay visible below. In HQ (`activeCompany
+    // === null`) the main bots rank first; in a company, that company. A no-op
+    // when browsing (no query — the scope has already narrowed `filtered`).
+    if (hasQuery) {
       return companyFirstOrder(sorted, activeCompany)
     }
     return sorted
@@ -717,7 +726,7 @@ export function Overview() {
         <AttentionRollup sessions={needsYou} className="order-first w-full sm:order-none sm:w-auto" />
 
         {/* Company scope (Bot Mode, migration 0030) — narrows the whole
-            overview to one company; "All companies" is the omniscient default.
+            overview to one company; "HQ" (the main/PA space) is the default.
             Lazy (see the import) with a same-size placeholder. */}
         <React.Suspense
           fallback={<div className="h-9 w-[9rem] rounded-md border border-input" aria-hidden />}

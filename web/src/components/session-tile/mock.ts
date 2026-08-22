@@ -10,7 +10,7 @@ import type { TileSession } from './types'
 // whole-app scoping are exercisable OFFLINE in the /dev rig (seeded into the
 // `['companies']` query alongside MOCK_TILES). Several tiles below carry a
 // matching `company_id`; the rest are `undefined` = main/PA bots (shown only in
-// the "All companies" scope).
+// the HQ scope, `activeCompany === null`).
 export const MOCK_COMPANIES: Company[] = [
   { id: 1, slug: 'acme', display_name: 'Acme Robotics', root_dir: '/srv/acme', archived: 0 },
   { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/srv/globex', archived: 0 },
