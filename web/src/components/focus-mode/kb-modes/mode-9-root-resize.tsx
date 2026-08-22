@@ -1,7 +1,7 @@
-// Mode 9 — IMPERATIVE ROOT RESIZE.
+// IMPERATIVE ROOT RESIZE.
 //
-// The distinct technique: instead of sizing its OWN box (that is mode 3), this
-// mode shrinks the WHOLE application's root — `document.documentElement`,
+// The distinct technique: instead of sizing its OWN box, this
+// layout shrinks the WHOLE application's root — `document.documentElement`,
 // `document.body` AND `#root` — to exactly the visible viewport height on every
 // `visualViewport` resize, so the entire app equals the visible area. The layout
 // itself is then a boring, normal-flow `height:100%` flex column: header / body /
@@ -16,24 +16,24 @@
 // `min-height:100vh`. On the owner's iOS standalone PWA that `min-height:100vh`
 // would win against any shorter `height` we set (min-height beats height), so the
 // root would refuse to shrink and the composer would stay behind the keyboard. So
-// mode 9 writes BOTH inline `height` and inline `minHeight` (inline beats the
+// it writes BOTH inline `height` and inline `minHeight` (inline beats the
 // stylesheet) on all three elements, and restores each element's prior inline
-// values on cleanup / keyboard-close so nothing leaks to the next mode.
+// values on cleanup / keyboard-close so nothing leaks after unmount.
 //
-// COLD-LAUNCH GUARD (mirrors `useKeyboardViewport` / mode 3): on an iOS PWA cold
+// COLD-LAUNCH GUARD (mirrors `useKeyboardViewport`): on an iOS PWA cold
 // launch `visualViewport.height` briefly evaluates to physical-screen-minus-home-
 // indicator; pinning the root to it there would paint a black bar BELOW the app.
 // So we only shrink the root while the keyboard is OPEN (via the shared dual-
 // signal `createKeyboardOpenDetector`); when closed we clear the inline heights
 // and fall back to the CSS `100dvh` / `min-height:100vh` base. All writes are
 // rAF-coalesced; every listener is removed and every inline style restored on
-// unmount, so switching modes is clean and leaves NO global side-effect.
+// unmount, so teardown is clean and leaves NO global side-effect.
 //
 // DOCUMENTED RISK on the OWNER device: iOS 26 standalone PWA absorbs the whole
 // keyboard overlap into `visualViewport.offsetTop`, leaving `.height` at full
 // height — so the imperative root height may not actually shrink and the composer
-// may still float. That is the exact failure this mode probes; it is A/B-tested
-// against the other ten. (The `keyboardOpen` gate still flips — the detector reads
+// may still float. That is the exact failure this layout probes. (The
+// `keyboardOpen` gate still flips — the detector reads
 // `offsetTop` — we simply have no shorter height to pin.) The other risk this mode
 // deliberately owns is that resizing the root reflows ALL fixed chrome / the
 // shell; the strict save-and-restore of inline styles is what keeps that safe.

@@ -1,23 +1,20 @@
-// KbLayout — the shared contract every keyboard-layout MODE implements.
+// KbLayout — the shared contract every keyboard-layout implements.
 //
 // Background. On the owner's real iPhone (standalone PWA) the mobile CHAT
 // composer floats a ~68px black band above the soft keyboard. The simulator
 // cannot reproduce it and `visualViewport` on that device is unreliable (the
-// overlap is absorbed into `visualViewport.offsetTop`, not `.height`). Rather
-// than guess one fix, the app ships ELEVEN independently-selectable keyboard-
-// avoidance implementations (ids 0–10) the owner switches between from a
-// Settings dropdown, keeping whichever gives zero band on his hardware.
+// overlap is absorbed into `visualViewport.offsetTop`, not `.height`). The
+// shipped layout drives that band to zero on the owner's hardware.
 //
-// Each mode is exactly one `KbLayoutComponent`. It lays out the three semantic
+// The layout is exactly one `KbLayoutComponent`. It lays out the three semantic
 // regions of the mobile chat view (header / body / composer) and owns keyboard
-// avoidance its OWN way. Exactly one mode is mounted at a time (the route
-// renders only the active one), so a mode that flips a global (mode 2's
-// `virtualKeyboard.overlaysContent`, mode 9's `documentElement.height`) does it
-// in a mount `useEffect` and reverts in the cleanup — component lifecycle is the
-// activation signal; there is no explicit onActivate/onDeactivate.
+// avoidance. When it flips a global (its `documentElement.height` root resize)
+// it does so in a mount `useEffect` and reverts in the cleanup — component
+// lifecycle is the activation signal; there is no explicit
+// onActivate/onDeactivate.
 //
-// TYPE-ONLY module. Mode files, `chat-surface.tsx` and the registry all import
-// from here type-only, so it stays free of runtime imports (chat-surface.tsx is
+// TYPE-ONLY module. The layout file and `chat-surface.tsx` import from here
+// type-only, so it stays free of runtime imports (chat-surface.tsx is
 // rendered by `bun test`, whose root tsconfig carries no `@/` paths).
 
 import type * as React from 'react'
