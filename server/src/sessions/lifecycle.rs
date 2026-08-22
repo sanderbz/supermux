@@ -886,6 +886,74 @@ async fn require_session(state: &AppState, name: &str) -> Result<Session, AppErr
         .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))
 }
 
+/// Build the per-spawn OS-sandbox confinement plan for a COMPANY session
+/// (companies §4.4), or `None` for a main/PA/tech-admin bot (`company_id` NULL)
+/// or when `isolation_mode = off`.
+///
+/// Resolves the company `root_dir` by a DB read (kept OUT of the pure
+/// `build_env`), builds the [`crate::isolation::SandboxSpec`], surfaces the
+/// MEASURED level per session (log + `isolation_applied` store for the P2 badge),
+/// and — under `StrictRequired` on a host that enforces nothing — REFUSES to
+/// start with a clear error rather than degrading. Under `BestEffort` a
+/// `None`/blocked measurement still returns a plan whose `apply_in_child` fails
+/// open, so the child execs.
+async fn company_confinement(
+    state: &AppState,
+    s: &Session,
+    name: &str,
+) -> Result<Option<crate::isolation::ConfinePlan>, AppError> {
+    use crate::isolation::IsolationMode;
+    // GATE: `company_id IS NULL` ⇒ a main/PA/tech-admin bot ⇒ never confined —
+    // `confine()` is simply never reached (no global sandbox to exempt from).
+    let Some(cid) = s.company_id else {
+        return Ok(None);
+    };
+    // Escape hatch: `isolation_mode = off` ⇒ no plan ⇒ `confine()` never called.
+    if state.isolation.mode() == IsolationMode::Off {
+        return Ok(None);
+    }
+    // StrictRequired fail-closed: refuse to start a company session on a host
+    // that enforces no OS sandbox, BEFORE any spawn.
+    if let Some(reason) = state.isolation.strict_refusal() {
+        return Err(AppError::Conflict(reason));
+    }
+    let company = db::companies::get(&state.pool, cid)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("load company {cid}: {e}")))?
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!(
+                "session '{name}' references company {cid} that no longer exists"
+            ))
+        })?;
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let plan = state
+        .isolation
+        .plan_for(std::path::Path::new(&company.root_dir), &home);
+
+    // Surface the MEASURED level per session (BestEffort surfaces the measured
+    // level, never the requested mode) — log it + stash it for the P2 UI badge.
+    let level = state.isolation.probe().best_level.clone();
+    if level.is_enforced() {
+        tracing::info!(
+            session = name,
+            company = cid,
+            backend = state.isolation.probe().backend,
+            "isolation: company agent confined at {level}",
+        );
+    } else {
+        tracing::warn!(
+            session = name,
+            company = cid,
+            backend = state.isolation.probe().backend,
+            "isolation: company agent '{name}' spawning UNCONFINED (measured {level}; \
+             fail-open under best-effort). secret-floor still applies; add \
+             SystemCallFilter=@sandbox on Linux to enable the kernel jail.",
+        );
+    }
+    state.isolation_applied.insert(name.to_string(), level);
+    Ok(plan)
+}
+
 /// R2 board↔session link liveness: when a session's lifecycle changes
 /// (archive/unarchive/stop/delete), any board card linked to it goes stale —
 /// `IssueView::session_live` flips, so an open board would keep showing a
@@ -1188,7 +1256,15 @@ async fn start_locked(
         // ("a fault reads as gone"), so a transient probe glitch on a session
         // that is actually running now lands here — and must not tear down that
         // live session's cached stream on the way to a spawn that fails.
-        rt.spawn(&dir, &env, &shell).await?;
+        //
+        // COMPANY AGENT ISOLATION (companies §4.4). Build a per-spawn OS-sandbox
+        // confinement plan — ONLY for a company session (`company_id.is_some()`)
+        // under a non-`Off` mode. main/PA/tech-admin bots (`company_id` NULL) are
+        // NEVER confined: `plan` stays `None`, and the child spawns exactly as
+        // before. The company `root_dir` is resolved by a DB read HERE (kept out
+        // of the pure `build_env`).
+        let confine_plan = company_confinement(state, &s, name).await?;
+        rt.spawn_confined(&dir, &env, &shell, confine_plan).await?;
         state.pty_invalidate(name);
     }
 
@@ -2671,6 +2747,7 @@ mod build_env_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         }
     }
@@ -2829,6 +2906,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            company_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
@@ -2890,6 +2968,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            company_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
@@ -2954,6 +3033,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            company_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
@@ -3004,6 +3084,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            company_id: None,
             mark_pin: None,
             runtime: "tmux".into(),
             notif: "inherit".into(),
@@ -3255,6 +3336,7 @@ mod link_liveness_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -3476,6 +3558,7 @@ mod write_runtime_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

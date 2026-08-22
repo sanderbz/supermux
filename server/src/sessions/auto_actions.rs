@@ -2316,6 +2316,7 @@ mod board_reaction_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -2524,6 +2525,7 @@ mod boot_reconcile_tests {
             mcp: None,
             worktree: None,
             host_id: None,
+            company_id: None,
             runtime: Some("native".into()),
         };
         crate::sessions::create(state, inp).await.expect("create");
@@ -2723,6 +2725,7 @@ mod dead_holder_tests {
             mcp: None,
             worktree: None,
             host_id: None,
+            company_id: None,
             runtime: Some("native".into()),
         };
         crate::sessions::create(state, inp).await.expect("create");

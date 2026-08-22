@@ -118,6 +118,18 @@ pub struct Config {
     /// absent from the wire, and every surface that reads it renders nothing
     /// (`web/src/lib/rate-limits.ts`).
     pub statusline_tap: bool,
+    /// Portable agent-isolation policy for COMPANY sessions (companies §4.4).
+    ///
+    /// Parsed from `isolation_mode` in `config.toml` (`off` / `best-effort` /
+    /// `strict-required`), default [`BestEffort`](crate::isolation::IsolationMode::BestEffort).
+    /// It gates the per-spawn OS sandbox (Landlock on Linux) that confines a
+    /// company agent's own shell; main / PA / tech-admin bots (`company_id IS
+    /// NULL`) are NEVER confined regardless of this value. `best-effort` applies
+    /// the strongest backend the host offers and degrades with a warning on a
+    /// mechanism-less host (or when the systemd `@system-service` filter blocks
+    /// `landlock_*`); `strict-required` refuses to start a company session when
+    /// isolation is unavailable; `off` is the escape hatch.
+    pub isolation_mode: crate::isolation::IsolationMode,
 }
 
 /// `[ws]` config block. Both knobs are sized so a single multi-device PWA user
@@ -198,6 +210,10 @@ struct RawConfig {
     /// See [`Config::statusline_tap`]. Absent key = OFF.
     #[serde(default)]
     statusline_tap: bool,
+    /// See [`Config::isolation_mode`]. Absent key = the safe default
+    /// (`best-effort`), resolved by [`crate::isolation::IsolationMode::parse`].
+    #[serde(default)]
+    isolation_mode: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -291,6 +307,16 @@ pub fn load() -> Result<Config> {
         github_token,
         extra_origins: raw.extra_origins,
         statusline_tap: raw.statusline_tap,
+        // Env override (handy for ad-hoc deploys with no config file) wins over
+        // config.toml; both resolve through the same lenient parser, so a typo
+        // falls back to `best-effort` rather than silently disabling the sandbox.
+        isolation_mode: crate::isolation::IsolationMode::parse(
+            &std::env::var("SUPERMUX_ISOLATION_MODE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or(raw.isolation_mode)
+                .unwrap_or_default(),
+        ),
     })
 }
 

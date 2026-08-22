@@ -54,6 +54,10 @@ pub struct Session {
     /// 0018). The entire pre-remote-host fleet backfills to `NULL` so existing
     /// call sites that don't yet pass a host_id keep their local-only semantics.
     pub host_id: Option<i64>,
+    /// The company this session belongs to (migration 0030), or `NULL` for a
+    /// main/PA/tech-admin bot. `FromRow` picks up the new column; the entire
+    /// existing fleet backfills to `NULL` (= a main bot), byte-identical to today.
+    pub company_id: Option<i64>,
     /// The user's explicit identity-mark override (migration 0027), as
     /// `"<silhouette>:<hue>"`. `NULL` for every session that has never been
     /// rerolled — which is almost all of them: the face is DERIVED from the slug
@@ -164,6 +168,19 @@ pub async fn get(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Session>>
         .bind(name)
         .fetch_optional(pool)
         .await
+}
+
+/// Slugs of every session belonging to `company` (archived included — a
+/// delegation edge can point at an archived peer). Used only by the optional
+/// `company` scope on the delegation-graph read; the omniscient owner default
+/// never calls it. One query, so a scoped caller filters against a set rather
+/// than a per-edge lookup.
+pub async fn names_in_company(pool: &SqlitePool, company: i64) -> sqlx::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM sessions WHERE company_id = ?")
+        .bind(company)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
 /// Fetch a session's runtime row.
@@ -385,6 +402,10 @@ pub struct NewSession {
     /// this is already one of the two literals. Mirrors `host_id`: the create
     /// path (CreateInput → NewSession → INSERT) carries it end-to-end.
     pub runtime: String,
+    /// The company this session is created into (migration 0030); `None` = a
+    /// main bot (`company_id` NULL). Set by the create path AFTER the §4.1
+    /// dir-forcing has validated/derived the company folder.
+    pub company_id: Option<i64>,
 }
 
 /// Insert a full session config row. `created_at` is set to now.
@@ -393,8 +414,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
-             worktree, worktree_repo, host_id, runtime, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             worktree, worktree_repo, host_id, company_id, runtime, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.display_name)
@@ -409,6 +430,7 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(s.worktree as i64)
     .bind(&s.worktree_repo)
     .bind(s.host_id)
+    .bind(s.company_id)
     .bind(&s.runtime)
     .bind(now)
     .execute(pool)
@@ -458,10 +480,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, notif, mark_pin, created_at)
+             host_id, company_id, runtime, notif, mark_pin, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, notif, mark_pin, ?
+                host_id, company_id, runtime, notif, mark_pin, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

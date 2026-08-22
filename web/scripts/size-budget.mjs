@@ -282,7 +282,52 @@ const BUDGET_ENTRY_JS = 160 * KB
 //             serious `nested-interactive`) and one `data-testid`.
 // The turn announcer is on the hero path because the focus route is where a
 // turn happens and the chat chunk is lazy; the chip fix is unavoidable markup.
-const BUDGET_APP_JS = 239 * KB
+//
+// 242 at feat(companies) — the company switcher + whole-app scoping slice
+// (Bot Mode, migration 0030): measured 241.49 against 238.00 for this branch's
+// pre-slice base, a +3.49 KB fase. ceil(measured) = 242 (measured×1.02 = 246.3
+// would be looser; the ledger takes the tighter, as every fase since B3 has).
+// Where the bytes went, per part:
+//   ~1.4 KB  `create-company-dialog.tsx` — the "New company…" create form
+//            (name → derived slug + root_dir, 409/offline error branches). It
+//            is LAZY (radix Dialog only enters the bundle on open), so this is
+//            a separate async chunk, not hero-path weight.
+//   ~1.0 KB  `company-switcher.tsx` — the header dropdown (All + per-company
+//            options, the check-marked list, the inline caret). ALSO lazy from
+//            the overview, per this ledger's standing advice that the next
+//            additive change to the hero path should code-split rather than
+//            spend — so it too is off the entry chunk.
+//   ~0.7 KB  `companiesApi` (in `lib/api/sessions.ts`) + `use-companies.ts`
+//            (the `['companies']` query + create/archive mutations). This part
+//            IS eager — the overview reads the company list for the stale-id
+//            guard and team scoping — and is the whole of the entry delta.
+//   ~0.4 KB  `lib/companies.ts` (the pure stale-id guard + company-first
+//            search comparator, unit-tested) + the overview scoping seams
+//            (`filtered`/`filteredTeams`/`flatSorted` predicates) + the
+//            ui-store `activeCompany` field.
+// The ENTRY gate — the hard hero-path guard — stays GREEN at 159.97 / 160 KB
+// (99.98%): the two UI components are code-split, so only the ~0.5 KB eager
+// api+hook slice lands on first paint. The Files-browser + palette company
+// scoping are a deliberately-deferred next slice (see the TODO anchor in
+// `routes/overview.tsx`), so no more hero-path bytes are queued behind this.
+//
+// 245 at feat(companies) Files-scope slice — the deferred slice above landed:
+// the Files browser now ROOTS at the active company's `root_dir` (HQ =
+// unrestricted), and the chat `@`-picker is scoped to the current session's own
+// `company_id` (same-company peers; a main/HQ session still reaches all). The
+// eager cost of that (the companies query on the Files route's first paint) was
+// NOT spent on the hard-gated hero path: per this ledger's standing "code-split
+// rather than spend" advice, the whole Files route went entry-lazy, exactly as
+// Settings did. The trade the numbers record:
+//   ENTRY (the hard hero-path gate)  160.03 → 153.66 KB  (−6.37 KB, now 96%)
+//   TOTAL app JS                     241.64 → 244.11 KB  (+2.47 KB)
+// The +2.47 KB total is gzip-boundary cost: one big entry blob split into a
+// route chunk (`files` ~5.8 KB) plus its now-standalone `session-picker` /
+// `file-types` leaves each fragment less compressible than it was inlined. That
+// is soft-ceiling spend deliberately buying hard-gate headroom — the trade this
+// ledger has celebrated every fase ("the ENTRY gate MOVED DOWN"). ceil(244.11)
+// = 245 (measured×1.02 = 249 would be looser; the ledger takes the tighter).
+const BUDGET_APP_JS = 245 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

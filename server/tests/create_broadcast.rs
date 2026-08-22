@@ -43,6 +43,7 @@ fn temp_config() -> (Config, PathBuf) {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     (config, dir)
 }
@@ -67,6 +68,7 @@ fn create_input(name: &str, dir: &std::path::Path) -> CreateInput {
         mcp: None,
         worktree: None,
         host_id: None,
+        company_id: None,
         bypass_permissions: None,
         // Native + local: no tmux/pty is actually launched by `create`; it only
         // inserts the row and spawns the in-memory detector/steering loops.

@@ -54,6 +54,7 @@ async fn spawn_server(ws: WsConfig) -> (AppState, SocketAddr, PathBuf) {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);
@@ -158,6 +159,7 @@ async fn make_session(state: &AppState, name: &str) {
             mcp: None,
             worktree: None,
             host_id: None,
+            company_id: None,
             runtime: Some("tmux".into()),
         },
     )

@@ -87,6 +87,32 @@ pub trait SessionRuntime: Send + Sync {
     /// `dir` as its working directory and `env` injected into the pty.
     async fn spawn(&self, dir: &Path, env: &HashMap<String, String>, shell: &str) -> Result<()>;
 
+    /// Like [`spawn`](Self::spawn), but additionally apply a per-spawn OS-sandbox
+    /// confinement inside the child (companies §4.4). `plan` is `Some` only for a
+    /// COMPANY session under a non-`Off` isolation mode; the closure runs
+    /// post-fork / pre-exec so the restriction is inherited across `exec`.
+    ///
+    /// The default IGNORES `plan` and delegates to [`spawn`](Self::spawn): a
+    /// backend with no pre-exec seam (tmux — it forks via `tmux new-session`, and
+    /// company agents run native anyway; the in-test mock) is never asked to
+    /// confine a company shell. Only the native backend overrides this.
+    async fn spawn_confined(
+        &self,
+        dir: &Path,
+        env: &HashMap<String, String>,
+        shell: &str,
+        plan: Option<crate::isolation::ConfinePlan>,
+    ) -> Result<()> {
+        if plan.is_some() {
+            tracing::warn!(
+                "isolation: {} backend has no pre-exec confinement seam; company shell \
+                 spawned UNCONFINED (native runtime is required for OS sandboxing)",
+                self.target(),
+            );
+        }
+        self.spawn(dir, env, shell).await
+    }
+
     /// Is the session's terminal live? Best-effort and infallible by contract:
     /// any backend fault reads as "gone" so callers fail toward teardown rather
     /// than serving a dead pane.
@@ -449,6 +475,16 @@ impl NativeRuntime {
 impl SessionRuntime for NativeRuntime {
     async fn spawn(&self, dir: &Path, env: &HashMap<String, String>, shell: &str) -> Result<()> {
         self.session.spawn(dir, env, shell).await
+    }
+
+    async fn spawn_confined(
+        &self,
+        dir: &Path,
+        env: &HashMap<String, String>,
+        shell: &str,
+        plan: Option<crate::isolation::ConfinePlan>,
+    ) -> Result<()> {
+        self.session.spawn_confined(dir, env, shell, plan).await
     }
 
     async fn alive(&self) -> bool {

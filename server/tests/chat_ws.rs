@@ -92,6 +92,7 @@ async fn spawn_harness() -> Harness {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);
@@ -123,6 +124,7 @@ async fn make_session(h: &Harness, name: &str, provider: &str, host_id: Option<i
             worktree_repo: String::new(),
             host_id,
             runtime: "native".to_string(),
+            company_id: None,
         },
     )
     .await

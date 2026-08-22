@@ -82,6 +82,15 @@ interface UIStore {
    *  per-surface localStorage flag folds into this). Default `false`: stopped
    *  sessions are shown until the user opts to hide them. */
   hideStopped: boolean
+  /** Active company scope (Bot Mode, migration 0030). `null` = HQ — the main/PA
+   *  space that shows ONLY sessions + teams whose `company_id` is null (the main
+   *  bots); the default landing. A number scopes the whole app — the overview
+   *  roster, the team cards, and the new-agent default — to that company. There
+   *  is no view that mixes HQ with a company. Persisted here beside `hideStopped`
+   *  so the chosen scope survives a reload; a stale id that no longer maps to a
+   *  live company is reconciled to `null` (=HQ) by the overview (see
+   *  `resolveActiveCompany`). */
+  activeCompany: number | null
   /** Fase A1 chat renderer (Track A). When ON, eligible LOCAL Claude sessions
    *  default to the read-only chat renderer at the desktop focus seam, with
    *  the terminal one tap away. Kill-switch:
@@ -116,6 +125,7 @@ interface UIStore {
   setOverviewSizeMobile: (s: OverviewSize) => void
   setShowHidden: (v: boolean) => void
   setHideStopped: (v: boolean) => void
+  setActiveCompany: (id: number | null) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -129,6 +139,7 @@ export const useUI = create<UIStore>()(
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
       hideStopped: false,
+      activeCompany: null,
       chatRenderer: false,
       setChatRenderer: (chatRenderer) => set({ chatRenderer }),
       defaultRenderer: 'chat',
@@ -164,6 +175,7 @@ export const useUI = create<UIStore>()(
         set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
       setShowHidden: (showHidden) => set({ showHidden }),
       setHideStopped: (hideStopped) => set({ hideStopped }),
+      setActiveCompany: (activeCompany) => set({ activeCompany }),
     }),
     {
       name: 'supermux-ui',

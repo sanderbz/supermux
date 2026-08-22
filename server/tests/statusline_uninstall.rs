@@ -73,6 +73,7 @@ async fn uninstall_reports_the_truth_and_keeps_the_sidecar_when_it_removed_nothi
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

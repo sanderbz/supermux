@@ -54,6 +54,9 @@ export interface SessionSummary {
   /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0030); null / absent = a
+   *  main/PA bot. The company switcher (P1) reads this to scope the roster. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars), captured by `set_last_send` on
    *  both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. */
@@ -297,6 +300,10 @@ export interface ApiSession {
    *  row). The session tile renders a small globe badge when this is set; the
    *  new-session sheet picks it via <HostPicker>. */
   host_id?: number | null
+  /** The company this session belongs to (migration 0030); null = a main/PA
+   *  bot (the entire existing fleet). The read-path addition `host_id` never
+   *  got — the switcher (P1) reads it to scope the roster client-side. */
+  company_id?: number | null
   /** The user's last sent prompt (≤200 chars, control chars stripped), captured
    *  on both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
    *  Absent when the session has never received a submission. Pairs with
@@ -509,6 +516,10 @@ export interface NewSession {
   worktree?: boolean
   command?: string
   host_id?: number | null
+  /** The company to create this session into (migration 0030). Absent / null =
+   *  a main bot; when set, the server forces `dir` under the company's
+   *  `root_dir/<name>/` and rejects any other dir. */
+  company_id?: number | null
   /** Boot Claude in bypass-permissions mode (`--permission-mode
    *  bypassPermissions`) — it runs tools without asking. A typed boolean: the
    *  server builds the trusted flag, the web never sends raw launch flags. */
@@ -876,6 +887,60 @@ export const sessionsApi = {
       return []
     }
   },
+}
+
+// ── Companies endpoint (migration 0030) ──────────────────────────────────────
+//
+// Mirrors `sessionsApi`: same `sessReq` (auth + `{ ok, data }` envelope +
+// `SessionError`) so the switcher writes through the one canonical fetch. The
+// server surface is `server/src/companies/mod.rs`.
+
+export type { Company } from '../companies'
+import type { Company } from '../companies'
+
+/** Create body for `POST /api/companies`. The server derives nothing from the
+ *  name for us — it takes an explicit `{slug, display_name, root_dir}` and
+ *  mkdir's `root_dir` (the create dialog derives `slug`/`root_dir` from the
+ *  typed name before calling). */
+export interface NewCompany {
+  slug: string
+  display_name: string
+  root_dir: string
+}
+
+export const companiesApi = {
+  /** `GET /api/companies` — live (non-archived) companies, ordered by
+   *  `display_name`. `?archived=1` would include archived; the switcher only
+   *  ever wants live ones. */
+  list: async (): Promise<Company[]> => {
+    const body = await sessReq<unknown>('/api/companies')
+    return Array.isArray(body) ? (body as Company[]) : []
+  },
+
+  /** `POST /api/companies` — create ({slug, display_name, root_dir}); the server
+   *  mkdir's `root_dir` and returns the row (201). 409 on a slug that collides
+   *  with an existing company OR session slug. */
+  create: (input: NewCompany): Promise<Company> =>
+    sessReq('/api/companies', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /** `PATCH /api/companies/{id}` — archive (soft-hide from the switcher) or
+   *  rename. Archiving is the switcher's "remove from the list" — the row and
+   *  its `root_dir` survive (a company is never destructively dropped here). */
+  archive: (id: number): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    }),
+
+  /** `PATCH /api/companies/{id}` — set the display name. */
+  rename: (id: number, display_name: string): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name }),
+    }),
 }
 
 // ── Project repos endpoint ───────────────────────────────────────────────────

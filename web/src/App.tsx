@@ -15,12 +15,21 @@ import { ConnectionOverlay } from '@/components/connection/connection-overlay'
 import { MorphCommitProbe } from '@/components/view-transitions/morph'
 import { Overview } from '@/routes/overview'
 import { Focus, FocusEntry } from '@/routes/focus'
-import { Files } from '@/routes/files'
 // Settings is entry-lazy: it is a cold administrative surface, and its eager
 // import tipped the hero-path bundle over the 200 KB gz budget (#67 red).
 // (B1 folded the Scheduler route into Settings, so no Scheduler import here.)
 const Settings = lazy(() =>
   import('@/routes/settings').then((m) => ({ default: m.Settings })),
+)
+// Files is entry-lazy too (Bot Mode P1). It is a secondary browse surface with
+// its own weight (FileList / FileViewer / Dropzone / breadcrumb tree), reached
+// deliberately rather than on the landing — the same profile as Settings above.
+// Company-root scoping added the companies query to its first paint, and rather
+// than SPEND that on the hard-gated hero path this follows the size-budget
+// ledger's standing advice ("code-split rather than spend"): the whole route
+// leaves the entry chunk, which DROPS the hero-path gate ~6 KB (160.0 → 153.7).
+const Files = lazy(() =>
+  import('@/routes/files').then((m) => ({ default: m.Files })),
 )
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
@@ -162,7 +171,14 @@ export default function App() {
                     bookmark lands somewhere honest — the same pattern /scheduler
                     and /hosts use. */}
                 <Route path="/board" element={<Navigate to="/" replace />} />
-                <Route path="/files/:name?" element={<Files />} />
+                <Route
+                  path="/files/:name?"
+                  element={
+                    <Suspense fallback={null}>
+                      <Files />
+                    </Suspense>
+                  }
+                />
                 {/* Scheduler moved into Settings → Schedules (B1 T8: a route
                     whose 5-column table did not earn a primary-nav slot).
                     Redirect old bookmarks / deep links to the Settings anchor

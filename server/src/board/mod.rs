@@ -954,6 +954,8 @@ async fn start_handler(
                 mcp: None,
                 worktree: spawn.worktree,
                 host_id: None,
+                // Board-spawned sessions are main bots (no company).
+                company_id: None,
                 // Board-spawned sessions take the default (tmux) runtime.
                 runtime: None,
             };
@@ -1571,6 +1573,7 @@ mod tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = db::init(&config).await.expect("init pool");

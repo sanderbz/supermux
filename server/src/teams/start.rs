@@ -273,6 +273,9 @@ pub async fn start_team(
             mcp: None,
             worktree: None,
             host_id: None,
+            // Team leads created via this path are main bots (no company); a
+            // company-scoped team is a P1+ concern.
+            company_id: None,
             // A team LEAD is tmux by definition — Claude renders teammates as
             // tmux split-window panes, which the native runtime has no analogue
             // for. EXPLICIT since the create default became native.
@@ -643,6 +646,7 @@ mod tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -693,6 +697,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: Some("native".into()),
             },
         )
@@ -742,6 +747,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -780,6 +786,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -825,6 +832,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )

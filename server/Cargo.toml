@@ -126,6 +126,14 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 dirs = "5.0"                                             # home dir
 which = "7.0"                                            # locate claude/tmux
 
+# ── portable agent isolation (companies §4.4) ──
+# Landlock LSM helpers for the per-spawn company-agent sandbox (Linux only).
+# NOT `birdcage` (archived + GPL-3.0 — would relicense-contaminate this MIT
+# tree). Linux-gated: zero build cost on macOS/other, where the Noop / Seatbelt
+# backends carry the trait. See `crate::isolation`.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+
 [features]
 # Gates test-only helpers (e.g. `ReleaseCache::seed`) that would otherwise be
 # compiled into release production binaries. Auto-enabled for `cargo test`

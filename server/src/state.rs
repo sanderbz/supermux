@@ -435,6 +435,21 @@ pub struct AppState {
     /// SAME cache + registry (a `/start` writer + `/progress` subscriber must
     /// rendezvous on one channel — see `crate::updates`).
     pub updates: crate::updates::UpdatesState,
+    /// Portable agent-isolation runtime (companies §4.4): the requested
+    /// [`IsolationMode`](crate::isolation::IsolationMode), the once-at-startup
+    /// probe result, and the active backend. The spawn path (`lifecycle::
+    /// start_locked`) consults it to build a per-spawn confinement plan for
+    /// COMPANY sessions only. Cheap `Arc`; the probe (which forks once) is
+    /// memoised process-wide, so building this per test `AppState` is free after
+    /// the first.
+    pub isolation: Arc<crate::isolation::IsolationRuntime>,
+    /// The last per-spawn isolation level actually applied, keyed by session
+    /// name (companies §4.4 surface). In-memory only; written when a company
+    /// session is (re)started so P2 can render a badge without re-probing.
+    /// Bounded by the live session set (cleared on delete via `pty_invalidate`
+    /// paths is not required — a stale entry is harmless and overwritten on the
+    /// next start).
+    pub isolation_applied: Arc<DashMap<String, crate::isolation::IsolationLevel>>,
 }
 
 impl AppState {
@@ -454,6 +469,8 @@ impl AppState {
         // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
         // lazily when `transport_for` is first called for a host.
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
+        // Capture the isolation policy before `config` is moved into the Arc.
+        let isolation_mode = config.isolation_mode;
         Self {
             pool,
             config: Arc::new(config),
@@ -484,6 +501,13 @@ impl AppState {
             statuslines: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
+            // Runs (or reuses) the once-per-process isolation probe and logs the
+            // honest startup line. `from_mode` is cheap after the first call
+            // (the probe is memoised in a process-wide OnceLock).
+            isolation: Arc::new(crate::isolation::IsolationRuntime::from_mode(
+                isolation_mode,
+            )),
+            isolation_applied: Arc::new(DashMap::new()),
         }
     }
 
@@ -1487,6 +1511,7 @@ mod pending_edit_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

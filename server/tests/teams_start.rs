@@ -38,6 +38,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

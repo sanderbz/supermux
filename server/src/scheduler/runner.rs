@@ -524,6 +524,8 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         mcp: None,
         worktree: Some(sched.boot_worktree == 1),
         host_id: None,
+        // Scheduler-booted sessions are main bots (no company).
+        company_id: None,
         // Scheduler-booted sessions take the default (tmux) runtime.
         runtime: None,
     };

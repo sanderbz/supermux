@@ -242,7 +242,7 @@ export function statusToDelta(payload: unknown): Partial<ApiSession>[] {
 /** DEV-only: `?mock=1` seeds the cache from the mocks (overview dogfooding
  *  without a backend). When active, the live fetch is disabled so it can't
  *  overwrite the seed. Always `false` in a production build. */
-function devMockActive(): boolean {
+export function devMockActive(): boolean {
   return (
     import.meta.env.DEV &&
     typeof window !== 'undefined' &&

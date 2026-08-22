@@ -794,6 +794,7 @@ mod tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = db::init(&config).await.expect("init pool");
@@ -974,6 +975,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -1018,6 +1020,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -1084,6 +1087,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -1150,6 +1154,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                company_id: None,
                 runtime: None,
             },
         )
@@ -1226,6 +1231,7 @@ mod tests {
             mcp: None,
             worktree: None,
             host_id: None,
+            company_id: None,
             runtime: None,
         };
         crate::sessions::create(&state, mk("old-host", "/old")).await.unwrap();
