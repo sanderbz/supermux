@@ -979,8 +979,10 @@ export const sessionsApi = {
 export type { Company } from '../companies'
 import type { Company } from '../companies'
 
-/** Create body for `POST /api/companies`. The server takes an explicit
- *  `{slug, display_name, root_dir}` and mkdir's `root_dir`. */
+/** Create body for `POST /api/companies`. `root_dir` is only a HINT: the server
+ *  is authoritative and DERIVES the jail root as `<projects_root>/companies/<slug>`,
+ *  ignoring any supplied value. Read the returned `Company.root_dir` for the
+ *  truth. */
 export interface NewCompany {
   slug: string
   display_name: string
@@ -995,9 +997,10 @@ export const companiesApi = {
     return Array.isArray(body) ? (body as Company[]) : []
   },
 
-  /** `POST /api/companies` — create ({slug, display_name, root_dir}); the server
-   *  mkdir's `root_dir` and returns the row (201). 409 on a slug that collides
-   *  with an existing company OR session slug. */
+  /** `POST /api/companies` — create ({slug, display_name}); the server DERIVES +
+   *  mkdir's `root_dir` = `<projects_root>/companies/<slug>` (any supplied
+   *  `root_dir` is ignored) and returns the row (201). 409 on a slug that
+   *  collides with an existing company OR session slug. */
   create: (input: NewCompany): Promise<Company> =>
     sessReq('/api/companies', {
       method: 'POST',

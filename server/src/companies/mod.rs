@@ -68,6 +68,27 @@ fn valid_slug(slug: &str) -> bool {
     SLUG_RE.is_match(slug)
 }
 
+/// The authoritative company-jail namespace root: `<projects_root>/companies`.
+///
+/// `<projects_root>` is the FIRST `SUPERMUX_PROJECT_DIRS` entry — the SAME notion
+/// the files-repos handler (`files::projects_repos`) and the start-a-team
+/// pre-fill (`static_assets`) already read, so there is one source of truth —
+/// tilde-expanded. When the var is unset/empty we fall back to `$HOME` (and `/`
+/// only if even that is unknown). Every company's `root_dir` is derived under
+/// here (`<companies_root>/<slug>`) so a client can never supply an arbitrary
+/// jail root.
+fn companies_root() -> std::path::PathBuf {
+    let projects_root = std::env::var("SUPERMUX_PROJECT_DIRS")
+        .ok()
+        .and_then(|s| s.split(':').next().map(str::to_string))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| std::path::PathBuf::from(shellexpand::tilde(&s).into_owned()))
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"));
+    projects_root.join("companies")
+}
+
 // ── query / body types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -86,7 +107,13 @@ fn is_truthy(v: &str) -> bool {
 pub struct CreateCompanyInput {
     pub slug: String,
     pub display_name: String,
-    pub root_dir: String,
+    /// **Ignored — never trusted.** The company jail root is derived
+    /// AUTHORITATIVELY server-side as `<projects_root>/companies/<slug>` (see
+    /// [`companies_root`] + [`create_handler`]), so a client can never point a
+    /// company's jail at an arbitrary path. Kept optional purely so an older
+    /// client may still send it as a hint; the value is discarded.
+    #[serde(default)]
+    pub root_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,17 +137,34 @@ struct DeleteResult {
 
 async fn list_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Envelope<Vec<Company>>>, AppError> {
     let include_archived = params.archived.as_deref().map(is_truthy).unwrap_or(false);
     let rows = companies::list(&state.pool, include_archived).await?;
+    // P3d: a scoped MEMBER sees ONLY their own company (so the switcher shows just
+    // theirs) — never the whole roster. Owner/admin (Scope::All) see everything.
+    let rows = match crate::scope::Scope::of(ctx.0.as_ref()) {
+        crate::scope::Scope::All => rows,
+        crate::scope::Scope::Company(hc) => {
+            rows.into_iter().filter(|c| c.id == hc).collect()
+        }
+    };
     Ok(ok(rows))
 }
 
 async fn get_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<i64>,
 ) -> Result<Json<Envelope<Company>>, AppError> {
+    // P3d: a member may fetch ONLY their own company; any other id is a uniform
+    // 404 (byte-identical to a nonexistent id — no cross-company enumeration).
+    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        if id != hc {
+            return Err(AppError::NotFound(format!("company id={id}")));
+        }
+    }
     let row = companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
@@ -129,11 +173,14 @@ async fn get_handler(
 
 async fn create_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(input): Json<CreateCompanyInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // P3d: creating a company is owner/admin-only company-management. A member is
+    // refused with the uniform hide-existence 404.
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/companies")?;
     let slug = input.slug.trim();
     let display_name = input.display_name.trim();
-    let root_dir = input.root_dir.trim();
 
     if slug.is_empty() {
         return Err(AppError::BadRequest("slug is required".into()));
@@ -146,17 +193,25 @@ async fn create_handler(
     if display_name.is_empty() {
         return Err(AppError::BadRequest("display_name is required".into()));
     }
-    if root_dir.is_empty() {
-        return Err(AppError::BadRequest("root_dir is required".into()));
-    }
-    // `root_dir` must be an absolute path — a company folder is a fixed jail
-    // root, not a cwd-relative one.
-    if !std::path::Path::new(root_dir).is_absolute() {
-        return Err(AppError::BadRequest("root_dir must be an absolute path".into()));
+
+    // AUTHORITATIVE derivation — the jail root is NEVER taken from the client
+    // (`input.root_dir` is ignored). The slug is already unique + charset-validated,
+    // so `<companies_root>/<slug>` is a safe, namespaced folder that a client can
+    // never redirect. This closes the "client sets an arbitrary jail root"
+    // weakness and namespaces companies under `<projects>/companies/`.
+    let root_path = companies_root().join(slug);
+    let root_dir = root_path.display().to_string();
+    // Safety still applies to the FINAL derived path — a company folder is a fixed
+    // absolute jail root, not a cwd-relative one.
+    if !root_path.is_absolute() {
+        return Err(AppError::BadRequest(
+            "derived root_dir is not absolute (misconfigured SUPERMUX_PROJECT_DIRS)".into(),
+        ));
     }
     if root_dir.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
         return Err(AppError::BadRequest("invalid root_dir (NUL / newline)".into()));
     }
+    let root_dir = root_dir.as_str();
 
     // Slug soft-reject: never collide with an existing SESSION slug (folder /
     // URL legibility) — same 409 shape as a duplicate company slug.
@@ -188,9 +243,12 @@ async fn create_handler(
 
 async fn patch_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<i64>,
     Json(input): Json<PatchCompanyInput>,
 ) -> Result<Json<Envelope<Company>>, AppError> {
+    // P3d: renaming/archiving a company is owner/admin-only.
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}"))?;
     // 404 if the row is gone.
     companies::get(&state.pool, id)
         .await?
@@ -217,8 +275,11 @@ async fn patch_handler(
 
 async fn delete_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
+    // P3d: deleting a company is owner/admin-only company-management.
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}"))?;
     let company = companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
@@ -285,6 +346,11 @@ mod tests {
         dir.join(name).display().to_string()
     }
 
+    /// Serializes the tests that mutate the process-global `SUPERMUX_PROJECT_DIRS`
+    /// (the create handler now DERIVES `root_dir` from it), so parallel test
+    /// threads don't clobber each other's env.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn post_company_rejects_slug_colliding_with_session_slug() {
         let (state, dir) = test_state().await;
@@ -294,10 +360,11 @@ mod tests {
             .unwrap();
         let r = create_handler(
             State(state.clone()),
+            crate::scope::OptCtx(None),
             Json(CreateCompanyInput {
                 slug: "acme".into(),
                 display_name: "Acme".into(),
-                root_dir: root_under(&dir, "acme"),
+                root_dir: None,
             }),
         )
         .await;
@@ -306,6 +373,64 @@ mod tests {
             other => panic!("expected Conflict, got {:?}", other.err()),
         }
         state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The SERVER derives `root_dir = <projects_root>/companies/<slug>` and
+    /// IGNORES any client-supplied value — closing the "client picks an arbitrary
+    /// jail root" weakness AND namespacing companies under `companies/`.
+    #[tokio::test]
+    async fn create_derives_root_dir_server_side_and_ignores_client_value() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let (state, dir) = test_state().await;
+        // Point the projects root at this test's isolated temp dir.
+        std::env::set_var("SUPERMUX_PROJECT_DIRS", &dir);
+
+        let created = create_handler(
+            State(state.clone()),
+            crate::scope::OptCtx(None),
+            Json(CreateCompanyInput {
+                slug: "acme".into(),
+                display_name: "Acme".into(),
+                // A BOGUS client-supplied jail root — must NOT be honored.
+                root_dir: Some("/home/supermux".into()),
+            }),
+        )
+        .await
+        .expect("create should succeed")
+        .into_response();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // The stored + returned root_dir is the server-derived path, NOT the
+        // client's bogus one.
+        let want = dir.join("companies").join("acme").display().to_string();
+        let listed = list_handler(
+            State(state.clone()),
+            crate::scope::OptCtx(None),
+            Query(ListParams { archived: None }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.data.len(), 1);
+        assert_eq!(listed.data[0].root_dir, want, "root_dir is server-derived");
+        assert_ne!(listed.data[0].root_dir, "/home/supermux", "client value ignored");
+        // The folder (and its `companies/` parent) were created under the namespace.
+        assert!(dir.join("companies").join("acme").is_dir(), "namespaced folder mkdir'd");
+
+        // The P0 dir-forcing (sessions::create) reads companies.root_dir from the
+        // DB and joins `<name>` — so a company session lands under
+        // `<projects>/companies/<slug>/<agent>`. Mirror that join here to pin the
+        // shape the derived root produces (the forcing code itself is covered by
+        // the `company_session_dir_is_forced_*` sessions tests).
+        let agent_dir = std::path::Path::new(&listed.data[0].root_dir).join("bot-a");
+        assert_eq!(
+            agent_dir.display().to_string(),
+            dir.join("companies").join("acme").join("bot-a").display().to_string(),
+            "agent dir forced under <projects>/companies/<slug>/<agent>"
+        );
+
+        state.pool.close().await;
+        std::env::remove_var("SUPERMUX_PROJECT_DIRS");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -325,7 +450,7 @@ mod tests {
             .await
             .unwrap();
 
-        let r = delete_handler(State(state.clone()), Path(c.id)).await;
+        let r = delete_handler(State(state.clone()), crate::scope::OptCtx(None), Path(c.id)).await;
         match r {
             Err(AppError::Conflict(_)) => {}
             other => panic!("expected Conflict, got {:?}", other.err()),
@@ -338,30 +463,38 @@ mod tests {
 
     #[tokio::test]
     async fn create_then_list_roundtrip_over_http() {
+        let _env = ENV_LOCK.lock().unwrap();
         let (state, dir) = test_state().await;
+        std::env::set_var("SUPERMUX_PROJECT_DIRS", &dir);
         let r = create_handler(
             State(state.clone()),
+            crate::scope::OptCtx(None),
             Json(CreateCompanyInput {
                 slug: "acme".into(),
                 display_name: "Acme".into(),
-                root_dir: root_under(&dir, "acme"),
+                root_dir: None,
             }),
         )
         .await;
         assert!(r.is_ok(), "create should succeed");
-        // The root_dir was mkdir'd.
-        assert!(dir.join("acme").is_dir());
+        // The server-derived root_dir (`<projects>/companies/acme`) was mkdir'd.
+        assert!(dir.join("companies").join("acme").is_dir());
 
         // GET lists it.
-        let listed = list_handler(State(state.clone()), Query(ListParams { archived: None }))
-            .await
-            .unwrap();
+        let listed = list_handler(
+            State(state.clone()),
+            crate::scope::OptCtx(None),
+            Query(ListParams { archived: None }),
+        )
+        .await
+        .unwrap();
         assert_eq!(listed.data.len(), 1);
         let id = listed.data[0].id;
 
         // PATCH archived=1 hides it from the default list.
         patch_handler(
             State(state.clone()),
+            crate::scope::OptCtx(None),
             Path(id),
             Json(PatchCompanyInput {
                 display_name: None,
@@ -370,12 +503,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let default_list = list_handler(State(state.clone()), Query(ListParams { archived: None }))
-            .await
-            .unwrap();
+        let default_list = list_handler(
+            State(state.clone()),
+            crate::scope::OptCtx(None),
+            Query(ListParams { archived: None }),
+        )
+        .await
+        .unwrap();
         assert_eq!(default_list.data.len(), 0, "archived hidden by default");
         let with_archived = list_handler(
             State(state.clone()),
+            crate::scope::OptCtx(None),
             Query(ListParams {
                 archived: Some("1".into()),
             }),
@@ -385,6 +523,7 @@ mod tests {
         assert_eq!(with_archived.data.len(), 1, "included when asked");
 
         state.pool.close().await;
+        std::env::remove_var("SUPERMUX_PROJECT_DIRS");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

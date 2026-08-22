@@ -10,9 +10,9 @@ import type { Company } from '@/lib/companies'
 // tags on the tiles above (Acme=1: web-app, api-server · Globex=2: docs-writer,
 // cso-review · Initech=3: empty, to show the identity-coloured empty state).
 export const MOCK_COMPANIES: Company[] = [
-  { id: 1, slug: 'acme', display_name: 'Acme', root_dir: '/opt/projects/acme', archived: 0 },
-  { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/opt/projects/globex', archived: 0 },
-  { id: 3, slug: 'initech', display_name: 'Initech', root_dir: '/opt/projects/initech', archived: 0 },
+  { id: 1, slug: 'acme', display_name: 'Acme', root_dir: '/opt/projects/companies/acme', archived: 0 },
+  { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/opt/projects/companies/globex', archived: 0 },
+  { id: 3, slug: 'initech', display_name: 'Initech', root_dir: '/opt/projects/companies/initech', archived: 0 },
 ]
 
 const claudeBoot = (task: string): string[] => [

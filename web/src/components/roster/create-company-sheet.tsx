@@ -37,11 +37,15 @@ export function toCompanySlug(raw: string): string {
     .slice(0, 64)
 }
 
-/** Where a new company's `root_dir` lands: `<projects root or $HOME>/<slug>`.
- *  The server requires an absolute path and mkdir's it. */
+/** PREVIEW of where a new company's folder lands:
+ *  `<projects root or $HOME>/companies/<slug>`. This mirrors what the SERVER
+ *  now derives authoritatively (`server/src/companies/mod.rs` → `companies_root()`
+ *  = `<projects_root>/companies`, joined with the slug). The client value is only
+ *  a hint — the server ignores any supplied `root_dir` and derives its own — so
+ *  the success state reads the RETURNED `company.root_dir`, not this preview. */
 export function deriveRootDir(slug: string): string {
   const root = (projectsDir() || homeDir()).replace(/\/+$/, '')
-  return root ? `${root}/${slug}` : ''
+  return root ? `${root}/companies/${slug}` : ''
 }
 
 export function CreateCompanySheet({
