@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { companiesApi, type Company, type NewCompany } from '@/lib/api'
+import { devMockActive } from '@/hooks/use-sessions'
 
 export const COMPANIES_KEY = ['companies'] as const
 
@@ -22,6 +23,9 @@ export function useCompanies(): UseCompaniesResult {
     queryKey: COMPANIES_KEY,
     queryFn: companiesApi.list,
     staleTime: 30_000,
+    // DEV `?mock`: the seed populates the cache; disable the live fetch so it
+    // can't overwrite the seeded companies (mirrors useSessions).
+    enabled: !devMockActive(),
   })
   return {
     companies: query.data ?? [],
