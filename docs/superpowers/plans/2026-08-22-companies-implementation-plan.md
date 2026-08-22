@@ -4,7 +4,7 @@
 
 **Goal:** Turn the flat single-tenant supermux dashboard into a small operational OS where a `Company` is a first-class named workspace that owns a folder + a set of agents, isolated server-side (files, delegation, connector credentials, and an OS sandbox), with company-less bots (`company_id IS NULL`) staying omniscient main/PA bots.
 
-**Architecture:** `company_id` is a **plain nullable `INTEGER`** filter attribute on `sessions` (NULL = main bot). Session slugs stay **globally unique** — company is only a `WHERE` predicate + a client-side filter, so none of the ~20 slug-keyed in-memory `DashMap`s, the native spool path, the hook-token store, or the tmux session names ever gain a company dimension. Isolation is layered: a server-enforced Files jail + delegation gate + query scoping (cheap, seam already exists), a P0 **secret-floor** (per-company `CLAUDE_CONFIG_DIR` on the child env per-spawn), and a P1 kernel-enforced **OS sandbox** (`IsolationProvider`: Landlock on Linux via `pre_exec` + `restrict_self()`, Seatbelt on macOS, Noop fallback) applied per-spawn only to company agents.
+**Architecture:** `company_id` is a **plain nullable `INTEGER`** filter attribute on `sessions` (NULL = main bot). Session slugs stay **globally unique** — company is only a `WHERE` predicate + a client-side filter, so none of the ~20 slug-keyed in-memory `DashMap`s, the native spool path, the hook-token store, or the tmux session names ever gain a company dimension. Isolation is layered: a server-enforced Files jail + delegation gate + query scoping (cheap, seam already exists), a P2 **secret-floor** (per-company `CLAUDE_CONFIG_DIR` on the child env per-spawn **AND** company-aware server-side resolvers — both halves co-ship), and a P1 kernel-enforced **OS sandbox** (`IsolationProvider`: Landlock on Linux via `pre_exec` + `restrict_self()`, Seatbelt on macOS, Noop fallback) applied per-spawn only to company agents.
 
 **Tech Stack:** Rust (axum / tokio / sqlx runtime `query_as` + `FromRow`, SQLite WAL + `foreign_keys=ON`), React / TypeScript / Vite / Tailwind / Bun, rust-landlock (`ABI::V4` + `CompatLevel::BestEffort`, P1), XChaCha20-Poly1305 secretbox vault (P2), Cloudflare tunnel + Google OIDC (P3).
 
@@ -30,16 +30,22 @@ Five independently-shippable units, in ship order. Each states its one-line done
 | # | Slice | Done-definition (one line) | Owner-visible check |
 | --- | --- | --- | --- |
 | 0 | **Deploy prereq — `@sandbox` unit line** | `supermux.service` carries `SystemCallFilter=@sandbox` and the service still boots green | Service restarts cleanly; `systemctl show supermux -p SystemCallFilter` lists `@sandbox`; nothing in the dashboard changes |
-| 1 | **P0 — data-model + secret-floor** | Migration 0030 applied (count 27→28), `company_id` threaded through the 5 Rust + 3 web types, companies CRUD live, create-time dir-forcing + per-child `CLAUDE_CONFIG_DIR` in place; all gates green | A create/list curl shows a company exists and a company-scoped session carries its `company_id` with `dir` forced under `root_dir`; **the dashboard looks identical** (that is the point) |
+| 1 | **P0 — data-model + companies CRUD + dir-forcing** | Migration 0030 applied (count 27→28), `company_id` threaded through the 5 Rust + 3 web types, companies CRUD live, create-time + duplicate-time dir-forcing in place; behavior-neutral for NULL sessions; all gates green | A create/list curl shows a company exists and a company-scoped session carries its `company_id` with `dir` forced under `root_dir`; **the dashboard looks identical** (that is the point) |
 | 2 | **P1 — companies + switcher + isolation backend** | Files jail flips on, delegation gate + silent-404 + graph filter live, `<CompanySwitcher>` scopes the whole app, `IsolationProvider`/Landlock/startup-probe land | Owner picks a company → roster, teams, Files all narrow; a new agent lands in that company's folder; the PA still reaches everyone; a cross-company delegate curl 404s; the session log records the measured isolation level |
-| 3 | **P2 — connectors + vault + UI badge + strict + TCP** | `company_connectors` materialize per-company at start into the secret-floor dir, sealed at rest by the vault, manager sheet shows scope; per-session isolation badge, `StrictRequired`, ABI-v4 TCP rule | Owner configures Slack for Company X and Y with different tokens; each company's bot picks up its own on start; the sheet shows "inherited from company"; each session shows its isolation level |
+| 3 | **P2 — secret-floor + connectors + vault + UI badge + strict + TCP** | The **secret-floor lands here** — per-company `CLAUDE_CONFIG_DIR` on the child env **AND** company-aware server-side resolvers, co-shipped; `company_connectors` materialize per-company at start into that dir, sealed at rest by the vault, manager sheet shows scope; per-session isolation badge, `StrictRequired`, ABI-v4 TCP rule | Owner configures Slack for Company X and Y with different tokens; each company's bot picks up its own on start; the sheet shows "inherited from company"; each session shows its isolation level |
 | 4 | **P3 — external humans + macOS backend** | Per-company Cloudflare tunnel + Google login + human-auth middleware, per-company SSE channels, per-message human provenance, audit attribution, iCal gating, owner/admin/member; SeatbeltMacOS on-demand | Owner invites a colleague to one company; the colleague logs in via Google, chats with only that company's agents; the owner sees the colleague's name on each message and in the audit log |
 
-**Sequencing law (see §E):** slice 0 (`@sandbox`) is independent and ships first or alongside P0 — it is a no-op until the Landlock backend (P1) lands, and self-verifies via the P1 probe. The **secret-floor is independent of `@sandbox`** — it holds on every host including Noop. P1's Landlock backend is *dead code* (measures `None`) until slice 0 has shipped, so slice 0 must precede P1's owner-verify.
+**Sequencing law (see §E):** slice 0 (`@sandbox`) is independent and ships first or alongside P0 — it is a no-op until the Landlock backend (P1) lands, and self-verifies via the P1 probe. The **secret-floor is a P2 item** requiring **both** the child-env `CLAUDE_CONFIG_DIR` **and** company-aware server-side resolvers — the child-env half alone is only half a mechanism, because the server resolves Claude's config/json/transcript/projects dir from its **own** process env in many resolvers (`--resume` detection, transcript recall, statusline, and `write_json_atomic` materialization would all read/write the server's `~/.claude(.json)` for a company session). Until P2, company children share the server's config dir (acceptable because P0/P1 are single-owner — the owner trusts their own bots, no external humans yet). P1's Landlock backend is *dead code* (measures `None`) until slice 0 has shipped, so slice 0 must precede P1's owner-verify.
 
 ---
 
 ## B. P0 — execution-ready tasks
+
+**P0 is behavior-neutral: data model + companies CRUD + create/duplicate dir-forcing only.** The **secret-floor moved to P2** (per the adversarial-review fix): it is only half a mechanism if set on the child env alone, because the server resolves Claude's config/json/transcript/projects dir from its **own** process env in many resolvers (`server/src/claude_tools/atomic.rs:20-46` `claude_config_dir`/`claude_json_path`, `server/src/sessions/resumable.rs:70`, `server/src/sessions/recall.rs`, `server/src/sessions/chat/statusline.rs`, `server/src/claude_config.rs:150`, `teams/scan.rs`, `skills.rs`). It must co-ship **both** halves — the child-env `CLAUDE_CONFIG_DIR` **and** company-aware server-side resolvers — so it lands in P2 alongside connector materialization (see §C P2). There is no P0.9 in this list.
+
+**Implementation notes / known snippet caveats (executor must avoid these):**
+- **P0.7 dir-forcing must not use-after-move `input.dir`.** `Option::filter` at `sessions/mod.rs:1020` takes `self` **by value** — capture the raw supplied `dir` (e.g. into a local `let supplied_dir = input.dir.clone()`/a borrowed ref) **before** any `.filter(...)` consumes it, or the later `NewSession` build has a moved-out `input.dir`.
+- **There is NO shared `crate::db::test_pool()`.** Each db module defines its **own** private `test_pool()` inside its `#[cfg(test)] mod tests` — copy the ~15-line pattern from `db/mod.rs:64`. `db/sessions.rs` has **no** test module yet, so a new sessions/companies test must bring its own `test_pool()` (the snippets in P0.3/P0.5 that read `crate::db::test_pool()` are illustrative — wire each to a module-local copy).
 
 **File structure for P0.**
 - Create `server/migrations/0030_companies.sql` — the schema (companies, `sessions.company_id`, `human_users` seed, `company_connectors` + triggers).
@@ -47,7 +53,6 @@ Five independently-shippable units, in ship order. Each states its one-line done
 - Create `server/src/companies/mod.rs` — the HTTP router (`GET/POST /api/companies`, `PATCH/DELETE /api/companies/{id}`), modeled on `agents::router_for`.
 - Modify `server/src/db/sessions.rs` — `Session` struct, `NewSession` struct, `create` INSERT, `duplicate` INSERT + a `set_dir` helper.
 - Modify `server/src/sessions/mod.rs` — `CreateInput`, `SessionView`, `view()`, the create-time dir-forcing, the `duplicate` handler re-derive.
-- Modify `server/src/sessions/lifecycle.rs` — `build_env` gains company context → per-child `CLAUDE_CONFIG_DIR`.
 - Modify `server/src/db/mod.rs` — bump the applied-migration assertion 27→28 + new company regression tests.
 - Modify `server/src/http.rs` — merge the companies router.
 - Modify `server/src/db.rs`/module tree + `server/src/lib.rs` (or `main.rs` module decls) — register `companies` modules.
@@ -662,54 +667,6 @@ git commit -m "feat(companies): re-derive+mkdir a duplicated company session's o
 
 ---
 
-### Task P0.9 — The secret-floor: per-child `CLAUDE_CONFIG_DIR` (per-spawn, 0700, NOT process-global)
-
-**Files:**
-- Modify: `server/src/sessions/lifecycle.rs` — `build_env` (`:225`), its callsite in `start_locked` (`:1113`), and the resolution of the session's `company_id` (available via `db::sessions::get` already loaded near `:884`/`:961`).
-
-**Interfaces:**
-- Consumes: `Session.company_id` (P0.3), `db::companies::get`, the config `data_dir`.
-- Produces: `build_env` gains a `company_id: Option<i64>` parameter (and resolves the company `root`/slug), and inserts `CLAUDE_CONFIG_DIR = <data_dir>/companies/<slug>/claude` into the returned per-child env map **only when `company_id.is_some()`**; the dir is `mkdir`'d `0700` before spawn. Main bots (NULL) get no `CLAUDE_CONFIG_DIR` insertion (unchanged process-inherited behavior). Two concurrently-spawned company sessions in **different** companies resolve to **different** `CLAUDE_CONFIG_DIR` values.
-
-- [ ] **Step 1: Write the failing test** — a `build_env`-level unit test (the module already exists at `lifecycle.rs:2653 build_env_tests`):
-
-```rust
-#[test]
-fn build_env_sets_per_company_claude_config_dir_and_isolates_two_companies() {
-    // Given two companies with slugs "acme"/"globex" and a data_dir,
-    // env_a = build_env(.., company=Some(acme_slug_resolved)),
-    // env_b = build_env(.., company=Some(globex..)),
-    // assert env_a["CLAUDE_CONFIG_DIR"] != env_b["CLAUDE_CONFIG_DIR"]
-    // assert a main bot (None) has NO CLAUDE_CONFIG_DIR key.
-}
-```
-
-(Because `build_env` currently takes `host_id: Option<i64>` and no DB pool, pass the already-resolved company **slug + data_dir** rather than doing a DB read inside `build_env` — keep `build_env` a pure function of its arguments, matching its existing test discipline. Resolve `company_id → slug` in `start_locked` before the call.)
-
-- [ ] **Step 2: Run — fails** (no such parameter / key).
-
-Run: `OPENSSL_NO_VENDOR=1 OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu cargo test -p supermux-server build_env 2>&1 | head`
-Expected: FAIL.
-
-- [ ] **Step 3: Implement.**
-  - Change `build_env`'s signature to accept `company: Option<&CompanyEnv>` where `CompanyEnv { slug: String, config_dir: PathBuf }` (or the pair `(slug, data_dir)`), and inside, when `Some`, `env.insert("CLAUDE_CONFIG_DIR".into(), config_dir.display().to_string())`.
-  - In `start_locked` (`:1113` callsite), resolve the session's `company_id` (the `Session` is in hand from the `db::sessions::get` this function already does), and when non-NULL: `db::companies::get` → build `config_dir = <config.data_dir>/companies/<slug>/claude`, `std::fs::create_dir_all` it and set mode `0700` (`std::os::unix::fs::PermissionsExt`), then pass it to `build_env`. NULL → pass `None`.
-  - **Critical:** this insertion is on the returned per-child env `HashMap` that flows into `Command::envs(env)` (native at `runtime.rs:376`), NOT a `std::env::set_var`. Do not touch the process-global. Update the other `build_env(...)` test callsites to pass `None`.
-
-- [ ] **Step 4: Run — passes.** Then run the full lifecycle test module to catch the signature ripple.
-
-Run: `OPENSSL_NO_VENDOR=1 OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu cargo test -p supermux-server lifecycle::build_env`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add server/src/sessions/lifecycle.rs
-git commit -m "feat(companies): secret-floor — per-child CLAUDE_CONFIG_DIR per company spawn (0700, not process-global)"
-```
-
----
-
 ### Task P0.10 — Web types: `company_id?` on `SessionSummary`, `ApiSession`, `NewSession`
 
 **Files:**
@@ -775,11 +732,12 @@ Web:
 
 **P1 done-definition:** switcher narrows overview + teams; a company bot's Files view can't escape its root; cross-company delegate curl 404s; same-company + main-bot delegate succeed; the probe reports `Full` on the deployed host and a confined agent can't read a sibling tree while a main bot can; gates green.
 
-### P2 — connector store + vault + isolation surfacing
+### P2 — secret-floor + connector store + vault + isolation surfacing
 
+- [ ] **Secret-floor — BOTH halves, co-shipped (moved here from P0).** Half (a), the **child env**: `build_env` (`lifecycle.rs:225`, callsite in `start_locked` `:1113`) gains company context and inserts `CLAUDE_CONFIG_DIR = <data_dir>/companies/<slug>/claude` into the returned per-child env map **only when `company_id != NULL`** (`mkdir 0700` pre-spawn; on the env `HashMap` that flows into `Command::envs`, native `runtime.rs:376` — **never** `std::env::set_var`, never the process-global). Main bots (NULL) get no insertion. Half (b), the **server-side resolvers**: parameterize `claude_config_dir()` / `claude_json_path()` (`server/src/claude_tools/atomic.rs:20-46`) to take an explicit per-session config dir instead of reading `std::env::var`, and thread that per-session dir (resolved from the session's `company_id → company.slug → <data_dir>/companies/<slug>/claude`) through every caller: `server/src/sessions/resumable.rs:70` (`--resume` detection), `server/src/sessions/recall.rs` (transcript recall), `server/src/sessions/chat/statusline.rs` (statusline), `server/src/claude_config.rs:150`, `teams/scan.rs`, `skills.rs`. A NULL session resolves to the server's default (`~/.claude`), unchanged. **Touch-set (exact):** `claude_tools/atomic.rs`, `sessions/resumable.rs`, `sessions/recall.rs`, `sessions/chat/statusline.rs`, `claude_config.rs`, `teams/scan.rs`, `skills.rs`, `sessions/lifecycle.rs`. **Done-check (not merely "two env values differ"):** for a company session, transcript **recall**, **`--resume`** detection, and **statusline** all still resolve (against the per-company dir, not the server's `~/.claude`), AND `write_json_atomic` materializes connectors into the **per-company** dir (not the server's `~/.claude.json`); two concurrently-spawned company sessions in different companies resolve to different `CLAUDE_CONFIG_DIR` on the child env; a main bot gets no `CLAUDE_CONFIG_DIR` insertion and reads/writes the server default.
 - [ ] **`db::company_connectors`** module — `list_for_company`, `effective_for_session(company_id, slug)` (company-wide rows overlaid by `target_session = slug` rows, **name-matched wholesale replace**, decision #9), CRUD.
 - [ ] **Encrypt-at-rest vault** (`server/src/companies/vault.rs`) — key file `<data_dir>/companies_vault_key` mode `0600`, generated on first use (32 bytes), `SUPERMUX_COMPANIES_VAULT_KEY` override, modeled on `config.rs:309-367`; XChaCha20-Poly1305 secretbox over `config_json` → `{nonce,ciphertext}` base64. Decrypt server-side only. Key rotation re-seals every row.
-- [ ] **Session-start materialization** — a new hook in `start_locked` (`lifecycle.rs:960+`, near the hook-install block `:1075`) resolves `company_id`, gathers the effective connector set, decrypts via the vault, and materializes them into the session's cwd `local` scope in its **per-company `CLAUDE_CONFIG_DIR`** (the P0 secret-floor) via `write_json_atomic` (`claude_tools/atomic.rs:81`, read→merge `mcpServers` subtree→temp→fsync→rename). **Done:** two companies each hold a differently-credentialed Slack; a bot's `local` scope shows exactly its company's (+ per-bot-override) connectors; secrets sealed at rest, masked on read (`mask_mcp_secrets`, `atomic.rs:127-142`).
+- [ ] **Session-start materialization** — a new hook in `start_locked` (`lifecycle.rs:960+`, near the hook-install block `:1075`) resolves `company_id`, gathers the effective connector set, decrypts via the vault, and materializes them into the session's cwd `local` scope in its **per-company `CLAUDE_CONFIG_DIR`** (the secret-floor above — and because `write_json_atomic` resolves its target through `claude_json_path()`, that resolver MUST be the company-aware one, or materialization writes the server's `~/.claude.json` and defeats the floor at the write end) via `write_json_atomic` (`claude_tools/atomic.rs:81`, read→merge `mcpServers` subtree→temp→fsync→rename). **Done:** two companies each hold a differently-credentialed Slack; a bot's `local` scope shows exactly its company's (+ per-bot-override) connectors; secrets sealed at rest, masked on read (`mask_mcp_secrets`, `atomic.rs:127-142`).
 - [ ] **Manager sheet scope** — `claude-tools-sheet.tsx` gains company provenance ("inherited from company" vs "overridden for this bot"), a company-connectors editor when a company is active, and a "restart affected bots to apply" affordance (materialization is at start).
 - [ ] **Per-session `IsolationLevel` UI badge** — surface the measured `Full`/`Partial`/`None` per session (never the requested mode), threaded onto `SessionView` (a new `isolation: {level, backend, note}` field) and rendered in the session UI.
 - [ ] **`StrictRequired` mode** — refuse to start a company session when the measured level is below the configured ABI floor.
@@ -826,7 +784,7 @@ Web:
 
 **Isolation probe self-test (P1):** the fork-and-`restrict_self` probe reports `Full` on the deployed `@sandbox` host and `None` + one loud warning without it; a live check that a confined company agent's shell cannot `cat` a sibling tree or `~/.supermux/auth_token` while a main bot can.
 
-**Secret-floor test (P0, Task P0.9):** two concurrently-spawned company sessions in different companies resolve to **different** `CLAUDE_CONFIG_DIR` values on the **child env** (per-child, not process-global); a main bot gets no `CLAUDE_CONFIG_DIR` insertion.
+**Secret-floor test (P2 — both halves):** (child-env half) two concurrently-spawned company sessions in different companies resolve to **different** `CLAUDE_CONFIG_DIR` values on the **child env** (per-child, not process-global), and a main bot gets no `CLAUDE_CONFIG_DIR` insertion; (server-resolver half) a company session's transcript **recall** + **`--resume`** detection + **statusline** all resolve against the **per-company** config dir (not the server's `~/.claude`), and `write_json_atomic` materializes into the per-company dir (not the server's `~/.claude.json`). The test asserts behavior resolves, not merely that two env values differ.
 
 **Deploy-alone + owner-visual-verify loop:** deploy each slice alone from this worktree (manual deploy-request, `source_dir=` the worktree), then the owner verifies the phase's "Owner sees" line before the next slice starts. Never restart the hosting instance unasked; side-port for live checks.
 
@@ -835,10 +793,10 @@ Web:
 ## E. Risk / sequencing note — what must land before what
 
 1. **`@sandbox` (slice 0) before P1's Landlock owner-verify.** The LandlockLinux backend is **dead code that measures `None`** until `SystemCallFilter=@sandbox` un-blocks `landlock_*` (the current `@system-service` filter blocks them, silently → `EPERM`/`ENOSYS`). Ship slice 0 first or alongside P0; it is a pure no-op until P1 and self-verifies via the probe. If P1 ships to a host without the unit line, the probe correctly reports `None` + a loud warning — no false `Full`.
-2. **The secret-floor (P0.9) is independent of `@sandbox` and of Landlock.** It is env separation on the child, holds on every host including Noop, and is the P0-critical isolation primitive. It must NOT be gated on the sandbox landing — it is the honest floor when the kernel jail is absent.
-3. **P0.1 (migration) strictly precedes everything** — the assertion bump, the Rust type thread, the create/duplicate seams all read the new column/tables. Within P0 the order in §B is a hard dependency chain (migration → assertion+regression → db types → view types → db module → router → create-dir → duplicate-dir → secret-floor → web types → gate/deploy).
+2. **The secret-floor is a P2 item, NOT P0, and needs BOTH halves.** It is *not* "independent" and does *not* "hold on every host in P0": the child-env `CLAUDE_CONFIG_DIR` alone is only half a mechanism, because the server resolves Claude's config/json/transcript/projects dir from its **own** process env in many resolvers (`atomic.rs:20-46`, `resumable.rs:70`, `recall.rs`, `chat/statusline.rs`, `claude_config.rs:150`, `teams/scan.rs`, `skills.rs`). Set only on the child, a company session's Claude writes transcripts/projects under the per-company dir while the server keeps reading `~/.claude(.json)` → `--resume` detection, transcript recall, and statusline **break** for company sessions, and `write_json_atomic` materialization writes the server's `~/.claude.json`, defeating the floor at the write end. So it must co-ship the child-env half **and** company-aware server resolvers, landing in **P2** alongside connector materialization. **Until P2, company children share the server's config dir** — acceptable because P0/P1 are single-owner (the owner trusts their own bots, no external humans yet). The vault (at-rest-in-DB) and the secret-floor (runtime co-residence) remain complementary — neither substitutes for the other.
+3. **P0.1 (migration) strictly precedes everything** — the assertion bump, the Rust type thread, the create/duplicate seams all read the new column/tables. Within P0 the order in §B is a hard dependency chain (migration → assertion+regression → db types → view types → db module → router → create-dir → duplicate-dir → web types → gate/deploy). (The secret-floor is no longer in this chain — it moved to P2.)
 4. **Create-time dir-forcing (P0.7/P0.8) MUST co-ship with `company_id`-on-create.** A company session created in P0 whose `dir` merely defaulted to `$HOME` would be **un-jailable** when P1 flips the jail — P1 does **not** retroactively move it. The column and its dir invariant land together, and the duplicate seam (which bypasses `create()`) is closed in the same phase.
 5. **P1's Files jail depends on P0's dir-forcing** — the jailed roots must exist to flip onto. Flipping the jail without forced dirs would jail nothing useful.
-6. **P2 materialization depends on P0's secret-floor dir** — connectors materialize **into** the per-company `CLAUDE_CONFIG_DIR`; the vault seals what materialization reads. The vault protects at-rest-in-DB + P3-over-the-API; the secret-floor protects runtime co-residence — complementary layers, neither substitutes for the other.
+6. **P2 materialization co-ships with the secret-floor (both now in P2)** — connectors materialize **into** the per-company `CLAUDE_CONFIG_DIR`, so the secret-floor's child-env half **and** its company-aware `claude_json_path()` resolver must land in the same slice (else `write_json_atomic` writes the server's `~/.claude.json`); the vault seals what materialization reads. The vault protects at-rest-in-DB + P3-over-the-API; the secret-floor protects runtime co-residence — complementary layers, neither substitutes for the other.
 7. **P3's per-company SSE channels are a hard gate** — any P3 path that publishes to the global `sse_tx` re-opens the cross-company real-time leak; test with two simultaneous human connections. P3's delegation `from`-binding is the moment the `company_id IS NULL` bypass must move from a body-supplied `from` to the authenticated identity — until P3 only the owner authenticates, so it is a documented assumption, not a live hole.
 8. **Migration numbering ordering across phases:** 0030 (P0) is the only migration in this plan's early phases; P3 adds `companies.tunnel_hostname` and `audit_log.author_user_id`/`company_id` as **new** migrations (next-free-above, e.g. 0031/0032), each bumping the `db/mod.rs` count assertion again. Never edit 0030 after it ships.
