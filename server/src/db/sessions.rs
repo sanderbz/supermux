@@ -170,6 +170,19 @@ pub async fn get(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Session>>
         .await
 }
 
+/// Slugs of every session belonging to `company` (archived included — a
+/// delegation edge can point at an archived peer). Used only by the optional
+/// `company` scope on the delegation-graph read; the omniscient owner default
+/// never calls it. One query, so a scoped caller filters against a set rather
+/// than a per-edge lookup.
+pub async fn names_in_company(pool: &SqlitePool, company: i64) -> sqlx::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM sessions WHERE company_id = ?")
+        .bind(company)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
 /// Fetch a session's runtime row.
 pub async fn runtime(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<SessionRuntime>> {
     sqlx::query_as::<_, SessionRuntime>("SELECT * FROM session_runtime WHERE name = ?")
