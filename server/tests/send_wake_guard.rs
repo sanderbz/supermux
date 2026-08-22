@@ -53,6 +53,7 @@ fn temp_config() -> (Config, PathBuf) {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     (config, dir)
 }

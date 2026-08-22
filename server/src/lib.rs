@@ -20,6 +20,7 @@ pub mod files;
 pub mod hooks;
 pub mod hosts;
 pub mod http;
+pub mod isolation;
 pub mod log_redact;
 pub mod notify;
 pub mod prefs;
