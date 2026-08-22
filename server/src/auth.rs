@@ -36,7 +36,12 @@ pub async fn auth_middleware(
 
 /// Pull the token from `Authorization: Bearer <tok>` (canonical) or, for legacy
 /// curl convenience, the `?_token=` query parameter.
-fn extract_token(req: &Request) -> Option<String> {
+///
+/// `pub(crate)` so the P3a [`crate::auth_human`] AuthContext middleware reuses
+/// the EXACT owner-token extraction (bearer + `?_token=`) — the `?_token=` path
+/// authenticates only the owner bearer and is never a value a human can present
+/// as an identity (a human authenticates solely by the session cookie).
+pub(crate) fn extract_token(req: &Request) -> Option<String> {
     if let Some(value) = req.headers().get(AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
             let s = s.trim();
@@ -60,6 +65,6 @@ fn extract_token(req: &Request) -> Option<String> {
 
 /// Constant-time token comparison. `constant_time_eq` is itself
 /// length-aware and does not early-return on the first differing byte.
-fn token_matches(expected: &str, presented: &str) -> bool {
+pub(crate) fn token_matches(expected: &str, presented: &str) -> bool {
     constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
 }

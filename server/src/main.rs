@@ -117,6 +117,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let pool = db::init(&config).await?;
+
+    // P3a: rebind the seeded `owner@localhost` sentinel to the owner's real email
+    // (per the 0032 header) when one is configured. Idempotent — touches only the
+    // still-sentinel owner row. Non-fatal.
+    if let Some(owner_email) = config.human_auth.owner_email.as_deref() {
+        match db::human_users::bind_owner_email(&pool, owner_email).await {
+            Ok(true) => tracing::info!("bound owner human_users row to configured owner_email"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "could not bind owner_email"),
+        }
+    }
+
     let bind = config.bind;
 
     let state = state::AppState::new(pool, config);

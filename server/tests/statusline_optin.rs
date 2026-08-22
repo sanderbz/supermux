@@ -71,6 +71,7 @@ async fn session_create_and_start_never_install_the_statusline() {
         // `statusline_tap` key resolves to exactly this.
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        human_auth: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

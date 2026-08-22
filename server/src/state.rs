@@ -505,6 +505,10 @@ pub struct AppState {
     /// session is (re)started so a later surface can render a badge without
     /// re-probing. A stale entry is harmless and overwritten on the next start.
     pub isolation_applied: Arc<DashMap<String, crate::isolation::IsolationLevel>>,
+    /// P3a — human identity plane runtime: the ephemeral OIDC flow store + the
+    /// (swappable-for-tests) Google verifier. Config/keys live on
+    /// `config.human_auth`.
+    pub human_auth: Arc<crate::auth_human::HumanAuth>,
 }
 
 impl AppState {
@@ -526,6 +530,9 @@ impl AppState {
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
         // Capture the isolation policy before `config` is moved into the Arc.
         let isolation_mode = config.isolation_mode;
+        // Build the P3a human-auth runtime (flow store + Google verifier) before
+        // `config` is moved into the Arc.
+        let human_auth = Arc::new(crate::auth_human::HumanAuth::new(&config.human_auth));
         Self {
             pool,
             config: Arc::new(config),
@@ -570,6 +577,7 @@ impl AppState {
                 isolation_mode,
             )),
             isolation_applied: Arc::new(DashMap::new()),
+            human_auth,
         }
     }
 
@@ -1694,6 +1702,7 @@ mod pending_edit_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

@@ -127,6 +127,95 @@ pub struct Config {
     /// PA bots are never touched. `best-effort` fails open (a loud warning) when
     /// isolation is unavailable; `off` is the escape hatch.
     pub isolation_mode: crate::isolation::IsolationMode,
+    /// P3a — the human identity plane (Google OIDC + cookie sessions).
+    ///
+    /// **Inert by default.** With no `google_client_id` and no `company_hosts`,
+    /// the `/auth/*` routes refuse to start a flow and no human can exist, so the
+    /// owner-bearer request path is byte-identical to before P3a. Secrets
+    /// (`google_client_secret`, the cookie/CSRF keys) come from env or a
+    /// mode-0600 file in `data_dir`, never `config.toml`-in-repo. See
+    /// [`HumanAuthConfig`].
+    pub human_auth: HumanAuthConfig,
+}
+
+/// P3a human-identity configuration. `Default` is fully inert (`enabled()` is
+/// false), so every existing `Config { .. }` literal and the no-config boot path
+/// stay behavior-neutral.
+#[derive(Debug, Clone, Default)]
+pub struct HumanAuthConfig {
+    /// Google OAuth 2.0 Web-application client id (non-secret). `None` ⇒ the
+    /// login surface is inert.
+    pub google_client_id: Option<String>,
+    /// Google OAuth client secret. Resolution: `SUPERMUX_GOOGLE_CLIENT_SECRET`
+    /// env → `<data_dir>/google_client_secret` (mode 0600) → `config.toml`. Kept
+    /// out of the repo config the same way `auth_token` is.
+    pub google_client_secret: Option<String>,
+    /// The owner's real email. When set, a single `UPDATE human_users` on boot
+    /// rebinds the seeded `owner@localhost` sentinel to it (per the 0032 header).
+    pub owner_email: Option<String>,
+    /// Per-host allowlist: `host → company_id → redirect_uri`. The single source
+    /// of truth for (a) which company a tunnel Host serves and (b) the exact
+    /// Google redirect URI for that Host. A login on a Host not listed here is refused.
+    pub company_hosts: Vec<CompanyHost>,
+    /// HMAC key that signs the session cookie (integrity pre-check before any DB
+    /// hit). Generated + persisted mode 0600 in `data_dir` when human-auth is
+    /// enabled; empty ⇒ disabled.
+    pub cookie_key: Vec<u8>,
+    /// HMAC key for the double-submit CSRF token hash. Same persistence as
+    /// `cookie_key`.
+    pub csrf_key: Vec<u8>,
+    /// Session lifetime in seconds (cookie + `human_sessions.expires_at`).
+    /// Default 12h.
+    pub session_ttl_secs: i64,
+}
+
+impl HumanAuthConfig {
+    /// True once the login surface has enough config to run a real flow: a Google
+    /// client id, a secret, at least one allowlisted host, and the signing keys.
+    pub fn enabled(&self) -> bool {
+        self.google_client_id.is_some()
+            && self.google_client_secret.is_some()
+            && !self.company_hosts.is_empty()
+            && !self.cookie_key.is_empty()
+            && !self.csrf_key.is_empty()
+    }
+
+    /// Effective session TTL (seconds), falling back to 12h when unset/nonpositive.
+    pub fn ttl_secs(&self) -> i64 {
+        if self.session_ttl_secs > 0 {
+            self.session_ttl_secs
+        } else {
+            12 * 60 * 60
+        }
+    }
+
+    /// Resolve the [`CompanyHost`] entry for an inbound `Host` header (exact,
+    /// case-insensitive host match). `None` ⇒ the Host is not allowlisted.
+    pub fn host_entry(&self, host: &str) -> Option<&CompanyHost> {
+        let host = host.trim().to_ascii_lowercase();
+        // Compare against the host portion only (strip any :port the header carries).
+        let bare = host.split(':').next().unwrap_or(&host);
+        self.company_hosts.iter().find(|c| {
+            let ch = c.host.trim().to_ascii_lowercase();
+            let ch_bare = ch.split(':').next().unwrap_or(&ch);
+            ch == host || ch_bare == bare
+        })
+    }
+}
+
+/// One `host → company_id → redirect_uri` allowlist entry (`[[company_hosts]]`
+/// in `config.toml`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompanyHost {
+    /// Public tunnel hostname a company's colleagues reach (e.g.
+    /// `acme.supermux.example`). Also feeds the WS Origin allowlist.
+    pub host: String,
+    /// The company this Host serves. A cookie minted for a different company is
+    /// rejected on this Host.
+    pub company_id: i64,
+    /// The exact redirect URI registered with Google for this Host
+    /// (`https://<host>/auth/callback`).
+    pub redirect_uri: String,
 }
 
 /// `[ws]` config block. Both knobs are sized so a single multi-device PWA user
@@ -211,6 +300,18 @@ struct RawConfig {
     /// (`best-effort`), resolved by [`crate::isolation::IsolationMode::parse`].
     #[serde(default)]
     isolation_mode: Option<String>,
+    // ── P3a human identity plane (all optional; absent ⇒ inert) ──
+    #[serde(default)]
+    google_client_id: Option<String>,
+    /// Secret preferred from env/file; a `config.toml` value is a last resort.
+    #[serde(default)]
+    google_client_secret: Option<String>,
+    #[serde(default)]
+    owner_email: Option<String>,
+    #[serde(default)]
+    company_hosts: Vec<CompanyHost>,
+    #[serde(default)]
+    human_session_ttl_secs: Option<i64>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -291,6 +392,16 @@ pub fn load() -> Result<Config> {
                 })
         });
 
+    // Assemble the P3a human-auth config before moving `data_dir` into `Config`.
+    let human_auth = resolve_human_auth(
+        &data_dir,
+        raw.google_client_id,
+        raw.google_client_secret,
+        raw.owner_email,
+        raw.company_hosts,
+        raw.human_session_ttl_secs,
+    )?;
+
     Ok(Config {
         data_dir,
         bind,
@@ -314,7 +425,94 @@ pub fn load() -> Result<Config> {
                 .or(raw.isolation_mode)
                 .unwrap_or_default(),
         ),
+        human_auth,
     })
+}
+
+/// Assemble the P3a [`HumanAuthConfig`]. Secrets and signing keys follow the
+/// same env→file precedence as `auth_token`; the signing keys are generated +
+/// persisted mode 0600 in `data_dir` **only** when the login surface is actually
+/// configured (a `google_client_id` is present), so an install that never
+/// enables human-auth writes no new files and stays byte-identical.
+fn resolve_human_auth(
+    data_dir: &Path,
+    google_client_id: Option<String>,
+    google_client_secret_cfg: Option<String>,
+    owner_email: Option<String>,
+    company_hosts: Vec<CompanyHost>,
+    ttl_secs: Option<i64>,
+) -> Result<HumanAuthConfig> {
+    let google_client_id = google_client_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Secret: env → <data_dir>/google_client_secret (0600) → config.toml.
+    let google_client_secret = std::env::var("SUPERMUX_GOOGLE_CLIENT_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| read_secret_file(&data_dir.join("google_client_secret")))
+        .or_else(|| {
+            google_client_secret_cfg
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    let owner_email = owner_email
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Generate/persist the cookie + CSRF signing keys only when the surface is
+    // configured (a client id is present). Otherwise leave them empty (inert).
+    let (cookie_key, csrf_key) = if google_client_id.is_some() {
+        (
+            resolve_or_generate_key(&data_dir.join("human_cookie_key"))?,
+            resolve_or_generate_key(&data_dir.join("human_csrf_key"))?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    Ok(HumanAuthConfig {
+        google_client_id,
+        google_client_secret,
+        owner_email,
+        company_hosts,
+        cookie_key,
+        csrf_key,
+        session_ttl_secs: ttl_secs.unwrap_or(0),
+    })
+}
+
+/// Read a trimmed non-empty secret from a 0600 file, or `None`.
+fn read_secret_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Read a persisted 32-byte signing key from `path` (base64url), or generate one
+/// and persist it mode 0600. Returns the raw key bytes.
+fn resolve_or_generate_key(path: &Path) -> Result<Vec<u8>> {
+    if path.exists() {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw) {
+                if bytes.len() >= 32 {
+                    return Ok(bytes);
+                }
+            }
+        }
+    }
+    let mut buf = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf);
+    write_token_0600(path, &encoded)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(buf.to_vec())
 }
 
 /// Read a non-empty filesystem path from an env var, trimming surrounding space.

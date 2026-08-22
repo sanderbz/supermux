@@ -17,7 +17,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::agents;
 use crate::audit;
-use crate::auth;
+use crate::auth_human;
 use crate::board;
 use crate::claude_tools;
 use crate::external_edit;
@@ -73,6 +73,10 @@ pub fn router(state: AppState) -> Router {
         // finish tier for "notify me when done" schedules.
         .merge(scheduler::hook_router_for(state.clone()))
         .merge(public::router_for(state.clone()))
+        // P3a — PUBLIC human-auth login surface (`/auth/login|callback|logout|me`).
+        // Merged OUTSIDE the bearer layer, beside the public router. Inert unless
+        // `config.human_auth` is configured (routes 404 / return not-authenticated).
+        .merge(auth_human::router::router_for(state.clone()))
         // Embedded SPA — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
         // assets or the SPA shell (with `window._SUPERMUX_AUTH_TOKEN` injected). The
@@ -188,5 +192,12 @@ fn protected_router(state: AppState) -> Router {
         // still streams frame-by-frame. Placed INSIDE the auth layer so a 401
         // synthesized by the middleware is not worth a compressor pass.
         .layer(static_assets::compression())
-        .layer(from_fn_with_state(state, auth::auth_middleware))
+        // P3a: the AuthContext resolver SUPERSEDES the bearer-only middleware. It
+        // resolves the owner bearer (byte-identical to before) OR a valid human
+        // session cookie, stamps an `AuthContext` request extension, and enforces
+        // CSRF on cookie-borne state changes. A request with neither → 401.
+        .layer(from_fn_with_state(
+            state,
+            auth_human::auth_context_middleware,
+        ))
 }

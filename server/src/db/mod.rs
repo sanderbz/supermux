@@ -17,6 +17,8 @@ pub mod boards;
 pub mod companies;
 pub mod connectors;
 pub mod hosts;
+pub mod human_sessions;
+pub mod human_users;
 pub mod prefs;
 pub mod push;
 pub mod runtime_state;
@@ -79,6 +81,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
         let pool = init(&config).await.expect("init pool");
@@ -116,8 +119,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 30,
-            "expected thirty applied migrations (0001-0005, 0007-0024, 0026-0032)"
+            applied, 31,
+            "expected thirty-one applied migrations (0001-0005, 0007-0024, 0026-0033)"
         );
 
         pool.close().await;
