@@ -99,6 +99,10 @@ pub struct SessionActivity {
     /// [`connect_request`](Self::connect_request), plus explicitly by the
     /// endpoint the moment the human hands the wheel back. In-memory only.
     pub browser_takeover: Option<crate::sessions::takeover_ask::TakeoverAsk>,
+    /// The Notification `message` for the needs-you family (permission_prompt /
+    /// idle_prompt / agent_needs_input) while the session sits Waiting. In-memory,
+    /// display-only; SAME clear-set as `permission` (the needs-you resolution set).
+    pub waiting_message: Option<String>,
 }
 
 impl SessionActivity {
@@ -114,6 +118,7 @@ impl SessionActivity {
             && self.elicitation.is_none()
             && self.connect_request.is_none()
             && self.browser_takeover.is_none()
+            && self.waiting_message.is_none()
     }
 }
 
@@ -1012,7 +1017,8 @@ impl AppState {
             || entry.permission != before.permission
             || entry.elicitation != before.elicitation
             || entry.connect_request != before.connect_request
-            || entry.browser_takeover != before.browser_takeover;
+            || entry.browser_takeover != before.browser_takeover
+            || entry.waiting_message != before.waiting_message;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -1098,6 +1104,24 @@ impl AppState {
     pub fn clear_permission_request(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.permission = None;
+        })
+    }
+
+    /// Set `name`'s Notification waiting message (the needs-you family's text,
+    /// shown read-only on the Waiting line). Same posture and same clear-set as
+    /// the permission ask. Returns whether it changed.
+    pub fn set_waiting_message(&self, name: &str, msg: String) -> bool {
+        self.mutate_activity(name, |a| {
+            a.waiting_message = Some(msg);
+        })
+    }
+
+    /// Clear `name`'s Notification waiting message — cleared by the same
+    /// resolution events as the permission ask (next Active/Stop). Returns
+    /// whether it changed.
+    pub fn clear_waiting_message(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.waiting_message = None;
         })
     }
 

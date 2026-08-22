@@ -97,6 +97,12 @@ pub struct HookPayload {
     /// vanishing.
     #[serde(default)]
     pub action: Option<String>,
+    /// `Notification`'s subtype (`permission_prompt` / `idle_prompt` /
+    /// `agent_needs_input` / `auth_success` / `agent_completed` / …). Only the
+    /// needs-you family carries `message` to the waiting line; the rest surface
+    /// nothing. Snake_case on the wire; aliased to the camel form.
+    #[serde(default, alias = "notificationType")]
+    pub notification_type: Option<String>,
 }
 
 /// The live "Claude is asking permission to do X" state, derived from a

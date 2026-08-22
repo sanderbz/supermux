@@ -287,6 +287,9 @@ export function Surface({
       // `err.stream_stalled`): `session.activity` still names the last tool
       // that RAN, which is the misreading this state exists to show fixed.
       stalled={state.stalled ?? null}
+      // The live compaction hint — its presence makes the working row read
+      // `Compacting context…` (same peek machinery as `stalled`).
+      compacting={state.compacting ?? null}
       attention={state.attention ?? null}
       attentionCapture={state.attentionCapture}
       attentionExpanded={state.attentionExpanded}

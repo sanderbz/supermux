@@ -209,6 +209,13 @@ export interface LiveLayerProps {
    * and now says the true thing — how long this turn has been waiting.
    */
   stalled?: string | null
+  /**
+   * The pty's live compaction hint (`peek-lens` `compacting`): CC is compacting
+   * the context window, a benign in-progress pause. Owns the working-row label
+   * exactly like `stalled` (they derive from the one `peek.lens.notice`, so at
+   * most one is non-null); labels the row `Compacting context…`.
+   */
+  compacting?: string | null
 }
 
 export function LiveLayer({
@@ -230,6 +237,7 @@ export function LiveLayer({
   onChooseDialog,
   dialogResolved,
   stalled = null,
+  compacting = null,
 }: LiveLayerProps) {
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
@@ -237,8 +245,12 @@ export function LiveLayer({
   const target = pendingHandoff(handoff, events, name)
   // A STALL OWNS THE LABEL (see `stalled`). One expression, used by both the
   // overlay group's live line and the working row below it, so the two cannot
-  // disagree about what the session is doing.
-  const activity = stalled ?? session?.activity
+  // disagree about what the session is doing. A live compaction owns it next
+  // (a fixed, friendly label — the verbatim `compacting` line only needs to be
+  // present to fire it); `stalled` and `compacting` are mutually exclusive on
+  // the one PTY line, so their order here is immaterial.
+  const activity =
+    stalled ?? (compacting != null ? 'Compacting context…' : null) ?? session?.activity
 
   // THE ONE LIVE ROW (daily-driver QA #7).
   //
@@ -376,6 +388,13 @@ export function LiveLayer({
           dir={session.dir}
           mode={session.permission_request.mode ?? session.mode}
         />
+      ) : session?.status === 'waiting' && session?.waiting_message ? (
+        // The needs-you Notification message, read-only, bound to Waiting. Last
+        // in the chain so a `permission_prompt` (which also raises the rich
+        // PermissionCard above) never double-renders — only `idle_prompt` /
+        // `agent_needs_input`, which have no card, land here. Gating on Waiting
+        // keeps any stale value invisible once the session leaves Waiting.
+        <SystemLine>{session.waiting_message}</SystemLine>
       ) : (
         dialogResolved && <SystemLine>{dialogResolved}</SystemLine>
       )}

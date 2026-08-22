@@ -253,6 +253,9 @@ export interface ChatConversationProps {
   /** The pty's stall line, straight through to the live band's working row
    *  (`live-layer.tsx` `stalled`). */
   stalled?: string | null
+  /** The pty's live compaction hint, straight through to the working row
+   *  (`live-layer.tsx` `compacting`); mutually exclusive with `stalled`. */
+  compacting?: string | null
   /** Send it again (the hook re-runs the pre-send gate). */
   onRetryPending?: (id: string) => void
   /** Stop showing this failure — the user has read it. */
@@ -350,6 +353,7 @@ export function ChatConversation({
   onChooseDialog,
   dialogResolved,
   stalled,
+  compacting,
   onRetryPending,
   onDismissPending,
   onOpenTerminal,
@@ -667,6 +671,7 @@ export function ChatConversation({
             onChooseDialog={onChooseDialog}
             dialogResolved={dialogResolved}
             stalled={stalled}
+            compacting={compacting}
             attention={
               attention && (
                 <AttentionRow

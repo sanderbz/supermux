@@ -916,6 +916,10 @@ export default function ChatPanel({
       // during a stall — `session.activity` still names the last tool that ran
       // (`live-layer.tsx` `stalled`).
       stalled={peek.lens.notice?.kind === 'stream-stalled' ? peek.lens.notice.text : null}
+      // CC is compacting the context window — a live, benign pause. Labels the
+      // working row `Compacting context…` (same peek.lens.notice machinery as
+      // `stalled`; the two are mutually exclusive on the one PTY line).
+      compacting={peek.lens.notice?.kind === 'compacting' ? peek.lens.notice.text : null}
       onRetryPending={pending.retry}
       onDismissPending={pending.dismiss}
       attention={attention}

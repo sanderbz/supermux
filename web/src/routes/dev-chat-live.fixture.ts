@@ -545,6 +545,10 @@ export interface LiveState {
   /** The pty's stall line (catalog `err.stream_stalled`) — what the working
    *  row says while a request is out and nothing is coming back. */
   stalled?: string
+  /** The pty's live compaction hint (`peek-lens` `compacting`) — its presence
+   *  makes the working row read `Compacting context…`. Driven through the real
+   *  `readLens` so the bench exercises COMPACTING_RE, not a hand-typed label. */
+  compacting?: string
 }
 
 /**
@@ -1447,6 +1451,47 @@ export function liveStates(nowMs: number): LiveState[] {
       stalled: 'Waiting for API response · will retry in 3s · check your network',
     },
     {
+      id: 'compacting',
+      title: 'Compacting the context — the live, benign in-progress pause',
+      board: 'the states audit, the live compaction hint',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // ACTIVE: the turn is still live while CC compacts; the working row
+        // takes the compaction label instead of the last tool that ran.
+        status: 'active',
+        activity: '⚡ Read server/src/export/money.rs',
+      }),
+      entries: release,
+      turnAgo: 12,
+      // Driven through the REAL peek machinery: inject the pty hint line and let
+      // `readLens`/COMPACTING_RE derive the notice, exactly as ChatPanel does.
+      // Its presence (any non-null) makes the working row read `Compacting
+      // context…` (the fixed label lives in `live-layer.tsx`).
+      compacting:
+        readLens(
+          ['✻ Simmering… (esc to interrupt)', '  ⎿  Compacting conversation… (23.4k tokens)'].join(
+            '\n',
+          ),
+        ).notice?.text ?? undefined,
+    },
+    {
+      id: 'waiting-message',
+      title: 'The Notification waiting line — idle_prompt / agent_needs_input',
+      board: 'the states audit, the needs-you Notification message',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // WAITING (from the Notification hook → HookEvent::Notification): the
+        // read-only line renders in the attention region, gated on this status.
+        // No permission_request / dialog, so the SystemLine — not a card — shows.
+        status: 'waiting',
+        waiting_message: 'Claude needs your input to continue',
+      }),
+      entries: release,
+      turnAgo: undefined,
+    },
+    {
       id: 'stop-armed',
       title: 'Stop refused — the terminal has Escape armed for something else',
       board: 'the states audit, catalog generic.armed_keys',
@@ -1522,6 +1567,8 @@ export const STATE_IDS = [
   'refusal-fallback',
   'turn-refused',
   'stalled',
+  'compacting',
+  'waiting-message',
   'stop-armed',
 ] as const
 

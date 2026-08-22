@@ -347,6 +347,11 @@ export interface ApiSession {
   connect_request?: ConnectRequestInfo | null
   /** The live shared-browser takeover ask (see `BrowserTakeoverInfo`). */
   browser_takeover?: BrowserTakeoverInfo | null
+  /** The Notification `message` for the needs-you family (permission_prompt /
+   *  idle_prompt / agent_needs_input) while the session sits Waiting. Rides the
+   *  `sessions` SSE delta (`null` clears — mergeRow passes null through).
+   *  Rendered read-only in the attention region, gated on `status === 'waiting'`. */
+  waiting_message?: string | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor and the client's clock-skew sample. */
   activity_at?: number

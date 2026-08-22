@@ -162,7 +162,10 @@ export interface PtyNotice {
    *  `stream-stalled` — the request went out and no bytes came back; CC has
    *  scheduled a retry and the turn is STILL LIVE. Transient, never a block:
    *  the failure it fixes is the opposite one (the surface drifting to Idle
-   *  and the user walking away from a turn that was about to resume). */
+   *  and the user walking away from a turn that was about to resume).
+   *  `compacting` — CC is compacting the context window (its `compactingHintText`
+   *  is on screen). Transient and benign like `stream-stalled`; the turn is still
+   *  live. Distinct from the completed `compact_boundary` transcript history row. */
   kind:
     | 'limit-blocked'
     | 'limit-warning'
@@ -170,6 +173,7 @@ export interface PtyNotice {
     | 'session-paused'
     | 'turn-refused'
     | 'stream-stalled'
+    | 'compacting'
   /** Claude Code's own line, verbatim (whitespace-normalised, nothing else). */
   text: string
   /** The remediation subline CC prints under a hard block (`/upgrade or
@@ -1157,6 +1161,16 @@ function readNotice(
     if (m) return { kind: 'stream-stalled', text: noticeLine(m[0]) }
   }
 
+  // STILL LIVE. CC is compacting the context window (its `compactingHintText`
+  // is on screen); the turn resumes by itself when the compaction lands. Benign
+  // and transient like `stream-stalled` — surfaced so the surface can label the
+  // pause instead of drifting to Idle. Distinct from the completed
+  // `compact_boundary` history seam; this clears when the line leaves capture.
+  for (let i = tail; i >= from; i--) {
+    const m = COMPACTING_RE.exec(lines[i])
+    if (m) return { kind: 'compacting', text: noticeLine(m[0]) }
+  }
+
   for (let i = tail; i >= from; i--) {
     const m = LIMIT_WARN_RE.exec(lines[i])
     if (m) return { kind: 'limit-warning', text: noticeLine(m[0]) }
@@ -1181,6 +1195,14 @@ const REFUSAL_RECOVERY_RE = /double press esc|start a new session/i
  *  Anchored on the first clause and taken to end of line so the countdown and
  *  the remediation ride along verbatim. */
 const STALLED_RE = /\bWaiting for API response\b.*$/i
+
+/** CC's live compaction hint (`compactingHintText`, shown while `isCompacting`;
+ *  verified in the 2.1.239 binary). The three surface forms are `Compacting
+ *  conversation`, `Compacting at auto window (…)` and `… compacting history
+ *  (…)`. Anchored on the verb + a known object, taken to EOL so a token count /
+ *  percentage rides along, mirroring STALLED_RE. Conservative: won't fire on a
+ *  stray lowercase `compacting` mid-word or in prose. */
+const COMPACTING_RE = /\bCompacting (?:conversation|at auto window|history)\b.*$/i
 
 /* ── the armed keys (catalog `generic.armed_keys`) ───────────────────────────
  *

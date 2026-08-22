@@ -501,7 +501,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -512,7 +512,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // …and any pending ELICITATION: the form is raised mid-tool-call, so
             // the tool having finished proves the form is gone even if the
             // `ElicitationResult` leg never arrived.
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -590,7 +590,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -612,7 +612,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
             let err = state.clear_error(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             err || sub || perm
         }
         // Session lifecycle ───────────────────────────────────────────────────
@@ -627,7 +627,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             state.reset_turn_state(session);
             state.clear_forced_status(session);
             let err = state.clear_error(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             err || perm
         }
         // End: clear activity AND force Stopped now (the capture classifier can't
@@ -655,7 +655,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
             let perm_changed =
-                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session);
+                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
             // The turn is definitively over when the session ends — drop it so a
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
@@ -685,6 +685,21 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             let set = state.set_error(session, etype, msg);
             cleared || set
         }
+        // Claude raised a Notification. The needs-you family carries its message
+        // to the ephemeral Waiting line (the status side already flips Waiting
+        // via HookEvent::Notification). auth_success / agent_completed etc.
+        // surface nothing. Cleared by the same resolution events as `permission`.
+        "notification" | "Notification" => match payload.notification_type.as_deref() {
+            Some("permission_prompt" | "idle_prompt" | "agent_needs_input") => {
+                match payload.message.as_deref() {
+                    Some(m) if !m.trim().is_empty() => {
+                        state.set_waiting_message(session, m.trim().to_string())
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        },
         _ => false,
     };
 
@@ -782,6 +797,9 @@ pub(crate) fn broadcast_activity_delta(state: &AppState, session: &str) {
             // wheel back or the call moved on — the client must drop the card,
             // so this is always present).
             "browser_takeover": act.browser_takeover,
+            // The needs-you Notification waiting line (`null` clears — always
+            // present). Rendered read-only in the attention region on Waiting.
+            "waiting_message": act.waiting_message,
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
@@ -1367,6 +1385,68 @@ mod tests {
         );
         let d = last_delta(&mut rx, s).expect("the clear broadcasts too");
         assert_eq!(d["browser_takeover"], Value::Null, "cleared as null");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_notification_carries_its_message_to_the_waiting_line() {
+        // The needs-you Notification family (permission_prompt / idle_prompt /
+        // agent_needs_input) stashes its `message` on `waiting_message`, which
+        // rides the same `sessions` delta and clears on the next resolution
+        // event. auth_success / agent_completed surface nothing.
+        let (state, dir) = test_state().await;
+        let s = "worker-notif";
+        let mut rx = state.sse_tx.subscribe();
+
+        // agent_needs_input → the message is carried.
+        apply_payload(
+            &state,
+            s,
+            "notification",
+            &p(r#"{"notification_type":"agent_needs_input","message":"Claude needs your input"}"#),
+        );
+        assert_eq!(
+            state.session_activity(s).and_then(|a| a.waiting_message).as_deref(),
+            Some("Claude needs your input"),
+            "the needs-you message reaches the waiting line",
+        );
+        let d = last_delta(&mut rx, s).expect("the waiting message broadcasts a delta");
+        assert_eq!(d["waiting_message"], json!("Claude needs your input"));
+
+        // A resolution event (the user's next prompt) clears it as null.
+        apply_payload(&state, s, "user_prompt", &p("{}"));
+        assert!(
+            state.session_activity(s).and_then(|a| a.waiting_message).is_none(),
+            "the line must not outlive the Waiting state",
+        );
+        let d = last_delta(&mut rx, s).expect("the clear broadcasts too");
+        assert_eq!(d["waiting_message"], Value::Null, "cleared as null");
+
+        // auth_success carries no surface — waiting_message stays empty.
+        apply_payload(
+            &state,
+            s,
+            "notification",
+            &p(r#"{"notification_type":"auth_success","message":"Logged in"}"#),
+        );
+        assert!(
+            state.session_activity(s).and_then(|a| a.waiting_message).is_none(),
+            "auth_success is not a needs-you type — nothing is surfaced",
+        );
+
+        // The camel alias is accepted too, and an all-whitespace message is ignored.
+        apply_payload(
+            &state,
+            s,
+            "notification",
+            &p(r#"{"notificationType":"idle_prompt","message":"   "}"#),
+        );
+        assert!(
+            state.session_activity(s).and_then(|a| a.waiting_message).is_none(),
+            "a blank message surfaces nothing",
+        );
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

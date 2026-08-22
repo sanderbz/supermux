@@ -540,6 +540,25 @@ describe('the refused turn and the stalled one', () => {
       'Waiting for API response · will retry in 3s · check your network',
     )
   })
+
+  test('a live compaction is reported as its own transient notice', () => {
+    for (const line of [
+      'Compacting conversation…',
+      'Compacting at auto window (5% left)',
+      '✳ compacting history (12.3k tokens)',
+    ]) {
+      const lens = readLens([`✻ Simmering… (esc to interrupt)`, `  ⎿  ${line}`].join('\n'))
+      expect(lens.notice?.kind).toBe('compacting')
+    }
+  })
+
+  test('the completed compact_boundary prose is NOT a live compaction notice', () => {
+    // A finished seam / ordinary sentence must not read as the in-progress hint.
+    expect(readLens('● I finished compacting the notes for you.\n❯\n').notice).toBeNull()
+    expect(readLens('● Compacting is done; here is the summary.\n❯\n').notice?.kind).not.toBe(
+      'compacting',
+    )
+  })
 })
 
 /**

@@ -64,6 +64,11 @@ export interface TileSession extends SessionSummary {
   connect_request?: ConnectRequestInfo | null
   /** The live shared-browser takeover ask — a bot needs a human on its page. */
   browser_takeover?: BrowserTakeoverInfo | null
+  /** The Notification `message` for the needs-you family (permission_prompt /
+   *  idle_prompt / agent_needs_input) while the session sits Waiting. Same
+   *  `sessions` delta, same `null`-clears rule; rendered read-only in the
+   *  attention region, gated on `status === 'waiting'`. */
+  waiting_message?: string | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number

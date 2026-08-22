@@ -339,6 +339,12 @@ pub struct SessionView {
     /// asking, so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_takeover: Option<takeover_ask::TakeoverAsk>,
+    /// The Notification `message` for the needs-you family (permission_prompt /
+    /// idle_prompt / agent_needs_input) while the session sits Waiting. In-memory,
+    /// display-only; rendered read-only in the attention region on Waiting.
+    /// Omitted when absent, so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_message: Option<String>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -571,6 +577,7 @@ fn view(
         elicitation: act.as_ref().and_then(|a| a.elicitation.clone()),
         connect_request: act.as_ref().and_then(|a| a.connect_request.clone()),
         browser_takeover: act.as_ref().and_then(|a| a.browser_takeover.clone()),
+        waiting_message: act.as_ref().and_then(|a| a.waiting_message.clone()),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,
