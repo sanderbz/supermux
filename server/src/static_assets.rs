@@ -103,30 +103,70 @@ pub fn compression() -> CompressionLayer<impl Predicate + Clone> {
 
 /// `GET /` — the SPA shell with the runtime config injected.
 async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    serve_index(&state, is_company_host_request(&state, &headers))
+    serve_index(&state, should_splice_admin_token(&state, &headers))
 }
 
-/// Decide whether this request's `Host` is a **company tunnel host** — the one
-/// case where the served SPA shell must NOT carry the admin bearer.
+/// Decide whether the served SPA shell should carry the admin bearer
+/// (`window._SUPERMUX_AUTH_TOKEN`). Returns `true` to splice the token.
 ///
-/// Precise rule (the P3a CRITICAL escalation fix): a request is treated as a
-/// company host IFF `human_auth.enabled()` **and** the inbound `Host` resolves
-/// to a configured `company_hosts` entry. On a public catch-all a missing or
-/// unparseable `Host` header defaults to the SAFE branch (company host ⇒ token
-/// withheld) — but ONLY when human-auth is enabled. When human-auth is
-/// disabled this always returns `false`, so token injection is byte-identical
-/// to the pre-P3a behavior (the owner's tailnet/localhost transport).
-fn is_company_host_request(state: &AppState, headers: &HeaderMap) -> bool {
+/// **Fail-closed allowlist (the P3a CRITICAL escalation fix).** The admin bearer
+/// is the crown jewel and the static-asset router lives OUTSIDE the bearer layer,
+/// so the shell is readable by anyone who can reach a Host that points at this
+/// server. When human-auth is enabled we therefore splice the token ONLY for a
+/// **trusted owner transport** — everything else (company hosts, public hosts,
+/// unknown/forged Hosts, and a missing/unparseable `Host` header) gets a
+/// cookie-only shell with NO token.
+///
+/// Trusted owner transports (see [`is_trusted_owner_transport`]): loopback
+/// (`127.0.0.1` / `::1` / `localhost`, any port), tailnet MagicDNS names
+/// (`*.ts.net`), and any Host explicitly listed in
+/// `config.human_auth.owner_hosts`.
+///
+/// When human-auth is **disabled** this always returns `true`, so token
+/// injection is byte-identical to the pre-P3a behavior (the owner's
+/// tailnet/localhost transport always received the token).
+fn should_splice_admin_token(state: &AppState, headers: &HeaderMap) -> bool {
     let cfg = &state.config.human_auth;
+    // Feature off ⇒ byte-identical to pre-P3a: always splice the token.
     if !cfg.enabled() {
-        return false;
+        return true;
     }
     match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
-        Some(host) => cfg.host_entry(host).is_some(),
-        // A public catch-all request with a missing/HeaderParse-failing Host
-        // defaults to SAFE (withhold the token) now that human-auth is on.
-        None => true,
+        Some(host) => is_trusted_owner_transport(cfg, host),
+        // A missing / HeaderParse-failing `Host` is NOT a recognised owner
+        // transport ⇒ fail closed, withhold the token.
+        None => false,
     }
+}
+
+/// Is `host` (a raw `Host` header value) a **trusted owner transport** — one
+/// that may receive the admin bearer when human-auth is enabled?
+///
+/// Trusted IFF, after lowercasing + stripping any `:port`:
+///   * loopback — `127.0.0.1`, `::1` (bracketed `[::1]` in the header), or
+///     `localhost`; OR
+///   * a tailnet MagicDNS name ending in `.ts.net` (covers the owner's
+///     `supermux-*.tailXXXX.ts.net`); OR
+///   * an explicit `config.human_auth.owner_hosts` entry.
+///
+/// Everything else — company hosts, public hosts, unknown/forged Hosts — is
+/// untrusted (no token).
+fn is_trusted_owner_transport(cfg: &crate::config::HumanAuthConfig, host: &str) -> bool {
+    let lowered = host.trim().to_ascii_lowercase();
+    // Strip the port. IPv6 literals arrive bracketed (`[::1]:8824`); pull the
+    // address out of the brackets, otherwise split on the single `:port`.
+    let bare = if let Some(rest) = lowered.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(&lowered)
+    } else {
+        lowered.split(':').next().unwrap_or(&lowered)
+    };
+    if bare == "127.0.0.1" || bare == "::1" || bare == "localhost" {
+        return true;
+    }
+    if bare.ends_with(".ts.net") {
+        return true;
+    }
+    cfg.is_owner_host(host)
 }
 
 /// SPA fallback: serve the request path as an embedded asset if it exists,
@@ -167,13 +207,13 @@ async fn asset_or_index(State(state): State<AppState>, headers: HeaderMap, uri: 
         }
         // Unknown path with no file extension → an SPA client-route; serve the
         // shell so the front-end router can resolve it.
-        None => serve_index(&state, is_company_host_request(&state, &headers)),
+        None => serve_index(&state, should_splice_admin_token(&state, &headers)),
     }
 }
 
 /// Render `index.html` with `window._SUPERMUX_*` runtime config spliced in before
 /// `<div id="root">`.
-fn serve_index(state: &AppState, is_company_host: bool) -> Response {
+fn serve_index(state: &AppState, splice_token: bool) -> Response {
     let Some(raw) = Assets::get("index.html") else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -182,7 +222,7 @@ fn serve_index(state: &AppState, is_company_host: bool) -> Response {
             .into_response();
     };
     let html = String::from_utf8_lossy(&raw.data);
-    let injected = inject_runtime_config(&html, state, is_company_host);
+    let injected = inject_runtime_config(&html, state, splice_token);
 
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -203,7 +243,7 @@ fn serve_index(state: &AppState, is_company_host: bool) -> Response {
 /// server's `bind` address here would pin every HTTP + SSE request to a fixed
 /// origin and break the app whenever the page is reached via any other host
 /// (localhost, the Tailscale hostname) — a cross-origin CORS failure.
-fn inject_runtime_config(html: &str, state: &AppState, is_company_host: bool) -> String {
+fn inject_runtime_config(html: &str, state: &AppState, splice_token: bool) -> String {
     // `_SUPERMUX_HOME_DIR`: the server's home directory. The New-session form
     // pre-fills its working-directory field with this so a session can be
     // created in one click without typing a path. Empty string if unresolved
@@ -225,19 +265,22 @@ fn inject_runtime_config(html: &str, state: &AppState, is_company_host: bool) ->
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
     // CRITICAL (P3a): the admin bearer is spliced into the shell for EVERY
-    // viewer, and the static-asset router is OUTSIDE the bearer layer. On a
-    // company tunnel host a scoped colleague would otherwise read the omniscient
-    // Owner token straight out of the page's JS. So on a company host we withhold
-    // the `_SUPERMUX_AUTH_TOKEN` line ENTIRELY — a scoped human gets a cookie-only
-    // shell and authenticates via the session cookie + `/auth/me`. On the owner's
-    // transport (non-company host) the token is spliced exactly as before.
-    let token_line = if is_company_host {
-        String::new()
-    } else {
+    // viewer, and the static-asset router is OUTSIDE the bearer layer. Anyone
+    // who can reach a Host pointing at this server would otherwise read the
+    // omniscient Owner token straight out of the page's JS. So the splice is
+    // FAIL-CLOSED (`should_splice_admin_token`): when human-auth is enabled only
+    // a TRUSTED OWNER TRANSPORT (loopback / `*.ts.net` / configured
+    // `owner_hosts`) carries the token; every other Host — company, public,
+    // unknown/forged, or missing — gets a cookie-only shell and authenticates
+    // via the session cookie + `/auth/me`. When human-auth is disabled the token
+    // is always spliced (byte-identical to pre-P3a).
+    let token_line = if splice_token {
         format!(
             "window._SUPERMUX_AUTH_TOKEN={token};",
             token = json_string(&state.config.auth_token),
         )
+    } else {
+        String::new()
     };
     let script = format!(
         "<script>{token_line}window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};window._SUPERMUX_PROJECT_DIR={projects};</script>",
@@ -338,15 +381,26 @@ mod tests {
 
     // ── P3a CRITICAL: withhold the admin bearer on company tunnel hosts ─────────
 
-    use super::index;
+    use super::{asset_or_index, index};
     use crate::config::{CompanyHost, Config, HumanAuthConfig};
     use crate::state::AppState;
     use axum::extract::State;
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use axum::http::{header, HeaderMap, HeaderValue, Uri};
 
     const OWNER_TOKEN: &str = "sk-owner-admin-bearer-secret";
     const COMPANY_HOST: &str = "acme.supermux.example";
+    /// A tailnet MagicDNS owner transport (`*.ts.net`) — always trusted.
     const OWNER_HOST: &str = "owner-box.taild681cb.ts.net";
+    /// The real strato owner box, to prove the `*.ts.net` rule covers it.
+    const TAILNET_OWNER_HOST: &str = "supermux-strato.taild681cb.ts.net";
+    /// A loopback owner transport (any port).
+    const LOOPBACK_HOST: &str = "127.0.0.1:8824";
+    /// An explicit `owner_hosts` allowlist entry (neither loopback nor ts.net).
+    const OWNER_HOST_CFG: &str = "my-owner-box.internal";
+    /// A company/untrusted tunnel Host under the shared suffix.
+    const COMPANY_UNTRUSTED_HOST: &str = "acme.s.iwd.nl";
+    /// A random forged/unknown Host — must fail closed.
+    const EVIL_HOST: &str = "evil.example.com";
 
     /// Build an `AppState`; `human_auth` is enabled with a single `company_hosts`
     /// entry for `COMPANY_HOST` when `enable_human_auth` is set, otherwise inert.
@@ -364,6 +418,7 @@ mod tests {
                     company_id: 1,
                     redirect_uri: format!("https://{COMPANY_HOST}/auth/callback"),
                 }],
+                owner_hosts: vec![OWNER_HOST_CFG.into()],
                 cookie_key: b"cookie-key".to_vec(),
                 csrf_key: b"csrf-key".to_vec(),
                 session_ttl_secs: 0,
@@ -404,41 +459,143 @@ mod tests {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
+    /// A catch-all SPA client-route Uri (no file extension), so `asset_or_index`
+    /// falls through `Assets::get` to the injected shell.
+    fn spa_uri() -> Uri {
+        "/some/spa/route".parse().unwrap()
+    }
+
+    // (a) A company / untrusted Host receives NO admin token — proven through
+    // BOTH entry points: `GET /` (`index`) AND the catch-all fallback
+    // (`asset_or_index` on an SPA client-route). The fallback is a real leak path
+    // because it also serves the injected shell.
     #[tokio::test]
-    async fn company_host_shell_has_no_admin_token() {
+    async fn company_host_shell_has_no_admin_token_via_index_and_fallback() {
         let (state, dir) = state_with(true).await;
-        let resp = index(State(state.clone()), headers_with_host(COMPANY_HOST)).await;
+
+        let resp = index(State(state.clone()), headers_with_host(COMPANY_UNTRUSTED_HOST)).await;
         let html = body_of(resp).await;
         assert!(
             !html.contains("_SUPERMUX_AUTH_TOKEN"),
-            "company-host shell must NOT leak the admin bearer, got: {html:?}"
+            "index(): company/untrusted host must NOT leak the admin bearer, got: {html:?}"
         );
-        // The rest of the runtime config is still spliced (cookie-only shell).
         assert!(html.contains("_SUPERMUX_VERSION"), "runtime config still injected");
-        state.pool.close().await;
-        let _ = std::fs::remove_dir_all(dir);
-    }
 
-    #[tokio::test]
-    async fn owner_host_shell_still_carries_the_admin_token() {
-        let (state, dir) = state_with(true).await;
-        let resp = index(State(state.clone()), headers_with_host(OWNER_HOST)).await;
+        // Same host, through the fallback catch-all on an SPA route.
+        let resp = asset_or_index(
+            State(state.clone()),
+            headers_with_host(COMPANY_UNTRUSTED_HOST),
+            spa_uri(),
+        )
+        .await;
         let html = body_of(resp).await;
         assert!(
-            html.contains("_SUPERMUX_AUTH_TOKEN"),
-            "owner (non-company) host must still receive the token"
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "asset_or_index() fallback: company/untrusted host must NOT leak the admin bearer"
         );
-        assert!(html.contains(OWNER_TOKEN), "the actual token value is present");
+        assert!(html.contains("_SUPERMUX_VERSION"), "runtime config still injected via fallback");
+
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // (b) A tailnet owner transport (`*.ts.net`, e.g. supermux-strato) STILL
+    // receives the token — the `*.ts.net` rule covers the owner's box.
+    #[tokio::test]
+    async fn tailnet_owner_host_still_carries_the_admin_token() {
+        let (state, dir) = state_with(true).await;
+        for host in [OWNER_HOST, TAILNET_OWNER_HOST] {
+            let resp = index(State(state.clone()), headers_with_host(host)).await;
+            let html = body_of(resp).await;
+            assert!(
+                html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+                "tailnet owner host must still receive the token (host={host})"
+            );
+        }
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // (c) A loopback transport (127.0.0.1, any port) receives the token.
+    #[tokio::test]
+    async fn loopback_host_carries_the_admin_token() {
+        let (state, dir) = state_with(true).await;
+        let resp = index(State(state.clone()), headers_with_host(LOOPBACK_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+            "loopback owner transport must receive the token"
+        );
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // An explicitly configured `owner_hosts` entry (neither loopback nor
+    // ts.net) also receives the token.
+    #[tokio::test]
+    async fn configured_owner_host_carries_the_admin_token() {
+        let (state, dir) = state_with(true).await;
+        let resp = index(State(state.clone()), headers_with_host(OWNER_HOST_CFG)).await;
+        let html = body_of(resp).await;
+        assert!(
+            html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+            "configured owner_hosts entry must receive the token"
+        );
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // (d) A random unknown / forged Host fails CLOSED — no token, even though it
+    // is not a configured company host either.
+    #[tokio::test]
+    async fn unknown_forged_host_fails_closed_no_token() {
+        let (state, dir) = state_with(true).await;
+        let resp = index(State(state.clone()), headers_with_host(EVIL_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "unknown/forged host must fail closed (NO token), got: {html:?}"
+        );
+        // Same through the fallback catch-all.
+        let resp = asset_or_index(State(state.clone()), headers_with_host(EVIL_HOST), spa_uri()).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "unknown/forged host must fail closed through the fallback too"
+        );
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // (e) A MISSING Host header fails CLOSED — no token.
+    #[tokio::test]
+    async fn missing_host_header_fails_closed_no_token() {
+        let (state, dir) = state_with(true).await;
+        // `index` with an empty HeaderMap (no Host).
+        let resp = index(State(state.clone()), HeaderMap::new()).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "missing Host must fail closed (NO token), got: {html:?}"
+        );
+        // And through the fallback.
+        let resp = asset_or_index(State(state.clone()), HeaderMap::new(), spa_uri()).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "missing Host must fail closed through the fallback too"
+        );
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // (f) Human-auth DISABLED ⇒ the token is spliced for ALL hosts (including a
+    // company host, a forged host, and even a missing Host) — byte-identical to
+    // pre-P3a behavior.
     #[tokio::test]
     async fn human_auth_disabled_always_splices_the_token() {
         let (state, dir) = state_with(false).await;
-        // Even a Host that would be a "company host" when the feature is on gets
-        // the token when human-auth is disabled — byte-identical to pre-P3a.
-        for host in [COMPANY_HOST, OWNER_HOST] {
+        for host in [COMPANY_HOST, COMPANY_UNTRUSTED_HOST, OWNER_HOST, EVIL_HOST] {
             let resp = index(State(state.clone()), headers_with_host(host)).await;
             let html = body_of(resp).await;
             assert!(
@@ -446,6 +603,13 @@ mod tests {
                 "human-auth disabled must always inject the token (host={host})"
             );
         }
+        // Even a missing Host still gets the token when the feature is off.
+        let resp = index(State(state.clone()), HeaderMap::new()).await;
+        let html = body_of(resp).await;
+        assert!(
+            html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+            "human-auth disabled + missing Host must still inject the token"
+        );
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

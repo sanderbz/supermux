@@ -37,6 +37,7 @@ fn human_auth_cfg() -> HumanAuthConfig {
             company_id: COMPANY_ID,
             redirect_uri: format!("https://{HOST}/auth/callback"),
         }],
+        owner_hosts: Vec::new(),
         cookie_key: b"cookie-key-cookie-key-cookie-key0".to_vec(),
         csrf_key: b"csrf-key0-csrf-key0-csrf-key0-csr".to_vec(),
         session_ttl_secs: 3600,

@@ -157,6 +157,13 @@ pub struct HumanAuthConfig {
     /// of truth for (a) which company a tunnel Host serves and (b) the exact
     /// Google redirect URI for that Host. A login on a Host not listed here is refused.
     pub company_hosts: Vec<CompanyHost>,
+    /// Optional allowlist of **trusted owner transports** — extra Hosts (beyond
+    /// loopback and `*.ts.net`, which are always trusted) that may receive the
+    /// spliced admin bearer when human-auth is enabled. Default empty. Matched
+    /// case-insensitively, port-stripped — the same style as
+    /// [`host_entry`](Self::host_entry). See
+    /// `static_assets::should_splice_admin_token` (fail-closed splice).
+    pub owner_hosts: Vec<String>,
     /// HMAC key that signs the session cookie (integrity pre-check before any DB
     /// hit). Generated + persisted mode 0600 in `data_dir` when human-auth is
     /// enabled; empty ⇒ disabled.
@@ -199,6 +206,21 @@ impl HumanAuthConfig {
             let ch = c.host.trim().to_ascii_lowercase();
             let ch_bare = ch.split(':').next().unwrap_or(&ch);
             ch == host || ch_bare == bare
+        })
+    }
+
+    /// True when `host` (a raw `Host` header value) matches a configured
+    /// [`owner_hosts`](Self::owner_hosts) entry — case-insensitive, port-stripped,
+    /// the same matching style as [`host_entry`](Self::host_entry). Used by the
+    /// fail-closed admin-token splice to recognise an explicitly trusted owner
+    /// transport beyond the always-trusted loopback / `*.ts.net` set.
+    pub fn is_owner_host(&self, host: &str) -> bool {
+        let host = host.trim().to_ascii_lowercase();
+        let bare = host.split(':').next().unwrap_or(&host);
+        self.owner_hosts.iter().any(|h| {
+            let h = h.trim().to_ascii_lowercase();
+            let h_bare = h.split(':').next().unwrap_or(&h);
+            h == host || h_bare == bare
         })
     }
 }
@@ -311,6 +333,8 @@ struct RawConfig {
     #[serde(default)]
     company_hosts: Vec<CompanyHost>,
     #[serde(default)]
+    owner_hosts: Vec<String>,
+    #[serde(default)]
     human_session_ttl_secs: Option<i64>,
 }
 
@@ -399,6 +423,7 @@ pub fn load() -> Result<Config> {
         raw.google_client_secret,
         raw.owner_email,
         raw.company_hosts,
+        raw.owner_hosts,
         raw.human_session_ttl_secs,
     )?;
 
@@ -440,6 +465,7 @@ fn resolve_human_auth(
     google_client_secret_cfg: Option<String>,
     owner_email: Option<String>,
     company_hosts: Vec<CompanyHost>,
+    owner_hosts: Vec<String>,
     ttl_secs: Option<i64>,
 ) -> Result<HumanAuthConfig> {
     let google_client_id = google_client_id
@@ -478,6 +504,7 @@ fn resolve_human_auth(
         google_client_secret,
         owner_email,
         company_hosts,
+        owner_hosts,
         cookie_key,
         csrf_key,
         session_ttl_secs: ttl_secs.unwrap_or(0),
