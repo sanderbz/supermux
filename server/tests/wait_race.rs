@@ -53,6 +53,7 @@ async fn hundred_waiters_all_observe_one_transition() {
         handles.push(tokio::spawn(async move {
             wait(
                 State(st),
+                supermux_server::scope::OptCtx(None),
                 Path(n),
                 Query(WaitQuery { state: "idle".into(), timeout: Some(5) }),
             )
@@ -95,6 +96,7 @@ async fn wait_returns_current_status_on_timeout() {
 
     let res = wait(
         State(state.clone()),
+        supermux_server::scope::OptCtx(None),
         Path(name.to_string()),
         Query(WaitQuery { state: "idle".into(), timeout: Some(1) }),
     )
@@ -117,6 +119,7 @@ async fn wait_already_in_state_returns_immediately() {
     // `done` is the CLI alias for idle (§3.7); the session is already idle.
     let res = wait(
         State(state.clone()),
+        supermux_server::scope::OptCtx(None),
         Path(name.to_string()),
         Query(WaitQuery { state: "done".into(), timeout: Some(300) }),
     )
@@ -133,6 +136,7 @@ async fn wait_unknown_session_is_404() {
     let (state, dir) = test_state().await;
     let err = wait(
         State(state.clone()),
+        supermux_server::scope::OptCtx(None),
         Path("ghost".to_string()),
         Query(WaitQuery { state: "idle".into(), timeout: Some(1) }),
     )

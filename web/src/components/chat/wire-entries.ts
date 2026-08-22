@@ -102,6 +102,10 @@ function attrValue(body: string, attr: string): string | undefined {
  *  same (`DELEGATION_TAG`, `SCHEDULE_TAG`): the format is a contract. */
 const DELEGATION_TAG = 'supermux-delegation'
 const SCHEDULE_TAG = 'supermux-schedule'
+/** A message an authenticated human colleague sent — `<supermux-human user name
+ *  company>`, server-stamped from the resolved AuthContext (P3c). Same contract
+ *  const as `delegate.rs::HUMAN_TAG`. */
+const HUMAN_TAG = 'supermux-human'
 
 /** `scheduler/runner.rs::CONFIRM_FOOTER_SENTINEL` — the line that opens the
  *  machine-written "run this curl when you're done" footer. */
@@ -167,18 +171,31 @@ function shortSummary(s: string): string {
 /** The A1 display kinds a user-role line can become. Mirrors `recall.rs`'s
  *  `Kind` in its snake_case wire spelling — the vocabulary the shared parity
  *  corpus is written in. */
+/** The immutable identity of a human author (P3c). Carried ONLY on the render
+ *  plane: `userId` is the hue seed (stable across renames — never the mutable
+ *  name) and the self/remote key; `name` is the chip label; `companyId` is the
+ *  scope. Parsed from `<supermux-human user name company>`. */
+export interface HumanAuthor {
+  userId: string
+  name: string
+  companyId?: string
+}
+
 export interface ClassifiedPrompt {
   kind:
     | 'prompt'
     | 'command'
     | 'teammate'
     | 'delegation'
+    | 'human'
     | 'schedule'
     | 'notification'
     | 'system'
     | 'image'
   text: string
   label?: string
+  /** `kind:'human'` only — the immutable author for the circle `HumanMark`. */
+  author?: HumanAuthor
 }
 
 /**
@@ -202,6 +219,7 @@ export const SURVIVING_KINDS: ReadonlySet<ClassifiedPrompt['kind']> = new Set([
   'command',
   'teammate',
   'delegation',
+  'human',
   'schedule',
 ] as const)
 
@@ -276,6 +294,32 @@ export function classifyPrompt(raw: string): ClassifiedPrompt {
         return { kind: 'system', text: shortSummary(inner), label: DELEGATION_TAG }
       }
       return { kind: 'delegation', text: inner || UNREADABLE_WRAPPER_BODY, label: from }
+    }
+    case HUMAN_TAG: {
+      // `<supermux-human user="7" name="Sander" company="3">…</supermux-human>`
+      // — a message an authenticated human colleague sent
+      // (`sessions::lifecycle::send_human_text` writes it from the resolved
+      // AuthContext, never the body). The `name` is the divider/chip label; the
+      // immutable `user`/`company` ride on `author` for the circle mark's hue
+      // (keyed on the id, never the mutable name) and the self/remote split.
+      // `name` is XML-escaped by the writer (the schedule-title contract), so it
+      // is unescaped here exactly as `recall.rs` does — parity on both planes.
+      const rawName = attrValue(trimmed, 'name')
+      const name = rawName ? unescapeAttr(rawName).trim() : undefined
+      const inner = sanitiseText(tagInner(trimmed, HUMAN_TAG) ?? '')
+      // No author means no provenance — never leak the body as a bare prompt
+      // (the unattributed-delegation discipline; kept byte-identical to recall).
+      if (!name) {
+        return { kind: 'system', text: shortSummary(inner), label: HUMAN_TAG }
+      }
+      const userId = attrValue(trimmed, 'user')?.trim()
+      const companyId = attrValue(trimmed, 'company')?.trim() || undefined
+      return {
+        kind: 'human',
+        text: inner || UNREADABLE_WRAPPER_BODY,
+        label: name,
+        author: { userId: userId || name, name, companyId },
+      }
     }
     case SCHEDULE_TAG: {
       // `<supermux-schedule id="…" title="…">…</supermux-schedule>` — a prompt
@@ -1006,6 +1050,10 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
         text: c.text,
         kind: c.kind,
         label: c.label,
+        // P3c: a human-authored turn carries its immutable author (id → hue, name
+        // → chip). Absent for every other kind, so the render path is inert until
+        // a real colleague sends.
+        author: c.author,
         truncated: w.truncated || undefined,
       })
       continue

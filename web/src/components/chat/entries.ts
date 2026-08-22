@@ -5,6 +5,16 @@
 
 /** Structural subset of the wire `RecallEntry` (lib/api/sessions.ts) the
  *  display model needs. Kept local: the wire type may grow; we only read. */
+/** The immutable identity of a human author (P3c), carried on a human-authored
+ *  turn. Local structural type (this module stays import-free) — structurally
+ *  identical to `wire-entries.ts::HumanAuthor`. `userId` is the hue seed + the
+ *  self/remote key (stable across renames); `name` is the chip label. */
+export interface ChatAuthor {
+  userId: string
+  name: string
+  companyId?: string
+}
+
 export interface ChatEntry {
   uuid: string
   ts: number
@@ -21,6 +31,8 @@ export interface ChatEntry {
   reply?: string
   kind: string
   label?: string
+  /** `kind:'human'` only — the immutable author (P3c). */
+  author?: ChatAuthor
   ok?: boolean
   /** Server clipped `text` at the wire cap. Rendered as a marker: without it
    *  a clipped message is indistinguishable from one that simply ended. */
@@ -102,6 +114,10 @@ export type ChatItem =
       ts: number
       text: string
       badge?: string
+      /** `badge:'human'` only — the immutable author for the circle `HumanMark`
+       *  (P3c). Absent for every other kind, so the human render path is inert
+       *  until a real colleague sends. */
+      author?: ChatAuthor
       truncated?: boolean
       /**
        * The SOURCE's own words, under this app's summary of them.
@@ -231,6 +247,8 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         ts: e.ts,
         text: e.text,
         badge: e.kind === 'prompt' ? undefined : e.kind,
+        // Carried only for a human-authored turn (P3c); undefined otherwise.
+        author: e.author,
         truncated: e.truncated,
         detail: e.reply,
       })

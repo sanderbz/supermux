@@ -56,6 +56,15 @@ pub struct DelegateInput {
 /// literal repeated in two crates' worth of files.
 pub const DELEGATION_TAG: &str = "supermux-delegation";
 
+/// The wrapper tag supermux writes around a message sent by an authenticated
+/// HUMAN colleague (P3c). Like `<supermux-delegation>` it is an AUTHENTICITY
+/// CLAIM, not decoration: only the send funnel writes it, and only from the
+/// server-resolved `AuthContext` (never the request body), so a colleague can
+/// never forge another person's — or the owner's — authorship. `recall.rs` and
+/// `wire-entries.ts` read it back into a human-author row. One const, three
+/// readers: the format is a contract, not a literal repeated across files.
+pub const HUMAN_TAG: &str = "supermux-human";
+
 /// The schedule wrapper's tag, named here only so [`wrapper_markup`] can refuse
 /// it too: a delegated prompt that opens a `<supermux-schedule>` would let one
 /// session forge a scheduled fire in another's transcript just as easily.
@@ -75,7 +84,7 @@ const SCHEDULE_TAG: &str = crate::scheduler::runner::SCHEDULE_TAG;
 /// later reader can still verify by eye.
 pub fn wrapper_markup(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    [DELEGATION_TAG, SCHEDULE_TAG]
+    [DELEGATION_TAG, SCHEDULE_TAG, HUMAN_TAG]
         .iter()
         .any(|t| lower.contains(&format!("<{t}")) || lower.contains(&format!("</{t}")))
 }
@@ -115,6 +124,36 @@ pub fn wrap_delegation(from: &str, prompt: &str) -> Result<String, &'static str>
     }
     Ok(format!(
         "<{DELEGATION_TAG} from=\"{from}\">\n{prompt}\n</{DELEGATION_TAG}>"
+    ))
+}
+
+/// What a message from an authenticated human colleague looks like on the
+/// receiver's pty/JSONL (P3c). Same unforgeable-by-construction discipline as
+/// [`wrap_delegation`]: the author fields are the caller's already-resolved
+/// `AuthContext` (never body-supplied), and EVERY writer refuses the markup
+/// ([`wrapper_markup`] now names [`HUMAN_TAG`]), so the wrapper is an authenticity
+/// claim rather than an escaping exercise.
+///
+/// `user`/`company` are integers — attr-safe by construction, so they are
+/// interpolated raw. `name` is the only free text; it is XML-escaped with the
+/// SAME contract the schedule title uses (`runner::escape_attr` ⇄
+/// `recall::unescape_attr`), so a display name carrying `"` or `<` cannot break
+/// out of the attribute. The body is refused (not escaped) if it carries wrapper
+/// markup, exactly like `wrap_delegation`, so a nested closer can never append a
+/// second attributed block.
+pub fn wrap_human(
+    user_id: i64,
+    name: &str,
+    company_id: Option<i64>,
+    prompt: &str,
+) -> Result<String, &'static str> {
+    if wrapper_markup(prompt) {
+        return Err("prompt may not contain supermux wrapper markup");
+    }
+    let company = company_id.map(|c| c.to_string()).unwrap_or_default();
+    let name = crate::scheduler::runner::escape_attr(name);
+    Ok(format!(
+        "<{HUMAN_TAG} user=\"{user_id}\" name=\"{name}\" company=\"{company}\">\n{prompt}\n</{HUMAN_TAG}>"
     ))
 }
 

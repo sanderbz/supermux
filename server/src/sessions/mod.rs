@@ -1947,9 +1947,60 @@ struct SendInput {
 async fn send_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    // Stamped by `auth_human::auth_context_middleware` on every `protected_router`
+    // request (`http.rs`), so the extractor never fails here. It is the ONLY
+    // authority on who is sending — the author is resolved from it, never from
+    // `SendInput` (a body-supplied author is exactly the forgery this closes).
+    axum::Extension(ctx): axum::Extension<crate::auth_human::AuthContext>,
     Json(input): Json<SendInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    lifecycle::send_chat_text(&state, &name, &input.text, input.send_id.as_deref()).await?;
+    match ctx {
+        // A scoped/known human colleague: server-stamp the `<supermux-human>`
+        // provenance wrapper from the resolved identity, and attribute the action
+        // to a real person + company in the audit ledger (P3c).
+        crate::auth_human::AuthContext::Human {
+            user_id,
+            company_id,
+            ..
+        } => {
+            // The display name is not on the AuthContext — resolve it from the
+            // `human_users` row (the hue seed on the render side is the immutable
+            // id, never this mutable name).
+            let display_name = db::human_users::get(&state.pool, user_id)
+                .await?
+                .map(|u| u.display_name)
+                .unwrap_or_default();
+            lifecycle::send_human_text(
+                &state,
+                &name,
+                &input.text,
+                user_id,
+                &display_name,
+                company_id,
+                input.send_id.as_deref(),
+            )
+            .await?;
+            // Forensic attribution — no `emit_harness`: the message already
+            // carries its own provenance in the transcript via the wrapper, so
+            // this is a ledger row, not a second system line in chat.
+            db::audit::log_authored(
+                &state.pool,
+                "user",
+                "session.send",
+                &name,
+                json!({}),
+                user_id,
+                company_id,
+            )
+            .await?;
+        }
+        // The owner (bearer / ?_token). Byte-identical to the pre-P3c path: no
+        // human wrapper, no per-person audit attribution.
+        crate::auth_human::AuthContext::Owner => {
+            lifecycle::send_chat_text(&state, &name, &input.text, input.send_id.as_deref())
+                .await?;
+        }
+    }
     Ok(Json(json!({ "ok": true })))
 }
 

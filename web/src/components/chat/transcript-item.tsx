@@ -37,12 +37,14 @@
  */
 import * as React from 'react'
 
-import { SessionMark, type MarkPin } from '../../brand/marks'
+import { accentInk, characterFromSeed, SessionMark, type MarkPin } from '../../brand/marks'
 import { cn } from '../../lib/utils'
+import { useTheme } from '../theme-provider'
+import { HumanMark } from '../roster/human-mark'
 
 import type { HarnessEvent } from '../../lib/api/harness'
 
-import type { ChatItem } from './entries'
+import type { ChatAuthor, ChatItem } from './entries'
 import { harnessNotice } from './entries'
 import { framesIn } from './frames'
 import { mentionSegments, toReceiptRows, type TranscriptNode } from './grouping'
@@ -144,6 +146,13 @@ export interface TranscriptItemProps {
    * `ui/message-actions.tsx`.
    */
   showActions?: boolean
+  /**
+   * The VIEWER's own human user id (P3c), when a human colleague is signed in.
+   * A human-authored message whose `author.userId` matches renders as "You";
+   * every other colleague renders their name chip. Absent for the owner (who is
+   * not a Human context) → every human author is a named remote colleague.
+   */
+  selfHumanId?: string
 }
 
 /** What a schedule chip knows about the schedule it names. Both fields optional —
@@ -233,7 +242,8 @@ export const TranscriptItem = React.memo(function TranscriptItem(
     )
   }
 
-  const { item, speaker, grouped, showGutter, sender } = node
+  const { item, speaker, grouped, showGutter, author } = node
+  const { sender } = node
   // Before the system arm: a blocked banner is a CARD, not a centred line, and
   // it is the one row on this surface that must be impossible to mistake for
   // Claude talking.
@@ -241,6 +251,11 @@ export const TranscriptItem = React.memo(function TranscriptItem(
     return <BlockedRow item={item} onOpenTerminal={props.onOpenTerminal} />
   if (speaker === 'system') return <SystemRow item={item} labels={props.labels} />
   if (speaker === 'me') return <UserRow {...props} item={item} grouped={grouped} />
+  // A human colleague's message (P3c) — a circle mark + name chip + hue keyline,
+  // reusing the delegation ARRIVAL vocabulary. Checked before the teammate arm.
+  if (speaker.startsWith('human:') && author) {
+    return <HumanRow {...props} item={item} grouped={grouped} author={author} />
+  }
   if (sender !== undefined || speaker.startsWith('teammate:')) {
     return <TeammateRow {...props} item={item} grouped={grouped} sender={sender ?? ''} />
   }
@@ -294,6 +309,7 @@ function areTranscriptPropsEqual(a: TranscriptItemProps, b: TranscriptItemProps)
     a.labels !== b.labels ||
     a.mentions !== b.mentions ||
     a.names !== b.names ||
+    a.selfHumanId !== b.selfHumanId ||
     a.rawUrl !== b.rawUrl ||
     a.pinFor !== b.pinFor ||
     a.showActions !== b.showActions ||
@@ -312,7 +328,11 @@ function areTranscriptPropsEqual(a: TranscriptItemProps, b: TranscriptItemProps)
       x.grouped !== y.grouped ||
       x.showGutter !== y.showGutter ||
       x.speaker !== y.speaker ||
-      x.sender !== y.sender
+      x.sender !== y.sender ||
+      // A human author's display name (chip label) can change on a rename while
+      // the id-keyed speaker stays put — compare it by value so the chip is not
+      // frozen. `userId` is already in `speaker`; `name` is the render input.
+      x.author?.name !== y.author?.name
     ) {
       return false
     }
@@ -636,6 +656,83 @@ function TeammateRow({
           />
           {item.truncated && <ClippedMarker uuid={item.uuid} />}
         </Bubble>
+      </MessageRow>
+    </>
+  )
+}
+
+/* ── a human colleague ───────────────────────────────────────────────────── */
+
+/**
+ * A message an authenticated human colleague sent (P3c / UI-DIRECTION §5).
+ *
+ * Reuses the delegation ARRIVAL vocabulary — `<ArrivalDivider>` naming the
+ * author once above their run — but swaps the mascot for the CIRCLE `<HumanMark>`
+ * (people ≠ agents' faces ≠ companies' rounded-squares) and adds a name chip +
+ * a 2px left keyline, both in the author's own `accentInk(hue)`. The hue is a
+ * pure function of the IMMUTABLE `author.userId`, so it is stable across a
+ * rename and the same colour rides the mark, the chip and the keyline. SELF (the
+ * signed-in viewer's own id) reads "You"; every other colleague reads their name.
+ *
+ * Mobile-first: the chip `min-w-0 truncate`s and the divider `flex-wrap`s, so a
+ * long name folds instead of overflowing the 390px column; the keyline is a 2px
+ * border, never a fixed-width element.
+ */
+function HumanRow({
+  item,
+  grouped,
+  author,
+  selfHumanId,
+  ...rest
+}: TranscriptItemProps & {
+  item: ChatItem
+  grouped: boolean
+  author: ChatAuthor
+}) {
+  const { resolvedTheme } = useTheme()
+  if (item.type !== 'user') return null
+  const isDark = resolvedTheme === 'dark'
+  const ink = accentInk(characterFromSeed(author.userId).hue, isDark)
+  const isSelf = selfHumanId !== undefined && author.userId === selfHumanId
+  const shown = isSelf ? 'You' : author.name
+  return (
+    <>
+      {!grouped && (
+        <ArrivalDivider>
+          <span>Message from</span>
+          <span className="inline-flex min-w-0 items-center gap-1.5 font-medium">
+            <HumanMark seed={author.userId} name={author.name} size={MARK_SIZE.divider} dark={isDark} />
+            <span className="truncate" style={{ color: ink }}>
+              {shown}
+            </span>
+          </span>
+        </ArrivalDivider>
+      )}
+      <MessageRow
+        grouped={grouped}
+        surface={rest.surface}
+        gutter={
+          !grouped ? (
+            <HumanMark seed={author.userId} name={author.name} size={MARK_SIZE.gutter} dark={isDark} />
+          ) : undefined
+        }
+      >
+        {/* The 2px left keyline — the "left accent bar" mapped onto attribution,
+            in the author's pigment. A non-semantic identity surface, so it never
+            collides with the status left-edge bar. */}
+        <div style={{ borderLeft: `2px solid ${ink}`, borderRadius: 1, paddingLeft: rest.surface === 'phone' ? 8 : 10 }}>
+          <Bubble surface={rest.surface} author={grouped ? undefined : shown}>
+            <Prose
+              text={item.text}
+              mentions={rest.mentions}
+              pinFor={rest.pinFor}
+              surface={rest.surface}
+              rawUrl={rest.rawUrl}
+              onOpenSession={rest.onOpenSession}
+            />
+            {item.truncated && <ClippedMarker uuid={item.uuid} />}
+          </Bubble>
+        </div>
       </MessageRow>
     </>
   )

@@ -40,7 +40,7 @@
  */
 import type { HarnessEvent } from '../../lib/api/harness'
 
-import type { ChatEntry, ChatItem, ReceiptLine } from './entries'
+import type { ChatAuthor, ChatEntry, ChatItem, ReceiptLine } from './entries'
 import { harnessNotice, stripEmojiPrefix } from './entries'
 import type { Receipt } from './ui/receipt-group'
 
@@ -66,7 +66,17 @@ import type { Receipt } from './ui/receipt-group'
  * 03:00). Its identity is the schedule's title, so two fires of one schedule
  * stack into one run and two different schedules never do.
  */
-export type Speaker = 'agent' | 'me' | 'system' | `teammate:${string}` | `schedule:${string}`
+export type Speaker =
+  | 'agent'
+  | 'me'
+  | 'system'
+  | `teammate:${string}`
+  | `schedule:${string}`
+  // A message an authenticated human colleague sent (P3c). The run key is the
+  // IMMUTABLE `user_id` (not the display name), so a rename never re-deals a
+  // colleague's run and the mark's hue is stable. The name + company ride on
+  // `GroupedItem.author`.
+  | `human:${string}`
 
 /** Wire kinds that are harness events rather than anybody speaking.
  *
@@ -103,6 +113,10 @@ function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speake
   // in who is speaking, so they share one voice and one arrival divider.
   if (item.badge === 'teammate' || item.badge === 'delegation')
     return `teammate:${labels?.get(item.uuid) ?? ''}`
+  // A human colleague's message: keyed on the immutable author id so a rename
+  // never scrambles the run and the mark hue is stable. Fail-closed — an
+  // author-less human badge (never produced by the wire) falls through to 'me'.
+  if (item.badge === 'human' && item.author) return `human:${item.author.userId}`
   if (item.badge === 'schedule') return `schedule:${labels?.get(item.uuid) ?? ''}`
   if (item.badge && SYSTEM_BADGES.has(item.badge)) return 'system'
   // An interruption is user-role on the wire and nobody's words on the screen.
@@ -204,6 +218,9 @@ export interface GroupedItem {
   showGutter: boolean
   /** The colleague who sent it, when the speaker is a teammate. */
   sender?: string
+  /** The human author (P3c), when the speaker is `human:…` — the immutable id
+   *  (mark hue + self/remote key) and the display name (chip). */
+  author?: ChatAuthor
 }
 
 /**
@@ -226,12 +243,16 @@ export function groupItems(
     // nothing that could stack into it — it also breaks the run around it.
     const grouped = speaker !== 'system' && speaker === previous
     const teammate = speaker.startsWith('teammate:')
+    const human = speaker.startsWith('human:')
     out.push({
       item,
       speaker,
       grouped,
-      showGutter: !grouped && (speaker === 'agent' || teammate),
+      // A human row hangs its circle mark on the first row of the run, exactly
+      // like a colleague's — the two left-hand attributed voices.
+      showGutter: !grouped && (speaker === 'agent' || teammate || human),
       sender: teammate ? speaker.slice('teammate:'.length) || undefined : undefined,
+      author: human && item.type === 'user' ? item.author : undefined,
     })
     previous = speaker
   }

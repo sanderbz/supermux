@@ -1957,6 +1957,37 @@ pub async fn send_chat_text(
     send_harness_text(state, name, text, None, send_id).await
 }
 
+/// [`send_chat_text`] for a message sent by an authenticated HUMAN colleague
+/// (P3c). The author is server-resolved from `AuthContext` (P3a) and stamped into
+/// a `<supermux-human>` provenance wrapper — NEVER trusted from the request body.
+///
+/// The composer text is first refused if it already carries wrapper markup (a
+/// forged human/delegation/schedule claim), exactly as an owner send is; only
+/// THEN is the clean text wrapped and handed to the harness door
+/// ([`send_harness_text`], the one writer allowed to emit a wrapper). The stored
+/// preview is the UNWRAPPED text, so the roster's send-recall shows what the
+/// person typed, not the machinery. The owner's own sends never reach here (the
+/// owner is not a `Human` context), so they are byte-identically unaffected.
+pub async fn send_human_text(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    author_user_id: i64,
+    author_name: &str,
+    author_company_id: Option<i64>,
+    send_id: Option<&str>,
+) -> Result<(), AppError> {
+    reject_wrapper_markup(text)?;
+    let wrapped = crate::agents::delegate::wrap_human(
+        author_user_id,
+        author_name,
+        author_company_id,
+        text,
+    )
+    .map_err(|e| AppError::BadRequest(e.into()))?;
+    send_harness_text(state, name, &wrapped, Some(text), send_id).await
+}
+
 /// [`send_text`] for HARNESS-AUTHORED deliveries: no wrapper-markup guard, and
 /// the string recorded as `last_send_text` can differ from the string typed
 /// into the pty.

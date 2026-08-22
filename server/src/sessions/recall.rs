@@ -23,7 +23,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::agents::delegate::DELEGATION_TAG;
+use crate::agents::delegate::{DELEGATION_TAG, HUMAN_TAG};
 use crate::scheduler::runner::{unescape_attr, CONFIRM_FOOTER_SENTINEL, SCHEDULE_TAG};
 use crate::db;
 use crate::error::AppError;
@@ -146,6 +146,11 @@ pub enum Kind {
     /// supermux delegate delivery — `<supermux-delegation from>` wrapper.
     /// `label` is the sending session's slug.
     Delegation,
+    /// A message an authenticated HUMAN colleague sent — `<supermux-human
+    /// user name company>` wrapper (P3c). `label` is the author's display name;
+    /// the render plane (`wire-entries.ts`) additionally carries the immutable
+    /// `user`/`company` for the circle `HumanMark` hue + self/remote split.
+    Human,
     /// supermux scheduled delivery — `<supermux-schedule id title>` wrapper.
     /// `label` is the schedule's title. The schedule is its own speaker in the
     /// transcript: a 03:00 fire is not the owner typing at 03:00.
@@ -182,7 +187,12 @@ impl Kind {
     pub fn is_user_initiated(self) -> bool {
         matches!(
             self,
-            Kind::Prompt | Kind::Command | Kind::Teammate | Kind::Delegation | Kind::Schedule
+            Kind::Prompt
+                | Kind::Command
+                | Kind::Teammate
+                | Kind::Delegation
+                | Kind::Human
+                | Kind::Schedule
         )
     }
 }
@@ -1201,7 +1211,10 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
 /// Whether `body` opens with a wrapper supermux authored itself (as opposed to
 /// one Claude Code injects). Only these outrank `promptSource: "typed"`.
 fn is_supermux_wrapper(body: &str) -> bool {
-    matches!(leading_tag(body), Some(DELEGATION_TAG) | Some(SCHEDULE_TAG))
+    matches!(
+        leading_tag(body),
+        Some(DELEGATION_TAG) | Some(HUMAN_TAG) | Some(SCHEDULE_TAG)
+    )
 }
 
 /// The three tags one slash invocation's envelope is made of, in whichever
@@ -1291,6 +1304,35 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
                     kind: Kind::Delegation,
                     text: or_unreadable(sanitise_text(cleaned)),
                     label: Some(from),
+                }),
+            }
+        }
+        HUMAN_TAG => {
+            // `<supermux-human user="7" name="Sander" company="3">…</supermux-human>`
+            // — a message an authenticated human colleague sent (P3c;
+            // `sessions::lifecycle::send_human_text` writes it from the resolved
+            // AuthContext, never the body). The recall plane needs only the
+            // author's display NAME as the label; the render plane parses the
+            // immutable `user`/`company` too, for the circle mark's hue and the
+            // self/remote split. `name` is unescaped with the schedule-title
+            // contract (`runner::unescape_attr`).
+            let name = attr_value(body, "name")
+                .map(|n| unescape_attr(&n))
+                .filter(|n| !n.trim().is_empty());
+            let inner = tag_inner(body, HUMAN_TAG).unwrap_or_default();
+            let cleaned = inner.trim();
+            match name {
+                // No author means no provenance — never leak the body as a bare
+                // prompt (same discipline the unattributed delegation gets).
+                None => Some(ClassifiedUser {
+                    kind: Kind::System,
+                    text: short_summary(cleaned),
+                    label: Some(HUMAN_TAG.to_string()),
+                }),
+                Some(name) => Some(ClassifiedUser {
+                    kind: Kind::Human,
+                    text: or_unreadable(sanitise_text(cleaned)),
+                    label: Some(name),
                 }),
             }
         }
@@ -2020,6 +2062,7 @@ please prepare the next stacked branch
         assert_eq!(wire(Kind::Command), "command");
         assert_eq!(wire(Kind::Teammate), "teammate");
         assert_eq!(wire(Kind::Delegation), "delegation");
+        assert_eq!(wire(Kind::Human), "human");
         assert_eq!(wire(Kind::Schedule), "schedule");
         assert_eq!(wire(Kind::Notification), "notification");
         assert_eq!(wire(Kind::System), "system");

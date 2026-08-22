@@ -60,6 +60,49 @@ pub async fn log_entry(
     })
 }
 
+/// [`log_entry`], but stamps the P3c per-message human attribution
+/// (`author_user_id` + `author_company_id`, migration 0034) onto the row.
+///
+/// This is the ONLY writer that fills those two columns: an action taken by an
+/// authenticated Human colleague is attributable to a real `human_users` row and
+/// a company, not just to the free-text `actor`. Owner actions keep going through
+/// [`log`]/[`log_entry`], which leave both columns NULL. The author values are
+/// the caller's already-resolved `AuthContext` (P3a) — never anything the request
+/// body claimed.
+pub async fn log_authored(
+    pool: &SqlitePool,
+    actor: &str,
+    action: &str,
+    target: &str,
+    detail: Value,
+    author_user_id: i64,
+    author_company_id: Option<i64>,
+) -> sqlx::Result<AuditEntry> {
+    let ts = chrono::Utc::now().timestamp();
+    let detail = detail.to_string();
+    let res = sqlx::query(
+        "INSERT INTO audit_log (ts, actor, action, target, detail, author_user_id, author_company_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(ts)
+    .bind(actor)
+    .bind(action)
+    .bind(target)
+    .bind(&detail)
+    .bind(author_user_id)
+    .bind(author_company_id)
+    .execute(pool)
+    .await?;
+    Ok(AuditEntry {
+        id: res.last_insert_rowid(),
+        ts,
+        actor: actor.to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        detail,
+    })
+}
+
 /// The most-recent `limit` audit rows, newest first (`GET /api/audit?limit=N`).
 /// Backed by `idx_audit_ts`.
 pub async fn list(pool: &SqlitePool, limit: i64) -> sqlx::Result<Vec<AuditEntry>> {

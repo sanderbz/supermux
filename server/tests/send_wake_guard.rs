@@ -145,6 +145,7 @@ async fn delegate_reports_undelivered_and_records_no_edge() {
 
     let err = supermux_server::agents::delegate::delegate(
         axum::extract::State(state.clone()),
+        supermux_server::scope::OptCtx(None),
         axum::Json(DelegateInput {
             from: "sender".into(),
             to: "receiver".into(),
@@ -342,6 +343,7 @@ async fn delegate_into_an_open_picker_records_no_edge() {
 
     let err = supermux_server::agents::delegate::delegate(
         axum::extract::State(state.clone()),
+        supermux_server::scope::OptCtx(None),
         axum::Json(DelegateInput {
             from: "sender".into(),
             to: "receiver".into(),
