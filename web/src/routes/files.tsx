@@ -47,6 +47,8 @@ import {
   useUploadFiles,
 } from '@/hooks/use-files'
 import { useSessions } from '@/hooks/use-sessions'
+import { useCompanies } from '@/hooks/use-companies'
+import { companyFilesRoot } from '@/lib/companies'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { useUI } from '@/stores/ui-store'
 import type { FsEntry } from '@/lib/api'
@@ -70,18 +72,30 @@ export function Files() {
   const [lastActive, setLastActive] = useLastActiveSession()
   const { sessions } = useSessions()
 
+  // Company scoping (Bot Mode P1). When a company is active in the switcher the
+  // browser STARTS at its `root_dir`; HQ (activeCompany null) → null =
+  // unrestricted, the current behavior (the owner sees everything). This sets
+  // only the STARTING location — `?path=` and an explicit session pick still
+  // win, so manual navigation is untouched. See lib/companies.ts.
+  const activeCompany = useUI((s) => s.activeCompany)
+  const { companies } = useCompanies()
+  const companyRoot = companyFilesRoot(activeCompany, companies)
+
   // The effective session for the listing: the explicit URL param wins; absent,
   // the last-active session (only if it still exists in the live list — a
   // stopped/archived session would resolve to a dead dir). Empty string = the
-  // user explicitly picked "Home" last time → stay at $HOME.
+  // user explicitly picked "Home" last time → stay at $HOME. When a company is
+  // active we do NOT fall back to the last-active session (it may live in
+  // another space) — the company root is the start instead.
   const lastActiveExists = lastActive
     ? sessions.some((s) => s.name === lastActive)
     : false
-  const effectiveName = name ?? (lastActiveExists ? lastActive! : undefined)
+  const effectiveName =
+    name ?? (lastActiveExists && !companyRoot ? lastActive! : undefined)
   const sessionDir = useSessionDir(effectiveName)
 
   const pathParam = searchParams.get('path')
-  const currentPath = pathParam ?? sessionDir.data ?? HOME_PATH
+  const currentPath = pathParam ?? sessionDir.data ?? companyRoot ?? HOME_PATH
 
   // Mirror the URL-driven session into the shared cell so a deep link
   // (`/files/foo`) or a focus→files breadcrumb persists the pick. The route's

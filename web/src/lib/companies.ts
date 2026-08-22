@@ -48,6 +48,23 @@ export function inCompanyScope(
   return companyId === activeCompany
 }
 
+/** The STARTING root the Files browser opens at for the active space. A company
+ *  (`activeCompany !== null`) roots the browser at its `root_dir`; HQ
+ *  (`activeCompany === null`) returns `null` = unrestricted (the owner sees
+ *  everything, current behavior). A stale `activeCompany` id that no longer maps
+ *  to a live company also returns `null` — the same fail-open-to-HQ rule
+ *  `resolveActiveCompany` keeps. Pure + unit-tested; the route applies it as the
+ *  starting cwd only, so manual navigation (`?path=`, a session pick) still
+ *  wins. */
+export function companyFilesRoot(
+  activeCompany: number | null,
+  companies: readonly Company[],
+): string | null {
+  if (activeCompany === null) return null
+  const c = companies.find((c) => c.id === activeCompany)
+  return c ? c.root_dir : null
+}
+
 /** Stable "space-first" ordering for GLOBAL search results (§4c): sessions in
  *  the ACTIVE space keep their incoming relative order but sort ahead of every
  *  out-of-space match, which stays visible below. The active space is HQ when

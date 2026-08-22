@@ -13,10 +13,13 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  companyFilesRoot,
   companyFirstOrder,
   inCompanyScope,
   resolveActiveCompany,
+  type Company,
 } from '@/lib/companies'
+import { canMentionPeer, scopeMentionPeers } from '@/lib/mention-scope'
 
 describe('resolveActiveCompany — the stale-id guard', () => {
   test('null in ⇒ null out (already HQ)', () => {
@@ -95,5 +98,74 @@ describe('companyFirstOrder — stable space-first search ranking', () => {
   test('empty input ⇒ empty output', () => {
     expect(companyFirstOrder([], 1)).toEqual([])
     expect(companyFirstOrder([], null)).toEqual([])
+  })
+})
+
+describe('canMentionPeer — the @-picker same-company predicate', () => {
+  test('a main/HQ session (self company_id null/undefined) can reach ANY peer', () => {
+    expect(canMentionPeer(null, null)).toBe(true)
+    expect(canMentionPeer(null, 1)).toBe(true)
+    expect(canMentionPeer(null, 2)).toBe(true)
+    expect(canMentionPeer(undefined, 3)).toBe(true)
+  })
+
+  test('a company session sees ONLY same-company peers', () => {
+    expect(canMentionPeer(1, 1)).toBe(true)
+    // Another company is hidden.
+    expect(canMentionPeer(1, 2)).toBe(false)
+    // A main/PA bot is NOT reachable from inside a company.
+    expect(canMentionPeer(1, null)).toBe(false)
+    expect(canMentionPeer(1, undefined)).toBe(false)
+  })
+})
+
+describe('scopeMentionPeers — filtering the picker session list', () => {
+  const sessions = [
+    { name: 'acme-a', company_id: 1 },
+    { name: 'acme-b', company_id: 1 },
+    { name: 'globex-a', company_id: 2 },
+    { name: 'main-a', company_id: null },
+    { name: 'main-b' as const }, // undefined company_id = main bot
+  ]
+
+  test('a company session keeps only its own peers', () => {
+    const out = scopeMentionPeers(sessions, 1)
+    expect(out.map((s) => s.name)).toEqual(['acme-a', 'acme-b'])
+  })
+
+  test('a main/HQ session (null) sees ALL sessions — main can reach any', () => {
+    const out = scopeMentionPeers(sessions, null)
+    expect(out.map((s) => s.name)).toEqual([
+      'acme-a',
+      'acme-b',
+      'globex-a',
+      'main-a',
+      'main-b',
+    ])
+  })
+
+  test('a company with no same-company peers yields an empty picker', () => {
+    expect(scopeMentionPeers(sessions, 3).map((s) => s.name)).toEqual([])
+  })
+})
+
+describe('companyFilesRoot — the Files-browser starting root', () => {
+  const companies: Company[] = [
+    { id: 1, slug: 'acme', display_name: 'Acme', root_dir: '/srv/acme', archived: 0 },
+    { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/srv/globex', archived: 0 },
+  ]
+
+  test('HQ (activeCompany null) ⇒ null = unrestricted (owner sees everything)', () => {
+    expect(companyFilesRoot(null, companies)).toBe(null)
+  })
+
+  test('an active company ⇒ its root_dir', () => {
+    expect(companyFilesRoot(1, companies)).toBe('/srv/acme')
+    expect(companyFilesRoot(2, companies)).toBe('/srv/globex')
+  })
+
+  test('a stale/unknown active id fails open to null (=HQ, unrestricted)', () => {
+    expect(companyFilesRoot(9, companies)).toBe(null)
+    expect(companyFilesRoot(1, [])).toBe(null)
   })
 })

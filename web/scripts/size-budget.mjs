@@ -310,7 +310,24 @@ const BUDGET_ENTRY_JS = 160 * KB
 // api+hook slice lands on first paint. The Files-browser + palette company
 // scoping are a deliberately-deferred next slice (see the TODO anchor in
 // `routes/overview.tsx`), so no more hero-path bytes are queued behind this.
-const BUDGET_APP_JS = 242 * KB
+//
+// 245 at feat(companies) Files-scope slice — the deferred slice above landed:
+// the Files browser now ROOTS at the active company's `root_dir` (HQ =
+// unrestricted), and the chat `@`-picker is scoped to the current session's own
+// `company_id` (same-company peers; a main/HQ session still reaches all). The
+// eager cost of that (the companies query on the Files route's first paint) was
+// NOT spent on the hard-gated hero path: per this ledger's standing "code-split
+// rather than spend" advice, the whole Files route went entry-lazy, exactly as
+// Settings did. The trade the numbers record:
+//   ENTRY (the hard hero-path gate)  160.03 → 153.66 KB  (−6.37 KB, now 96%)
+//   TOTAL app JS                     241.64 → 244.11 KB  (+2.47 KB)
+// The +2.47 KB total is gzip-boundary cost: one big entry blob split into a
+// route chunk (`files` ~5.8 KB) plus its now-standalone `session-picker` /
+// `file-types` leaves each fragment less compressible than it was inlined. That
+// is soft-ceiling spend deliberately buying hard-gate headroom — the trade this
+// ledger has celebrated every fase ("the ENTRY gate MOVED DOWN"). ceil(244.11)
+// = 245 (measured×1.02 = 249 would be looser; the ledger takes the tighter).
+const BUDGET_APP_JS = 245 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

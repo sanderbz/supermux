@@ -27,6 +27,7 @@ import { useNavigate } from 'react-router-dom'
 import type { TileSession } from '@/components/session-tile/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
+import { scopeMentionPeers } from '@/lib/mention-scope'
 import { agentsApi, commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
@@ -147,6 +148,20 @@ export default function ChatPanel({
   // from the shared sessions query: one cache, already populated by the shell,
   // so this adds a subscriber rather than a fetch.
   const { sessions } = useSessions()
+  // The `@`-picker is scoped to THIS session's own company (Bot Mode P1):
+  // a company session can only `@` same-company peers; a main/HQ session
+  // (company_id null) can reach any. Keyed off the session's OWN company_id
+  // (looked up from the live list by name — robust when the `session` prop is
+  // null in the bench), NOT the global activeCompany. Mirrors + reinforces the
+  // server delegation gate (defense-in-depth). See lib/companies.ts.
+  const selfCompanyId = React.useMemo(
+    () => sessions.find((s) => s.name === name)?.company_id ?? null,
+    [sessions, name],
+  )
+  const mentionSessions = React.useMemo(
+    () => scopeMentionPeers(sessions, selfCompanyId),
+    [sessions, selfCompanyId],
+  )
   const mentions = React.useMemo(() => mentionIndex(sessions), [sessions])
   // slug → what that session is CALLED. The arrival divider names a colleague,
   // and the wire's teammate envelope carries only the slug.
@@ -483,10 +498,10 @@ export default function ChatPanel({
     () => ({
       files: trackedFiles.data,
       commands: slashCommands.data,
-      sessions,
+      sessions: mentionSessions,
       loading: picker.kind === '@' ? trackedFiles.isLoading : slashCommands.isLoading,
     }),
-    [picker.kind, sessions, slashCommands.data, slashCommands.isLoading, trackedFiles.data, trackedFiles.isLoading],
+    [picker.kind, mentionSessions, slashCommands.data, slashCommands.isLoading, trackedFiles.data, trackedFiles.isLoading],
   )
 
   // ── The Attention card (fase A4 T5) ────────────────────────────────────────
