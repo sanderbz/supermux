@@ -38,7 +38,7 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -102,8 +102,31 @@ pub fn compression() -> CompressionLayer<impl Predicate + Clone> {
 }
 
 /// `GET /` — the SPA shell with the runtime config injected.
-async fn index(State(state): State<AppState>) -> Response {
-    serve_index(&state)
+async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    serve_index(&state, is_company_host_request(&state, &headers))
+}
+
+/// Decide whether this request's `Host` is a **company tunnel host** — the one
+/// case where the served SPA shell must NOT carry the admin bearer.
+///
+/// Precise rule (the P3a CRITICAL escalation fix): a request is treated as a
+/// company host IFF `human_auth.enabled()` **and** the inbound `Host` resolves
+/// to a configured `company_hosts` entry. On a public catch-all a missing or
+/// unparseable `Host` header defaults to the SAFE branch (company host ⇒ token
+/// withheld) — but ONLY when human-auth is enabled. When human-auth is
+/// disabled this always returns `false`, so token injection is byte-identical
+/// to the pre-P3a behavior (the owner's tailnet/localhost transport).
+fn is_company_host_request(state: &AppState, headers: &HeaderMap) -> bool {
+    let cfg = &state.config.human_auth;
+    if !cfg.enabled() {
+        return false;
+    }
+    match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+        Some(host) => cfg.host_entry(host).is_some(),
+        // A public catch-all request with a missing/HeaderParse-failing Host
+        // defaults to SAFE (withhold the token) now that human-auth is on.
+        None => true,
+    }
 }
 
 /// SPA fallback: serve the request path as an embedded asset if it exists,
@@ -114,7 +137,7 @@ async fn index(State(state): State<AppState>) -> Response {
 /// The path is read from the request [`Uri`], not a `Path` extractor: a
 /// `.fallback` route has no path pattern, so `Path<String>` would be a
 /// rejection (HTTP 500). The `Uri` always carries the literal request path.
-async fn asset_or_index(State(state): State<AppState>, uri: Uri) -> Response {
+async fn asset_or_index(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     let trimmed = uri.path().trim_start_matches('/');
 
     // Denylist the backend route namespaces: a request that fell through to the
@@ -144,13 +167,13 @@ async fn asset_or_index(State(state): State<AppState>, uri: Uri) -> Response {
         }
         // Unknown path with no file extension → an SPA client-route; serve the
         // shell so the front-end router can resolve it.
-        None => serve_index(&state),
+        None => serve_index(&state, is_company_host_request(&state, &headers)),
     }
 }
 
 /// Render `index.html` with `window._SUPERMUX_*` runtime config spliced in before
 /// `<div id="root">`.
-fn serve_index(state: &AppState) -> Response {
+fn serve_index(state: &AppState, is_company_host: bool) -> Response {
     let Some(raw) = Assets::get("index.html") else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -159,7 +182,7 @@ fn serve_index(state: &AppState) -> Response {
             .into_response();
     };
     let html = String::from_utf8_lossy(&raw.data);
-    let injected = inject_runtime_config(&html, state);
+    let injected = inject_runtime_config(&html, state, is_company_host);
 
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -180,7 +203,7 @@ fn serve_index(state: &AppState) -> Response {
 /// server's `bind` address here would pin every HTTP + SSE request to a fixed
 /// origin and break the app whenever the page is reached via any other host
 /// (localhost, the Tailscale hostname) — a cross-origin CORS failure.
-fn inject_runtime_config(html: &str, state: &AppState) -> String {
+fn inject_runtime_config(html: &str, state: &AppState, is_company_host: bool) -> String {
     // `_SUPERMUX_HOME_DIR`: the server's home directory. The New-session form
     // pre-fills its working-directory field with this so a session can be
     // created in one click without typing a path. Empty string if unresolved
@@ -201,9 +224,23 @@ fn inject_runtime_config(html: &str, state: &AppState) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
+    // CRITICAL (P3a): the admin bearer is spliced into the shell for EVERY
+    // viewer, and the static-asset router is OUTSIDE the bearer layer. On a
+    // company tunnel host a scoped colleague would otherwise read the omniscient
+    // Owner token straight out of the page's JS. So on a company host we withhold
+    // the `_SUPERMUX_AUTH_TOKEN` line ENTIRELY — a scoped human gets a cookie-only
+    // shell and authenticates via the session cookie + `/auth/me`. On the owner's
+    // transport (non-company host) the token is spliced exactly as before.
+    let token_line = if is_company_host {
+        String::new()
+    } else {
+        format!(
+            "window._SUPERMUX_AUTH_TOKEN={token};",
+            token = json_string(&state.config.auth_token),
+        )
+    };
     let script = format!(
-        "<script>window._SUPERMUX_AUTH_TOKEN={token};window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};window._SUPERMUX_PROJECT_DIR={projects};</script>",
-        token = json_string(&state.config.auth_token),
+        "<script>{token_line}window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};window._SUPERMUX_PROJECT_DIR={projects};</script>",
         version = json_string(env!("CARGO_PKG_VERSION")),
         home = json_string(&home_dir),
         projects = json_string(&projects_dir),
@@ -298,6 +335,120 @@ fn cache_control(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::cache_control;
+
+    // ── P3a CRITICAL: withhold the admin bearer on company tunnel hosts ─────────
+
+    use super::index;
+    use crate::config::{CompanyHost, Config, HumanAuthConfig};
+    use crate::state::AppState;
+    use axum::extract::State;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    const OWNER_TOKEN: &str = "sk-owner-admin-bearer-secret";
+    const COMPANY_HOST: &str = "acme.supermux.example";
+    const OWNER_HOST: &str = "owner-box.taild681cb.ts.net";
+
+    /// Build an `AppState`; `human_auth` is enabled with a single `company_hosts`
+    /// entry for `COMPANY_HOST` when `enable_human_auth` is set, otherwise inert.
+    async fn state_with(enable_human_auth: bool) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir()
+            .join(format!("supermux-static-p3a-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let human_auth = if enable_human_auth {
+            HumanAuthConfig {
+                google_client_id: Some("test-client-id".into()),
+                google_client_secret: Some("test-client-secret".into()),
+                owner_email: None,
+                company_hosts: vec![CompanyHost {
+                    host: COMPANY_HOST.into(),
+                    company_id: 1,
+                    redirect_uri: format!("https://{COMPANY_HOST}/auth/callback"),
+                }],
+                cookie_key: b"cookie-key".to_vec(),
+                csrf_key: b"csrf-key".to_vec(),
+                session_ttl_secs: 0,
+            }
+        } else {
+            HumanAuthConfig::default()
+        };
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: OWNER_TOKEN.to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    fn headers_with_host(host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        h
+    }
+
+    async fn body_of(resp: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn company_host_shell_has_no_admin_token() {
+        let (state, dir) = state_with(true).await;
+        let resp = index(State(state.clone()), headers_with_host(COMPANY_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "company-host shell must NOT leak the admin bearer, got: {html:?}"
+        );
+        // The rest of the runtime config is still spliced (cookie-only shell).
+        assert!(html.contains("_SUPERMUX_VERSION"), "runtime config still injected");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn owner_host_shell_still_carries_the_admin_token() {
+        let (state, dir) = state_with(true).await;
+        let resp = index(State(state.clone()), headers_with_host(OWNER_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "owner (non-company) host must still receive the token"
+        );
+        assert!(html.contains(OWNER_TOKEN), "the actual token value is present");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn human_auth_disabled_always_splices_the_token() {
+        let (state, dir) = state_with(false).await;
+        // Even a Host that would be a "company host" when the feature is on gets
+        // the token when human-auth is disabled — byte-identical to pre-P3a.
+        for host in [COMPANY_HOST, OWNER_HOST] {
+            let resp = index(State(state.clone()), headers_with_host(host)).await;
+            let html = body_of(resp).await;
+            assert!(
+                html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+                "human-auth disabled must always inject the token (host={host})"
+            );
+        }
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn index_html_is_no_cache_so_the_sw_is_never_pinned_on_a_stale_bundle() {

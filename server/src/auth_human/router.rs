@@ -163,11 +163,14 @@ async fn callback(
 
     // Host ↔ company binding: a scoped colleague may only mint on their own
     // company's host (owner/admin, company_id NULL, may mint on any allowlisted host).
+    // Defense-in-depth: a scoped session MUST be bound to an allowlisted company
+    // host — so if the mint host is not an allowlisted `company_hosts` entry at
+    // all, REJECT rather than falling through and minting an unbound session.
     if let Some(uc) = user.company_id {
-        if let Some(entry) = cfg.host_entry(&host) {
-            if entry.company_id != uc {
-                return (StatusCode::FORBIDDEN, "wrong host for company").into_response();
-            }
+        match cfg.host_entry(&host) {
+            Some(entry) if entry.company_id == uc => {}
+            Some(_) => return (StatusCode::FORBIDDEN, "wrong host for company").into_response(),
+            None => return (StatusCode::FORBIDDEN, "host not allowlisted for company").into_response(),
         }
     }
 
