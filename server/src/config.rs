@@ -225,12 +225,34 @@ impl HumanAuthConfig {
     }
 }
 
+/// The canonical per-company tunnel domain suffix. A company `slug` is fronted by
+/// `<slug>.s.iwd.nl` (P3d), which is what [`company_canonical_host`] derives and
+/// what the `scripts/companies-tunnel.sh` provisioner creates a Cloudflare public
+/// hostname for.
+pub const COMPANY_HOST_SUFFIX: &str = "s.iwd.nl";
+
+/// Derive the canonical tunnel host for a company slug: `<slug>.s.iwd.nl`.
+///
+/// The slug is lower-cased for host legibility (DNS is case-insensitive; the
+/// `companies.slug` charset — letters/digits/`_`/`.`/`-` — already excludes any
+/// character illegal in a host label except `_`, which the operator avoids in a
+/// slug meant to be tunneled).
+pub fn company_canonical_host(slug: &str) -> String {
+    format!("{}.{COMPANY_HOST_SUFFIX}", slug.trim().to_ascii_lowercase())
+}
+
+/// The exact Google redirect URI for a company's canonical host:
+/// `https://<slug>.s.iwd.nl/auth/callback`.
+pub fn company_redirect_uri(slug: &str) -> String {
+    format!("https://{}/auth/callback", company_canonical_host(slug))
+}
+
 /// One `host → company_id → redirect_uri` allowlist entry (`[[company_hosts]]`
 /// in `config.toml`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CompanyHost {
-    /// Public tunnel hostname a company's colleagues reach (e.g.
-    /// `acme.supermux.example`). Also feeds the WS Origin allowlist.
+    /// Public tunnel hostname a company's colleagues reach (canonical form
+    /// `<slug>.s.iwd.nl`, P3d). Also feeds the WS Origin allowlist.
     pub host: String,
     /// The company this Host serves. A cookie minted for a different company is
     /// rejected on this Host.
@@ -238,6 +260,22 @@ pub struct CompanyHost {
     /// The exact redirect URI registered with Google for this Host
     /// (`https://<host>/auth/callback`).
     pub redirect_uri: String,
+}
+
+impl CompanyHost {
+    /// Does this entry map the CANONICAL layout for `(slug, company_id)`? A valid
+    /// P3d tunnel entry has `host == <slug>.s.iwd.nl`,
+    /// `redirect_uri == https://<slug>.s.iwd.nl/auth/callback`, and
+    /// `company_id == expected_company_id`. Host/redirect are compared
+    /// case-insensitively (DNS + scheme are case-folding). Used by the provisioner
+    /// doc/test to validate a hand-edited `config.toml` block before deploy.
+    pub fn is_canonical_for(&self, slug: &str, expected_company_id: i64) -> bool {
+        let want_host = company_canonical_host(slug);
+        let want_redirect = company_redirect_uri(slug);
+        self.company_id == expected_company_id
+            && self.host.trim().eq_ignore_ascii_case(&want_host)
+            && self.redirect_uri.trim().eq_ignore_ascii_case(&want_redirect)
+    }
 }
 
 /// `[ws]` config block. Both knobs are sized so a single multi-device PWA user
@@ -612,4 +650,75 @@ fn write_token_0600(path: &Path, token: &str) -> Result<()> {
         std::fs::write(path, format!("{token}\n"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_host_is_slug_dot_s_iwd_nl() {
+        assert_eq!(company_canonical_host("acme"), "acme.s.iwd.nl");
+        // Lower-cased for host legibility.
+        assert_eq!(company_canonical_host("Acme"), "acme.s.iwd.nl");
+        assert_eq!(company_canonical_host("  beta  "), "beta.s.iwd.nl");
+    }
+
+    #[test]
+    fn canonical_redirect_uri_is_https_callback() {
+        assert_eq!(
+            company_redirect_uri("acme"),
+            "https://acme.s.iwd.nl/auth/callback"
+        );
+    }
+
+    #[test]
+    fn company_host_maps_slug_to_company_and_redirect() {
+        // A correctly hand-edited `[[company_hosts]]` block for (slug=acme, id=7).
+        let entry = CompanyHost {
+            host: "acme.s.iwd.nl".to_string(),
+            company_id: 7,
+            redirect_uri: "https://acme.s.iwd.nl/auth/callback".to_string(),
+        };
+        assert!(entry.is_canonical_for("acme", 7));
+        // Case-insensitive host/redirect match (DNS + scheme fold case).
+        let mixed = CompanyHost {
+            host: "ACME.s.iwd.nl".to_string(),
+            company_id: 7,
+            redirect_uri: "https://ACME.s.iwd.nl/auth/callback".to_string(),
+        };
+        assert!(mixed.is_canonical_for("acme", 7));
+
+        // Wrong company id → not canonical (host↔company binding must be exact).
+        assert!(!entry.is_canonical_for("acme", 8));
+        // Wrong slug (host serves a different company's domain) → not canonical.
+        assert!(!entry.is_canonical_for("beta", 7));
+        // A stray redirect host → not canonical (open-redirect / mis-registration).
+        let bad_redirect = CompanyHost {
+            host: "acme.s.iwd.nl".to_string(),
+            company_id: 7,
+            redirect_uri: "https://evil.example/auth/callback".to_string(),
+        };
+        assert!(!bad_redirect.is_canonical_for("acme", 7));
+    }
+
+    #[test]
+    fn host_entry_resolves_canonical_company_host() {
+        let cfg = HumanAuthConfig {
+            google_client_id: Some("cid".to_string()),
+            google_client_secret: Some("sec".to_string()),
+            company_hosts: vec![CompanyHost {
+                host: company_canonical_host("acme"),
+                company_id: 42,
+                redirect_uri: company_redirect_uri("acme"),
+            }],
+            cookie_key: vec![1; 32],
+            csrf_key: vec![1; 32],
+            ..Default::default()
+        };
+        // The canonical host resolves to its company; a stray host does not.
+        let e = cfg.host_entry("acme.s.iwd.nl").expect("canonical host resolves");
+        assert_eq!(e.company_id, 42);
+        assert!(cfg.host_entry("beta.s.iwd.nl").is_none());
+    }
 }

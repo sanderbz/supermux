@@ -1839,8 +1839,23 @@ async fn get_handler(
 
 async fn create_handler(
     State(state): State<AppState>,
-    Json(input): Json<CreateInput>,
+    ctx: crate::scope::OptCtx,
+    Json(mut input): Json<CreateInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // P3d: a scoped MEMBER may create/spawn agents ONLY in their OWN company.
+    //   * `company_id` defaults to theirs when omitted;
+    //   * an explicit `company_id` for ANOTHER company is a uniform 404 (a member
+    //     cannot even learn another company exists by probing create).
+    // Owner/admin (Scope::All) are unrestricted — any/no company as before.
+    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        match input.company_id {
+            None => input.company_id = Some(hc),
+            Some(c) if c == hc => {}
+            Some(other) => {
+                return Err(AppError::NotFound(format!("company id={other}")));
+            }
+        }
+    }
     let v = create(&state, input).await?;
     Ok((StatusCode::CREATED, ok(v)))
 }

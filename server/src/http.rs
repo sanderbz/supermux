@@ -11,7 +11,7 @@
 //! NOT wrapped by it (layers apply only to routes present when `.layer` runs).
 
 use axum::http::{header, HeaderName, HeaderValue};
-use axum::middleware::from_fn_with_state;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -156,32 +156,48 @@ pub fn router(state: AppState) -> Router {
 /// .merge(agents::router_for(state.clone()))
 /// ```
 fn protected_router(state: AppState) -> Router {
+    use crate::scope::{require_admin_mw, require_admin_writes_mw};
     Router::new()
         .merge(sessions::router_for(state.clone()))
         .merge(board::router_for(state.clone()))
-        .merge(hosts::router_for(state.clone())) // hosts CRUD + bootstrap
+        // hosts CRUD + bootstrap — P3d: owner/admin-only. A scoped member never
+        // reaches these (uniform 404, hides existence), enforced by the shared
+        // `require_admin` guard as a route-layer over the whole sub-router.
+        .merge(hosts::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // `files::router_for()` returns a `Router<AppState>` (state not yet
         // provided); `.with_state` resolves it to `Router<()>` so it merges
         // alongside the already-stateful sessions router.
         .merge(files::router_for().with_state(state.clone()))
-        .merge(scheduler::router_for(state.clone()))
+        // Scheduler CRUD — P3d owner/admin-only (the agent→scheduler HOOK router,
+        // merged outside the bearer layer in `router`, is unaffected).
+        .merge(scheduler::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         .merge(sse::router_for(state.clone())) // GET /api/events SSE stream
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
         // Claude tools registry + MCP CRUD (bearer-protected).
         .merge(claude_tools::router_for(state.clone()))
         // Connector store: manifest CRUD + .mcpb import + per-agent grants +
-        // write-only credential→vault (bearer-protected).
+        // write-only credential→vault (bearer-protected). P3d: the mutation
+        // handlers gate a member to their company scope INSIDE the handlers
+        // (a member may grant `@company:<their id>` / an own-company session, but
+        // not `*` / another company / a global connector definition).
         .merge(crate::connectors::router_for(state.clone()))
-        .merge(crate::companies::router_for(state.clone())) // /api/companies CRUD
-        .merge(prefs::router_for(state.clone())) // snippets + kbd-groups
-        .merge(audit::router_for(state.clone())) // audit log read
+        // Companies — P3d: GET returns only a member's own company; POST/PATCH/
+        // DELETE are owner/admin-only. Gated INSIDE the handlers so the member GET
+        // can still return their one company (a blanket route-layer would 404 it).
+        .merge(crate::companies::router_for(state.clone()))
+        // Prefs — P3d: a member may READ account prefs but not WRITE them; only the
+        // state-changing methods are owner/admin-gated.
+        .merge(prefs::router_for(state.clone()).route_layer(from_fn(require_admin_writes_mw)))
+        // Audit log read — P3d owner/admin-only.
+        .merge(audit::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // Web-push VAPID key + subscribe/unsubscribe (single-user dashboard,
-        // so bearer-gated like the rest of /api).
-        .merge(push::router_for(state.clone()))
+        // so bearer-gated like the rest of /api). P3d owner/admin-only.
+        .merge(push::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // In-UI updater (`/api/version*` + `/api/update/*`). Same bearer
-        // gate as the rest of /api — auto-update is admin-equivalent.
-        .merge(updates::router_for(state.clone()))
+        // gate as the rest of /api — auto-update is admin-equivalent. P3d
+        // owner/admin-only.
+        .merge(updates::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // ── Compress the JSON plane too ──
         // #84 gave the *static* sub-router br/gzip and stopped there, so every
         // `/api/*` body shipped identity: `GET /api/sessions` is ~50 KB of JSON

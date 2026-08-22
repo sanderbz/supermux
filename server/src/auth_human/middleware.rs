@@ -42,6 +42,34 @@ pub enum AuthContext {
     },
 }
 
+impl AuthContext {
+    /// Is this identity an **admin-or-owner** (the omniscient, company-management
+    /// tier)? True for the bearer [`Owner`](AuthContext::Owner), and for a
+    /// [`Human`](AuthContext::Human) whose `role` is `owner`/`admin` **and** whose
+    /// `company_id` is `NULL` (the 0032 model: owner/admin are company-unscoped).
+    ///
+    /// A scoped member (`company_id = Some(_)`) is never admin-or-owner even if a
+    /// forged `role` string said so — the `company_id.is_none()` conjunct is the
+    /// defense that keeps role and scope consistent (P3d).
+    pub fn is_admin_or_owner(&self) -> bool {
+        match self {
+            AuthContext::Owner => true,
+            AuthContext::Human {
+                company_id, role, ..
+            } => company_id.is_none() && matches!(role.as_str(), "owner" | "admin"),
+        }
+    }
+
+    /// May this identity manage companies (create/delete/rename/archive companies,
+    /// seed/invite members, and reach the other global-admin surfaces)? Identical
+    /// to [`is_admin_or_owner`](Self::is_admin_or_owner) in v1 — a distinct name so
+    /// an owner-only lifecycle (e.g. removing the owner) can later narrow it
+    /// without re-auditing every call site.
+    pub fn can_manage_companies(&self) -> bool {
+        self.is_admin_or_owner()
+    }
+}
+
 /// True for the HTTP methods that mutate state (CSRF-relevant for cookie auth).
 fn is_state_changing(method: &Method) -> bool {
     matches!(

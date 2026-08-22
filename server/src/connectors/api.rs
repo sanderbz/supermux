@@ -181,16 +181,24 @@ pub async fn get_one(
 /// manifest (the runtime/listing format).
 pub async fn upsert(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(manifest): Json<Manifest>,
 ) -> Result<Json<Value>, AppError> {
+    // P3d: a connector DEFINITION is GLOBAL (no company column); creating/editing
+    // one is owner/admin-only. A member is confined to GRANTING existing
+    // connectors into their own company scope, never authoring global rows.
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/connectors")?;
     store_manifest(&state, manifest).await
 }
 
 /// `POST /api/connectors/import` — import a `.mcpb` `manifest.json` → a connector.
 pub async fn import_mcpb(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(bundle): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
+    // P3d: same global-definition rule as `upsert` — owner/admin-only.
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/connectors/import")?;
     let manifest = Manifest::from_mcpb(&bundle)?;
     store_manifest(&state, manifest).await
 }
@@ -221,8 +229,11 @@ async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Val
 /// `DELETE /api/connectors/{id}` — remove a connector (grants + vault CASCADE).
 pub async fn remove(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    // P3d: deleting a GLOBAL connector definition is owner/admin-only.
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/connectors/{id}"))?;
     let removed = connectors::delete(&state.pool, &id).await.map_err(db_err)?;
     if !removed {
         return Err(AppError::NotFound(format!("connector '{id}'")));
@@ -252,9 +263,26 @@ pub struct CredentialBody {
 /// The response NEVER contains a value — only masked field keys + the secret_ref.
 pub async fn put_credential(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<String>,
     Json(body): Json<CredentialBody>,
 ) -> Result<Json<Value>, AppError> {
+    // P3d: a member may seal a credential ONLY when attaching it to their own
+    // company scope (an own-company grant target). A bare seal (no target) or a
+    // global/cross-company target is a uniform 404 — a member can't mint a global
+    // credential. Owner/admin (Scope::All) are unrestricted.
+    if matches!(
+        crate::scope::Scope::of(ctx.0.as_ref()),
+        crate::scope::Scope::Company(_)
+    ) {
+        match body.session_name.as_deref().filter(|s| !s.is_empty()) {
+            Some(t) => {
+                crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &normalize_session(t))
+                    .await?
+            }
+            None => return Err(AppError::NotFound(format!("connector '{id}'"))),
+        }
+    }
     // Connector must exist (the vault row FK-references it).
     connectors::get(&state.pool, &id)
         .await
@@ -331,17 +359,22 @@ fn default_true() -> bool {
 /// `POST /api/connectors/{id}/grant` — grant a connector to one session or all.
 pub async fn grant(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<String>,
     Json(body): Json<GrantBody>,
 ) -> Result<Json<Value>, AppError> {
     if !valid_connector_id(&id) {
         return Err(AppError::BadRequest("invalid connector id".into()));
     }
+    let session = normalize_session(&body.session_name);
+    // P3d: confine a member's grant target to their own company scope
+    // (`@company:<their id>` or an own-company session). `*` (global) / another
+    // company / a foreign session all collapse to a uniform 404. Owner/admin: no-op.
+    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &session).await?;
     connectors::get(&state.pool, &id)
         .await
         .map_err(db_err)?
         .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
-    let session = normalize_session(&body.session_name);
     connectors::grant(&state.pool, &session, &id, body.secret_ref.as_deref(), body.enabled)
         .await
         .map_err(db_err)?;
@@ -357,10 +390,14 @@ pub struct RevokeQuery {
 /// `DELETE /api/connectors/{id}/grant?session_name=` — revoke a grant.
 pub async fn revoke(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<String>,
     Query(q): Query<RevokeQuery>,
 ) -> Result<Json<Value>, AppError> {
     let session = normalize_session(&q.session_name);
+    // P3d: a member may only revoke within their own company scope (uniform 404
+    // otherwise). Owner/admin: no-op.
+    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &session).await?;
     let removed = connectors::revoke(&state.pool, &session, &id).await.map_err(db_err)?;
     if !removed {
         return Err(AppError::NotFound(format!(
