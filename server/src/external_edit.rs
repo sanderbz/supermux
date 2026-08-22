@@ -314,6 +314,7 @@ async fn open_handler(
     // bearer-gated `/api/events`); we deliberately do NOT log it.
     let _ = state.sse_tx.send(SseEvent {
         event: "external-edit".to_string(),
+        company_id: None,
         payload: json!({
             "session": body.session,
             "requestId": request_id,

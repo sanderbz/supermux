@@ -31,7 +31,7 @@ use constant_time_eq::constant_time_eq;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
-pub use middleware::{auth_context_middleware, AuthContext};
+pub use middleware::{auth_context_middleware, resolve_cookie_identity, AuthContext};
 pub use oidc::OidcVerifier;
 
 use crate::config::HumanAuthConfig;

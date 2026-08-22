@@ -632,6 +632,7 @@ pub async fn ingest_handler(
             let payload = json!({ "delta": [{ "name": q.session, "statusline": next }] });
             let _ = state.sse_tx.send(crate::state::SseEvent {
                 event: "sessions".to_string(),
+                company_id: None,
                 payload,
             });
         }

@@ -232,12 +232,43 @@ fn is_local_transport(transport: &Arc<dyn FileTransport>) -> bool {
     transport.is_local()
 }
 
+/// P3b — the per-request company jail. `None` for owner/admin (the global file
+/// browser, unrestricted); `Some(root_dir)` for a scoped human, confining every
+/// path resolution under their company root. Errors are surfaced as a uniform
+/// 404 by [`safe_path_scoped`].
+async fn jail_for(state: &AppState, ctx: &crate::scope::OptCtx) -> Result<Option<PathBuf>, AppError> {
+    crate::scope::company_jail(state, ctx.0.as_ref()).await
+}
+
+/// [`safe_path`] with the P3b jail applied. When a jail is set (a scoped human),
+/// ANY resolution failure — outside the jail, blocked, malformed, or a genuine
+/// "not found" — collapses to a single `AppError::NotFound`, so a member can
+/// never distinguish "exists but not yours" from "does not exist" (and never
+/// receives bytes for a path outside their company root). Owner/admin (`jail =
+/// None`) keep the original, precise error mapping — behaviour-neutral.
+async fn safe_path_scoped(
+    transport: &Arc<dyn FileTransport>,
+    input: &str,
+    jail: Option<&Path>,
+) -> Result<PathBuf, AppError> {
+    match safe_path(transport, input, jail).await {
+        Ok(p) => Ok(p),
+        Err(_) if jail.is_some() => Err(AppError::NotFound("path not found".to_string())),
+        Err(e) => Err(e),
+    }
+}
+
 // ──────────────────────────────── handlers ─────────────────────────────────
 
 /// `GET /api/ls` — list a directory's entries.
-async fn ls(State(state): State<AppState>, Query(q): Query<LsQuery>) -> Result<Json<Value>, AppError> {
+async fn ls(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Query(q): Query<LsQuery>,
+) -> Result<Json<Value>, AppError> {
     let transport = transport_for_session(&state, q.session.as_deref()).await?;
-    let abs = safe_path(&transport, &to_abs(&q.path, None), None).await?;
+    let jail = jail_for(&state, &ctx).await?;
+    let abs = safe_path_scoped(&transport, &to_abs(&q.path, None), jail.as_deref()).await?;
     let show_hidden = is_truthy(q.hidden.as_deref());
 
     let raw = transport.list_dir(&abs).await.map_err(map_transport)?;
@@ -272,10 +303,12 @@ async fn ls(State(state): State<AppState>, Query(q): Query<LsQuery>) -> Result<J
 /// `GET /api/file` — read a file with a type-aware JSON envelope.
 async fn get_file(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Query(q): Query<FileQuery>,
 ) -> Result<Json<Value>, AppError> {
     let transport = transport_for_session(&state, q.session.as_deref()).await?;
-    let abs = safe_path(&transport, &to_abs(&q.path, q.cwd.as_deref()), None).await?;
+    let jail = jail_for(&state, &ctx).await?;
+    let abs = safe_path_scoped(&transport, &to_abs(&q.path, q.cwd.as_deref()), jail.as_deref()).await?;
     let stat = transport.stat(&abs).await.map_err(map_transport)?;
     if stat.is_dir {
         return Err(AppError::BadRequest("path is a directory".into()));
@@ -343,6 +376,7 @@ async fn get_file(
 /// `PUT /api/file` — write a whitelisted text file, creating parents as needed.
 async fn put_file(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(body): Json<PutBody>,
 ) -> Result<Json<Value>, AppError> {
     let raw = to_abs(&body.path, body.cwd.as_deref());
@@ -351,9 +385,11 @@ async fn put_file(
     }
 
     let transport = transport_for_session(&state, body.session.as_deref()).await?;
+    let jail = jail_for(&state, &ctx).await?;
     // resolve_safe canonicalizes the nearest existing ancestor, so a brand-new
-    // (non-existent) target resolves without 500ing.
-    let abs = safe_path(&transport, &raw, None).await?;
+    // (non-existent) target resolves without 500ing. The jail confines a scoped
+    // human's writes under their company root (a write outside → uniform 404).
+    let abs = safe_path_scoped(&transport, &raw, jail.as_deref()).await?;
 
     // For the LOCAL transport keep the old `safe_open_write` (`O_NOFOLLOW`)
     // hot path — it defends a TOCTOU symlink swap on the final component.
@@ -398,11 +434,13 @@ async fn put_file(
 /// give us native partial reads.
 async fn get_raw(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     headers: HeaderMap,
     Query(q): Query<FileQuery>,
 ) -> Result<Response<Body>, AppError> {
     let transport = transport_for_session(&state, q.session.as_deref()).await?;
-    let abs = safe_path(&transport, &to_abs(&q.path, q.cwd.as_deref()), None).await?;
+    let jail = jail_for(&state, &ctx).await?;
+    let abs = safe_path_scoped(&transport, &to_abs(&q.path, q.cwd.as_deref()), jail.as_deref()).await?;
     let stat = transport.stat(&abs).await.map_err(map_transport)?;
     if stat.is_dir {
         return Err(AppError::BadRequest("path is a directory".into()));
@@ -486,6 +524,7 @@ async fn get_raw(
 /// `POST /api/fs/upload` — multipart upload into a chosen directory.
 async fn fs_upload(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     mut mp: Multipart,
 ) -> Result<Json<Value>, AppError> {
     let mut dir: Option<String> = None;
@@ -519,7 +558,8 @@ async fn fs_upload(
 
     let dir = dir.ok_or_else(|| AppError::BadRequest("missing `dir` field".into()))?;
     let transport = transport_for_session(&state, session.as_deref()).await?;
-    let dir_abs = safe_path(&transport, &to_abs(&dir, None), None).await?;
+    let jail = jail_for(&state, &ctx).await?;
+    let dir_abs = safe_path_scoped(&transport, &to_abs(&dir, None), jail.as_deref()).await?;
     let dir_stat = transport.stat(&dir_abs).await.map_err(map_transport)?;
     if !dir_stat.is_dir {
         return Err(AppError::BadRequest("`dir` is not a directory".into()));
@@ -556,10 +596,12 @@ async fn fs_upload(
 /// deletes keep their full recursive semantics.
 async fn fs_delete(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(body): Json<DeleteBody>,
 ) -> Result<Json<Value>, AppError> {
     let transport = transport_for_session(&state, body.session.as_deref()).await?;
-    let abs = safe_path(&transport, &to_abs(&body.path, body.cwd.as_deref()), None).await?;
+    let jail = jail_for(&state, &ctx).await?;
+    let abs = safe_path_scoped(&transport, &to_abs(&body.path, body.cwd.as_deref()), jail.as_deref()).await?;
 
     if is_local_transport(&transport) {
         let meta = tokio::fs::symlink_metadata(&abs).await.map_err(map_io)?;
@@ -696,7 +738,8 @@ fn upload_disposition(mime: &str) -> &'static str {
 /// legacy "include everything" contract so existing consumers are byte-for-byte
 /// unaffected.
 async fn autocomplete_dir(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Query(q): Query<AutocompleteQuery>,
 ) -> Json<Vec<String>> {
     let expanded = shellexpand::tilde(&q.q).into_owned();
@@ -709,6 +752,18 @@ async fn autocomplete_dir(
             p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         )
     };
+    // P3b — this endpoint reads a raw directory with no `safe_path`, so a scoped
+    // human could enumerate directory names anywhere. Confine it: if a jail is
+    // set and the target dir does not resolve UNDER the company root, return no
+    // completions (never a listing outside the company).
+    if let Ok(Some(jail)) = jail_for(&state, &ctx).await {
+        if path_safe::resolve_safe(&dir.to_string_lossy(), Some(&jail))
+            .await
+            .is_err()
+        {
+            return Json(Vec::new());
+        }
+    }
     // `hidden=0` / `false` / `no` opt-in to dotfile filtering. Anything else
     // (including the default `None`) leaves legacy behaviour intact.
     let filter_hidden = matches!(
@@ -783,7 +838,23 @@ struct ProjectRepos {
 /// `GET /api/projects/repos` — list immediate subdirs of the first
 /// `SUPERMUX_PROJECT_DIRS` entry with git-repo metadata. Hidden entries
 /// filtered; alphabetical; capped at [`PROJECTS_CAP`].
-async fn projects_repos(State(_state): State<AppState>) -> Json<ProjectRepos> {
+async fn projects_repos(
+    State(_state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+) -> Json<ProjectRepos> {
+    // P3b — the project-dirs root is a GLOBAL config value, not company-scoped,
+    // so a scoped human gets no listing (members are chat-only by default and
+    // never create sessions against the global project root). Owner/admin see
+    // the full list, unchanged.
+    if matches!(
+        crate::scope::Scope::of(ctx.0.as_ref()),
+        crate::scope::Scope::Company(_)
+    ) {
+        return Json(ProjectRepos {
+            root: String::new(),
+            entries: Vec::new(),
+        });
+    }
     let root = std::env::var("SUPERMUX_PROJECT_DIRS")
         .ok()
         .and_then(|s| s.split(':').next().map(str::to_string))

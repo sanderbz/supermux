@@ -292,6 +292,7 @@ pub(crate) async fn emit_boards(state: &AppState) {
     if let Ok(boards) = db::boards::list(&state.pool).await {
         let _ = state.sse_tx.send(crate::state::SseEvent {
             event: "boards".to_string(),
+            company_id: None,
             payload: serde_json::to_value(&boards).unwrap_or(serde_json::Value::Null),
         });
     }

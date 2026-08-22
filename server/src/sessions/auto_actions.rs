@@ -2257,6 +2257,7 @@ fn parse_status(s: &str) -> Option<Status> {
 fn broadcast(state: &AppState, event: &str, payload: Value) {
     let _ = state.sse_tx.send(SseEvent {
         event: event.to_string(),
+        company_id: None,
         payload,
     });
 }

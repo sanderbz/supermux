@@ -117,6 +117,7 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
     // Surface the run to clients (anti-vision: push, never poll).
     let _ = state.sse_tx.send(SseEvent {
         event: "alerts".to_string(),
+        company_id: None,
         payload: json!({
             "level": if outcome.status == "error" { "error" } else { "info" },
             "source": "scheduler",

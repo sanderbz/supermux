@@ -67,6 +67,41 @@ use crate::db::sessions::{NewSession, Session, SessionRuntime};
 use crate::error::AppError;
 use crate::state::{AppState, SessionActivity};
 
+/// P3b — the per-company REST funnel for EVERY `/api/sessions/{name}/…` route.
+///
+/// Applied as ONE layer on the whole sessions sub-router (below), so a new
+/// name-addressed handler is scoped the moment it is registered — there is no
+/// per-handler call to forget, which is the "single choke point so none is
+/// missed" the security review asks for (design §3 row 3). It reads the `{name}`
+/// path param the router already captured and the `AuthContext` the auth layer
+/// already stamped, and calls [`crate::scope::authorize_session_for_human`]:
+/// a scoped human hitting another company's session gets the uniform 404,
+/// byte-identical to a nonexistent slug; owner/admin bypass; a route with no
+/// `{name}` param (`/api/sessions`, `/api/sessions/archived`, the statusline
+/// routes) is passed straight through.
+async fn scope_session_middleware(
+    State(state): State<AppState>,
+    params: axum::extract::RawPathParams,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, AppError> {
+    let name = params
+        .iter()
+        .find(|(k, _)| *k == "name")
+        .map(|(_, v)| v.to_string());
+    if let Some(name) = name {
+        let ctx = req
+            .extensions()
+            .get::<crate::auth_human::AuthContext>()
+            .cloned();
+        // Load-and-gate. Owner/admin (or no ctx) → Ok and continue; a scoped
+        // human off their company → the uniform NotFound returned here, before
+        // the handler runs (no bytes, no existence tell).
+        crate::scope::authorize_session_for_human(&state, ctx.as_ref(), &name).await?;
+    }
+    Ok(next.run(req).await)
+}
+
 /// Build the sessions sub-router (no auth layer — applied by `http::router`).
 pub fn router_for(state: AppState) -> Router {
     use axum::routing::{get, patch, post};
@@ -189,6 +224,14 @@ pub fn router_for(state: AppState) -> Router {
                 .post(steer_add_handler)
                 .delete(steer_clear_handler),
         )
+        // P3b — scope EVERY `{name}` route through the company funnel in one
+        // place. `.layer` here is INNER to the `auth_context_middleware` applied
+        // by `http::protected_router`, so `AuthContext` is already stamped when
+        // this runs; a route with no `{name}` param is a no-op pass-through.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            scope_session_middleware,
+        ))
         .with_state(state)
 }
 
@@ -854,6 +897,7 @@ async fn events_handler(
 pub fn emit_harness(state: &AppState, sessions: &[&str], entry: &crate::db::runtime_state::AuditEntry) {
     let _ = state.sse_tx.send(crate::state::SseEvent {
         event: "harness".into(),
+        company_id: None,
         payload: json!({ "sessions": sessions, "entry": entry }),
     });
 }
@@ -1251,6 +1295,11 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         row["archived"] = json!(false);
         let _ = state.sse_tx.send(crate::state::SseEvent {
             event: "sessions".to_string(),
+            // P3b — a create is a session-scoped event; stamp the new session's
+            // company so members of that company (and the owner) see it and
+            // members of another company never do. `view.company_id` is already
+            // in hand, so this costs nothing.
+            company_id: view.company_id,
             payload: json!({ "delta": [row] }),
         });
     }
@@ -1307,6 +1356,7 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // green Idle dot and enabled composer stale until an unrelated resync.
     let _ = state.sse_tx.send(crate::state::SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({
             "delta": [{ "name": name, "removed": true }],
         }),

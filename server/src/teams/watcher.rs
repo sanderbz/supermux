@@ -146,6 +146,7 @@ pub fn spawn(state: AppState) {
             if last_payload.as_ref() != Some(&payload) {
                 let _ = state.sse_tx.send(SseEvent {
                     event: "teams".to_string(),
+                    company_id: None,
                     payload: payload.clone(),
                 });
                 last_payload = Some(payload);

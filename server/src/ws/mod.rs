@@ -116,7 +116,27 @@ async fn handle_ws(
     headers: HeaderMap,
 ) -> Response {
     let origin_ok = origin_allowed(&state, &headers);
-    ws.on_upgrade(move |socket| handle_socket(socket, name, state, origin_ok))
+    // P3b — a browser WS CAN carry the `Cookie` header (it cannot carry
+    // `Authorization`), so resolve the human identity from the PRE-UPGRADE
+    // headers here and hand its company scope to the socket task. `None` ⇒ no
+    // human cookie ⇒ the in-band bearer-frame path (the owner) is used, unchanged.
+    let human_scope = resolve_ws_scope(&state, &headers).await;
+    ws.on_upgrade(move |socket| handle_socket(socket, name, state, origin_ok, human_scope))
+}
+
+/// Resolve the WS caller's company scope from the pre-upgrade `Cookie` header.
+///
+/// Returns `Some(scope)` when a valid human session cookie resolves (CSRF is not
+/// applicable to a WS upgrade — the Origin allowlist bounds it), and `None` when
+/// there is no human cookie (⇒ the socket must present the owner bearer in-band).
+pub(crate) async fn resolve_ws_scope(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<crate::scope::Scope> {
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
+    crate::auth_human::resolve_cookie_identity(state, cookie)
+        .await
+        .map(|ctx| crate::scope::Scope::of(Some(&ctx)))
 }
 
 /// Optional query for the teammate-pane WS: `?pane_id=%17`. When present (and
@@ -141,8 +161,9 @@ async fn handle_team_ws(
     headers: HeaderMap,
 ) -> Response {
     let origin_ok = origin_allowed(&state, &headers);
+    let human_scope = resolve_ws_scope(&state, &headers).await;
     ws.on_upgrade(move |socket| {
-        handle_team_socket(socket, team, member, q.pane_id, state, origin_ok)
+        handle_team_socket(socket, team, member, q.pane_id, state, origin_ok, human_scope)
     })
 }
 
@@ -158,16 +179,26 @@ async fn handle_team_socket(
     pane_override: Option<String>,
     state: AppState,
     origin_ok: bool,
+    human_scope: Option<crate::scope::Scope>,
 ) {
     if !origin_ok {
         close(&mut socket, close_code::POLICY, "origin not allowed").await;
         return;
     }
 
-    // 1. First-frame auth — identical contract to the session terminal.
-    let authed = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
-        Ok(Some(Ok(Message::Text(t)))) => verify_auth_frame(&state, t.as_str()),
-        _ => false,
+    // 1. First-frame auth — identical contract to the session terminal. A human
+    //    resolved from the cookie pre-upgrade is already authenticated; the first
+    //    frame is consumed (never injected) but not required to be a bearer.
+    let first = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
+        Ok(Some(Ok(Message::Text(t)))) => Some(t),
+        _ => None,
+    };
+    let authed = match human_scope {
+        Some(_) => true,
+        None => first
+            .as_deref()
+            .map(|t| verify_auth_frame(&state, t))
+            .unwrap_or(false),
     };
     if !authed {
         close(&mut socket, close_code::POLICY, "auth required").await;
@@ -193,6 +224,27 @@ async fn handle_team_socket(
             return;
         }
     };
+
+    // P3b — a team pane has no `sessions` row of its own, so scope it by the
+    // resolved LEAD's company: a scoped human may open the pane only when the
+    // lead session is in their company. Owner/admin (Scope::All) bypass. On a
+    // mismatch (or an absent lead row) close with the SAME terminal 4404 an
+    // unresolved pane gets — the human cannot tell "wrong company" from "no such
+    // pane".
+    if let Some(scope @ crate::scope::Scope::Company(_)) = human_scope {
+        let lead_company = match crate::db::sessions::get(&state.pool, &resolved.lead_session).await {
+            Ok(Some(row)) => row.company_id,
+            _ => {
+                close(&mut socket, CLOSE_NOT_RUNNING, "teammate pane not available").await;
+                return;
+            }
+        };
+        if !scope.sees(lead_company) {
+            close(&mut socket, CLOSE_NOT_RUNNING, "teammate pane not available").await;
+            return;
+        }
+    }
+
     let stream_key = teams::teammate_stream_key(&team, &member);
 
     // 3. Ensure the per-pane reader is running + enforce the subscriber cap. The
@@ -368,17 +420,33 @@ async fn handle_team_socket(
     }
 }
 
-async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, origin_ok: bool) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    name: String,
+    state: AppState,
+    origin_ok: bool,
+    human_scope: Option<crate::scope::Scope>,
+) {
     if !origin_ok {
         close(&mut socket, close_code::POLICY, "origin not allowed").await;
         return;
     }
 
-    // 1. First-frame auth: the first inbound frame within 2s must be a valid
-    //    `{"type":"auth","token":...}`.
-    let authed = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
-        Ok(Some(Ok(Message::Text(t)))) => verify_auth_frame(&state, t.as_str()),
-        _ => false,
+    // 1. First-frame auth: the OWNER's first inbound frame within 2s must be a
+    //    valid `{"type":"auth","token":...}`. A human resolved from the cookie
+    //    pre-upgrade is already authenticated — its first frame is still consumed
+    //    (so a stray `{"type":"auth"}` is never injected as input) but not
+    //    required to be a bearer.
+    let first = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
+        Ok(Some(Ok(Message::Text(t)))) => Some(t),
+        _ => None,
+    };
+    let authed = match human_scope {
+        Some(_) => true,
+        None => first
+            .as_deref()
+            .map(|t| verify_auth_frame(&state, t))
+            .unwrap_or(false),
     };
     if !authed {
         close(&mut socket, close_code::POLICY, "auth required").await;
@@ -401,6 +469,27 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     if !sessions::valid_name(&name) {
         close(&mut socket, close_code::POLICY, "bad name").await;
         return;
+    }
+
+    // 1b. P3b company gate. A scoped human may open only their own company's
+    //     session terminal. Load the row and check BEFORE the liveness probe /
+    //     subscribe / pty_for below, so no bytes and no existence signal leak; on
+    //     a mismatch (or an absent row) close with the SAME terminal 4404 a
+    //     stopped/nonexistent session gets — the human cannot distinguish "wrong
+    //     company" from "no such session". Owner/admin (Scope::All, or no cookie)
+    //     skip this entirely — behaviour-neutral, no extra query.
+    if let Some(scope @ crate::scope::Scope::Company(_)) = human_scope {
+        let company = match crate::db::sessions::get(&state.pool, &name).await {
+            Ok(Some(row)) => row.company_id,
+            _ => {
+                close_owned(&mut socket, CLOSE_NOT_RUNNING, "session not running".to_string()).await;
+                return;
+            }
+        };
+        if !scope.sees(company) {
+            close_owned(&mut socket, CLOSE_NOT_RUNNING, "session not running".to_string()).await;
+            return;
+        }
     }
 
     // 2. Up-front liveness check: if the session's terminal is gone (a `stopped`

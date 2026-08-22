@@ -337,6 +337,7 @@ async fn put_agent_teams(
     db::prefs::set_agent_teams_enabled(&state.pool, input.enabled).await?;
     let _ = state.sse_tx.send(SseEvent {
         event: "settings".to_string(),
+        company_id: None,
         payload: json!({ "key": db::prefs::AGENT_TEAMS_PREF_KEY, "enabled": input.enabled }),
     });
     Ok(Json(json!({ "ok": true, "data": { "enabled": input.enabled } })))

@@ -48,12 +48,14 @@ pub struct WaitResult {
 /// Long-poll for `name` to reach `q.state`.
 pub async fn wait(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(name): Path<String>,
     Query(q): Query<WaitQuery>,
 ) -> Result<Json<WaitResult>, AppError> {
-    if !db::sessions::exists(&state.pool, &name).await? {
-        return Err(AppError::NotFound(format!("session '{name}'")));
-    }
+    // P3b — this `{name}` route lives on the agents router (not the sessions
+    // scope layer). Funnel it: the helper 404s a missing row too, so it replaces
+    // the `exists` check while adding the company fence (uniform 404 either way).
+    crate::scope::authorize_session_for_human(&state, ctx.0.as_ref(), &name).await?;
     let want = parse_want(&q.state)?;
     let timeout = Duration::from_secs(q.timeout.unwrap_or(MAX_TIMEOUT_SECS).min(MAX_TIMEOUT_SECS));
     let deadline = tokio::time::Instant::now() + timeout;

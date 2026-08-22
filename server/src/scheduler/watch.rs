@@ -261,6 +261,7 @@ async fn fire_done(state: &AppState, sched: &Schedule, signal: &str) {
     let _ = db::schedules::insert_run(&state.pool, &sched.id, Utc::now().timestamp(), "done", &note).await;
     let _ = state.sse_tx.send(SseEvent {
         event: "alerts".to_string(),
+        company_id: None,
         payload: json!({
             "level": "info",
             "source": "scheduler",

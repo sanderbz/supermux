@@ -131,6 +131,40 @@ pub struct SseEvent {
     #[serde(rename = "type")]
     pub event: String,
     pub payload: serde_json::Value,
+    /// P3b — the company this frame belongs to, for per-subscriber routing.
+    /// `None` = global/owner-only. NEVER serialized onto the wire (it is a
+    /// routing attribute, not payload; the client already gets what it needs
+    /// from `payload`); the SSE handler drops any frame a scoped viewer must not
+    /// see BEFORE serialization. Producers that know the session's company stamp
+    /// it via [`SseEvent::for_company`]; the rest stay `None` and, being
+    /// unstamped, reach ONLY the owner/admin (fail-closed).
+    #[serde(skip)]
+    pub company_id: Option<i64>,
+}
+
+impl SseEvent {
+    /// A global (unstamped) frame — reaches the owner/admin only once a scoped
+    /// human exists; today (no humans) it reaches everyone unchanged.
+    pub fn global(event: impl Into<String>, payload: serde_json::Value) -> Self {
+        SseEvent {
+            event: event.into(),
+            payload,
+            company_id: None,
+        }
+    }
+
+    /// A company-stamped frame — reaches the owner/admin and members of `company`.
+    pub fn for_company(
+        event: impl Into<String>,
+        payload: serde_json::Value,
+        company: Option<i64>,
+    ) -> Self {
+        SseEvent {
+            event: event.into(),
+            payload,
+            company_id: company,
+        }
+    }
 }
 
 /// Default fan-out capacity for the SSE broadcast channel.

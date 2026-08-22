@@ -375,8 +375,13 @@ pub async fn revoke(
 /// session (own + all-agents), each carrying its connector card. Secret-free.
 pub async fn session_connectors(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    // P3b — this `{name}` route lives on the connectors router, so it is not
+    // covered by the sessions scope layer; funnel it explicitly. A scoped human
+    // asking for another company's session's grants gets the uniform 404.
+    crate::scope::authorize_session_for_human(&state, ctx.0.as_ref(), &name).await?;
     let grants = connectors::grants_for_session(&state.pool, &name)
         .await
         .map_err(db_err)?;

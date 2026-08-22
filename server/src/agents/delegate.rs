@@ -184,6 +184,7 @@ pub fn audit_detail(from: &str) -> serde_json::Value {
 /// `POST /api/agents/delegate` — send `prompt` to `to`, record the edge.
 pub async fn delegate(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(input): Json<DelegateInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let from = input.from.trim();
@@ -225,6 +226,20 @@ pub async fn delegate(
     let to_row = db::sessions::get(&state.pool, to)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session '{to}'")))?;
+
+    // P3b — FROM-PINNING. `from` is a CLIENT-CLAIMED slug; nothing proves the
+    // caller is that session. For a scoped human this is an escalation: naming a
+    // main bot (`company_id NULL`) as `from` would make the gate below see an
+    // omniscient sender and reach ANY company. So derive the caller's company
+    // from the server-side `AuthContext`, not the body, and refuse (uniform 404)
+    // unless the claimed `from` is actually in the human's own company. Owner /
+    // admin-all (Scope::All, or no context) are unaffected — they may drive any
+    // `from`, exactly as before.
+    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        if from_row.company_id != Some(hc) {
+            return Err(AppError::NotFound(format!("session '{from}'")));
+        }
+    }
 
     // THE COMPANY GATE. After both sessions are known to exist and BEFORE any
     // delivery / keystroke / delegation edge / audit row: a company bot may only
@@ -440,6 +455,9 @@ mod tests {
 
         let err = delegate(
             axum::extract::State(state.clone()),
+            // Owner-equivalent caller (no human context) — the from-pinning gate
+            // only bites a scoped Human.
+            crate::scope::OptCtx(None),
             axum::Json(deleg_input("acme-bot", "globex-bot")),
         )
         .await
@@ -460,6 +478,9 @@ mod tests {
 
         let err = delegate(
             axum::extract::State(state.clone()),
+            // Owner-equivalent caller (no human context) — the from-pinning gate
+            // only bites a scoped Human.
+            crate::scope::OptCtx(None),
             axum::Json(deleg_input("acme-bot", "pa")),
         )
         .await
@@ -481,6 +502,9 @@ mod tests {
 
         let _ = delegate(
             axum::extract::State(state.clone()),
+            // Owner-equivalent caller (no human context) — the from-pinning gate
+            // only bites a scoped Human.
+            crate::scope::OptCtx(None),
             axum::Json(deleg_input("acme-bot", "globex-bot")),
         )
         .await

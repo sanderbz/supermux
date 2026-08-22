@@ -619,7 +619,10 @@ pub async fn handle_chat_ws(
     headers: HeaderMap,
 ) -> Response {
     let origin_ok = crate::ws::origin_allowed(&state, &headers);
-    ws.on_upgrade(move |socket| chat_socket(socket, name, state, origin_ok))
+    // P3b — resolve the human company scope from the pre-upgrade cookie (same as
+    // the terminal socket); `None` ⇒ the in-band owner-bearer path.
+    let human_scope = crate::ws::resolve_ws_scope(&state, &headers).await;
+    ws.on_upgrade(move |socket| chat_socket(socket, name, state, origin_ok, human_scope))
 }
 
 async fn send_frame(socket: &mut WebSocket, v: &Value) -> bool {
@@ -732,17 +735,32 @@ fn stop_close_code(retry: bool) -> u16 {
     }
 }
 
-async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origin_ok: bool) {
+async fn chat_socket(
+    mut socket: WebSocket,
+    name: String,
+    state: AppState,
+    origin_ok: bool,
+    human_scope: Option<crate::scope::Scope>,
+) {
     use crate::ws::{close, verify_auth_frame, AUTH_TIMEOUT, CLOSE_NOT_RUNNING, PING_EVERY, PONG_DEADLINE};
 
     if !origin_ok {
         close(&mut socket, close_code::POLICY, "origin not allowed").await;
         return;
     }
-    // First-frame auth — byte-identical contract to the terminal socket.
-    let authed = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
-        Ok(Some(Ok(Message::Text(t)))) => verify_auth_frame(&state, t.as_str()),
-        _ => false,
+    // First-frame auth — byte-identical contract to the terminal socket. A human
+    // resolved from the cookie pre-upgrade is already authenticated; its first
+    // frame is consumed (never injected) but not required to be a bearer.
+    let first = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
+        Ok(Some(Ok(Message::Text(t)))) => Some(t),
+        _ => None,
+    };
+    let authed = match human_scope {
+        Some(_) => true,
+        None => first
+            .as_deref()
+            .map(|t| verify_auth_frame(&state, t))
+            .unwrap_or(false),
     };
     if !authed {
         close(&mut socket, close_code::POLICY, "auth required").await;
@@ -771,6 +789,16 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
             return;
         }
     };
+    // P3b company gate. A scoped human may open only their own company's chat.
+    // The row is already loaded here (before the tailer subscribe), so gate it
+    // in place; a mismatch closes with the SAME 4404 "no session" a nonexistent
+    // slug gets (hide existence). Owner/admin (Scope::All / no cookie) bypass.
+    if let Some(scope @ crate::scope::Scope::Company(_)) = human_scope {
+        if !scope.sees(row.company_id) {
+            close(&mut socket, CLOSE_NOT_RUNNING, CLOSE_REASON_NO_SESSION).await;
+            return;
+        }
+    }
     if !chat_eligible(&row.provider, row.host_id) {
         tracing::debug!(session = %name, provider = %row.provider, "chat ws refused: ineligible");
         close(&mut socket, CLOSE_NOT_RUNNING, CLOSE_REASON_INELIGIBLE).await;

@@ -122,6 +122,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
                         // — previously this path was log-only and invisible.
                         let _ = state.sse_tx.send(SseEvent {
                             event: "alerts".to_string(),
+                            company_id: None,
                             payload: json!({
                                 "level": "info",
                                 "source": "scheduler",

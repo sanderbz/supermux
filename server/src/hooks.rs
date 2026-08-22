@@ -750,6 +750,7 @@ fn force_stopped(state: &AppState, session: &str) {
         };
         let _ = state.sse_tx.send(SseEvent {
             event: "status".to_string(),
+            company_id: None,
             payload: json!({
                 "name": session,
                 "status": Status::Stopped.as_str(),
@@ -758,6 +759,7 @@ fn force_stopped(state: &AppState, session: &str) {
         });
         let _ = state.sse_tx.send(SseEvent {
             event: "sessions".to_string(),
+            company_id: None,
             payload: json!({ "delta": [{ "name": session, "status": Status::Stopped.as_str() }] }),
         });
     });
@@ -775,6 +777,7 @@ pub(crate) fn broadcast_activity_delta(state: &AppState, session: &str) {
     });
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({ "delta": [{
             "name": session,
             // `null` when absent so a client clears the prior value.

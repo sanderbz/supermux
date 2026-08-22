@@ -1056,6 +1056,7 @@ async fn hard_kill(pid: u32) {
 fn emit_alert(state: &AppState, name: &str, level: &str, detail: &str) {
     let _ = state.sse_tx.send(SseEvent {
         event: "alerts".to_string(),
+        company_id: None,
         payload: json!({ "level": level, "session": name, "detail": detail }),
     });
 }
@@ -1078,10 +1079,12 @@ fn broadcast_status(state: &AppState, name: &str, status: &str) {
     };
     let _ = state.sse_tx.send(SseEvent {
         event: "status".to_string(),
+        company_id: None,
         payload: json!({ "name": name, "status": status, "version": version }),
     });
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({ "delta": [{ "name": name, "status": status }] }),
     });
 }
@@ -1099,6 +1102,7 @@ fn broadcast_status(state: &AppState, name: &str, status: &str) {
 pub(crate) fn broadcast_send(state: &AppState, name: &str, text: &str, at: i64) {
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({
             "delta": [{
                 "name": name,
@@ -1594,6 +1598,7 @@ async fn start_locked(
     };
     let _ = state.sse_tx.send(SseEvent {
         event: "status".to_string(),
+        company_id: None,
         payload: json!({
             "name": name,
             "status": "starting",
@@ -1602,6 +1607,7 @@ async fn start_locked(
     });
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({ "delta": [{ "name": name, "status": "starting" }] }),
     });
 
@@ -2361,6 +2367,7 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     // frontend's `applyDelta` reads this flag and removes the row.
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({
             "delta": [{ "name": name, "archived": true }],
         }),
@@ -2502,6 +2509,7 @@ pub async fn unarchive(state: &AppState, name: &str) -> Result<(), AppError> {
         row["archived"] = json!(false);
         let _ = state.sse_tx.send(SseEvent {
             event: "sessions".to_string(),
+            company_id: None,
             payload: json!({ "delta": [row] }),
         });
     }
@@ -2843,6 +2851,7 @@ async fn relaunch_for_bypass(
 fn broadcast_mode(state: &AppState, name: &str, mode: Mode) {
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
+        company_id: None,
         payload: json!({ "delta": [{ "name": name, "mode": mode.as_str() }] }),
     });
 }

@@ -50,8 +50,18 @@ pub fn router_for(state: AppState) -> Router {
 ///
 /// Auth is enforced upstream by `auth::auth_middleware` (constant-time
 /// `?_token=` validation); by the time this handler runs the caller is trusted.
-async fn events(State(state): State<AppState>) -> impl IntoResponse {
-    let stream = event_stream(state.sse_tx.subscribe());
+async fn events(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+) -> impl IntoResponse {
+    // P3b — resolve the subscriber's company scope ONCE, at subscribe, from the
+    // `AuthContext` the auth layer stamped. Owner/admin → `All` (sees every
+    // frame, unchanged); a scoped human → `Company(c)`, and the per-subscriber
+    // filter below drops every frame whose company_id != c (and every UNSTAMPED
+    // frame) BEFORE it is serialized — the payload carries session names/dirs, so
+    // the drop must precede serialization, and it does.
+    let scope = crate::scope::Scope::of(ctx.0.as_ref());
+    let stream = event_stream(state.sse_tx.subscribe(), scope);
     Sse::new(stream).keep_alive(
         // axum's transport-level keep-alive (a `:` comment line) is a belt-and
         // -braces guard against dead proxies; the explicit `ping` event below is
@@ -70,9 +80,15 @@ async fn events(State(state): State<AppState>) -> impl IntoResponse {
 /// dashboard's TanStack Query cache anyway.
 fn event_stream(
     rx: tokio::sync::broadcast::Receiver<SseEvent>,
+    scope: crate::scope::Scope,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
-    let events = BroadcastStream::new(rx).filter_map(|res| match res {
-        Ok(ev) => Some(Ok(to_sse_event(&ev))),
+    let events = BroadcastStream::new(rx).filter_map(move |res| match res {
+        // P3b — DROP any frame this subscriber's scope must not see, BEFORE
+        // serialization. `All` (owner/admin) keeps every frame; a scoped human
+        // keeps only frames stamped with their company. An unstamped frame is
+        // kept only for `All` (fail-closed — see `Scope::sees`).
+        Ok(ev) if scope.sees(ev.company_id) => Some(Ok(to_sse_event(&ev))),
+        Ok(_) => None,
         // Lagged: skip the dropped span, keep the stream alive.
         Err(_) => None,
     });
@@ -106,6 +122,7 @@ mod tests {
     fn named_event_carries_payload_json() {
         let ev = SseEvent {
             event: "sessions".to_string(),
+            company_id: None,
             payload: json!({ "name": "demo", "status": "idle" }),
         };
         let sse = to_sse_event(&ev);
@@ -124,13 +141,63 @@ mod tests {
     #[tokio::test]
     async fn stream_yields_a_broadcast_event() {
         let (tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(8);
-        let mut stream = Box::pin(event_stream(rx));
+        let mut stream = Box::pin(event_stream(rx, crate::scope::Scope::All));
         tx.send(SseEvent {
             event: "status".to_string(),
+            company_id: None,
             payload: json!({ "session": "a", "status": "active" }),
         })
         .unwrap();
         // The real event must arrive before the first 10s ping.
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("event within 1s")
+            .expect("stream not ended");
+        assert!(first.is_ok());
+    }
+
+    /// P3b — a scoped viewer's stream DROPS other-company and unstamped frames.
+    /// Proof by absence: with only a company-2 and an unstamped frame in flight,
+    /// the company-1 viewer's stream yields no data frame before the 10s ping.
+    #[tokio::test]
+    async fn scoped_stream_drops_other_company_and_unstamped() {
+        use crate::scope::Scope;
+        use crate::state::SseEvent;
+        let (tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(8);
+        let mut stream = Box::pin(event_stream(rx, Scope::Company(1)));
+        tx.send(SseEvent::global("status", json!({ "session": "g" }))).unwrap();
+        tx.send(SseEvent::for_company("status", json!({ "session": "b" }), Some(2)))
+            .unwrap();
+        // Both must be dropped → nothing arrives in the pre-ping window.
+        let got = tokio::time::timeout(Duration::from_millis(300), stream.next()).await;
+        assert!(got.is_err(), "scoped viewer must receive neither the B nor the unstamped frame");
+    }
+
+    /// …and KEEPS its own company's frame.
+    #[tokio::test]
+    async fn scoped_stream_keeps_own_company() {
+        use crate::scope::Scope;
+        use crate::state::SseEvent;
+        let (tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(8);
+        let mut stream = Box::pin(event_stream(rx, Scope::Company(1)));
+        tx.send(SseEvent::for_company("status", json!({ "session": "a" }), Some(1)))
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("company-1 frame within 1s")
+            .expect("stream not ended");
+        assert!(first.is_ok());
+    }
+
+    /// The owner (`Scope::All`) keeps unstamped frames — the fail-closed rule is
+    /// asymmetric: unstamped reaches the owner, never a scoped member.
+    #[tokio::test]
+    async fn owner_stream_keeps_unstamped() {
+        use crate::scope::Scope;
+        use crate::state::SseEvent;
+        let (tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(8);
+        let mut stream = Box::pin(event_stream(rx, Scope::All));
+        tx.send(SseEvent::global("status", json!({ "session": "g" }))).unwrap();
         let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
             .expect("event within 1s")

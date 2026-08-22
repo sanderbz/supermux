@@ -152,6 +152,7 @@ async fn pref_put(
     // Best-effort SSE fan-out so other tabs / devices reconcile without a poll.
     let _ = state.sse_tx.send(SseEvent {
         event: "prefs".to_string(),
+        company_id: None,
         payload: json!({ "key": key, "value": input.value }),
     });
     Ok(Json(json!({

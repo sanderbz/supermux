@@ -152,3 +152,34 @@ async fn resolve_human(
         role: sess.role,
     }))
 }
+
+/// Resolve a human identity from a raw `Cookie:` header WITHOUT CSRF enforcement.
+///
+/// The CSRF double-submit exists to stop a cross-site *form/fetch* from riding a
+/// cookie into a state-changing REST route; a WebSocket UPGRADE (gated by the
+/// Origin allowlist) and the read-only iCal `GET` are neither, so this variant
+/// skips CSRF and is used by the two surfaces that sit OUTSIDE the bearer layer
+/// (the pty/chat/team WS upgrades and `/api/calendar.ics`). Returns the resolved
+/// `AuthContext::Human` or `None` (human-auth disabled, or no/invalid/expired
+/// cookie). Fail-closed: any DB error resolves to `None`.
+pub async fn resolve_cookie_identity(
+    state: &AppState,
+    cookie_header: Option<&str>,
+) -> Option<AuthContext> {
+    if !state.config.human_auth.enabled() {
+        return None;
+    }
+    let cfg = &state.config.human_auth;
+    let raw = cookie_value(cookie_header?, SESSION_COOKIE)?;
+    let token = verify_cookie(&cfg.cookie_key, raw)?;
+    let now = chrono::Utc::now().timestamp();
+    let token_hash = sha256_hex(&token);
+    match crate::db::human_sessions::resolve_valid(&state.pool, &token_hash, now).await {
+        Ok(Some(s)) => Some(AuthContext::Human {
+            user_id: s.user_id,
+            company_id: s.company_id,
+            role: s.role,
+        }),
+        _ => None,
+    }
+}
