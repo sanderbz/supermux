@@ -71,6 +71,12 @@ pub struct StartTeamInput {
     /// `team-<suffix>` name is generated. Validated like any session name.
     #[serde(default)]
     pub name: Option<String>,
+    /// The company the LEAD belongs to. `None` = a main/global lead (owner path,
+    /// unchanged). For a scoped MEMBER the handler forces this to their own
+    /// company (defaulting an omitted value, refusing a foreign id) exactly like
+    /// `sessions::create` — so a member's team lead is always company-fenced.
+    #[serde(default)]
+    pub company_id: Option<i64>,
 }
 
 /// `POST /api/teams/start` success payload: the created LEAD [`SessionView`] (so
@@ -278,7 +284,9 @@ pub async fn start_team(
             // for. EXPLICIT since the create default became native.
             runtime: Some(crate::sessions::runtime::RUNTIME_TMUX.to_string()),
             model: None,
-            company_id: None,
+            // P3d — the LEAD inherits the caller's company (the handler already
+            // forced a member's to their own; `None` for the owner path).
+            company_id: input.company_id,
         },
     )
     .await?;

@@ -1820,8 +1820,20 @@ async fn git_info(dir: &str) -> GitInfo {
 
 async fn list_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
 ) -> Result<Json<Envelope<Vec<SessionView>>>, AppError> {
-    Ok(ok(list(&state).await?))
+    // P3d — the roster is company-scoped for a MEMBER: they see ONLY their own
+    // company's sessions (mirrors `GET /api/companies`'s own-filter and the SSE
+    // per-subscriber filter). Owner/admin (`Scope::All`) see the whole fleet,
+    // unchanged. `Scope::sees(None)` is false for a member, so an unstamped
+    // main/PA bot never appears in a member's roster (fail-closed).
+    let scope = crate::scope::Scope::of(ctx.0.as_ref());
+    let rows: Vec<SessionView> = list(&state)
+        .await?
+        .into_iter()
+        .filter(|s| scope.sees(s.company_id))
+        .collect();
+    Ok(ok(rows))
 }
 
 async fn list_archived_handler(

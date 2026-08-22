@@ -156,7 +156,7 @@ pub fn router(state: AppState) -> Router {
 /// .merge(agents::router_for(state.clone()))
 /// ```
 fn protected_router(state: AppState) -> Router {
-    use crate::scope::{require_admin_mw, require_admin_writes_mw};
+    use crate::scope::{member_allowlist_mw, require_admin_mw, require_admin_writes_mw};
     Router::new()
         .merge(sessions::router_for(state.clone()))
         .merge(board::router_for(state.clone()))
@@ -206,6 +206,19 @@ fn protected_router(state: AppState) -> Router {
         // gate as the rest of /api — auto-update is admin-equivalent. P3d
         // owner/admin-only.
         .merge(updates::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
+        // ── P3d DENY-BY-DEFAULT MEMBER BACKSTOP ──
+        // The class fix: a route-layer over EVERY merged protected route, INNER to
+        // the `auth_context_middleware` below (so `AuthContext` is already stamped
+        // when it runs) and OUTER to the handlers (so it blocks before any of them
+        // execute). For [`Scope::All`] — owner, admin-all human, or the no-human
+        // world (human-auth disabled ⇒ `AuthContext::Owner`) — it is a
+        // byte-identical pass-through. A scoped MEMBER is admitted only for the
+        // routes in `crate::scope::member_may_reach` (the audited allowlist) and
+        // gets a uniform `AppError::NotFound` on everything else — so a sub-router
+        // merged in the future defaults to DENIED for members until it is
+        // deliberately allowlisted. Each allowlisted route still does its OWN
+        // company scoping (defense-in-depth); this is the outer fence.
+        .layer(from_fn(member_allowlist_mw))
         // ── Compress the JSON plane too ──
         // #84 gave the *static* sub-router br/gzip and stopped there, so every
         // `/api/*` body shipped identity: `GET /api/sessions` is ~50 KB of JSON

@@ -515,8 +515,15 @@ pub struct InstallQuery {
 /// on for the host.
 pub async fn install_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Query(q): Query<InstallQuery>,
 ) -> Result<axum::Json<Value>, AppError> {
+    // P3d defense-in-depth: this writes the GLOBAL `~/.claude/settings.json`
+    // `statusLine` slot (host-wide, all companies), so it is owner/admin-only —
+    // a member gets the uniform hide-existence 404 (the deny-by-default backstop
+    // already 404s `/api/claude/statusline*` for a member; this makes the handler
+    // safe on its own). Owner/admin/no-context are a no-op pass-through.
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/claude/statusline/install")?;
     if !state.config.statusline_tap {
         return Err(AppError::Forbidden(
             "the statusline tap is disabled on this host; set `statusline_tap = true` in \
@@ -545,7 +552,11 @@ pub async fn install_handler(
 /// answers `installed: true, changed: false` with the reason.
 pub async fn uninstall_handler(
     State(_state): State<AppState>,
+    ctx: crate::scope::OptCtx,
 ) -> Result<axum::Json<Value>, AppError> {
+    // P3d defense-in-depth: a GLOBAL `~/.claude/settings.json` write, owner/admin-
+    // only (same rationale as install). A member 404s (backstop + this guard).
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/claude/statusline")?;
     let out = uninstall_local()
         .await
         .map_err(|e| AppError::BadRequest(format!("statusline uninstall: {e:#}")))?;

@@ -101,8 +101,23 @@ async fn list_teams(State(state): State<AppState>) -> Result<Json<serde_json::Va
 /// clamped/sanitized in [`start::start_team`].
 async fn start_team_handler(
     State(state): State<AppState>,
-    Json(input): Json<start::StartTeamInput>,
+    ctx: crate::scope::OptCtx,
+    Json(mut input): Json<start::StartTeamInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // P3d defense-in-depth: a scoped MEMBER may only spawn a team LEAD in their
+    // OWN company — mirror `sessions::create_handler` exactly. `company_id`
+    // defaults to theirs when omitted; an explicit FOREIGN id is a uniform 404
+    // (a member cannot even learn another company exists by probing). Owner/admin
+    // (`Scope::All`) are unrestricted — the lead is `company_id: None` (global)
+    // unless they set one. (The deny-by-default backstop already 404s
+    // `/api/teams/start` for a member; this keeps the handler safe on its own.)
+    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        match input.company_id {
+            None => input.company_id = Some(hc),
+            Some(c) if c == hc => {}
+            Some(other) => return Err(AppError::NotFound(format!("company id={other}"))),
+        }
+    }
     let result = start::start_team(&state, input).await?;
     Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
 }
@@ -123,8 +138,19 @@ async fn start_team_handler(
 ///   * 400 — bad name / empty task / non-Claude provider.
 async fn convert_to_team_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Json(input): Json<start::ConvertToTeamInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // P3d defense-in-depth: converting an EXISTING session into a team lead
+    // restarts it with the team env + writes global team files, so a member must
+    // never do it to a foreign (or ANY non-own) session. Gate on the target's
+    // company BEFORE `convert_to_team` runs — a member converting a foreign /
+    // nonexistent session gets the uniform `session '{name}'` 404, closing both
+    // the cross-company hijack and the existence oracle. Owner/admin
+    // (`Scope::All`) are a no-op pass-through. (The backstop also 404s
+    // `/api/teams/start-from-existing` for a member; this makes the handler safe
+    // independently.)
+    crate::scope::authorize_session_for_human(&state, ctx.0.as_ref(), &input.name).await?;
     let result = start::convert_to_team(&state, input).await?;
     Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
 }

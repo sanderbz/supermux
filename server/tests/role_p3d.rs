@@ -312,7 +312,9 @@ async fn member_cannot_reach_global_admin_routers() {
             serde_json::json!({"prompt":"x","schedule_expr":"@daily","target":"y"})).await,
         nf, "member 404s POST /api/schedules");
 
-    // prefs WRITES gated (reads open) — POST/PUT 404, but GET is allowed.
+    // prefs — P3d deny-by-default: BOTH writes AND reads are denied for a member
+    // (prefs are not on the member allowlist; the backstop 404s the whole
+    // surface). The `require_admin_writes_mw` on this router is defense-in-depth.
     assert_eq!(
         send_cookie(&f.app, "POST", "/api/snippets", &alice, &csrf,
             serde_json::json!({"title":"t","body":"b"})).await,
@@ -321,9 +323,9 @@ async fn member_cannot_reach_global_admin_routers() {
         send_cookie(&f.app, "PUT", "/api/prefs/overview_sort", &alice, &csrf,
             serde_json::json!({"value":"name"})).await,
         nf, "member 404s PUT /api/prefs/{{key}}");
-    assert_ne!(
+    assert_eq!(
         get_cookie(&f.app, "/api/snippets", &alice).await, nf,
-        "member may READ prefs (GET /api/snippets is not gated)");
+        "member 404s GET /api/snippets too (deny-by-default: prefs not allowlisted)");
 
     // audit read + push — owner/admin-only.
     assert_eq!(get_cookie(&f.app, "/api/audit", &alice).await, nf, "member 404s GET /api/audit");
@@ -623,14 +625,215 @@ async fn member_cannot_write_agent_teams_pref() {
             serde_json::json!({"enabled": true})).await,
         StatusCode::NOT_FOUND, "member 404s PUT /api/settings/experimental/agent-teams");
 
-    // Member GET is fine (read-only, harmless).
-    assert_ne!(
+    // P3d deny-by-default: the member 404s the READ too (settings/experimental is
+    // not on the member allowlist — the backstop hides the whole surface). The
+    // in-handler `require_admin` on the PUT stays as defense-in-depth.
+    assert_eq!(
         get_cookie(&f.app, "/api/settings/experimental/agent-teams", &alice).await,
-        StatusCode::NOT_FOUND, "member may READ the agent-teams toggle");
+        StatusCode::NOT_FOUND, "member 404s GET the agent-teams toggle (deny-by-default)");
 
     // Owner PUT succeeds (owner-neutral gate).
     assert_eq!(
         send_bearer(&f.app, "PUT", "/api/settings/experimental/agent-teams",
             serde_json::json!({"enabled": true})).await,
         StatusCode::OK, "owner flips the agent-teams toggle");
+}
+
+// ── P3d deny-by-default MEMBER BACKSTOP (the class fix) ──────────────────────────
+
+/// A no-human world (human-auth DISABLED): every request is the owner bearer, so
+/// `Scope::of` is always `All` and the deny-by-default backstop is a pure
+/// pass-through. Proves the class fix is byte-identical when no scoped human can
+/// exist.
+async fn no_human_fixture() -> axum::Router {
+    let dir = std::env::temp_dir().join(format!("supermux-p3d-nh-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = Config {
+        data_dir: dir.clone(),
+        bind: "127.0.0.1:0".parse().unwrap(),
+        extra_binds: vec![],
+        extra_origins: vec![],
+        tls: TlsConfig::default(),
+        auth_token: TOKEN.to_string(),
+        provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
+        remote_callback_url: None,
+        push_sub: None,
+        github_token: None,
+        statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        // The whole point: NO human-auth configured.
+        human_auth: Default::default(),
+    };
+    let pool = db::init(&config).await.expect("db init");
+    let state = AppState::new(pool, config);
+    http::router(state)
+}
+
+/// (a) A scoped MEMBER is a uniform 404 on the newly-closed global-write leaks —
+/// `POST /api/teams/start`, `POST /api/teams/start-from-existing` (a FOREIGN and
+/// their OWN session), `POST/DELETE /api/claude/statusline`, and `GET/POST
+/// /api/board*` — AND no global write lands: the company-B session is NOT hijacked
+/// into a team, and no `~/.claude/settings.json` `statusLine` slot is written.
+#[tokio::test]
+async fn member_denied_teams_statusline_board_and_no_global_write() {
+    let _guard = CLAUDE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Redirect the global Claude settings at a throwaway dir so a REGRESSION
+    // (member reaching install/uninstall) could only pollute this temp dir — and
+    // lets us assert nothing was written.
+    let cdir = std::env::temp_dir().join(format!("supermux-p3d-sl-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&cdir).unwrap();
+    let prev_ccd = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &cdir);
+
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let nf = StatusCode::NOT_FOUND;
+
+    // Owner seeds a company-2 (foreign) and a company-1 (own) session to probe the
+    // team-conversion hijack from a member.
+    assert_eq!(send_bearer(&f.app, "POST", "/api/sessions",
+        serde_json::json!({"name":"bob-sess","company_id":2,"runtime":"native"})).await,
+        StatusCode::CREATED, "owner seeds a company-B session");
+    assert_eq!(send_bearer(&f.app, "POST", "/api/sessions",
+        serde_json::json!({"name":"alice-sess","company_id":1,"runtime":"native"})).await,
+        StatusCode::CREATED, "owner seeds a company-A session");
+
+    // ── teams: start + start-from-existing (foreign AND own) all 404 ──
+    assert_eq!(send_cookie(&f.app, "POST", "/api/teams/start", &alice, &csrf,
+        serde_json::json!({"task":"do things"})).await, nf,
+        "member 404s POST /api/teams/start");
+    assert_eq!(send_cookie(&f.app, "POST", "/api/teams/start-from-existing", &alice, &csrf,
+        serde_json::json!({"name":"bob-sess","task":"hijack"})).await, nf,
+        "member 404s start-from-existing on a FOREIGN session (cross-company hijack)");
+    assert_eq!(send_cookie(&f.app, "POST", "/api/teams/start-from-existing", &alice, &csrf,
+        serde_json::json!({"name":"alice-sess","task":"convert"})).await, nf,
+        "member 404s start-from-existing even on their OWN session (teams denied in v1)");
+
+    // …and the foreign session was NOT converted (no `team` tag was added).
+    let (st, body) = get_bearer(&f.app, "/api/sessions/bob-sess").await;
+    assert_eq!(st, StatusCode::OK, "owner still reads the company-B session");
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let tags = v["data"]["tags"].as_array().cloned().unwrap_or_default();
+    assert!(!tags.iter().any(|t| t == "team"),
+        "company-B session must NOT have been hijacked into a team lead");
+
+    // ── statusline install/uninstall: 404 + no global settings.json write ──
+    assert_eq!(send_cookie(&f.app, "POST", "/api/claude/statusline/install", &alice, &csrf,
+        serde_json::json!({})).await, nf, "member 404s POST /api/claude/statusline/install");
+    assert_eq!(send_cookie(&f.app, "DELETE", "/api/claude/statusline", &alice, &csrf,
+        serde_json::json!({})).await, nf, "member 404s DELETE /api/claude/statusline");
+    let settings = cdir.join("settings.json");
+    if settings.exists() {
+        let root: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert!(root.get("statusLine").is_none(),
+            "member's rejected statusline install must NOT have written the global statusLine slot");
+    }
+
+    // ── board: reads + writes all 404 for a member (global kanban, denied in v1) ──
+    assert_eq!(get_cookie(&f.app, "/api/board", &alice).await, nf, "member 404s GET /api/board");
+    assert_eq!(get_cookie(&f.app, "/api/boards", &alice).await, nf, "member 404s GET /api/boards");
+    assert_eq!(send_cookie(&f.app, "POST", "/api/board/1/start", &alice, &csrf,
+        serde_json::json!({})).await, nf, "member 404s POST /api/board/{{id}}/start");
+
+    match prev_ccd {
+        Some(vv) => std::env::set_var("CLAUDE_CONFIG_DIR", vv),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    std::fs::remove_dir_all(&cdir).ok();
+}
+
+/// (b) A scoped MEMBER CAN still reach the allowlist: `GET /api/companies` (own),
+/// `GET /api/sessions` (company-filtered to ONLY their sessions), a company-scoped
+/// op on their OWN session (and a uniform 404 on a foreign one), `POST
+/// /api/agents/delegate` (reachable — proven via the pre-delivery empty-prompt
+/// 400, not a 404), a `/api/file` read within their company root, and `GET
+/// /api/events`.
+#[tokio::test]
+async fn member_can_reach_the_allowlist() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let nf = StatusCode::NOT_FOUND;
+
+    // Owner seeds two company-A sessions + one company-B session.
+    for (n, c) in [("alice-a", 1), ("alice-a2", 1), ("bob-b", 2)] {
+        assert_eq!(send_bearer(&f.app, "POST", "/api/sessions",
+            serde_json::json!({"name": n, "company_id": c, "runtime": "native"})).await,
+            StatusCode::CREATED, "owner seeds session {n}");
+    }
+
+    // GET /api/companies — own only.
+    let (stc, bc) = get_cookie_body(&f.app, "/api/companies", &alice).await;
+    assert_eq!(stc, StatusCode::OK, "member reaches GET /api/companies");
+    let vc: serde_json::Value = serde_json::from_slice(&bc).unwrap();
+    assert_eq!(vc["data"].as_array().unwrap().len(), 1, "…and sees only their own company");
+
+    // GET /api/sessions — company-filtered: alice sees ONLY her two, never bob-b.
+    let (sts, bs) = get_cookie_body(&f.app, "/api/sessions", &alice).await;
+    assert_eq!(sts, StatusCode::OK, "member reaches the roster (allowlisted)");
+    let vs: serde_json::Value = serde_json::from_slice(&bs).unwrap();
+    let names: Vec<String> = vs["data"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(names.contains(&"alice-a".to_string()) && names.contains(&"alice-a2".to_string()),
+        "member's roster shows their own company sessions: got {names:?}");
+    assert!(!names.iter().any(|n| n == "bob-b"),
+        "member's roster is company-filtered — no company-B session leaks: got {names:?}");
+
+    // A company-scoped op on her OWN session → OK; the FOREIGN one → uniform 404.
+    assert_eq!(get_cookie(&f.app, "/api/sessions/alice-a", &alice).await, StatusCode::OK,
+        "member reaches a scoped op on her own session");
+    assert_eq!(get_cookie(&f.app, "/api/sessions/bob-b", &alice).await, nf,
+        "member 404s a company-B session (sessions scope layer)");
+
+    // delegate is REACHABLE for a member (the backstop admits it) — proven by the
+    // handler's pre-delivery empty-prompt 400 (a denied route would be 404). No
+    // keystroke is ever delivered. (Cross-company/spoofed refusal is in scope_p3b.)
+    assert_eq!(send_cookie(&f.app, "POST", "/api/agents/delegate", &alice, &csrf,
+        serde_json::json!({"from":"alice-a","to":"alice-a2","prompt":"   "})).await,
+        StatusCode::BAD_REQUEST,
+        "member reaches delegate (empty-prompt 400, not a backstop 404)");
+
+    // a /api/file read within her company root.
+    let file = f.root_a.join("hello.txt");
+    std::fs::write(&file, b"hi-from-alice").unwrap();
+    let (stf, bf) = get_cookie_body(&f.app,
+        &format!("/api/file/raw?path={}", file.to_string_lossy()), &alice).await;
+    assert_eq!(stf, StatusCode::OK, "member reads a file under her company root");
+    assert_eq!(bf, b"hi-from-alice", "…and gets the real bytes");
+
+    // GET /api/events (SSE) — reachable (not a backstop 404).
+    assert_ne!(get_cookie(&f.app, "/api/events", &alice).await, nf,
+        "member reaches the SSE stream (allowlisted)");
+}
+
+/// (c) The owner bearer and an ADMIN human BYPASS the backstop entirely: routes
+/// denied to a member (board, prefs reads) are reachable for both.
+#[tokio::test]
+async fn owner_and_admin_bypass_the_member_backstop() {
+    let f = fixture().await;
+    let (carol, _csrf) = login(&f.app, HOST_A, "carol-code").await; // admin (company NULL)
+    let nf = StatusCode::NOT_FOUND;
+
+    // Board (denied to a member) — reachable for the owner AND the admin.
+    assert_ne!(get_bearer(&f.app, "/api/board").await.0, nf, "owner reaches /api/board");
+    assert_ne!(get_cookie(&f.app, "/api/board", &carol).await, nf, "admin reaches /api/board");
+    // Prefs reads (denied to a member) — reachable for both.
+    assert_ne!(get_bearer(&f.app, "/api/snippets").await.0, nf, "owner reaches /api/snippets");
+    assert_ne!(get_cookie(&f.app, "/api/snippets", &carol).await, nf, "admin reaches /api/snippets");
+}
+
+/// (d) A no-human world is byte-identical: with human-auth disabled, the owner
+/// bearer reaches the member-denied routes — the backstop never bites (every
+/// identity is `Scope::All`).
+#[tokio::test]
+async fn no_human_world_backstop_is_a_passthrough() {
+    let app = no_human_fixture().await;
+    let nf = StatusCode::NOT_FOUND;
+    // Routes that are DENIED to a scoped member are all reachable here.
+    assert_ne!(get_bearer(&app, "/api/board").await.0, nf, "no-human owner reaches /api/board");
+    assert_ne!(get_bearer(&app, "/api/snippets").await.0, nf, "no-human owner reaches /api/snippets");
+    assert_ne!(get_bearer(&app, "/api/hosts").await.0, nf, "no-human owner reaches /api/hosts");
+    // …and an allowlisted route is reachable too (sanity: nothing over-blocks).
+    assert_ne!(get_bearer(&app, "/api/sessions").await.0, nf, "no-human owner reaches /api/sessions");
 }

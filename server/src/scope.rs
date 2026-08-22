@@ -165,6 +165,116 @@ pub async fn require_admin_writes_mw(req: Request, next: Next) -> Result<Respons
     Ok(next.run(req).await)
 }
 
+// ── deny-by-default member backstop (P3d) ───────────────────────────────────────
+
+/// Path-segment prefix test: `path` is `base` exactly, or a proper descendant of
+/// it (`base` + `/…`). Deliberately NOT a bare `starts_with`, so `"/api/file"`
+/// does not spuriously admit `"/api/files"` (segment boundary required).
+fn under(path: &str, base: &str) -> bool {
+    path == base
+        || (path.len() > base.len()
+            && path.as_bytes()[base.len()] == b'/'
+            && path.starts_with(base))
+}
+
+/// Does a scoped **member** (`is_admin_or_owner() == false`) have permission to
+/// reach `method path` at all? This is the DENY-BY-DEFAULT allowlist that
+/// [`member_allowlist_mw`] enforces as a route-layer over the WHOLE
+/// `protected_router`: a route not named here is UNREACHABLE for a member
+/// (uniform 404), so a newly-merged sub-router defaults to denied until it is
+/// deliberately added.
+///
+/// Every entry is a route whose handler ALSO does its own company scoping as
+/// defense-in-depth — the sessions scope layer (`scope_session_middleware`), the
+/// connector-target check ([`authorize_connector_target`]), the files jail
+/// ([`company_jail`]), the SSE per-subscriber filter ([`Scope::sees`]), the
+/// `delegate` company gate, and the companies own-filter. The allowlist is the
+/// OUTER fence, not the only one.
+///
+/// Owner / admin-all / no-human never reach here — [`member_allowlist_mw`] passes
+/// them byte-identically BEFORE consulting this.
+pub fn member_may_reach(method: &Method, path: &str) -> bool {
+    // The whole sessions surface: the roster list (company-filtered in
+    // `list_handler`), `POST` create (company-defaulted), `/api/sessions/archived`,
+    // every `/api/sessions/{name}/…` op (the sessions scope layer 404s a foreign
+    // session), AND `/api/sessions/{name}/connectors` (connector target scoped).
+    if under(path, "/api/sessions") {
+        return true;
+    }
+    // Connector store — grants/credentials are company-scoped via
+    // `authorize_connector_target`; the definition CRUD / `.mcpb` import is
+    // `require_admin` INSIDE (404s a member), so the router is member-reachable
+    // while its admin bits are not.
+    if under(path, "/api/connectors") {
+        return true;
+    }
+    // Company-jailed file browser (`company_jail` confines every resolve). The
+    // GLOBAL project-root lister `/api/projects/repos` is deliberately NOT here —
+    // company-neutral config a member has no use for (it already returns an empty
+    // list to a member); fail closed.
+    if under(path, "/api/file")
+        || under(path, "/api/fs")
+        || under(path, "/api/ls")
+        || under(path, "/api/autocomplete")
+        || under(path, "/api/uploads")
+    {
+        return true;
+    }
+    // SSE — the per-subscriber stream drops every non-own-company (and unstamped)
+    // frame.
+    if path == "/api/events" {
+        return true;
+    }
+    // Delegate WITHIN the member's company (`delegate` refuses a spoofed/foreign
+    // `from` and a cross-company `to`), and long-poll `wait` on a session (the
+    // wait handler runs it through `authorize_session_for_human`). NOT
+    // `/api/agents/delegations` (the global delegation log) nor `/api/skills`.
+    if *method == Method::POST && path == "/api/agents/delegate" {
+        return true;
+    }
+    if *method == Method::GET && path.starts_with("/api/agents/") && path.ends_with("/wait") {
+        return true;
+    }
+    // Companies: READ only — the list is own-filtered and a `{id}` fetch 404s a
+    // foreign id. The POST/PATCH/DELETE lifecycle is `require_admin` company-
+    // management, denied here by admitting only GET.
+    if *method == Method::GET && under(path, "/api/companies") {
+        return true;
+    }
+    // Everything else — hosts, scheduler, audit, push, updates, claude_tools (the
+    // MCP registry), skills, slash-commands, agents/delegations, teams/* (start,
+    // start-from-existing, dismiss, members, agent-teams pref), board/*,
+    // `/api/claude/statusline*`, prefs (kbd-groups / snippets / prefs writes), and
+    // settings/experimental/* — is DENIED (uniform 404). Fail closed.
+    false
+}
+
+/// The deny-by-default backstop. Applied as a route-layer on `protected_router`
+/// INNER to `auth_context_middleware` (so `AuthContext` is already stamped when
+/// this runs).
+///
+///   * [`Scope::All`] — owner, admin-all human, or NO stamped identity (human-auth
+///     disabled / unit tests) — passes BYTE-IDENTICALLY (never consults the
+///     allowlist), so the owner world is unchanged.
+///   * a scoped **member** passes only when [`member_may_reach`] allows the
+///     `method path`; otherwise a uniform [`AppError::NotFound`] echoing only the
+///     requested path — the same shape a missing route returns, so a member
+///     cannot distinguish "denied" from "does not exist".
+pub async fn member_allowlist_mw(req: Request, next: Next) -> Result<Response, AppError> {
+    let is_member = matches!(
+        Scope::of(req.extensions().get::<AuthContext>()),
+        Scope::Company(_)
+    );
+    if is_member {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+        if !member_may_reach(&method, &path) {
+            return Err(AppError::NotFound(path));
+        }
+    }
+    Ok(next.run(req).await)
+}
+
 /// Confine a **member**'s connector grant/edit target to their own company.
 ///
 /// For [`Scope::All`] (owner/admin, or no context) this is a pure no-op. For a
@@ -293,6 +403,78 @@ mod tests {
             Err(AppError::NotFound(p)) => assert_eq!(p, "/api/hosts"),
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn member_allowlist_admits_only_company_safe_routes() {
+        let get = Method::GET;
+        let post = Method::POST;
+        let del = Method::DELETE;
+        let put = Method::PUT;
+
+        // ── ALLOWED (company-safe, each self-scoping) ──
+        assert!(member_may_reach(&get, "/api/sessions"));
+        assert!(member_may_reach(&get, "/api/sessions/archived"));
+        assert!(member_may_reach(&post, "/api/sessions"));
+        assert!(member_may_reach(&post, "/api/sessions/bot/send"));
+        assert!(member_may_reach(&get, "/api/sessions/bot/connectors"));
+        assert!(member_may_reach(&post, "/api/connectors/mail/grant"));
+        assert!(member_may_reach(&get, "/api/file/raw"));
+        assert!(member_may_reach(&get, "/api/fs/delete"));
+        assert!(member_may_reach(&get, "/api/ls"));
+        assert!(member_may_reach(&get, "/api/autocomplete/dir"));
+        assert!(member_may_reach(&get, "/api/uploads/x.png"));
+        assert!(member_may_reach(&get, "/api/events"));
+        assert!(member_may_reach(&post, "/api/agents/delegate"));
+        assert!(member_may_reach(&get, "/api/agents/bot/wait"));
+        assert!(member_may_reach(&get, "/api/companies"));
+        assert!(member_may_reach(&get, "/api/companies/1"));
+
+        // ── DENIED (global / admin / not company-scoped in v1) ──
+        // Companies writes (require_admin) — only GET is admitted.
+        assert!(!member_may_reach(&post, "/api/companies"));
+        assert!(!member_may_reach(&put, "/api/companies/1"));
+        assert!(!member_may_reach(&del, "/api/companies/2"));
+        // The global project-root lister is NOT the file jail.
+        assert!(!member_may_reach(&get, "/api/projects/repos"));
+        // Delegation LOG + skills + slash-commands (agents router, not delegate).
+        assert!(!member_may_reach(&get, "/api/agents/delegations"));
+        assert!(!member_may_reach(&post, "/api/skills/x"));
+        assert!(!member_may_reach(&get, "/api/slash-commands"));
+        // `wait` only via GET.
+        assert!(!member_may_reach(&post, "/api/agents/bot/wait"));
+        // Admin routers.
+        assert!(!member_may_reach(&get, "/api/hosts"));
+        assert!(!member_may_reach(&get, "/api/schedules"));
+        assert!(!member_may_reach(&get, "/api/audit"));
+        assert!(!member_may_reach(&get, "/api/push/key"));
+        assert!(!member_may_reach(&get, "/api/version"));
+        assert!(!member_may_reach(&get, "/api/claude/registry"));
+        assert!(!member_may_reach(&post, "/api/claude/mcp"));
+        // Global-write leaks this change closes.
+        assert!(!member_may_reach(&post, "/api/teams/start"));
+        assert!(!member_may_reach(&post, "/api/teams/start-from-existing"));
+        assert!(!member_may_reach(&post, "/api/teams/acme/dismiss"));
+        assert!(!member_may_reach(&post, "/api/claude/statusline/install"));
+        assert!(!member_may_reach(&del, "/api/claude/statusline"));
+        assert!(!member_may_reach(&put, "/api/settings/experimental/agent-teams"));
+        assert!(!member_may_reach(&get, "/api/settings/experimental/agent-teams"));
+        // Board is global in v1 — denied wholesale.
+        assert!(!member_may_reach(&get, "/api/board"));
+        assert!(!member_may_reach(&post, "/api/board/1/start"));
+        assert!(!member_may_reach(&get, "/api/boards"));
+        // Prefs (reads AND writes) are denied under deny-by-default.
+        assert!(!member_may_reach(&get, "/api/snippets"));
+        assert!(!member_may_reach(&put, "/api/prefs/overview_sort"));
+    }
+
+    #[test]
+    fn under_requires_a_segment_boundary() {
+        assert!(under("/api/file", "/api/file"));
+        assert!(under("/api/file/raw", "/api/file"));
+        // A shared textual prefix that is NOT a path segment must not match.
+        assert!(!under("/api/files", "/api/file"));
+        assert!(!under("/api/sessionsX", "/api/sessions"));
     }
 
     #[test]
