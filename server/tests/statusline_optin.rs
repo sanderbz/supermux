@@ -70,6 +70,7 @@ async fn session_create_and_start_never_install_the_statusline() {
         // THE DEFAULT. Not a test convenience — `config.toml` with no
         // `statusline_tap` key resolves to exactly this.
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

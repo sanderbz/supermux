@@ -492,6 +492,19 @@ pub struct AppState {
     /// a SIGTERM/SIGINT hook installed only once chrome is really running), so
     /// nothing here or in `main.rs` has to remember to stop it.
     pub browser: Arc<crate::connectors::browser::BrowserService>,
+    /// Portable agent-isolation runtime (companies §4.4): the requested
+    /// [`IsolationMode`](crate::isolation::IsolationMode), the once-at-startup
+    /// probe result, and the active backend. The spawn path (`lifecycle::
+    /// start_locked`) consults it to build a per-spawn confinement plan for
+    /// COMPANY sessions only. Cheap `Arc`; the probe (which forks once) is
+    /// memoised process-wide, so building this per test `AppState` is free after
+    /// the first.
+    pub isolation: Arc<crate::isolation::IsolationRuntime>,
+    /// The last per-spawn isolation level actually applied, keyed by session
+    /// name (companies §4.4 surface). In-memory only; written when a company
+    /// session is (re)started so a later surface can render a badge without
+    /// re-probing. A stale entry is harmless and overwritten on the next start.
+    pub isolation_applied: Arc<DashMap<String, crate::isolation::IsolationLevel>>,
 }
 
 impl AppState {
@@ -511,6 +524,8 @@ impl AppState {
         // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
         // lazily when `transport_for` is first called for a host.
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
+        // Capture the isolation policy before `config` is moved into the Arc.
+        let isolation_mode = config.isolation_mode;
         Self {
             pool,
             config: Arc::new(config),
@@ -547,6 +562,14 @@ impl AppState {
             browser: crate::connectors::browser::BrowserService::new(
                 crate::connectors::browser::BrowserConfig::from_env(),
             ),
+            // Runs (or reuses) the once-per-process isolation probe and logs the
+            // honest measured level. On THIS box the systemd @system-service
+            // filter blocks landlock_*, so the probe measures None and company
+            // agents run UNCONFINED under BestEffort (fail-open).
+            isolation: Arc::new(crate::isolation::IsolationRuntime::from_mode(
+                isolation_mode,
+            )),
+            isolation_applied: Arc::new(DashMap::new()),
         }
     }
 
@@ -1670,6 +1693,7 @@ mod pending_edit_tests {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

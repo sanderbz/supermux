@@ -49,6 +49,7 @@ fn test_config(data_dir: &Path) -> Config {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     }
 }
 

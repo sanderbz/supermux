@@ -324,6 +324,28 @@ impl NativeSession {
         env: &HashMap<String, String>,
         shell: &str,
     ) -> Result<()> {
+        self.spawn_confined(dir, env, shell, None).await
+    }
+
+    /// Like [`spawn`](Self::spawn), plus an optional per-spawn OS-sandbox
+    /// confinement (companies §4.4) applied INSIDE the holder child, post-fork /
+    /// pre-exec, so it is inherited across `exec` and is unescapable by the
+    /// agent. `plan` is `Some` only for a COMPANY session under a non-`Off`
+    /// isolation mode.
+    ///
+    /// The holder must bind its unix socket and write its spool under
+    /// [`self.dir`](Self::dir), so that dir is granted RW on the plan before it
+    /// is moved into the child (otherwise a *fully-enforced* Landlock jail would
+    /// deny the holder its own socket). On THIS box the confinement measures
+    /// `None` (the `@system-service` filter blocks `landlock_*`), so the child
+    /// execs unconfined — fail-open per §4.4.
+    pub async fn spawn_confined(
+        &self,
+        dir: &Path,
+        env: &HashMap<String, String>,
+        shell: &str,
+        mut plan: Option<crate::isolation::ConfinePlan>,
+    ) -> Result<()> {
         if self.alive().await {
             bail!("native session '{}' is already running", self.name);
         }
@@ -403,12 +425,33 @@ impl NativeSession {
         // Belt-and-suspenders: force Claude's transcript persistence on even if
         // some ancestor disabled it. Harmless for providers that ignore it.
         cmd.env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1");
+        // COMPANY-SESSION CONFINEMENT (companies §4.4). Grant the holder its own
+        // spool/socket dir RW so a fully-enforced Landlock jail does not deny it
+        // its socket, then move the plan into the pre-exec closure below. `None`
+        // for main/PA bots and under isolation_mode=off — the closure then does
+        // only the historical `setsid`.
+        // TODO(P1-followup, Full hosts only): a fully-enforced jail also needs
+        // the holder BINARY path (current_exe) and the socket's PARENT dir on the
+        // allow-list; on THIS box the measured level is None so neither bites yet.
+        if let Some(p) = plan.as_mut() {
+            p.allow_rw(self.dir.clone());
+            if let Some(parent) = self.socket.parent() {
+                p.allow_rw(parent.to_path_buf());
+            }
+        }
         // SAFETY: `setsid` is async-signal-safe. It detaches the holder from
         // the daemon's session/process group so a signal aimed at the daemon
-        // (or its group) can never reach a holder or its agent.
+        // (or its group) can never reach a holder or its agent. The optional
+        // `plan.apply_in_child()` runs Landlock `restrict_self()` on the forked
+        // child (pre-exec): it performs only Landlock syscalls + `open(2)` on
+        // pre-owned paths, and under BestEffort it fails OPEN (never aborts the
+        // spawn) — a `None`/blocked measurement still lets the child exec.
         unsafe {
-            cmd.pre_exec(|| {
+            cmd.pre_exec(move || {
                 libc::setsid();
+                if let Some(p) = plan.as_ref() {
+                    p.apply_in_child()?;
+                }
                 Ok(())
             });
         }

@@ -163,6 +163,7 @@ async fn make_pool() -> (Arc<HostPool>, sqlx::SqlitePool, PathBuf) {
             push_sub: None,
             github_token: None,
             statusline_tap: false,
+            isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = supermux_server::db::init(&config).await.expect("init pool");
     let hp = HostPool::new(pool.clone(), &dir);

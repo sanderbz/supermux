@@ -126,6 +126,27 @@ pub fn wraps_for_provider(provider: &str) -> bool {
     provider == "claude"
 }
 
+/// Whether a delegation from a session in `from_company` may reach a session in
+/// `to_company` (both read straight off `sessions.company_id`; `None` = a
+/// main/PA/tech-admin bot). THE company boundary, evaluated inside [`delegate`]
+/// so it holds for BOTH the web-composer path and a raw `curl` — the @-picker is
+/// only defense-in-depth, never the fence.
+///
+/// Three cases, in order:
+///  1. `from` is a main bot (`None`) ⇒ ALLOW — the PA reaches anyone, any
+///     company or main. This is the only way a cross-company edge is ever born.
+///  2. same non-null company (`from == to`, both `Some`) ⇒ ALLOW.
+///  3. otherwise (a company bot aimed at a *different* company, OR at a
+///     main/`None` target) ⇒ REFUSE. The caller turns a refusal into a silent
+///     404 — the same shape a non-existent slug gets — and writes NOTHING.
+///
+/// The whole predicate collapses to "the sender is omniscient, or the two share
+/// a company": `from_company.is_none() || from_company == to_company`. Spelled
+/// out here so the security-relevant table is one a later reader verifies by eye.
+pub fn delegation_gate_allows(from_company: Option<i64>, to_company: Option<i64>) -> bool {
+    from_company.is_none() || from_company == to_company
+}
+
 /// Audit-log actor string for a delegation. `"human"` is the composer path.
 ///
 /// EXACT match only, and everything else falls to the agent: see the module
@@ -193,12 +214,29 @@ pub async fn delegate(
             "prompt may not contain supermux wrapper markup".into(),
         ));
     }
-    if !db::sessions::exists(&state.pool, from).await? {
-        return Err(AppError::NotFound(format!("session '{from}'")));
-    }
+    // Load BOTH rows (not just `exists`): the company gate below reads
+    // `company_id` off each, and the `to` row also carries the provider that
+    // decides the wrapper. A missing row is a 404 exactly as before.
+    let from_row = db::sessions::get(&state.pool, from)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{from}'")))?;
     // `send_text` would also 404 a missing `to`, but check first so we never
     // record a half-valid edge (the FK would reject it anyway).
-    if !db::sessions::exists(&state.pool, to).await? {
+    let to_row = db::sessions::get(&state.pool, to)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{to}'")))?;
+
+    // THE COMPANY GATE. After both sessions are known to exist and BEFORE any
+    // delivery / keystroke / delegation edge / audit row: a company bot may only
+    // reach its own company; a main/PA bot (`company_id IS NULL`) reaches anyone.
+    // A refusal is a SILENT 404 — byte-identical to a non-existent slug, so a
+    // company bot cannot even probe another company's roster by name — and it
+    // returns here, before `record_delegation`, `send_harness_text`, or
+    // `audit_harness`, so a refused delegation leaves NO trace. This fires for
+    // the raw-curl path too, since it lives inside `delegate()` rather than in
+    // the web @-picker (which is only defense-in-depth). See
+    // [`delegation_gate_allows`] for the decision table.
+    if !delegation_gate_allows(from_row.company_id, to_row.company_id) {
         return Err(AppError::NotFound(format!("session '{to}'")));
     }
 
@@ -207,10 +245,7 @@ pub async fn delegate(
     // other providers get the raw prompt. Either way the *preview* stored in
     // `last_send_text` is the unwrapped prompt — the wrapper is machinery, not
     // something the owner should read back in the roster.
-    let target_provider = db::sessions::get(&state.pool, to)
-        .await?
-        .map(|s| s.provider)
-        .unwrap_or_default();
+    let target_provider = to_row.provider;
     if wraps_for_provider(&target_provider) {
         // The guard above already refused markup; a slug that still fails
         // `attr_safe` here means a session name got past `db::sessions` that
@@ -246,6 +281,14 @@ pub async fn delegate(
 pub struct DelegationsQuery {
     /// The session whose in/out edges to return.
     pub session: String,
+    /// OPTIONAL company scope for the scoped UI. Absent (the default) returns
+    /// the full graph — the P1 owner is a single, omniscient, bearer-authed
+    /// caller, so nothing is hidden by default. When present, only edges whose
+    /// *other* endpoint belongs to that company survive; a `<CompanySwitcher>`
+    /// on a company view passes it so the graph matches the scoped roster. The
+    /// delegation *gate* — not this read filter — is the real boundary.
+    #[serde(default)]
+    pub company: Option<i64>,
 }
 
 /// One end of the delegation graph for a session.
@@ -266,8 +309,23 @@ pub async fn delegations(
     if session.is_empty() {
         return Err(AppError::BadRequest("'session' query param is required".into()));
     }
-    let outgoing = db::audit::delegations_out(&state.pool, session).await?;
-    let incoming = db::audit::delegations_in(&state.pool, session).await?;
+    let mut outgoing = db::audit::delegations_out(&state.pool, session).await?;
+    let mut incoming = db::audit::delegations_in(&state.pool, session).await?;
+    // Optional company scope (see `DelegationsQuery::company`). Default = the
+    // full omniscient graph; when a company is given, keep only edges whose
+    // OTHER endpoint is in that company (outgoing keyed on `to`, incoming on
+    // `from`) — the intra-company view the scoped UI draws. `names_in_company`
+    // lives in `db::companies` (P0), the single owner of company-membership
+    // queries.
+    if let Some(cid) = q.company {
+        let members: std::collections::HashSet<String> =
+            db::companies::names_in_company(&state.pool, cid)
+                .await?
+                .into_iter()
+                .collect();
+        outgoing.retain(|e| members.contains(&e.to_session));
+        incoming.retain(|e| members.contains(&e.from_session));
+    }
     Ok(Json(json!({
         "ok": true,
         "data": DelegationsView { outgoing, incoming },
@@ -277,6 +335,220 @@ pub async fn delegations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::state::AppState;
+
+    /// Fresh on-disk pool + `AppState` with the full migration chain, so a test
+    /// can drive `delegate()` against real `sessions`/`companies`/`delegations`/
+    /// `audit_log` tables. Mirrors the `test_state()` helpers elsewhere.
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-deleg-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    /// Insert a session and stamp its `company_id` (NULL when `company` is None).
+    async fn seed_session(state: &AppState, name: &str, company: Option<i64>) {
+        db::sessions::insert_minimal(&state.pool, name, "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = ? WHERE name = ?")
+            .bind(company)
+            .bind(name)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn seed_company(state: &AppState, slug: &str) -> i64 {
+        db::companies::create(&state.pool, slug, slug, &format!("/srv/{slug}"))
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn count(state: &AppState, sql: &str) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(sql).fetch_one(&state.pool).await.unwrap();
+        n
+    }
+
+    // ── the pure gate decision table ─────────────────────────────────────────
+
+    #[test]
+    fn same_company_delegate_allowed() {
+        // Two bots sharing a non-null company reach each other.
+        assert!(delegation_gate_allows(Some(7), Some(7)));
+    }
+
+    #[test]
+    fn main_bot_bypass_reaches_any_company() {
+        // A main/PA bot (`from` NULL) reaches ANY target — a company or another
+        // main bot. This is the one origin of a legitimate cross-company edge.
+        assert!(delegation_gate_allows(None, Some(1)));
+        assert!(delegation_gate_allows(None, Some(99)));
+        assert!(delegation_gate_allows(None, None));
+    }
+
+    #[test]
+    fn company_bot_to_other_company_is_refused_by_gate() {
+        // Different non-null companies ⇒ the gate says no.
+        assert!(!delegation_gate_allows(Some(1), Some(2)));
+    }
+
+    #[test]
+    fn company_bot_to_main_bot_is_refused_by_gate() {
+        // A company bot cannot reach a main/NULL target either — only the PA
+        // crosses the fence, and only outward.
+        assert!(!delegation_gate_allows(Some(1), None));
+    }
+
+    // ── the gate as it actually fires inside delegate() ──────────────────────
+
+    fn deleg_input(from: &str, to: &str) -> DelegateInput {
+        DelegateInput {
+            from: from.to_string(),
+            to: to.to_string(),
+            prompt: "please take this".to_string(),
+            actor: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn company_bot_to_other_company_is_404() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        let globex = seed_company(&state, "globex").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "globex-bot", Some(globex)).await;
+
+        let err = delegate(
+            axum::extract::State(state.clone()),
+            axum::Json(deleg_input("acme-bot", "globex-bot")),
+        )
+        .await
+        .expect_err("cross-company delegate must be refused");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "cross-company refusal must be a silent 404, got {err:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn company_bot_to_main_bot_is_404() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "pa", None).await; // a main/PA bot
+
+        let err = delegate(
+            axum::extract::State(state.clone()),
+            axum::Json(deleg_input("acme-bot", "pa")),
+        )
+        .await
+        .expect_err("company→main delegate must be refused");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "company→main refusal must be a silent 404, got {err:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_refused_delegation_writes_no_edge_and_no_audit_row() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        let globex = seed_company(&state, "globex").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "globex-bot", Some(globex)).await;
+
+        let _ = delegate(
+            axum::extract::State(state.clone()),
+            axum::Json(deleg_input("acme-bot", "globex-bot")),
+        )
+        .await
+        .expect_err("must be refused");
+
+        // The refusal returns before `record_delegation` and `audit_harness`,
+        // so the graph and the ledger are both untouched.
+        assert_eq!(
+            count(&state, "SELECT COUNT(*) FROM delegations").await,
+            0,
+            "a refused delegation must write NO edge"
+        );
+        assert_eq!(
+            count(&state, "SELECT COUNT(*) FROM audit_log").await,
+            0,
+            "a refused delegation must write NO audit row"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn delegations_graph_filtered_by_company() {
+        // A main bot legitimately delegates into a company (gate case 1). The
+        // scoped read then hides that out-of-company edge from the company view
+        // while the default (omniscient) read still shows it.
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "acme-peer", Some(acme)).await;
+        seed_session(&state, "pa", None).await;
+
+        // pa → acme-bot (cross-company, born of the main-bot bypass) and
+        // acme-peer → acme-bot (intra-company).
+        db::audit::record_delegation(&state.pool, "pa", "acme-bot", "x")
+            .await
+            .unwrap();
+        db::audit::record_delegation(&state.pool, "acme-peer", "acme-bot", "y")
+            .await
+            .unwrap();
+
+        // Default (no company): the owner sees both incoming edges.
+        let unfiltered = delegations(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(DelegationsQuery {
+                session: "acme-bot".to_string(),
+                company: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let n_in = unfiltered.0["data"]["incoming"].as_array().unwrap().len();
+        assert_eq!(n_in, 2, "unfiltered graph shows every edge");
+
+        // Scoped to acme: the `pa → acme-bot` edge (from a NULL-company sender)
+        // drops; only the intra-company `acme-peer → acme-bot` survives.
+        let scoped = delegations(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(DelegationsQuery {
+                session: "acme-bot".to_string(),
+                company: Some(acme),
+            }),
+        )
+        .await
+        .unwrap();
+        let incoming = scoped.0["data"]["incoming"].as_array().unwrap();
+        assert_eq!(incoming.len(), 1, "scoped graph hides the out-of-company edge");
+        assert_eq!(incoming[0]["from_session"], "acme-peer");
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn actor_human_audits_as_user() {

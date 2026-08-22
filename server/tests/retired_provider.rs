@@ -53,6 +53,7 @@ async fn test_app() -> (axum::Router, SqlitePool, std::path::PathBuf) {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool.clone(), config);

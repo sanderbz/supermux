@@ -40,6 +40,7 @@ async fn test_app(data_dir: &Path) -> axum::Router {
         push_sub: None,
         github_token: None,
         statusline_tap: false,
+        isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);
