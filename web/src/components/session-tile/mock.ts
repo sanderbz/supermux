@@ -2,7 +2,20 @@
 // into production; see App.tsx lazy import). Covers every status the tile
 // renders so the visual critic can check all states in one screen.
 
+import type { Company } from '@/lib/companies'
+
 import type { TileSession } from './types'
+
+// Mock companies (Bot Mode, migration 0030) so the `<CompanySwitcher>` + the
+// whole-app scoping are exercisable OFFLINE in the /dev rig (seeded into the
+// `['companies']` query alongside MOCK_TILES). Several tiles below carry a
+// matching `company_id`; the rest are `undefined` = main/PA bots (shown only in
+// the "All companies" scope).
+export const MOCK_COMPANIES: Company[] = [
+  { id: 1, slug: 'acme', display_name: 'Acme Robotics', root_dir: '/srv/acme', archived: 0 },
+  { id: 2, slug: 'globex', display_name: 'Globex', root_dir: '/srv/globex', archived: 0 },
+  { id: 3, slug: 'initech', display_name: 'Initech', root_dir: '/srv/initech', archived: 0 },
+]
 
 const claudeBoot = (task: string): string[] => [
   '● Read package.json (1 file)',
@@ -88,6 +101,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'web-app',
+    company_id: 1,
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',
     dir: '/opt/projects/web-app',
@@ -112,6 +126,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'api-server',
+    company_id: 1,
     task_summary: 'Add Range support to the file streaming endpoint',
     status: 'waiting',
     dir: '/opt/projects/api-server',
@@ -144,6 +159,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'cso-review',
+    company_id: 2,
     task_summary: 'Security audit of the WS auth handshake',
     status: 'waiting',
     dir: '/opt/projects/supermux/server',
@@ -163,6 +179,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'build-runner',
+    company_id: 2,
     task_summary: 'Release build',
     status: 'active',
     dir: '/opt/projects/supermux/server',
@@ -175,6 +192,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'qa-astro',
+    company_id: 3,
     task_summary: 'Run the overview QA pass',
     status: 'starting',
     dir: '/opt/projects/web',
@@ -186,6 +204,7 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'idle-1',
+    company_id: 3,
     task_summary: 'Refactor the board reducer',
     status: 'idle',
     dir: '/opt/projects/board',

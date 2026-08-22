@@ -19,6 +19,8 @@ import { createProjectFolder } from '@/lib/create-project-folder'
 import { SessionMark } from '@/brand/marks'
 import { useRosterMarks } from '@/hooks/use-roster-marks'
 import { encodeMarkPin, freeTokens } from '@/lib/roster-marks'
+import { useUI } from '@/stores/ui-store'
+import { useCompanies } from '@/hooks/use-companies'
 
 /** Derive the immutable slug from the free-typed display name (migration 0019):
  *  whitespace → `-`, drop anything outside the server's `valid_name` charset
@@ -199,6 +201,18 @@ function AgentForm({
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  // New-agent company default (Bot Mode, migration 0030, §4b): when a company
+  // is the active scope, a new agent lands IN it. The server forces its `dir`
+  // under `<root_dir>/<name>/`, so we send that exact path (not an
+  // auto-created projects-root folder, which the server would 400 as
+  // out-of-jail) and skip the folder auto-create.
+  const activeCompany = useUI((s) => s.activeCompany)
+  const { companies } = useCompanies()
+  const company =
+    activeCompany !== null
+      ? (companies.find((c) => c.id === activeCompany) ?? null)
+      : null
+
   // The typed text is the display LABEL; the slug is derived from it and is the
   // immutable id (URL / tmux / hooks) AND the auto-folder name. A label of only
   // spaces/emoji slugifies to "" → not valid.
@@ -228,7 +242,12 @@ function AgentForm({
       // the WherePicker's "Create a new folder" uses). Opt-in: the directory
       // the user picked in the revealed WherePicker.
       let dir: string
-      if (ownFolder) {
+      if (company) {
+        // The company jail owns placement: force `<root_dir>/<slug>` (the exact
+        // path the server derives), overriding any picked folder. The server
+        // mkdir's it, so we don't create it here.
+        dir = `${company.root_dir.replace(/\/+$/, '')}/${slug}`
+      } else if (ownFolder) {
         dir = where.dir.trim()
       } else {
         const folder = await createProjectFolder(slug)
@@ -248,6 +267,10 @@ function AgentForm({
         provider,
         worktree,
         desc: desc.trim() || undefined,
+        // §4b — when a company is the active scope, the new agent is created
+        // into it; the server forces its dir under the company root. Absent =
+        // a main/PA bot (company_id NULL).
+        company_id: company ? company.id : undefined,
         // Omit when LOCAL so the wire stays clean (server treats missing/null
         // both as LOCAL). Only sent for a registered remote host.
         host_id: hostId ?? undefined,

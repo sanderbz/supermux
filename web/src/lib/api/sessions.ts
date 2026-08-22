@@ -889,6 +889,60 @@ export const sessionsApi = {
   },
 }
 
+// ── Companies endpoint (migration 0030) ──────────────────────────────────────
+//
+// Mirrors `sessionsApi`: same `sessReq` (auth + `{ ok, data }` envelope +
+// `SessionError`) so the switcher writes through the one canonical fetch. The
+// server surface is `server/src/companies/mod.rs`.
+
+export type { Company } from '../companies'
+import type { Company } from '../companies'
+
+/** Create body for `POST /api/companies`. The server derives nothing from the
+ *  name for us — it takes an explicit `{slug, display_name, root_dir}` and
+ *  mkdir's `root_dir` (the create dialog derives `slug`/`root_dir` from the
+ *  typed name before calling). */
+export interface NewCompany {
+  slug: string
+  display_name: string
+  root_dir: string
+}
+
+export const companiesApi = {
+  /** `GET /api/companies` — live (non-archived) companies, ordered by
+   *  `display_name`. `?archived=1` would include archived; the switcher only
+   *  ever wants live ones. */
+  list: async (): Promise<Company[]> => {
+    const body = await sessReq<unknown>('/api/companies')
+    return Array.isArray(body) ? (body as Company[]) : []
+  },
+
+  /** `POST /api/companies` — create ({slug, display_name, root_dir}); the server
+   *  mkdir's `root_dir` and returns the row (201). 409 on a slug that collides
+   *  with an existing company OR session slug. */
+  create: (input: NewCompany): Promise<Company> =>
+    sessReq('/api/companies', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /** `PATCH /api/companies/{id}` — archive (soft-hide from the switcher) or
+   *  rename. Archiving is the switcher's "remove from the list" — the row and
+   *  its `root_dir` survive (a company is never destructively dropped here). */
+  archive: (id: number): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    }),
+
+  /** `PATCH /api/companies/{id}` — set the display name. */
+  rename: (id: number, display_name: string): Promise<Company> =>
+    sessReq(`/api/companies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name }),
+    }),
+}
+
 // ── Project repos endpoint ───────────────────────────────────────────────────
 
 /** One entry from `GET /api/projects/repos` — a subdir of the first

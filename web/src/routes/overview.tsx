@@ -55,6 +55,18 @@ import {
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { DisplayControls } from '@/components/roster/display-controls'
+import { useCompanies, COMPANIES_KEY } from '@/hooks/use-companies'
+import { companyFirstOrder, resolveActiveCompany } from '@/lib/companies'
+
+// The company switcher UI is lazy-loaded so its dropdown/dialog code stays OUT
+// of the hero-path (entry) chunk that the overview compiles into — the entry
+// size gate is the one that guards first paint. A fixed-size placeholder holds
+// its slot so the header never reflows.
+const CompanySwitcher = React.lazy(() =>
+  import('@/components/roster/company-switcher').then((m) => ({
+    default: m.CompanySwitcher,
+  })),
+)
 import { listDetailCeiling, listDetailCeilingNote } from '@/lib/fact-ladder'
 import { AttentionRollup } from '@/components/roster/attention-rollup'
 import {
@@ -139,6 +151,29 @@ export function Overview() {
   const setViewMode = useUI((s) => s.setViewMode)
   const hideStopped = useUI((s) => s.hideStopped)
   const setHideStopped = useUI((s) => s.setHideStopped)
+  // Company scope (Bot Mode, migration 0030). `null` = "All companies". When a
+  // company is active it scopes the whole overview (roster + team cards) and the
+  // new-agent default; a global search escapes the scope but ranks in-company
+  // hits first (see `filtered`/`flatSorted`).
+  const activeCompany = useUI((s) => s.activeCompany)
+  const setActiveCompany = useUI((s) => s.setActiveCompany)
+  const { companies } = useCompanies()
+  // TODO(companies, next web slice): the Files browser company-root scoping and
+  // the ⌘K palette / @-picker company scoping are NOT in this slice — thread
+  // `activeCompany` into the Files route root + `mentionIndex`/`displayNames`
+  // there. See docs/superpowers/plans/2026-08-22-companies-implementation-plan.md
+  // P1 web tasks ("Files root", "@-picker scope").
+  // Reconcile a stale persisted id (a company that was deleted/archived, or a
+  // localStorage value from another install) down to `null` once the live list
+  // has loaded — never silently scope to a company that no longer exists.
+  React.useEffect(() => {
+    if (companies.length === 0) return
+    const resolved = resolveActiveCompany(
+      activeCompany,
+      companies.map((c) => c.id),
+    )
+    if (resolved !== activeCompany) setActiveCompany(resolved)
+  }, [companies, activeCompany, setActiveCompany])
   const overviewSizeDesktop = useUI((s) => s.overviewSize)
   const setOverviewSizeDesktop = useUI((s) => s.setOverviewSize)
   const overviewSizeMobile = useUI((s) => s.overviewSizeMobile)
@@ -230,17 +265,27 @@ export function Overview() {
     return [...set].sort()
   }, [sessions])
 
+  // A non-empty search query makes search GLOBAL (§4c): the company scope is
+  // lifted so a search reaches across companies, and in-company hits are ranked
+  // first instead (see `flatSorted`). With no query the company scope narrows
+  // the browse view (§4a).
+  const hasQuery = query.trim().length > 0
+
   // Filter once. Tags are ANDed with the search, ORed among themselves: picking
   // two tags shows sessions carrying EITHER, which is what a chip row reads as.
+  // The company predicate keeps only the active company's sessions while
+  // browsing (a main/PA bot, `company_id == null`, only shows in the "All"
+  // scope); it is lifted while searching so search stays global.
   const filtered = React.useMemo(
     () =>
       sessions.filter(
         (s) =>
           matches(s, query) &&
           (!hideStopped || s.status !== 'stopped') &&
-          (activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t))),
+          (activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t))) &&
+          (activeCompany === null || hasQuery || s.company_id === activeCompany),
       ),
-    [sessions, query, hideStopped, activeTags],
+    [sessions, query, hideStopped, activeTags, activeCompany, hasQuery],
   )
 
   // How far the LIST's fact ladder can actually climb on this roster (finding
@@ -453,17 +498,32 @@ export function Overview() {
     return () => setNewGroupAction(null)
   }, [setNewGroupAction, layout.mode, setMode])
 
-  // Teams that survive the search box.
+  // A team's company = its LEAD session's company. Look it up from the full
+  // session list so the team card scopes with the roster.
+  const companyByName = React.useMemo(() => {
+    const m = new Map<string, number | null>()
+    for (const s of allSessions) m.set(s.name, s.company_id ?? null)
+    return m
+  }, [allSessions])
+
+  // Teams that survive the search box AND the company scope. The company scope
+  // (by the lead session's `company_id`) is lifted while searching, mirroring
+  // the session filter — search stays global.
   const filteredTeams = React.useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return teams
+    const inScope = (t: (typeof teams)[number]) =>
+      activeCompany === null ||
+      needle.length > 0 ||
+      companyByName.get(t.lead_supermux_session ?? '') === activeCompany
     return teams.filter(
       (t) =>
-        t.team_name.toLowerCase().includes(needle) ||
-        t.members.some((m) => m.name.toLowerCase().includes(needle)) ||
-        (t.lead_supermux_session ?? '').toLowerCase().includes(needle),
+        inScope(t) &&
+        (needle.length === 0 ||
+          t.team_name.toLowerCase().includes(needle) ||
+          t.members.some((m) => m.name.toLowerCase().includes(needle)) ||
+          (t.lead_supermux_session ?? '').toLowerCase().includes(needle)),
     )
-  }, [teams, query])
+  }, [teams, query, activeCompany, companyByName])
 
   const hasSessions = sessions.length > 0
   const hasAnyAgent = hasSessions || teams.length > 0
@@ -484,10 +544,20 @@ export function Overview() {
   // The non-custom (smart / alpha) tile list — computed here so the renderer
   // below is pure JSX.
   const flatSorted = React.useMemo(() => {
-    if (layout.mode === 'smart') return smartSort(filtered)
-    if (layout.mode === 'alpha') return nameSort(filtered)
-    return filtered
-  }, [filtered, layout.mode])
+    const sorted =
+      layout.mode === 'smart'
+        ? smartSort(filtered)
+        : layout.mode === 'alpha'
+          ? nameSort(filtered)
+          : filtered
+    // §4c — while searching GLOBALLY with a company active, stably float the
+    // active company's matches to the top; cross-company matches stay visible
+    // below. A no-op when browsing (no query) or in the "All" scope.
+    if (hasQuery && activeCompany !== null) {
+      return companyFirstOrder(sorted, activeCompany)
+    }
+    return sorted
+  }, [filtered, layout.mode, hasQuery, activeCompany])
 
   // The DERIVED group-by preset (fase B2 T9). One section (the historical flat
   // render) when `groupBy === 'none'`; otherwise one per bucket, each sorted by
@@ -645,6 +715,15 @@ export function Overview() {
             it is a header-row control like the search field and the display
             chips, not a banner. */}
         <AttentionRollup sessions={needsYou} className="order-first w-full sm:order-none sm:w-auto" />
+
+        {/* Company scope (Bot Mode, migration 0030) — narrows the whole
+            overview to one company; "All companies" is the omniscient default.
+            Lazy (see the import) with a same-size placeholder. */}
+        <React.Suspense
+          fallback={<div className="h-9 w-[9rem] rounded-md border border-input" aria-hidden />}
+        >
+          <CompanySwitcher />
+        </React.Suspense>
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1050,8 +1129,12 @@ function useDevMockSeed() {
     if (!import.meta.env.DEV) return
     if (!new URLSearchParams(window.location.search).has('mock')) return
     let alive = true
-    void import('@/components/session-tile/mock').then(({ MOCK_TILES }) => {
-      if (alive) qc.setQueryData(SESSIONS_KEY, MOCK_TILES as ApiSession[])
+    void import('@/components/session-tile/mock').then(({ MOCK_TILES, MOCK_COMPANIES }) => {
+      if (!alive) return
+      qc.setQueryData(SESSIONS_KEY, MOCK_TILES as ApiSession[])
+      // Seed the companies query too so the switcher + whole-app scoping are
+      // exercisable offline in the /dev rig.
+      qc.setQueryData(COMPANIES_KEY, MOCK_COMPANIES)
     })
     return () => {
       alive = false
