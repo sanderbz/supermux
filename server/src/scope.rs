@@ -220,6 +220,16 @@ pub fn member_may_reach(method: &Method, path: &str) -> bool {
     {
         return true;
     }
+    // The composer's base64 attachment upload. It writes to the server data-dir
+    // scratch `uploads/` — NOT tied to any company session or company dir (the
+    // body is just `{name, data}`; files land in `<data_dir>/uploads/`, are
+    // served back via the already-allowlisted `/api/uploads/{file}`, and purge
+    // after 24h) — so allowlisting alone is company-safe. POST only, exact path:
+    // no phantom sub-path, and the GET `/api/uploads` plural (serve) stays its
+    // own separate entry above.
+    if *method == Method::POST && path == "/api/upload" {
+        return true;
+    }
     // SSE — the per-subscriber stream drops every non-own-company (and unstamped)
     // frame.
     if path == "/api/events" {
@@ -424,6 +434,9 @@ mod tests {
         assert!(member_may_reach(&get, "/api/ls"));
         assert!(member_may_reach(&get, "/api/autocomplete/dir"));
         assert!(member_may_reach(&get, "/api/uploads/x.png"));
+        // The composer's base64 attachment upload (writes to the data-dir scratch
+        // `uploads/`, not company-tied) — POST only.
+        assert!(member_may_reach(&post, "/api/upload"));
         assert!(member_may_reach(&get, "/api/events"));
         assert!(member_may_reach(&post, "/api/agents/delegate"));
         assert!(member_may_reach(&get, "/api/agents/bot/wait"));
@@ -443,6 +456,9 @@ mod tests {
         assert!(!member_may_reach(&get, "/api/slash-commands"));
         // `wait` only via GET.
         assert!(!member_may_reach(&post, "/api/agents/bot/wait"));
+        // Upload is POST-only and does NOT widen (no GET, no phantom sub-path).
+        assert!(!member_may_reach(&get, "/api/upload"));
+        assert!(!member_may_reach(&post, "/api/upload/x"));
         // Admin routers.
         assert!(!member_may_reach(&get, "/api/hosts"));
         assert!(!member_may_reach(&get, "/api/schedules"));

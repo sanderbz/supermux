@@ -807,6 +807,73 @@ async fn member_can_reach_the_allowlist() {
         "member reaches the SSE stream (allowlisted)");
 }
 
+/// P3d allowlist-precision (HIGH): `GET /api/sessions/archived` must be
+/// company-filtered for a MEMBER — exactly like the live roster (`list_handler`).
+/// The archived sheet listed EVERY company's archived sessions with no company
+/// fence (it takes no ctx), so a member could enumerate other companies' archived
+/// sessions by name. A member now sees ONLY their own company's archived rows; a
+/// company-B archived session is absent. Owner (`Scope::All`) still sees all.
+#[tokio::test]
+async fn member_archived_sessions_are_company_filtered() {
+    let f = fixture().await;
+    let (alice, _csrf) = login(&f.app, HOST_A, "alice-code").await;
+
+    // Owner seeds one company-A and one company-B session, then archives BOTH
+    // (archive flips `archived = 1` synchronously before returning the 202).
+    for (n, c) in [("arch-a", 1), ("arch-b", 2)] {
+        assert_eq!(send_bearer(&f.app, "POST", "/api/sessions",
+            serde_json::json!({"name": n, "company_id": c, "runtime": "native"})).await,
+            StatusCode::CREATED, "owner seeds session {n}");
+        assert_eq!(send_bearer(&f.app, "POST", &format!("/api/sessions/{n}/archive"),
+            serde_json::json!({})).await,
+            StatusCode::ACCEPTED, "owner archives {n}");
+    }
+
+    // Member: sees ONLY their own company-A archived session; company-B is absent.
+    let (st, body) = get_cookie_body(&f.app, "/api/sessions/archived", &alice).await;
+    assert_eq!(st, StatusCode::OK, "member reaches the archived sheet (allowlisted)");
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let names: Vec<String> = v["data"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(names.contains(&"arch-a".to_string()),
+        "member sees their own company's archived session: got {names:?}");
+    assert!(!names.iter().any(|n| n == "arch-b"),
+        "member's archived list is company-filtered — no company-B leak: got {names:?}");
+
+    // Owner sees BOTH archived sessions (Scope::All, unchanged).
+    let (sto, bo) = get_bearer(&f.app, "/api/sessions/archived").await;
+    assert_eq!(sto, StatusCode::OK);
+    let vo: serde_json::Value = serde_json::from_slice(&bo).unwrap();
+    let onames: Vec<String> = vo["data"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(onames.contains(&"arch-a".to_string()) && onames.contains(&"arch-b".to_string()),
+        "owner sees every company's archived sessions: got {onames:?}");
+}
+
+/// P3d allowlist-precision (MEDIUM): `POST /api/upload` (the chat composer's
+/// base64 attachment upload) was NOT on the member allowlist, so every composer
+/// attachment 404'd for a member. The upload writes to the server data-dir scratch
+/// `uploads/` — NOT tied to any company session or company dir — so allowlisting
+/// alone is safe (no session scoping needed). A member now reaches it (200), and
+/// the owner is unaffected.
+#[tokio::test]
+async fn member_can_upload_composer_attachment() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+
+    // A base64 note ("hi"). `.txt` is not an image ext, so it is accepted as-is.
+    let st = send_cookie(&f.app, "POST", "/api/upload", &alice, &csrf,
+        serde_json::json!({"name": "note.txt", "data": "aGk="})).await;
+    assert_eq!(st, StatusCode::OK,
+        "member reaches POST /api/upload (composer attachment) — not a backstop 404");
+
+    // Owner unaffected (Scope::All bypasses the backstop).
+    assert_eq!(
+        send_bearer(&f.app, "POST", "/api/upload",
+            serde_json::json!({"name": "owner.txt", "data": "aGk="})).await,
+        StatusCode::OK, "owner uploads unaffected");
+}
+
 /// (c) The owner bearer and an ADMIN human BYPASS the backstop entirely: routes
 /// denied to a member (board, prefs reads) are reachable for both.
 #[tokio::test]

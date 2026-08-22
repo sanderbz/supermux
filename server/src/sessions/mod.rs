@@ -1838,8 +1838,21 @@ async fn list_handler(
 
 async fn list_archived_handler(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
 ) -> Result<Json<Envelope<Vec<SessionView>>>, AppError> {
-    Ok(ok(list_archived(&state).await?))
+    // P3d — the archived sheet is company-scoped for a MEMBER exactly like the
+    // live roster (`list_handler`): they see ONLY their own company's archived
+    // sessions. Owner/admin (`Scope::All`) see every company's, unchanged.
+    // `Scope::sees(None)` is false for a member, so an unstamped archived row
+    // never leaks into a member's list (fail-closed). This is the `{name}`-less
+    // sibling of the sessions scope layer, which cannot fence a listing.
+    let scope = crate::scope::Scope::of(ctx.0.as_ref());
+    let rows: Vec<SessionView> = list_archived(&state)
+        .await?
+        .into_iter()
+        .filter(|s| scope.sees(s.company_id))
+        .collect();
+    Ok(ok(rows))
 }
 
 async fn get_handler(
