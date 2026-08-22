@@ -53,6 +53,35 @@ export interface CompanyMarkProps {
   style?: React.CSSProperties
 }
 
+/**
+ * `identityTileStyle(size)` — the shared rounded-square GEOMETRY of the identity
+ * system's tiles (company monogram + HQ brand mark), returned as an inline
+ * `CSSProperties` so it renders IDENTICALLY regardless of ancestor. Both marks
+ * render inside `<ResponsiveSheet>` bodies that portal to `document.body` OUTSIDE
+ * the `[data-grok]` shell, so a `[data-grok]`-scoped class (the old `.gr-cmark`)
+ * silently dropped every geometry prop in the mobile switcher rows + the
+ * create-preview — a bare unstyled square. Inlining with token fallbacks
+ * (`--sm-r-md` → 10px, `--sm-border` → a `currentColor` keyline) is the fix, and
+ * factoring it here means the company shape has EXACTLY ONE definition that
+ * cannot drift back into a scoped class. Consumed by both `CompanyMark` and
+ * `HqMark` below.
+ */
+export function identityTileStyle(size: number): React.CSSProperties {
+  return {
+    boxSizing: 'border-box',
+    display: 'grid',
+    placeItems: 'center',
+    flex: 'none',
+    width: size,
+    height: size,
+    // `--sm-r-md` (10px) rounded-square — the company shape. Fallbacks so it
+    // survives outside the `[data-grok]` subtree (portaled sheets/menus).
+    borderRadius: 'var(--sm-r-md, 10px)',
+    boxShadow:
+      'inset 0 0 0 0.5px var(--sm-border, color-mix(in srgb, currentColor 12%, transparent))',
+  }
+}
+
 export function CompanyMark({
   slug,
   name,
@@ -72,13 +101,19 @@ export function CompanyMark({
   return (
     <span
       aria-hidden
-      className={`gr-cmark${className ? ` ${className}` : ''}`}
+      className={className}
+      // SELF-CONTAINED (like `<HqMark>`): all geometry is inline via the shared
+      // `identityTileStyle` so the tile is byte-identical in the header trigger,
+      // the desktop menu rows, the portaled mobile sheet rows, AND the
+      // create-preview — no `[data-grok]` ancestor dependency. `grok-identity`
+      // (the 0.6s hue settle) is still applied by the caller via `className`.
       style={{
-        width: size,
-        height: size,
+        ...identityTileStyle(size),
         fontSize,
-        // `--sm-r-md` (10px) rounded-square — the company shape. `grok-identity`
-        // is applied by the caller where the hue should SETTLE on a switch.
+        fontWeight: 600,
+        letterSpacing: '-0.01em',
+        lineHeight: 1,
+        userSelect: 'none',
         background: wash,
         color: ink,
         ...style,
@@ -117,16 +152,9 @@ export function HqMark({ size = 24, className, style }: HqMarkProps) {
       aria-hidden
       className={className}
       style={{
-        boxSizing: 'border-box',
-        display: 'grid',
-        placeItems: 'center',
-        flex: 'none',
-        width: size,
-        height: size,
+        ...identityTileStyle(size),
         padding: Math.round(size * 0.15),
-        borderRadius: 'var(--sm-r-md, 10px)',
         background: 'color-mix(in srgb, currentColor 6%, transparent)',
-        boxShadow: 'inset 0 0 0 0.5px color-mix(in srgb, currentColor 12%, transparent)',
         ...style,
       }}
     >

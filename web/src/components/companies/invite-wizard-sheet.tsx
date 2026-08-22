@@ -147,7 +147,7 @@ export function InviteWizardSheet({
       title={
         <span className="flex items-center gap-2.5">
           <CompanyMark slug={company.slug} name={company.display_name} size={24} className="grok-identity" />
-          <span className="truncate">Invite to {company.display_name}</span>
+          <span className="truncate">Invite a teammate</span>
         </span>
       }
       description={step === 'success' ? 'All set.' : `Step ${idx + 1} of 3`}

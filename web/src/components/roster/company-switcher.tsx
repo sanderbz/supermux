@@ -346,7 +346,7 @@ export function CompanySwitcher({
             >
               <UserPlus size={sheet ? 18 : 15} />
             </span>
-            Invite to {active.display_name}
+            Invite a teammate
           </button>
         )}
 
@@ -371,7 +371,7 @@ export function CompanySwitcher({
           >
             <Plus size={sheet ? 18 : 15} />
           </span>
-          New company…
+          Start a company…
         </button>
       </>
     )

@@ -1551,21 +1551,12 @@
 }
 
 /* ── company identity mark + HQ/company switcher (Companies, Bot Mode) ───────── */
-/* The rounded-SQUARE monogram tile — the company shape (agent = mascot face,
-   person = circle later). Fill + ink are inline (per-slug pigment via the hue
-   engine); this rule owns only the geometry + the 0.5px keyline so the tile
-   separates on any ground. `--sm-r-md` (10px). */
-[data-grok] .gr-cmark {
-  display: grid;
-  place-items: center;
-  flex: none;
-  border-radius: var(--sm-r-md);
-  box-shadow: inset 0 0 0 0.5px var(--sm-border);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  user-select: none;
-}
+/* The rounded-SQUARE monogram tile geometry lives INLINE in `<CompanyMark>` /
+   `<HqMark>` (`identityTileStyle`), NOT in a `[data-grok]`-scoped rule: both marks
+   render inside `<ResponsiveSheet>` bodies that portal to `document.body` outside
+   this subtree, where a scoped `.gr-cmark` never matched → a bare unstyled square
+   in the mobile switcher rows + the create-preview. The old `[data-grok] .gr-cmark`
+   rule was deleted for exactly that reason. */
 
 /* The trigger — an always-visible scope chip in `.gr-head`, matching the
    `.gr-search` / `.gr-seg` hairline family (34px, `--sm-r-md`, surf2, 0.5px

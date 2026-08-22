@@ -104,8 +104,8 @@ export function CreateCompanySheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="New company"
-      description="A company owns a folder and a set of agents."
+      title="Start a company"
+      description="A shared space for a team of teammates."
       footer={
         <div className="flex items-center justify-end gap-2">
           <Button
@@ -121,11 +121,14 @@ export function CreateCompanySheet({
             form="create-company-form"
             disabled={!canSubmit}
             style={{
-              background: 'var(--sm-accent-fill)',
-              color: 'var(--gr-onaccent)',
+              // Fallbacks: the sheet portals to `document.body` outside
+              // `[data-grok]`, where a bare `var(--sm-accent-fill)` resolves to
+              // nothing and the primary CTA loses its accent fill.
+              background: 'var(--sm-accent-fill, #006ceb)',
+              color: 'var(--gr-onaccent, #fff)',
             }}
           >
-            {create.isPending ? 'Creating…' : 'Create company'}
+            {create.isPending ? 'Starting…' : 'Start company'}
           </Button>
         </div>
       }
@@ -152,13 +155,17 @@ export function CreateCompanySheet({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Acme"
-              autoFocus
               autoComplete="off"
             />
+            {/* NO autoFocus — same iOS-PWA Vaul "keyboard-during-slide-in →
+                half-cropped sheet" race the hire sheet's goal field dodges; users
+                tap to focus. And NO folder-path leak — the server derives the dir
+                authoritatively (the client `root_dir` is ignored), so the absolute
+                path is both nerdy and possibly wrong. A faint `id <slug>` is all
+                the founder needs. */}
             {slug && (
               <p className="pt-1 text-xs text-muted-foreground">
-                id <span className="font-mono text-foreground">{slug}</span> · folder{' '}
-                <span className="font-mono">{rootDir}</span>
+                id <span className="font-mono text-foreground">{slug}</span>
               </p>
             )}
             {error && <p className="pt-1 text-sm text-destructive">{error}</p>}

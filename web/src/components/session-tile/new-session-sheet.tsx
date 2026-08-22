@@ -59,9 +59,9 @@ function firstWord(raw: string): string {
 /** Example goals that fill the hero on tap — the empty state that teaches. Each
  *  is a whole job a bot can be hired for, phrased as the first thing you'd say. */
 const GOAL_EXAMPLES = [
+  'Research a topic and summarize the best sources.',
+  'Draft replies to my open threads.',
   'Review my open PRs and post a summary to Slack.',
-  'Watch the prod logs and flag anything unusual.',
-  'Draft release notes from the merged PRs this week.',
 ]
 
 export interface NewSessionSheetProps {
@@ -101,8 +101,8 @@ export function NewSessionSheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={botVoiced ? 'Hire a new bot' : 'New session'}
-      description={botVoiced ? 'Describe the job — tools and infra are optional.' : MISC.newSessionSubtitle}
+      title={botVoiced ? 'Hire a teammate' : 'New session'}
+      description={botVoiced ? "Tell them what to do — that's all you need." : MISC.newSessionSubtitle}
     >
       {open && (
         <NewSessionPanel
@@ -473,7 +473,10 @@ function AgentForm({
           )}
           <StepDots step={step} />
         </div>
-        {step === 'describe' && <KindToggle value={kind} onChange={onKindChange} />}
+        {/* The provider (engine) toggle is no longer the hero's lead — it now
+            lives inside Advanced as "Engine" (default Claude). Most users are
+            Claude (two steps); the Codex single-step path only appears once
+            someone deliberately switches engine. */}
       </div>
 
       <div className="relative overflow-hidden">
@@ -488,6 +491,8 @@ function AgentForm({
             >
               <DescribeStep
                 provider={provider}
+                kind={kind}
+                onKindChange={onKindChange}
                 botVoiced={botVoiced}
                 goal={goal}
                 setGoal={setGoal}
@@ -532,7 +537,7 @@ function AgentForm({
               exit={reduce ? { opacity: 0 } : { opacity: 0, x: 12 }}
               transition={stepTransition}
             >
-              <ConnectStep slug={createdName ?? slug} mock={bench?.mockConnectors} />
+              <ConnectStep slug={createdName ?? slug} name={name} mock={bench?.mockConnectors} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -556,31 +561,25 @@ function AgentForm({
           Labels shift per step (hire a colleague, not launch a job). */}
       <div className="sticky bottom-0 z-10 flex gap-2 border-t border-border bg-background px-6 pb-6 pt-4">
         {step === 'describe' ? (
+          // Two buttons, one row at 390px: Cancel + one dominant primary. No
+          // third "Skip & hire" (ambiguous — step 2 hasn't been seen; the
+          // connect step offers its own "Skip for now"). Claude → Continue (to
+          // the connect step); Codex → the single-step hire, its CTA celebrating
+          // the drafted name.
           <>
             <Button type="button" variant="ghost" className="flex-1" onClick={onCancel}>
               Cancel
             </Button>
-            {provider === 'claude' ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void hire()}
-                  disabled={!canSubmit || busy}
-                >
-                  Skip &amp; hire
-                </Button>
-                <Button type="submit" className="flex-1" disabled={!canSubmit || busy}>
-                  {busy && <Loader2 className="animate-spin" />}
-                  Continue
-                </Button>
-              </>
-            ) : (
-              <Button type="submit" className="flex-1" disabled={!canSubmit || busy}>
-                {busy && <Loader2 className="animate-spin" />}
-                {busy ? 'Hiring…' : 'Hire'}
-              </Button>
-            )}
+            <Button type="submit" className="min-w-0 flex-1" disabled={!canSubmit || busy}>
+              {busy && <Loader2 className="animate-spin" />}
+              <span className="truncate">
+                {provider === 'claude'
+                  ? 'Continue'
+                  : busy
+                    ? 'Hiring…'
+                    : `Hire ${name}`}
+              </span>
+            </Button>
           </>
         ) : (
           <>
@@ -607,6 +606,10 @@ function AgentForm({
 // ── Step 1: Describe ──────────────────────────────────────────────────────────
 function DescribeStep(props: {
   provider: 'claude' | 'codex'
+  /** The provider (engine) choice + setter — relocated into Advanced as the
+   *  "Engine" row (was the hero header toggle). */
+  kind: Kind
+  onKindChange: (k: Kind) => void
   botVoiced?: boolean
   goal: string
   setGoal: (v: string) => void
@@ -614,8 +617,8 @@ function DescribeStep(props: {
   setRole: (v: string) => void
   nameValue: string
   slug: string
-  /** When set (a company is active), the "runs in" hint names the company
-   *  folder `<company>/<slug>` instead of the plain `<slug>`. */
+  /** When set (a company is active), the identity caption reads a plain
+   *  "Works in <Company>" — no slug, no folder path (the server owns the dir). */
   companyLabel?: string
   onNameChange: (v: string) => void
   pickedPin: ReturnType<typeof freeTokens>[number] | undefined
@@ -643,6 +646,9 @@ function DescribeStep(props: {
 }) {
   const {
     provider,
+    kind,
+    onKindChange,
+    botVoiced,
     goal,
     setGoal,
     role,
@@ -664,7 +670,7 @@ function DescribeStep(props: {
       {/* GOAL — the hero, task-first front door. */}
       <div className="flex flex-col gap-2">
         <label htmlFor="ns-goal" className="text-[15px] font-semibold text-foreground">
-          What should this bot do?
+          {botVoiced ? 'What should your teammate do?' : 'What should this bot do?'}
         </label>
         {/* NO autoFocus — the same iOS-PWA Vaul keyboard-during-open race the
             start-team-sheet documents: the keyboard popping mid-slide-in makes
@@ -675,7 +681,11 @@ function DescribeStep(props: {
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           rows={3}
-          placeholder="Review my PRs and post a summary to Slack."
+          placeholder={
+            botVoiced
+              ? 'Research the top options and write me a short summary.'
+              : 'Review my PRs and post a summary to Slack.'
+          }
           className="w-full resize-y rounded-xl border border-input bg-transparent px-3 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
         <p className="text-xs text-muted-foreground">
@@ -697,9 +707,20 @@ function DescribeStep(props: {
         )}
       </div>
 
-      {/* Identity — role seeds the durable job, name is drafted, face inline. */}
-      <div className="flex flex-col gap-3">
-        <div className="flex items-start gap-3">
+      {/* Identity — avatar (TAP to shuffle) + a plain-English caption, one row.
+          The Role and Name inputs, the folder slug, and the labelled "Reroll"
+          button all moved out: the name is auto-drafted (never blocks hiring),
+          the server owns the dir in a company, and the avatar itself is now the
+          shuffle affordance. Role + a Name override live in Advanced. */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onReroll}
+          disabled={busy}
+          aria-label="Shuffle avatar"
+          title="Shuffle avatar"
+          className="shrink-0 rounded-[12px] outline-none transition hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
           <SessionMark
             seed={slug || 'new-session'}
             pin={pickedPin}
@@ -707,57 +728,14 @@ function DescribeStep(props: {
             animate={false}
             label={null}
           />
-          <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
-            <Field label="Role" htmlFor="ns-role">
-              <Input
-                id="ns-role"
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                placeholder="e.g. PR reviewer"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </Field>
-            <Field label="Name" htmlFor="ns-name">
-              <Input
-                id="ns-name"
-                value={nameValue}
-                onChange={(e) => onNameChange(e.target.value)}
-                placeholder="my-bot"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </Field>
-          </div>
-        </div>
-        <div className="flex items-center justify-between gap-3 pl-[56px]">
-          <p className="truncate text-[11px] text-muted-foreground">
-            {slug ? (
-              companyLabel ? (
-                <>
-                  Runs in{' '}
-                  <code className="font-mono">
-                    {companyLabel}/{slug}
-                  </code>{' '}
-                  — drafted, edit anytime.
-                </>
-              ) : (
-                <>
-                  Runs in a folder <code className="font-mono">{slug}</code> — drafted, edit anytime.
-                </>
-              )
-            ) : (
-              <>Give it a short name to hire.</>
-            )}
-          </p>
-          <button
-            type="button"
-            onClick={onReroll}
-            disabled={busy}
-            className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            Reroll
-          </button>
+        </button>
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-semibold text-foreground">
+            {nameValue || 'New teammate'}
+          </span>
+          <span className="truncate text-[12px] text-muted-foreground">
+            {companyLabel ? `Works in ${companyLabel}` : 'Tap the avatar to reroll'}
+          </span>
         </div>
       </div>
 
@@ -773,7 +751,7 @@ function DescribeStep(props: {
           <span className="flex flex-col">
             <span>Advanced</span>
             <span className="text-[11px] font-normal text-muted-foreground">
-              Model, folder, host, worktree, instructions, tags, permissions
+              Engine, model, folder, and more
             </span>
           </span>
           <ChevronDown
@@ -793,14 +771,53 @@ function DescribeStep(props: {
               className="overflow-hidden"
             >
               <div className="flex flex-col gap-4 border-t border-border px-3.5 pb-4 pt-4">
+                {/* Engine (provider) — relocated from the hero header. A power
+                    choice, not the lead; default Claude. Changing it remounts a
+                    fresh form (the two engines take different steps/models). */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium">Engine</span>
+                  <KindToggle value={kind} onChange={onKindChange} />
+                  <p className="text-xs text-muted-foreground">Claude (default) or Codex.</p>
+                </div>
+
+                <Field
+                  label="Role (optional)"
+                  htmlFor="ns-role"
+                  hint="Seeds the durable job and the drafted name. The goal alone is enough to hire."
+                >
+                  <Input
+                    id="ns-role"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    placeholder="e.g. PR reviewer"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+
+                <Field
+                  label="Name"
+                  htmlFor="ns-name"
+                  hint="Auto-drafted from the goal — override it here if you like."
+                >
+                  <Input
+                    id="ns-name"
+                    value={nameValue}
+                    onChange={(e) => onNameChange(e.target.value)}
+                    placeholder="my-bot"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+
                 <Field label="Model" htmlFor="ns-model">
                   <CreateModelPicker provider={provider} value={props.model} onChange={props.setModel} />
                 </Field>
 
                 <Field
-                  label="Extra standing instructions"
+                  label="Standing rules (optional)"
                   htmlFor="ns-desc"
-                  hint="Durable rules for this bot — not this task. Optional; the Role above already seeds its job."
+                  hint="Durable rules for this teammate — not this task. Optional; the Role above already seeds its job."
                 >
                   <textarea
                     id="ns-desc"
@@ -881,7 +898,17 @@ function DescribeStep(props: {
 }
 
 // ── Step 2: Connect (connector onboarding, scoped, skippable) ─────────────────
-function ConnectStep({ slug, mock }: { slug: string; mock?: ConnectorCard[] }) {
+function ConnectStep({
+  slug,
+  name,
+  mock,
+}: {
+  slug: string
+  /** The DISPLAY name for the heading (the slug is the machine id used for the
+   *  grant target). */
+  name: string
+  mock?: ConnectorCard[]
+}) {
   const live = useConnectors(mock ? { source: 'local' } : {})
   const cards = mock ?? live.data ?? []
   const emptyVault = !mock && !live.isLoading && cards.length === 0
@@ -889,9 +916,9 @@ function ConnectStep({ slug, mock }: { slug: string; mock?: ConnectorCard[] }) {
   return (
     <div className="flex min-h-0 flex-col gap-3 px-6 pb-2 pt-4">
       <div className="flex flex-col gap-1">
-        <h3 className="text-[15px] font-semibold text-foreground">Give {slug} its tools</h3>
+        <h3 className="text-[15px] font-semibold text-foreground">Give {name} its apps</h3>
         <p className="text-[13px] text-muted-foreground">
-          Pick what this bot can use. You can add more later — or skip.
+          Pick what this teammate can use. You can add more later — or skip.
         </p>
       </div>
 
@@ -989,7 +1016,7 @@ function CreateModelPicker({
 // ── Two-dot step progress ─────────────────────────────────────────────────────
 function StepDots({ step }: { step: Step }) {
   const steps: Step[] = ['describe', 'connect']
-  const labels: Record<Step, string> = { describe: 'Describe', connect: 'Tools' }
+  const labels: Record<Step, string> = { describe: 'Describe', connect: 'Connect apps' }
   return (
     <div className="flex items-center gap-2" aria-label={`Step ${step === 'describe' ? 1 : 2} of 2`}>
       {steps.map((s) => {

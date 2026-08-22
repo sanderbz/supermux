@@ -17,7 +17,7 @@ import {
   type SessionConnector,
 } from '@/lib/api/connectors'
 import { companyGrantKey } from '@/lib/api/connectors'
-import { connectorInCompanyView } from '@/lib/companies'
+import { connectorInCompanyView, resolveActiveCompany } from '@/lib/companies'
 import { useConnectors, useSessionConnectors } from '@/stores/connectors-store'
 import { useCompanies } from '@/hooks/use-companies'
 import { useUI } from '@/stores/ui-store'
@@ -77,9 +77,16 @@ export function StoreView({
   // company's grants (the middle tier), and, in a bot scope, that bot's own grants.
   const activeCompany = useUI((s) => s.activeCompany)
   const { companies } = useCompanies()
+  // Resolve the (possibly stale/persisted) active id against the LIVE set — an id
+  // that no longer maps to a company FAILS OPEN to HQ (the full catalog), rather
+  // than scoping the grid to empty. Same rule Files' `companyFilesRoot` keeps.
+  const resolvedCompany = React.useMemo(
+    () => resolveActiveCompany(activeCompany, companies.map((c) => c.id)),
+    [activeCompany, companies],
+  )
   const companyRow =
-    activeCompany !== null ? companies.find((c) => c.id === activeCompany) ?? null : null
-  const companyKey = !mock && activeCompany !== null ? companyGrantKey(activeCompany) : null
+    resolvedCompany !== null ? companies.find((c) => c.id === resolvedCompany) ?? null : null
+  const companyKey = !mock && resolvedCompany !== null ? companyGrantKey(resolvedCompany) : null
   const allGrants = useSessionConnectors(mock ? null : '*')
   const companyGrants = useSessionConnectors(companyKey)
   const botGrants = useSessionConnectors(mock ? null : botName)
@@ -116,11 +123,11 @@ export function StoreView({
   // library as before. A non-empty SEARCH lifts the scope so the owner can still
   // find + grant any connector to the company (mirrors the roster search-lifts-
   // scope idiom). `grantedFor` reflects the same tiers, so this reuses it.
-  const companyScoped = variant === 'page' && !botName && activeCompany !== null
+  const companyScoped = variant === 'page' && !botName && resolvedCompany !== null
   const inCompanyView = React.useCallback(
     (id: string): boolean =>
-      !companyScoped || connectorInCompanyView(grantedFor(id), activeCompany),
-    [companyScoped, grantedFor, activeCompany],
+      !companyScoped || connectorInCompanyView(grantedFor(id), resolvedCompany),
+    [companyScoped, grantedFor, resolvedCompany],
   )
 
   // Featured is a curated highlight, not the whole catalog: cap the rail so it
