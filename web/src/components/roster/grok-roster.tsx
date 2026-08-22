@@ -82,6 +82,7 @@ import {
   resolveActiveCompany,
   inCompanyScope,
   companyFirstOrder,
+  companiesNeedingAttention,
 } from '@/lib/companies'
 import { CompanySwitcher } from '@/components/roster/company-switcher'
 import { agentHueVars } from '@/lib/grok-agent-hue'
@@ -775,6 +776,17 @@ export default function GrokRoster() {
   )
   const groups = React.useMemo(() => groupSessions(sorted, needNames), [sorted, needNames])
 
+  // Per-company attention for the switcher's need-you dots — the cross-company
+  // awareness the scoped census (above) intentionally drops. Computed from the
+  // FULL, UNFILTERED roster (`allSessions`, so scope/search never hide a signal)
+  // and REUSING the roster's own needs-you predicate (`needNames` — the same
+  // app-wide rollup the NEEDS YOU section and header count read), so there is
+  // exactly ONE definition of "needs you". `null` in the set = HQ needs you.
+  const companyAttention = React.useMemo(
+    () => companiesNeedingAttention(allSessions, (name) => needNames.has(name)),
+    [allSessions, needNames],
+  )
+
   // OD-2 = FOLD: a team is no longer a leading divider — it sorts into the SAME
   // four sections as a bot, by its own derived attention (`team-attention.ts`).
   // Each team's lead contributes two bits (does the lead itself need you / is it
@@ -961,12 +973,23 @@ export default function GrokRoster() {
   }, [navigate, threadName])
 
   // "N bots" counts every standalone session PLUS each rostered team's members
-  // and its (mapped) lead — the honest fleet size, not a row count. A rosterless
-  // team contributes nothing (it renders nowhere). From the UNFILTERED roster —
-  // the header is the fleet, not the current search.
-  const totalBots = totalBotCount(sessions.length, teams)
-  // The crew census the folded roster no longer says with a divider (OD-2).
-  const crewCount = rosteredTeams(teams).length
+  // and its (mapped) lead — the honest fleet HEADCOUNT (a crew of 3 is one row
+  // but three bots), not a row count. A rosterless team contributes nothing (it
+  // renders nowhere).
+  //
+  // SCOPED to the active company: it counts the SAME sets that feed the visible
+  // sections — `filtered` (scoped standalone bots) + `filteredTeams` (teams whose
+  // lead is in scope) — so the census can never disagree with the NEEDS YOU /
+  // ACTIVE / DONE headers below. HQ (`activeCompany === null`) counts only
+  // null-company bots; a company counts only its own. A non-empty search LIFTS
+  // the scope exactly as it does for the sections (`filtered`/`filteredTeams` are
+  // search-aware), so the two stay in lockstep while searching too. All-HQ (no
+  // companies) ⇒ `filtered` is every session and `filteredTeams` every team, so
+  // this is byte-identical to the old unfiltered census — behaviour-neutral.
+  const totalBots = totalBotCount(filtered.length, filteredTeams)
+  // The crew census the folded roster no longer says with a divider (OD-2) —
+  // scoped to the crews whose lead is in the active company.
+  const crewCount = rosteredTeams(filteredTeams).length
   const hasDetail = !!selectedSession || !!selectedTeam
 
   const SECTIONS: { key: GroupKey; label: string }[] = [
@@ -987,7 +1010,7 @@ export default function GrokRoster() {
         </span>
         {/* The HQ/company scope chip — leftmost identity, right after the
             wordmark: a scope reads as "above" the sort/density/search controls. */}
-        <CompanySwitcher />
+        <CompanySwitcher attention={companyAttention} />
         <span className="gr-count">
           {totalBots} {totalBots === 1 ? 'bot' : 'bots'}
           {crewCount > 0 && ` · ${crewCount} ${crewCount === 1 ? 'crew' : 'crews'}`}

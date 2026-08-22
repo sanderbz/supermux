@@ -39,7 +39,31 @@ function isCmdOrCtrl(e: KeyboardEvent | React.KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey
 }
 
-export function CompanySwitcher() {
+/** A stable empty attention set so the default prop is referentially constant. */
+const EMPTY_ATTENTION: ReadonlySet<number | null> = new Set()
+
+/** A subtle ~6px attention dot in the status token (`--gr-need`), NOT an
+ *  identity hue — the firewall's status half. Static (no pulse), so it is
+ *  reduced-motion-safe by construction; it carries no text, so it owes no AA
+ *  contrast, and the accessible signal rides an `sr-only` word on the row. */
+function NeedDot() {
+  return (
+    <span
+      aria-hidden
+      className="size-1.5 shrink-0 rounded-full"
+      style={{ background: 'var(--gr-need)' }}
+    />
+  )
+}
+
+export function CompanySwitcher({
+  /** The set of company ids (with `null` = HQ) that currently have at least one
+   *  bot needing attention, from the roster's own needs-you rollup. A dot shows
+   *  on each row in the set. Defaults to empty so a bench can render it bare. */
+  attention = EMPTY_ATTENTION,
+}: {
+  attention?: ReadonlySet<number | null>
+} = {}) {
   const { companies } = useCompanies()
   const activeCompany = useUI((s) => s.activeCompany)
   const setActiveCompany = useUI((s) => s.setActiveCompany)
@@ -214,14 +238,13 @@ export function CompanySwitcher() {
                   PA · tech-admin · sees everything
                 </span>
               </span>
-              {activeCompany === null && (
-                <Check
-                  size={15}
-                  className="ml-auto"
-                  style={{ color: 'var(--sm-accent)' }}
-                  aria-hidden
-                />
-              )}
+              {attention.has(null) && <span className="sr-only"> — needs you</span>}
+              <span className="ml-auto flex items-center gap-2">
+                {attention.has(null) && <NeedDot />}
+                {activeCompany === null && (
+                  <Check size={15} style={{ color: 'var(--sm-accent)' }} aria-hidden />
+                )}
+              </span>
             </button>
 
             <div className="my-1 h-px bg-border" role="separator" />
@@ -230,6 +253,7 @@ export function CompanySwitcher() {
             {companies.map((c, i) => {
               const idx = i + 1
               const on = activeCompany === c.id
+              const needs = attention.has(c.id)
               return (
                 <button
                   key={c.id}
@@ -250,7 +274,9 @@ export function CompanySwitcher() {
                       {c.slug}
                     </span>
                   </span>
+                  {needs && <span className="sr-only"> — needs you</span>}
                   <span className="ml-auto flex items-center gap-2">
+                    {needs && <NeedDot />}
                     {i < 9 && (
                       <kbd className="hidden text-[11px] tabular-nums text-muted-foreground sm:inline">
                         ⌘{i + 1}

@@ -65,6 +65,28 @@ export function companyFilesRoot(
   return c ? c.root_dir : null
 }
 
+/** Which companies (by id; `null` = HQ) have at least one bot in the NEEDS-YOU
+ *  state — the set the switcher's per-company attention dots read.
+ *
+ *  It is computed from the FULL, unfiltered session list on purpose: the scoped
+ *  header census intentionally drops cross-company counts, so this is how the
+ *  switcher keeps the awareness that "Globex needs you" while you are browsing
+ *  Acme. The needs-you rule is INJECTED (`needsYou`), never re-invented here —
+ *  the caller passes the roster's OWN predicate (`(name) => needNames.has(name)`,
+ *  the app-wide attention rollup that the NEEDS YOU section and the header count
+ *  already read) so there is exactly one definition of "needs you" in the app.
+ *  Generic over anything carrying a `name` + nullable `company_id`; a
+ *  null/undefined `company_id` folds to the `null` (HQ) key. Pure + unit-tested. */
+export function companiesNeedingAttention<
+  T extends { name: string; company_id?: number | null },
+>(sessions: readonly T[], needsYou: (name: string) => boolean): Set<number | null> {
+  const out = new Set<number | null>()
+  for (const s of sessions) {
+    if (needsYou(s.name)) out.add(s.company_id ?? null)
+  }
+  return out
+}
+
 /** The company the ⌘/Ctrl+1..9 power-user shortcut jumps to: `digit` is 1-based
  *  (the key the user pressed), so it selects `companies[digit - 1]`. Out-of-range
  *  digits (no Nth company) resolve to `undefined` = no-op, so the switcher never

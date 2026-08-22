@@ -13,6 +13,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  companiesNeedingAttention,
   companyFilesRoot,
   companyFirstOrder,
   companyForDigit,
@@ -21,6 +22,8 @@ import {
   type Company,
 } from '@/lib/companies'
 import { canMentionPeer, scopeMentionPeers } from '@/lib/mention-scope'
+import { rosteredTeams, totalBotCount } from '@/lib/team-attention'
+import type { MemberStatus, Team, TeamMember } from '@/lib/api/teams'
 
 describe('resolveActiveCompany — the stale-id guard', () => {
   test('null in ⇒ null out (already HQ)', () => {
@@ -197,5 +200,139 @@ describe('companyFilesRoot — the Files-browser starting root', () => {
   test('a stale/unknown active id fails open to null (=HQ, unrestricted)', () => {
     expect(companyFilesRoot(9, companies)).toBe(null)
     expect(companyFilesRoot(1, [])).toBe(null)
+  })
+})
+
+/* ── the polish items: scoped census + per-company attention dots ───────────── */
+
+let seq = 0
+function member(status: MemberStatus): TeamMember {
+  const name = `m${seq++}`
+  return {
+    name,
+    agent_id: `${name}@t`,
+    model: 'claude-sonnet-4',
+    color: '',
+    tmux_pane_id: '%1',
+    is_active: true,
+    status,
+  }
+}
+function team(over: Partial<Team> = {}): Team {
+  return {
+    team_name: over.team_name ?? `team-${seq++}`,
+    lead_session: 'lead',
+    lead_supermux_session: over.lead_supermux_session ?? 'supermux-lead',
+    members: over.members ?? [member('idle')],
+    tasks: over.tasks ?? [],
+    ...over,
+  }
+}
+
+/** The roster's own census derivation, reproduced from the SAME pure helpers the
+ *  component uses (`inCompanyScope` → `filtered`/`filteredTeams` → `totalBotCount`
+ *  / `rosteredTeams`). Pins the scoped counts without a DOM. */
+function scopedCensus(
+  allSessions: readonly { name: string; company_id?: number | null }[],
+  nonLeadSessions: readonly { name: string; company_id?: number | null }[],
+  teams: readonly Team[],
+  activeCompany: number | null,
+) {
+  const filtered = nonLeadSessions.filter((s) => inCompanyScope(s.company_id, activeCompany))
+  const companyByName = new Map<string, number | null>()
+  for (const s of allSessions) companyByName.set(s.name, s.company_id ?? null)
+  const filteredTeams = teams.filter((t) =>
+    inCompanyScope(companyByName.get(t.lead_supermux_session ?? '') ?? null, activeCompany),
+  )
+  return {
+    bots: totalBotCount(filtered.length, filteredTeams),
+    crews: rosteredTeams(filteredTeams).length,
+  }
+}
+
+describe('scoped census — the header count reads the active company, not the fleet', () => {
+  // 15 bots total: 2 in Acme (id 1), 3 in Globex (id 2), 10 at HQ (null).
+  const acme = [
+    { name: 'acme-a', company_id: 1 },
+    { name: 'acme-b', company_id: 1 },
+  ]
+  const globex = [
+    { name: 'globex-a', company_id: 2 },
+    { name: 'globex-b', company_id: 2 },
+    { name: 'globex-c', company_id: 2 },
+  ]
+  const hq = Array.from({ length: 10 }, (_, i) => ({ name: `hq-${i}`, company_id: null }))
+  const nonLeadSessions = [...acme, ...globex, ...hq]
+
+  test('Acme (2 bots) reads 2, NOT the global 15', () => {
+    const { bots } = scopedCensus(nonLeadSessions, nonLeadSessions, [], 1)
+    expect(bots).toBe(2)
+  })
+
+  test('HQ (null) reads only the 10 main/PA bots, not the company bots', () => {
+    const { bots } = scopedCensus(nonLeadSessions, nonLeadSessions, [], null)
+    expect(bots).toBe(10)
+  })
+
+  test('a scoped crew adds its members + lead to the company headcount', () => {
+    // A Globex team: its lead is a Globex session, so it scopes to Globex only.
+    const lead = { name: 'globex-lead', company_id: 2 }
+    const t = team({ lead_supermux_session: 'globex-lead', members: [member('idle'), member('working')] })
+    const all = [...nonLeadSessions, lead]
+    const globexCensus = scopedCensus(all, nonLeadSessions, [t], 2)
+    // 3 standalone Globex bots + 2 crew members + 1 mapped lead = 6; 1 crew.
+    expect(globexCensus.bots).toBe(6)
+    expect(globexCensus.crews).toBe(1)
+    // Acme never sees the Globex crew.
+    const acmeCensus = scopedCensus(all, nonLeadSessions, [t], 1)
+    expect(acmeCensus.bots).toBe(2)
+    expect(acmeCensus.crews).toBe(0)
+  })
+
+  test('all-HQ (no companies) is byte-identical to the old unfiltered census', () => {
+    const flat = [
+      { name: 'a', company_id: null },
+      { name: 'b', company_id: null },
+      { name: 'c' as const },
+    ]
+    const { bots } = scopedCensus(flat, flat, [], null)
+    expect(bots).toBe(totalBotCount(flat.length, []))
+    expect(bots).toBe(3)
+  })
+})
+
+describe('companiesNeedingAttention — the switcher dots reuse the roster predicate', () => {
+  const sessions = [
+    { name: 'acme-a', company_id: 1 },
+    { name: 'acme-b', company_id: 1 },
+    { name: 'globex-a', company_id: 2 },
+    { name: 'hq-a', company_id: null },
+    { name: 'hq-b' as const }, // undefined company_id = HQ bot
+  ]
+  // The injected needs-you predicate stands in for the roster's `needNames.has`.
+  const needsYou = (names: string[]) => (name: string) => names.includes(name)
+
+  test('a needy bot lights its OWN company, not the others', () => {
+    const set = companiesNeedingAttention(sessions, needsYou(['acme-a']))
+    expect(set.has(1)).toBe(true)
+    expect(set.has(2)).toBe(false)
+    expect(set.has(null)).toBe(false)
+  })
+
+  test('an HQ (null / undefined company_id) bot lights the HQ dot', () => {
+    expect(companiesNeedingAttention(sessions, needsYou(['hq-a'])).has(null)).toBe(true)
+    // undefined company_id folds to the same HQ key.
+    expect(companiesNeedingAttention(sessions, needsYou(['hq-b'])).has(null)).toBe(true)
+  })
+
+  test('several companies can light at once; a calm company stays dark', () => {
+    const set = companiesNeedingAttention(sessions, needsYou(['acme-a', 'globex-a']))
+    expect(set.has(1)).toBe(true)
+    expect(set.has(2)).toBe(true)
+    expect(set.has(null)).toBe(false)
+  })
+
+  test('no needy bots ⇒ an empty set (every dot dark)', () => {
+    expect(companiesNeedingAttention(sessions, needsYou([])).size).toBe(0)
   })
 })
