@@ -113,14 +113,6 @@ interface UIStore {
   /** Adopt an account-wide blob from `/api/prefs/session_renderer` (a peer tab
    *  or another device). Whole-value; the sync hook does the conflict scoping. */
   applyRendererPrefs: (next: RendererState) => void
-  /** Keyboard-layout MODE for the mobile chat composer (experimental). The
-   *  persisted id (0..10) of the active `KbLayout` in `KB_MODES` — the owner
-   *  A/B-tests the eleven keyboard-avoidance implementations on his device and
-   *  keeps whichever gives zero black band. Default 0 = baseline (current
-   *  behaviour). Additive scalar, so it persists automatically and needs no
-   *  migration (absent → defaults to 0 on read). */
-  kbMode: number
-  setKbMode: (v: number) => void
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
@@ -144,13 +136,6 @@ export const useUI = create<UIStore>()(
       hideStopped: false,
       botMode: false,
       setBotMode: (botMode) => set({ botMode }),
-      // 0 = DEFAULT_KB_MODE (baseline). Inlined rather than imported from the
-      // registry so this CORE store — which lands on the hero/entry chunk —
-      // never pulls the mode registry (its labels/descriptions + eleven lazy
-      // loaders) onto the cold-load path. The registry is imported only by the
-      // lazy routes that need it (settings, the mobile focus route).
-      kbMode: 0,
-      setKbMode: (kbMode) => set({ kbMode }),
       defaultRenderer: 'chat',
       rendererOverrides: {},
       setDefaultRenderer: (defaultRenderer) => set({ defaultRenderer }),
@@ -231,10 +216,3 @@ export const useUI = create<UIStore>()(
     },
   ),
 )
-
-/** The active keyboard-layout mode id (0..10), persisted. Read by the mobile
- *  focus route to select the active `KbLayout` from `KB_MODES`. The FIELD-type
- *  selector (`useKbField`) lives beside the registry
- *  (`focus-mode/kb-modes/use-kb-field.ts`) so this core store stays registry-free
- *  on the hero path. */
-export const useKbMode = (): number => useUI((s) => s.kbMode)

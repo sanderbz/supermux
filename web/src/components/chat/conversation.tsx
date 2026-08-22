@@ -291,10 +291,10 @@ export interface ChatConversationProps {
   scrollRef?: React.Ref<HTMLDivElement>
   onScroll?: React.UIEventHandler<HTMLDivElement>
   testId?: string
-  /** The active keyboard-layout MODE (`KbLayout`), threaded straight through to
-   *  `ChatSurface`. The MOBILE focus route passes it (`kbMode` → the registry's
-   *  lazy loader); every other caller (desktop, benches, unit tests) omits it and
-   *  the surface renders its current DOM byte-for-byte. */
+  /** The keyboard-layout handler (`KbLayout`), threaded straight through to
+   *  `ChatSurface`. The MOBILE focus route passes the mode-9 root-resize layout;
+   *  every other caller (desktop, benches, unit tests) omits it and the surface
+   *  renders its current DOM byte-for-byte. */
   layout?: KbLayoutComponent
 
   // ── back-pagination (daily-driver QA #3) ─────────────────────────────────

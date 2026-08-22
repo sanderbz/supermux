@@ -43,9 +43,3 @@ export interface KbLayoutProps {
 
 /** Every mode file default-exports one of these. */
 export type KbLayoutComponent = React.FC<KbLayoutProps>
-
-/** The composer FIELD element type a mode wants. Only mode 7 ('native-textarea')
- *  needs a real `<textarea>`; every other mode keeps the contenteditable. Carried
- *  on the registry entry (not in KbLayoutProps) because the field lives inside
- *  ChatSurface's composer slot, which a mode may not reach into. */
-export type KbFieldKind = 'contenteditable' | 'textarea'

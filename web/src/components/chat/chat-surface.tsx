@@ -114,17 +114,16 @@ export interface ChatSurfaceProps {
    */
   testId?: string
   /**
-   * The active keyboard-layout MODE (`KbLayout`), threaded from the mobile focus
-   * route (`kbMode` → `kbModeEntry(...).load`). The mode owns how the composer
-   * stays flush above the soft keyboard on the owner's device — the app ships
-   * eleven implementations he A/B-tests and keeps the one with zero black band.
+   * The keyboard-layout handler (`KbLayout`), threaded from the mobile focus
+   * route (the mode-9 root-resize layout). It owns how the composer stays flush
+   * above the soft keyboard on the owner's device by shrinking the app root to
+   * `visualViewport.height` while the keyboard is open.
    *
    * WHEN ABSENT (desktop, unit tests, `/dev/chat-live`) this surface renders its
    * CURRENT DOM byte-for-byte — no regression to any existing test. WHEN PRESENT
    * (mobile focus route) the surface computes its header / body / composer nodes
-   * and hands them to the mode INSTEAD of arranging them itself; the mode places
-   * them. Mode 0 (`baseline`) is a transparent passthrough, so passing it is a
-   * true no-op relative to no layout at all. See `focus-mode/kb-modes/`.
+   * and hands them to the layout INSTEAD of arranging them itself; the layout
+   * places them. See `focus-mode/kb-modes/`.
    */
   layout?: KbLayoutComponent
 }

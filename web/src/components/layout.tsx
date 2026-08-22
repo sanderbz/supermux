@@ -43,17 +43,6 @@ import {
 } from '@/hooks/use-roster-marks'
 import { AttentionProvider, useAttentionProvider } from '@/hooks/use-attention'
 import { useViewportShellVars } from '@/hooks/use-keyboard-viewport'
-import { kbdebugFlagOn } from '@/lib/kbdebug-flag'
-
-// KBDEBUG (flag-gated, ZERO-RISK): a READ-ONLY on-device probe of the real iOS
-// composer runtime state (visualViewport + CSS vars + composer ancestor chain),
-// for diagnosing the keyboard black-bar / pinning bug the offline rig cannot
-// reproduce. Code-split via React.lazy so its code lands in its OWN chunk and
-// never enters the entry/main bundle a normal cold load pays for; the lazy
-// factory (and thus the chunk fetch) only runs when `kbdebugFlagOn()` is true.
-const KbDebugOverlay = React.lazy(
-  () => import('@/components/dev/kbdebug-overlay'),
-)
 
 interface NavItem {
   to: string
@@ -463,11 +452,6 @@ export function Layout() {
         : localStorage.getItem(GROK_KILL_SWITCH_KEY),
     ),
   )
-  // KBDEBUG opt-in, read ONCE at mount (like the substrate/grok kill switches):
-  // absent ⇒ the overlay is never mounted, so no dynamic import, no listeners,
-  // no measurement — fully inert for normal users. Only `?kbdebug=1` /
-  // `localStorage.kbdebug === '1'` flips it on.
-  const [kbdebug] = React.useState(kbdebugFlagOn)
   // The shell-overlay host: the content column, published on context so any
   // route can raise a <ShellOverlay> without prop-drilling and without a
   // body-level portal (which could not be bounded by the column).
@@ -606,15 +590,6 @@ export function Layout() {
        *  overflow item open the same instance. Opt-in — zero always-on estate
        *  (it's only in the DOM as an overlay while open). */}
       <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
-      {/* KBDEBUG (flag-gated) — mounted last so it paints above every surface.
-       *  `kbdebug` is false for normal users, so the lazy chunk is never fetched
-       *  and nothing renders. Suspense fallback is null: a diagnostic overlay
-       *  has nothing to show while its own chunk loads. */}
-      {kbdebug && (
-        <React.Suspense fallback={null}>
-          <KbDebugOverlay />
-        </React.Suspense>
-      )}
     </div>
     </ShellOverlayProvider>
     </AttentionProvider>
