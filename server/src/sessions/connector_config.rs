@@ -409,6 +409,12 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
             None
         };
 
+        // CF agent-inbox read path: if this session's company has an agent-inbox
+        // (`agent@<domain>`), a granted MAIL connector's `list_inbox` is filtered
+        // to only that address via `MAIL_TO_FILTER` — so the bot reads only its
+        // own mail inside a shared mailbox. Non-secret address, resolved once.
+        let agent_inbox_addr = agent_inbox_address(state, session_name).await;
+
         let mut resolved: Vec<ResolvedGrant> = Vec::new();
         for g in &grants {
             let Some(connector) = connectors::get(&state.pool, &g.connector_id).await? else {
@@ -425,8 +431,18 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 wants_browser = true;
                 continue;
             }
-            let emit: Value =
+            let mut emit: Value =
                 serde_json::from_str(&connector.emit_json).unwrap_or_else(|_| json!({}));
+            // Inject the agent-inbox To-filter into a MAIL connector's emit env
+            // (non-secret literal). Baked here rather than at seed time because it
+            // is per-session (the bot's company), not a property of the card.
+            if let Some(addr) = &agent_inbox_addr {
+                if crate::connectors::imap_connector::is_mail_connector(&g.connector_id) {
+                    if let Some(env) = emit.get_mut("env").and_then(|e| e.as_object_mut()) {
+                        env.insert("MAIL_TO_FILTER".to_string(), Value::String(addr.clone()));
+                    }
+                }
+            }
             let secrets = resolve_secret(state, vault.as_ref(), g).await;
             resolved.push(ResolvedGrant {
                 connector_id: g.connector_id.clone(),
@@ -501,6 +517,18 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
     }
 
     cfg.finish().await
+}
+
+/// This session's company agent-inbox address (`agent@<domain>`), if one is
+/// configured — the `MAIL_TO_FILTER` value for its granted mail connectors. A
+/// plain (company-less) session, or a company with no agent-inbox, yields `None`,
+/// so mail launches stay byte-identical unless the owner opted in. Best-effort:
+/// any read failure is `None` (never blocks a launch).
+async fn agent_inbox_address(state: &AppState, session_name: &str) -> Option<String> {
+    let session = crate::db::sessions::get(&state.pool, session_name).await.ok()??;
+    let company_id = session.company_id?;
+    let cfg = crate::external_access::store::read_or_default(&state.config.data_dir).ok()?;
+    crate::external_access::store::agent_inbox_for(&cfg, company_id).map(|a| a.address.clone())
 }
 
 /// Decrypt a grant's secret field-map, or return an empty map (no secret / a
@@ -689,6 +717,135 @@ mod tests {
         assert!(
             !state.browser.is_running().await,
             "assembling a launch must never spawn chrome"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Seed a mail connector card whose emit carries an `env` block (the shared
+    /// IMAP server reads host/creds/filter from env).
+    async fn seed_mail_card(state: &crate::state::AppState, id: &str) {
+        connectors::upsert(
+            &state.pool,
+            id,
+            "agent_authored",
+            "Gmail (IMAP)",
+            "",
+            "",
+            "[]",
+            "[]",
+            &json!({
+                "command": "python3",
+                "args": ["s.py"],
+                "env": { "IMAP_HOST": "imap.gmail.com", "MAIL_ADDRESS": "${MAIL_ADDRESS}" }
+            })
+            .to_string(),
+            "{}",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Configure `company_id`'s agent-inbox in the companion store.
+    fn seed_agent_inbox(dir: &Path, company_id: i64, address: &str) {
+        let mut cfg = crate::external_access::store::read_or_default(dir).unwrap();
+        crate::external_access::store::upsert_agent_inbox(
+            &mut cfg,
+            crate::external_access::store::AgentInbox {
+                company_id,
+                address: address.to_string(),
+                destination: "owner@example.com".to_string(),
+                verified: true,
+                rule_tag: None,
+            },
+        );
+        crate::external_access::store::write_atomic(dir, &cfg).unwrap();
+    }
+
+    /// CF agent-inbox read path: a granted MAIL connector for a company that HAS an
+    /// agent-inbox gets `MAIL_TO_FILTER=<agent@domain>` baked into its launch env,
+    /// so the bot's `list_inbox` shows only its own mail.
+    #[tokio::test]
+    async fn mail_connector_gets_agent_inbox_to_filter_when_configured() {
+        let (state, dir) = browser_state().await;
+        seed_mail_card(&state, "gmail-imap").await;
+        crate::db::sessions::insert_minimal(&state.pool, "crm-bot", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = 7 WHERE name = 'crm-bot'")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        seed_agent_inbox(&dir, 7, "agent@example.com");
+        connectors::grant(&state.pool, "crm-bot", "gmail-imap", None, true)
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "crm-bot").await.unwrap().expect("active");
+        let cfg = mcp_config_json(&fin);
+        assert_eq!(
+            cfg["mcpServers"]["gmail-imap"]["env"]["MAIL_TO_FILTER"],
+            json!("agent@example.com"),
+            "the bot's own address is injected as the To-filter"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The filter is injected ONLY when the company has an agent-inbox. No record →
+    /// no `MAIL_TO_FILTER`, and a NON-mail connector is never touched even when one
+    /// exists.
+    #[tokio::test]
+    async fn no_to_filter_without_an_agent_inbox_and_never_on_non_mail() {
+        let (state, dir) = browser_state().await;
+        seed_mail_card(&state, "gmail-imap").await;
+        // A non-mail connector that also carries an env block.
+        connectors::upsert(
+            &state.pool,
+            "pmcp-notion",
+            "mcp_catalog",
+            "Notion",
+            "",
+            "",
+            "[]",
+            "[]",
+            &json!({ "command": "npx", "args": ["notion"], "env": { "X": "1" } }).to_string(),
+            "{}",
+        )
+        .await
+        .unwrap();
+        crate::db::sessions::insert_minimal(&state.pool, "co-bot", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = 9 WHERE name = 'co-bot'")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        connectors::grant(&state.pool, "co-bot", "gmail-imap", None, true)
+            .await
+            .unwrap();
+        connectors::grant(&state.pool, "co-bot", "pmcp-notion", None, true)
+            .await
+            .unwrap();
+
+        // Company 9 has NO agent-inbox → no filter anywhere.
+        let fin = assemble(&state, "co-bot").await.unwrap().expect("active");
+        let cfg = mcp_config_json(&fin);
+        assert!(
+            cfg["mcpServers"]["gmail-imap"]["env"].get("MAIL_TO_FILTER").is_none(),
+            "no agent-inbox ⇒ no To-filter on the mail connector"
+        );
+
+        // Now give company 9 an inbox: the mail connector gets the filter, the
+        // non-mail connector never does.
+        seed_agent_inbox(&dir, 9, "agent@example.com");
+        let fin = assemble(&state, "co-bot").await.unwrap().expect("active");
+        let cfg = mcp_config_json(&fin);
+        assert_eq!(
+            cfg["mcpServers"]["gmail-imap"]["env"]["MAIL_TO_FILTER"],
+            json!("agent@example.com")
+        );
+        assert!(
+            cfg["mcpServers"]["pmcp-notion"]["env"].get("MAIL_TO_FILTER").is_none(),
+            "a non-mail connector is never given the To-filter"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

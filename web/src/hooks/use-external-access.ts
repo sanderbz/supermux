@@ -215,6 +215,35 @@ export function useCompanyHost(companyId: number) {
   })
 }
 
+// ── Step 3b — Agent inbox (Cloudflare Email Routing) ──────────────────────────
+
+/** `POST /api/external-access/agent-inbox` — mint `<local>@<domain>` forwarding to
+ *  a connected mailbox. Idempotent, so the wizard's "Check again" re-runs it to
+ *  refresh the destination's verified state; invalidates status so the live chip
+ *  updates. */
+export function useAgentInbox(companyId: number) {
+  const invalidate = useInvalidateStatus(companyId)
+  return useMutation({
+    mutationFn: async (v: { localPart: string; destinationEmail: string }) => {
+      if (devMockActive()) return (await mockClient()).agentInbox(companyId, v.localPart, v.destinationEmail)
+      return externalAccessApi.agentInbox(companyId, v.localPart, v.destinationEmail)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+/** `DELETE /api/external-access/agent-inbox` — remove this company's agent-inbox. */
+export function useDeleteAgentInbox(companyId: number) {
+  const invalidate = useInvalidateStatus(companyId)
+  return useMutation({
+    mutationFn: async () => {
+      if (devMockActive()) return (await mockClient()).deleteAgentInbox(companyId)
+      return externalAccessApi.deleteAgentInbox(companyId)
+    },
+    onSuccess: invalidate,
+  })
+}
+
 export function useVerifyLogin(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({

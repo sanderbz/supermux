@@ -100,6 +100,14 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// Is `id` one of the IMAP/SMTP mail connectors (this family OR the shipped
+/// iCloud card)? The Cloudflare agent-inbox read path uses this to decide whether
+/// to inject `MAIL_TO_FILTER` into a granted mail connector's launch env, so the
+/// bot's `list_inbox` shows only its own `agent@<domain>` mail.
+pub fn is_mail_connector(id: &str) -> bool {
+    id == super::icloud::ICLOUD_ID || PROVIDERS.iter().any(|p| p.id == id)
+}
+
 /// The three tools the shared server exposes (for the card's tool list/count).
 fn tool_decls() -> Vec<ToolDecl> {
     vec![

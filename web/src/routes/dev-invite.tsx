@@ -15,6 +15,7 @@
 //           /dev/invite?mock=1&entry=C       (already reachable — the repeat-invite path)
 //           /dev/invite?mock=1&entry=Q       (the "try without a domain" chooser — qt-choice)
 //           /dev/invite?mock=1&entry=Q&tunnel=1 (a temporary link already live — qt-success)
+//           /dev/invite?mock=1&entry=I       (the Cloudflare agent-inbox step — agent-inbox, pending)
 //
 // On a 390px viewport the ResponsiveSheet renders as the Vaul bottom-sheet; on a
 // wide viewport it is the desktop side sheet.
@@ -71,7 +72,7 @@ export default function DevInvite() {
         >
           Open wizard
         </button>
-        {(['A', 'B', 'C', 'Q'] as const).map((e) => (
+        {(['A', 'B', 'C', 'Q', 'I'] as const).map((e) => (
           <button
             key={e}
             type="button"

@@ -11,6 +11,8 @@
 //! | `GET  /api/external-access/zones`          | List the saved CF token's zones (the base-domain choices). |
 //! | `POST /api/external-access/base-domain`    | Set the operator's base domain (must be a controlled zone), hot-reload. |
 //! | `POST /api/external-access/google`         | Save the Google client id + secret (0600), hot-reload. |
+//! | `POST /api/external-access/agent-inbox`    | Mint `agent@<domain>` via CF Email Routing → a connected mailbox. |
+//! | `DELETE /api/external-access/agent-inbox`  | Remove a company's agent-inbox (rule + record). |
 //! | `POST /api/companies/{id}/host`            | Derive + write this company's `company_hosts` entry, hot-reload. |
 //! | `POST /api/companies/{id}/verify-login`    | Surface the exact redirect URI to register (redirect_uri_mismatch). |
 //! | `POST /api/companies/{id}/humans`          | Seed a colleague `human_users` row; returns the login url. |
@@ -164,6 +166,10 @@ pub fn router_for(state: AppState) -> Router {
             post(base_domain_handler),
         )
         .route("/api/external-access/google", post(google_handler))
+        .route(
+            "/api/external-access/agent-inbox",
+            post(agent_inbox_handler).delete(agent_inbox_delete_handler),
+        )
         .route(
             "/api/external-access/quick-tunnel",
             post(quick_tunnel_handler).delete(quick_tunnel_teardown_handler),
@@ -417,6 +423,22 @@ struct CompanyStatus {
     reachable: bool,
     host: String,
     redirect_uri: String,
+    /// The company's Cloudflare agent-inbox, if one has been provisioned. Absent
+    /// when the owner hasn't given this company's bots their own email yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_inbox: Option<AgentInboxStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentInboxStatus {
+    /// The bot's address, e.g. `agent@example.com`.
+    address: String,
+    /// The destination mailbox mail forwards to.
+    destination: String,
+    /// Whether Cloudflare has seen the owner verify the destination.
+    verified: bool,
+    /// `true` while the destination still needs its one-click verification.
+    verification_pending: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -500,6 +522,19 @@ async fn status_handler(
                 .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
             // Without a chosen base domain external access is not configured — a
             // benign "not configured" block (never a fake host). Fail-closed.
+            // The agent-inbox (if provisioned) is surfaced from the companion
+            // store — a cheap, side-effect-free read, so status polling never
+            // hits Cloudflare for it. `verified` is refreshed by re-running the
+            // provision endpoint (the wizard's "Check again").
+            let agent_inbox = store::read_or_default(&state.config.data_dir)
+                .ok()
+                .and_then(|s| store::agent_inbox_for(&s, id).cloned())
+                .map(|a| AgentInboxStatus {
+                    address: a.address,
+                    destination: a.destination,
+                    verified: a.verified,
+                    verification_pending: !a.verified,
+                });
             match &base_domain {
                 Some(base) => {
                     let host = company_canonical_host(&co.slug, base);
@@ -518,6 +553,7 @@ async fn status_handler(
                         reachable: written && tunnel_state == "healthy",
                         host,
                         redirect_uri,
+                        agent_inbox,
                     })
                 }
                 None => Some(CompanyStatus {
@@ -527,6 +563,7 @@ async fn status_handler(
                     reachable: false,
                     host: String::new(),
                     redirect_uri: String::new(),
+                    agent_inbox,
                 }),
             }
         }
@@ -584,6 +621,206 @@ async fn google_handler(
     state.reload_human_auth().map_err(AppError::Internal)?;
 
     Ok(ok(GoogleResult { configured: true }))
+}
+
+// ── 4d. POST/DELETE /api/external-access/agent-inbox ─────────────────────────
+
+/// A Cloudflare Email-Routing local part (the bit before `@`): ASCII lowercase
+/// letters/digits with interior `.`/`_`/`-`. Validated in code (no regex) so it
+/// can never carry a space, an `@`, or a path segment into the address we build.
+fn valid_local_part(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        && !s.starts_with(['.', '-'])
+        && !s.ends_with(['.', '-'])
+}
+
+/// Map a Cloudflare error from the Email-Routing calls to a human 400 — a
+/// `MissingScope` is the actionable "re-mint the token with the Email Routing
+/// scope" case the wizard shows.
+fn agent_inbox_cf_err(e: cf::CfError) -> AppError {
+    match e {
+        cf::CfError::MissingScope(_) => AppError::BadRequest(
+            "your Cloudflare token is missing the Email Routing scope — re-mint it with \
+             \"Email Routing Rules: Edit\" (keep the existing DNS: Edit for the MX records) \
+             and save the new token, then try again."
+                .into(),
+        ),
+        other => cf_err(other),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentInboxInput {
+    company_id: i64,
+    #[serde(default)]
+    local_part: Option<String>,
+    destination_email: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentInboxResult {
+    /// The bot's freshly-minted address, e.g. `agent@example.com`.
+    address: String,
+    destination: String,
+    /// True while the destination still needs its one CF verification click.
+    verification_pending: bool,
+    /// The zone's routing enablement (reflected from `email_routing_status`).
+    routing_enabled: bool,
+}
+
+/// `POST /api/external-access/agent-inbox` — give a company's bots their own
+/// address on the connected domain. Enables Cloudflare Email Routing on the zone,
+/// registers + (re)checks the destination mailbox, creates the
+/// `<local_part>@<base_domain> → destination` forward rule, and persists the
+/// non-secret record. Idempotent: re-running refreshes the destination's verified
+/// state (the wizard's "Check again") without duplicating the rule. FAIL-CLOSED —
+/// requires a chosen base domain (the connected zone) and a saved CF token.
+async fn agent_inbox_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+    Json(input): Json<AgentInboxInput>,
+) -> Result<Json<Envelope<AgentInboxResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/agent-inbox")?;
+    // The connected domain is the zone email routing runs on (fail-closed).
+    let base = require_base_domain(&state)?;
+    let id = input.company_id;
+    crate::db::companies::get(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
+
+    let local_part = input
+        .local_part
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("agent")
+        .to_ascii_lowercase();
+    if !valid_local_part(&local_part) {
+        return Err(AppError::BadRequest(
+            "local part must be lowercase letters/digits with interior . _ - (e.g. \"agent\")".into(),
+        ));
+    }
+    let destination = input.destination_email.trim().to_ascii_lowercase();
+    if !EMAIL_RE.is_match(&destination) {
+        return Err(AppError::BadRequest("destination email is not a valid address".into()));
+    }
+    let address = format!("{local_part}@{base}");
+
+    // Reject an address another company already claimed (each bot address is
+    // globally unique on the zone — two companies can't share one inbox).
+    {
+        let cfg = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+        if cfg
+            .agent_inboxes
+            .iter()
+            .any(|a| a.company_id != id && a.address.eq_ignore_ascii_case(&address))
+        {
+            return Err(AppError::Conflict(format!(
+                "{address} is already used by another company — pick a different local part"
+            )));
+        }
+    }
+
+    let token = read_cf_token(&state)
+        .ok_or_else(|| AppError::BadRequest("save a Cloudflare API token first".into()))?;
+    let api = state.external_access.cf();
+    let account_id = cf::discover_account(api.as_ref(), &token)
+        .await
+        .map_err(cf_err)?;
+    let zone_id = api.zone_id(&token, &base).await.map_err(cf_err)?;
+
+    // Enable routing (MX+SPF), register the destination, create the forward rule.
+    // A 403 from any of these ⇒ the token lacks the Email Routing scope.
+    api.enable_email_routing(&token, &zone_id)
+        .await
+        .map_err(agent_inbox_cf_err)?;
+    let dest = api
+        .add_destination_address(&token, &account_id, &destination)
+        .await
+        .map_err(agent_inbox_cf_err)?;
+    let rule_tag = api
+        .create_routing_rule(
+            &token,
+            &zone_id,
+            &format!("supermux agent-inbox: {address}"),
+            &address,
+            &destination,
+        )
+        .await
+        .map_err(agent_inbox_cf_err)?;
+    let routing_enabled = api
+        .email_routing_status(&token, &zone_id)
+        .await
+        .map(|s| s.enabled)
+        .unwrap_or(true);
+
+    // Persist the non-secret record (idempotent upsert by company).
+    let mut cfg = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+    store::upsert_agent_inbox(
+        &mut cfg,
+        store::AgentInbox {
+            company_id: id,
+            address: address.clone(),
+            destination: destination.clone(),
+            verified: dest.verified,
+            rule_tag: Some(rule_tag),
+        },
+    );
+    store::write_atomic(&state.config.data_dir, &cfg).map_err(AppError::Internal)?;
+
+    Ok(ok(AgentInboxResult {
+        address,
+        destination,
+        verification_pending: !dest.verified,
+        routing_enabled,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentInboxDeleteQuery {
+    company_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentInboxDeleteResult {
+    deleted: bool,
+}
+
+/// `DELETE /api/external-access/agent-inbox?company_id=<id>` — remove a company's
+/// agent-inbox: best-effort delete of the Cloudflare routing rule (by its stored
+/// tag), then drop the store record. The destination address (which the owner may
+/// use elsewhere) is intentionally left registered.
+async fn agent_inbox_delete_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+    Query(q): Query<AgentInboxDeleteQuery>,
+) -> Result<Json<Envelope<AgentInboxDeleteResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/agent-inbox")?;
+    let mut cfg = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+    let existing = store::agent_inbox_for(&cfg, q.company_id).cloned();
+    let Some(inbox) = existing else {
+        return Ok(ok(AgentInboxDeleteResult { deleted: false }));
+    };
+
+    // Best-effort CF rule teardown. A missing token/base or a CF hiccup must not
+    // block dropping the local record (fail-closed: no dangling allowlist).
+    if let Some(tag) = &inbox.rule_tag {
+        if let (Some(token), Ok(base)) = (read_cf_token(&state), require_base_domain(&state)) {
+            let api = state.external_access.cf();
+            if let Ok(zone_id) = api.zone_id(&token, &base).await {
+                if let Err(e) = api.delete_routing_rule(&token, &zone_id, tag).await {
+                    tracing::warn!(error = %e, "agent-inbox: CF rule delete failed; dropping record anyway");
+                }
+            }
+        }
+    }
+
+    store::remove_agent_inbox(&mut cfg, q.company_id);
+    store::write_atomic(&state.config.data_dir, &cfg).map_err(AppError::Internal)?;
+    Ok(ok(AgentInboxDeleteResult { deleted: true }))
 }
 
 // ── 4a. POST/DELETE /api/external-access/quick-tunnel ────────────────────────

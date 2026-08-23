@@ -85,6 +85,16 @@ export interface QuickTunnelTeardownResult {
   torn_down: boolean
 }
 
+/** The company's Cloudflare agent-inbox (`agent@<domain>` → a connected mailbox),
+ *  present on `company` once provisioned. `verification_pending` is the honesty
+ *  flag: Cloudflare forwards only after the owner clicks the one verify link. */
+export interface AgentInboxStatus {
+  address: string
+  destination: string
+  verified: boolean
+  verification_pending: boolean
+}
+
 /** Per-company external-access state (present when `company_id` is passed). */
 export interface CompanyStatus {
   company_id: number
@@ -94,6 +104,17 @@ export interface CompanyStatus {
   reachable: boolean
   host: string
   redirect_uri: string
+  /** The provisioned agent-inbox, or absent when this company's bots have no
+   *  address yet. */
+  agent_inbox?: AgentInboxStatus | null
+}
+
+/** `POST /api/external-access/agent-inbox` result. */
+export interface AgentInboxResult {
+  address: string
+  destination: string
+  verification_pending: boolean
+  routing_enabled: boolean
 }
 
 export interface ExternalStatus {
@@ -211,6 +232,31 @@ export const externalAccessApi = {
     sessionRequest('/api/external-access/google', {
       method: 'POST',
       body: JSON.stringify({ client_id, client_secret }),
+    }),
+
+  /** `POST /api/external-access/agent-inbox` — mint `<local_part>@<domain>` via
+   *  Cloudflare Email Routing forwarding to `destination_email` (a connected
+   *  mailbox). Idempotent — re-running refreshes the destination's verified state.
+   *  Returns `{address, destination, verification_pending, routing_enabled}`. */
+  agentInbox: (
+    companyId: number,
+    localPart: string,
+    destinationEmail: string,
+  ): Promise<AgentInboxResult> =>
+    sessionRequest('/api/external-access/agent-inbox', {
+      method: 'POST',
+      body: JSON.stringify({
+        company_id: companyId,
+        local_part: localPart,
+        destination_email: destinationEmail,
+      }),
+    }),
+
+  /** `DELETE /api/external-access/agent-inbox?company_id=` — remove this company's
+   *  agent-inbox (CF rule + record). */
+  deleteAgentInbox: (companyId: number): Promise<{ deleted: boolean }> =>
+    sessionRequest(`/api/external-access/agent-inbox?company_id=${companyId}`, {
+      method: 'DELETE',
     }),
 
   /** `POST /api/companies/{id}/host` — derive + write this company's

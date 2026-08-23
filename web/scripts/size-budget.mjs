@@ -1017,7 +1017,24 @@ const BUDGET_ENTRY_JS = 161 * KB
 //              eagerly-reachable bytes; the new wire types erase).
 // A genuine additive feature (no-domain onboarding), not a regression to trim:
 // ceil(measured)=337, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 337 * KB
+// 337 → 338 at the Cloudflare agent-inbox step (feat/companies-grok, slice 3): the
+// wizard gains an optional "give this company's bots their own email" step
+// (`AgentInboxStep`) that mints `agent@<domain>` via CF Email Routing forwarding to
+// a connected mailbox, with the honest one-click destination-verification state.
+// Measured 337.39 against 337.00 — +0.39 KB, ALL of it OFF the hero path: it lands
+// in the already-lazy `invite-wizard` chunk + the eagerly-cached api barrel, and the
+// ENTRY gate — the hard one guarding cold load — is UNMOVED at 157.11/161 (98%),
+// +0.00 KB (grep finds no `external-access/agent-inbox` in `index-*.js`). Where the
+// bytes went:
+//   +~0.30 KB  `AgentInboxStep` in `invite-wizard-sheet` (the form, the
+//              verification-pending panel, the live/remove states) + the `inbox`
+//              step in the permanent order. Wizard-route-only, lazy code.
+//   +~0.09 KB  `useAgentInbox` / `useDeleteAgentInbox` in `use-external-access` +
+//              `agentInbox` / `deleteAgentInbox` in the api barrel (the only
+//              eagerly-reachable bytes; the new wire types erase).
+// A genuine additive feature (the agent-inbox), not a regression to trim:
+// ceil(measured)=338, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 338 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

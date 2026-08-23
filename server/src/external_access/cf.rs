@@ -48,6 +48,23 @@ pub struct Tunnel {
     pub token: String,
 }
 
+/// The verification state of a Cloudflare Email-Routing **destination** address
+/// (the real mailbox forwarding lands in). Cloudflare only forwards to a
+/// destination the owner has verified by clicking the link CF emails — so a fresh
+/// destination is `verified:false` until they do.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DestinationStatus {
+    pub email: String,
+    pub verified: bool,
+}
+
+/// The zone's Email-Routing enablement (`GET /zones/{z}/email/routing`). `enabled`
+/// is true once the MX+SPF records are provisioned and routing is on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EmailRoutingStatus {
+    pub enabled: bool,
+}
+
 /// One DNS zone the token can read: its Cloudflare id + apex name. `zone_name`
 /// (e.g. `example.com`) is what the operator picks as their `base_domain`;
 /// `zone_id` is re-derived at provision time via [`CfApi::zone_id`] for the DNS
@@ -125,6 +142,57 @@ pub trait CfApi: Send + Sync {
         account_id: &str,
         tunnel_id: &str,
     ) -> Result<String, CfError>;
+
+    // ── Email Routing (the agent-inbox surface) ────────────────────────────────
+    //
+    // These three writes need the token's **Email Routing Rules: Edit** scope (the
+    // MX/SPF records enable writes reuse the existing DNS:Edit). A `FORBIDDEN` from
+    // any of them surfaces as `MissingScope("Email Routing Rules:Edit")` so the
+    // wizard can tell the operator to re-mint the token with that scope. Idempotent
+    // by construction — re-running a provision is a no-op that returns live state.
+
+    /// `POST /zones/{z}/email/routing/enable` — provision MX+SPF and turn routing
+    /// on. Idempotent: an already-enabled zone is treated as success.
+    async fn enable_email_routing(&self, token: &str, zone_id: &str) -> Result<(), CfError>;
+
+    /// `POST /accounts/{a}/email/routing/addresses` — register a destination
+    /// mailbox (Cloudflare emails it a verification link). Idempotent: an
+    /// already-registered address returns its current verified state rather than
+    /// erroring. Returns whether Cloudflare has seen the owner verify it.
+    async fn add_destination_address(
+        &self,
+        token: &str,
+        account_id: &str,
+        email: &str,
+    ) -> Result<DestinationStatus, CfError>;
+
+    /// `POST /zones/{z}/email/routing/rules` — a `to:<agent@domain> → forward
+    /// <destination>` rule. Idempotent by matcher: an existing rule for the same
+    /// `to` address is reused (its `tag` returned) rather than duplicated.
+    async fn create_routing_rule(
+        &self,
+        token: &str,
+        zone_id: &str,
+        name: &str,
+        to_address: &str,
+        forward_to: &str,
+    ) -> Result<String, CfError>;
+
+    /// `DELETE /zones/{z}/email/routing/rules/{tag}` — remove a rule by its tag.
+    async fn delete_routing_rule(
+        &self,
+        token: &str,
+        zone_id: &str,
+        rule_tag: &str,
+    ) -> Result<(), CfError>;
+
+    /// `GET /zones/{z}/email/routing` — the zone's routing enablement, to reflect
+    /// enabled/pending in status.
+    async fn email_routing_status(
+        &self,
+        token: &str,
+        zone_id: &str,
+    ) -> Result<EmailRoutingStatus, CfError>;
 }
 
 /// Verify the token is active and reach an account (proves account-scoped
@@ -496,6 +564,242 @@ impl CfApi for RealCfApi {
         let env: CfEnvelope<T> = resp.json().await.map_err(|e| CfError::Api(e.to_string()))?;
         Ok(env.into_result("tunnel_status")?.status)
     }
+
+    async fn enable_email_routing(&self, token: &str, zone_id: &str) -> Result<(), CfError> {
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                token,
+                &format!("/zones/{zone_id}/email/routing/enable"),
+            )
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        // Non-2xx: routing is very likely already enabled (a re-provision). Confirm
+        // idempotently rather than surfacing an error.
+        let already = self
+            .email_routing_status(token, zone_id)
+            .await
+            .map(|s| s.enabled)
+            .unwrap_or(false);
+        if already {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let env: CfEnvelope<serde_json::Value> = resp
+                .json()
+                .await
+                .map_err(|e| CfError::Api(format!("{status}: {e}")))?;
+            env.into_result("enable_email_routing").map(|_| ())
+        }
+    }
+
+    async fn add_destination_address(
+        &self,
+        token: &str,
+        account_id: &str,
+        email: &str,
+    ) -> Result<DestinationStatus, CfError> {
+        // A destination address carries a `verified` timestamp (null until the
+        // owner clicks Cloudflare's verification link).
+        #[derive(serde::Deserialize)]
+        struct Addr {
+            #[serde(default)]
+            email: String,
+            #[serde(default)]
+            verified: Option<serde_json::Value>,
+        }
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                token,
+                &format!("/accounts/{account_id}/email/routing/addresses"),
+            )
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        if resp.status().is_success() {
+            let env: CfEnvelope<Addr> =
+                resp.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+            let a = env.into_result("add_destination_address")?;
+            return Ok(DestinationStatus {
+                email: if a.email.is_empty() { email.to_string() } else { a.email },
+                verified: a.verified.map(|v| !v.is_null()).unwrap_or(false),
+            });
+        }
+        // Already registered (idempotent): re-fetch the list and read its state.
+        #[derive(serde::Deserialize)]
+        struct AddrRow {
+            #[serde(default)]
+            email: String,
+            #[serde(default)]
+            verified: Option<serde_json::Value>,
+        }
+        let list = self
+            .req(
+                reqwest::Method::GET,
+                token,
+                &format!("/accounts/{account_id}/email/routing/addresses?per_page=50"),
+            )
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        let env: CfEnvelope<Vec<AddrRow>> =
+            list.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+        let rows = env.into_result("list_destination_addresses")?;
+        let found = rows
+            .into_iter()
+            .find(|r| r.email.eq_ignore_ascii_case(email));
+        Ok(DestinationStatus {
+            email: email.to_string(),
+            verified: found
+                .and_then(|r| r.verified)
+                .map(|v| !v.is_null())
+                .unwrap_or(false),
+        })
+    }
+
+    async fn create_routing_rule(
+        &self,
+        token: &str,
+        zone_id: &str,
+        name: &str,
+        to_address: &str,
+        forward_to: &str,
+    ) -> Result<String, CfError> {
+        #[derive(serde::Deserialize)]
+        struct Rule {
+            #[serde(default)]
+            tag: String,
+            #[serde(default)]
+            matchers: Vec<Matcher>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Matcher {
+            #[serde(default)]
+            field: String,
+            #[serde(default)]
+            value: String,
+        }
+        // Idempotent by matcher: reuse an existing `to:<address>` rule if present.
+        let list = self
+            .req(
+                reqwest::Method::GET,
+                token,
+                &format!("/zones/{zone_id}/email/routing/rules?per_page=50"),
+            )
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        if list.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        if list.status().is_success() {
+            let env: CfEnvelope<Vec<Rule>> =
+                list.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+            if let Ok(rules) = env.into_result("list_routing_rules") {
+                if let Some(existing) = rules.into_iter().find(|r| {
+                    r.matchers.iter().any(|m| {
+                        m.field == "to" && m.value.eq_ignore_ascii_case(to_address)
+                    })
+                }) {
+                    if !existing.tag.is_empty() {
+                        return Ok(existing.tag);
+                    }
+                }
+            }
+        }
+        // None yet — create it.
+        let body = serde_json::json!({
+            "name": name,
+            "enabled": true,
+            "matchers": [{ "type": "literal", "field": "to", "value": to_address }],
+            "actions": [{ "type": "forward", "value": [forward_to] }],
+        });
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                token,
+                &format!("/zones/{zone_id}/email/routing/rules"),
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        let env: CfEnvelope<Rule> =
+            resp.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+        Ok(env.into_result("create_routing_rule")?.tag)
+    }
+
+    async fn delete_routing_rule(
+        &self,
+        token: &str,
+        zone_id: &str,
+        rule_tag: &str,
+    ) -> Result<(), CfError> {
+        let resp = self
+            .req(
+                reqwest::Method::DELETE,
+                token,
+                &format!("/zones/{zone_id}/email/routing/rules/{rule_tag}"),
+            )
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        // A 404 (rule already gone) is a benign no-op for a delete.
+        if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        let status = resp.status();
+        let env: CfEnvelope<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| CfError::Api(format!("{status}: {e}")))?;
+        env.into_result("delete_routing_rule").map(|_| ())
+    }
+
+    async fn email_routing_status(
+        &self,
+        token: &str,
+        zone_id: &str,
+    ) -> Result<EmailRoutingStatus, CfError> {
+        #[derive(serde::Deserialize)]
+        struct Routing {
+            #[serde(default)]
+            enabled: bool,
+        }
+        let resp = self
+            .req(
+                reqwest::Method::GET,
+                token,
+                &format!("/zones/{zone_id}/email/routing"),
+            )
+            .send()
+            .await
+            .map_err(|e| CfError::Api(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        let env: CfEnvelope<Routing> =
+            resp.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+        Ok(EmailRoutingStatus {
+            enabled: env.into_result("email_routing_status")?.enabled,
+        })
+    }
 }
 
 // ── test double ──────────────────────────────────────────────────────────────
@@ -521,6 +825,20 @@ pub struct MockCfApi {
     pub create_calls: std::sync::atomic::AtomicUsize,
     /// The status `tunnel_status` reports.
     pub status: std::sync::Mutex<String>,
+    // ── Email Routing knobs (agent-inbox) ──
+    /// When false, the routing writes return `MissingScope` (the token lacks the
+    /// Email Routing Rules:Edit scope) — drives the missing-scope test.
+    pub email_scope_ok: bool,
+    /// The verified state `add_destination_address` reports (default false so the
+    /// happy-path test sees the honest pending state a fresh destination has).
+    pub destination_verified: bool,
+    /// Zone routing enablement, shared so a re-provision observes the enable.
+    pub routing_enabled: std::sync::Mutex<bool>,
+    /// Counts `create_routing_rule` bodies actually POSTed (idempotency assert).
+    pub rule_create_calls: std::sync::atomic::AtomicUsize,
+    /// The single routing rule this mock "holds" (its tag), shared so a re-run
+    /// reuses it and a delete clears it.
+    pub existing_rule: std::sync::Mutex<Option<String>>,
 }
 
 #[cfg(test)]
@@ -539,6 +857,11 @@ impl Default for MockCfApi {
             existing_tunnel: std::sync::Mutex::new(None),
             create_calls: std::sync::atomic::AtomicUsize::new(0),
             status: std::sync::Mutex::new("healthy".to_string()),
+            email_scope_ok: true,
+            destination_verified: false,
+            routing_enabled: std::sync::Mutex::new(false),
+            rule_create_calls: std::sync::atomic::AtomicUsize::new(0),
+            existing_rule: std::sync::Mutex::new(None),
         }
     }
 }
@@ -547,6 +870,10 @@ impl Default for MockCfApi {
 impl MockCfApi {
     pub fn create_count(&self) -> usize {
         self.create_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn rule_create_count(&self) -> usize {
+        self.rule_create_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -653,5 +980,74 @@ impl CfApi for MockCfApi {
         _tunnel_id: &str,
     ) -> Result<String, CfError> {
         Ok(self.status.lock().unwrap().clone())
+    }
+
+    async fn enable_email_routing(&self, _token: &str, _zone_id: &str) -> Result<(), CfError> {
+        if !self.email_scope_ok {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        *self.routing_enabled.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn add_destination_address(
+        &self,
+        _token: &str,
+        _account_id: &str,
+        email: &str,
+    ) -> Result<DestinationStatus, CfError> {
+        if !self.email_scope_ok {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        Ok(DestinationStatus {
+            email: email.to_string(),
+            verified: self.destination_verified,
+        })
+    }
+
+    async fn create_routing_rule(
+        &self,
+        _token: &str,
+        _zone_id: &str,
+        _name: &str,
+        _to_address: &str,
+        _forward_to: &str,
+    ) -> Result<String, CfError> {
+        if !self.email_scope_ok {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        // Idempotent by matcher: reuse the held rule, only counting real creates.
+        let mut held = self.existing_rule.lock().unwrap();
+        if let Some(tag) = held.as_ref() {
+            return Ok(tag.clone());
+        }
+        self.rule_create_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tag = "rule-tag-abc".to_string();
+        *held = Some(tag.clone());
+        Ok(tag)
+    }
+
+    async fn delete_routing_rule(
+        &self,
+        _token: &str,
+        _zone_id: &str,
+        _rule_tag: &str,
+    ) -> Result<(), CfError> {
+        *self.existing_rule.lock().unwrap() = None;
+        Ok(())
+    }
+
+    async fn email_routing_status(
+        &self,
+        _token: &str,
+        _zone_id: &str,
+    ) -> Result<EmailRoutingStatus, CfError> {
+        if !self.email_scope_ok {
+            return Err(CfError::MissingScope("Email Routing Rules:Edit".into()));
+        }
+        Ok(EmailRoutingStatus {
+            enabled: *self.routing_enabled.lock().unwrap(),
+        })
     }
 }

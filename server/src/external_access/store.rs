@@ -58,6 +58,59 @@ pub struct CompaniesConfig {
     /// parses byte-identically with an empty list.
     #[serde(default)]
     pub oauth_apps: Vec<OauthApp>,
+    /// Slice 3 — per-company Cloudflare **agent-inbox** records: the bot's own
+    /// address on the connected domain (`agent@<base_domain>`) forwarding to a
+    /// destination mailbox the owner reads. All fields non-secret (the CF token
+    /// lives 0600 elsewhere). Defaulted, so an older store parses byte-identically
+    /// with an empty list (no migration).
+    #[serde(default)]
+    pub agent_inboxes: Vec<AgentInbox>,
+}
+
+/// One company's Cloudflare agent-inbox: `agent@<domain>` forwarded to a
+/// destination mailbox the bot reads (filtered via `MAIL_TO_FILTER`). NON-secret.
+/// `verified` mirrors Cloudflare's destination-verification state (the owner must
+/// click the link CF emails once) — refreshed each time the provision endpoint is
+/// re-run. Keyed by `company_id` (one agent-inbox per company).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentInbox {
+    pub company_id: i64,
+    /// The bot's address, e.g. `agent@example.com`.
+    pub address: String,
+    /// The verified destination mailbox mail forwards to.
+    pub destination: String,
+    /// Whether Cloudflare has seen the owner verify the destination.
+    #[serde(default)]
+    pub verified: bool,
+    /// The Cloudflare routing-rule tag, so a delete can remove exactly this rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_tag: Option<String>,
+}
+
+/// Replace-or-push an [`AgentInbox`] keyed by `company_id` (idempotent upsert).
+pub fn upsert_agent_inbox(cfg: &mut CompaniesConfig, inbox: AgentInbox) {
+    if let Some(existing) = cfg
+        .agent_inboxes
+        .iter_mut()
+        .find(|a| a.company_id == inbox.company_id)
+    {
+        *existing = inbox;
+    } else {
+        cfg.agent_inboxes.push(inbox);
+    }
+}
+
+/// Remove the [`AgentInbox`] for `company_id`. Returns whether one was removed.
+pub fn remove_agent_inbox(cfg: &mut CompaniesConfig, company_id: i64) -> bool {
+    let before = cfg.agent_inboxes.len();
+    cfg.agent_inboxes.retain(|a| a.company_id != company_id);
+    cfg.agent_inboxes.len() != before
+}
+
+/// The agent-inbox for `company_id`, if any (the read path's launch wiring +
+/// status both go through this).
+pub fn agent_inbox_for(cfg: &CompaniesConfig, company_id: i64) -> Option<&AgentInbox> {
+    cfg.agent_inboxes.iter().find(|a| a.company_id == company_id)
 }
 
 /// A persisted record that a zero-config quick tunnel is configured for one
@@ -349,6 +402,7 @@ mod tests {
             owner_hosts: vec![],
             oauth_apps: vec![],
             quick_tunnel: None,
+            agent_inboxes: vec![],
         };
         write_atomic(&d, &cfg).unwrap();
         // No temp file left behind.
@@ -465,6 +519,7 @@ mod tests {
             owner_hosts: vec![],
             oauth_apps: vec![],
             quick_tunnel: None,
+            agent_inboxes: vec![],
         };
         std::env::set_var("SUPERMUX_GOOGLE_CLIENT_SECRET", "shh");
         let merged = assemble(&d, &baseline, &store).unwrap();
@@ -548,6 +603,67 @@ mod tests {
         let got = read(&d).unwrap().unwrap();
         assert_eq!(got.quick_tunnel.unwrap().company_id, 3);
         assert!(got.company_hosts[0].ephemeral);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn agent_inbox_upsert_remove_and_roundtrip() {
+        let d = tmp();
+        let mut cfg = CompaniesConfig::default();
+        upsert_agent_inbox(
+            &mut cfg,
+            AgentInbox {
+                company_id: 7,
+                address: "agent@example.com".into(),
+                destination: "owner@example.com".into(),
+                verified: false,
+                rule_tag: Some("rule-tag-abc".into()),
+            },
+        );
+        assert_eq!(cfg.agent_inboxes.len(), 1);
+        // Upsert same company REPLACES (e.g. re-provision flips verified true).
+        upsert_agent_inbox(
+            &mut cfg,
+            AgentInbox {
+                company_id: 7,
+                address: "agent@example.com".into(),
+                destination: "owner@example.com".into(),
+                verified: true,
+                rule_tag: Some("rule-tag-abc".into()),
+            },
+        );
+        assert_eq!(cfg.agent_inboxes.len(), 1, "upsert replaces, never duplicates");
+        assert!(agent_inbox_for(&cfg, 7).unwrap().verified);
+
+        // Persist + re-read: the record round-trips through the companion TOML.
+        write_atomic(&d, &cfg).unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert_eq!(got.agent_inboxes.len(), 1);
+        let a = agent_inbox_for(&got, 7).unwrap();
+        assert_eq!(a.address, "agent@example.com");
+        assert_eq!(a.destination, "owner@example.com");
+        assert_eq!(a.rule_tag.as_deref(), Some("rule-tag-abc"));
+
+        // Remove is idempotent; a foreign company is untouched.
+        let mut got = got;
+        assert!(remove_agent_inbox(&mut got, 7));
+        assert!(!remove_agent_inbox(&mut got, 7));
+        assert!(got.agent_inboxes.is_empty());
+        assert!(agent_inbox_for(&got, 7).is_none());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn config_without_agent_inboxes_parses_to_empty() {
+        // A store written by an OLDER build (no `agent_inboxes` key) parses fine.
+        let d = tmp();
+        std::fs::write(
+            path(&d),
+            "google_client_id = \"cid.apps.googleusercontent.com\"\n",
+        )
+        .unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert!(got.agent_inboxes.is_empty(), "absent key ⇒ empty (no migration)");
         let _ = std::fs::remove_dir_all(d);
     }
 

@@ -612,6 +612,20 @@ async fn member_gets_uniform_404_on_every_wizard_endpoint() {
             client_secret: "GOCSPX-shh".into(),
         })
     ));
+    assert_404!(agent_inbox_handler(
+        State(state.clone()),
+        member(),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None,
+            destination_email: "x@acme.test".into(),
+        })
+    ));
+    assert_404!(agent_inbox_delete_handler(
+        State(state.clone()),
+        member(),
+        Query(AgentInboxDeleteQuery { company_id: co.id })
+    ));
     assert_404!(host_handler(State(state.clone()), member(), Path(co.id)));
     assert_404!(verify_login_handler(State(state.clone()), member(), Path(co.id)));
     assert_404!(add_human_handler(
@@ -912,6 +926,232 @@ async fn add_human_on_quick_company_returns_a_magic_link() {
     .expect("token verifies");
     assert_eq!(claims.user_id, added.0.data.user.id);
     assert_eq!(claims.company_id, co.id);
+    cleanup(state, dir).await;
+}
+
+// ── agent-inbox (Cloudflare Email Routing) ───────────────────────────────────
+
+/// Happy path: enable routing → add destination → create the forward rule, persist
+/// the record, and surface it (pending) in status. The mock's destination starts
+/// UNVERIFIED, so `verification_pending` is honestly true.
+#[tokio::test]
+async fn agent_inbox_provision_enables_adds_and_creates_rule() {
+    let (state, dir) = test_state().await;
+    let cf = inject_cf(&state);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+
+    let res = agent_inbox_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None, // defaults to "agent"
+            destination_email: "Owner@Example.com".into(),
+        }),
+    )
+    .await
+    .expect("provision ok");
+    assert_eq!(res.0.data.address, "agent@example.com");
+    assert_eq!(res.0.data.destination, "owner@example.com", "destination lower-cased");
+    assert!(res.0.data.verification_pending, "a fresh destination needs the CF click");
+    assert!(res.0.data.routing_enabled, "email routing turned on");
+    assert_eq!(cf.rule_create_count(), 1, "rule created exactly once");
+
+    // The non-secret record round-trips through the companion store.
+    let stored = store::read(&dir).unwrap().unwrap();
+    let a = store::agent_inbox_for(&stored, co.id).expect("record persisted");
+    assert_eq!(a.address, "agent@example.com");
+    assert_eq!(a.destination, "owner@example.com");
+    assert!(!a.verified);
+    assert_eq!(a.rule_tag.as_deref(), Some("rule-tag-abc"));
+
+    // Status surfaces the pending inbox on the company block.
+    let s = status_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Query(StatusQuery { company_id: Some(co.id) }),
+    )
+    .await
+    .unwrap();
+    let ai = s.0.data.company.unwrap().agent_inbox.expect("agent_inbox in status");
+    assert_eq!(ai.address, "agent@example.com");
+    assert!(ai.verification_pending && !ai.verified);
+    cleanup(state, dir).await;
+}
+
+/// Idempotent re-provision: running it twice through the SAME Cloudflare mock
+/// creates the rule only once (reused by matcher) and keeps a single record.
+#[tokio::test]
+async fn agent_inbox_reprovision_is_idempotent() {
+    let (state, dir) = test_state().await;
+    let cf = inject_cf(&state);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+
+    let call = || {
+        agent_inbox_handler(
+            State(state.clone()),
+            OptCtx(None),
+            Json(AgentInboxInput {
+                company_id: co.id,
+                local_part: Some("agent".into()),
+                destination_email: "owner@example.com".into(),
+            }),
+        )
+    };
+    call().await.expect("first ok");
+    call().await.expect("second ok");
+    assert_eq!(cf.rule_create_count(), 1, "idempotent — rule not re-created");
+    let stored = store::read(&dir).unwrap().unwrap();
+    assert_eq!(stored.agent_inboxes.len(), 1, "single record after re-provision");
+    cleanup(state, dir).await;
+}
+
+/// A verified destination is not reported pending, and the record stores it.
+#[tokio::test]
+async fn agent_inbox_verified_destination_is_not_pending() {
+    let (state, dir) = test_state().await;
+    let cf = Arc::new(MockCfApi {
+        destination_verified: true,
+        ..Default::default()
+    });
+    state.external_access.set_cf(cf);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+
+    let res = agent_inbox_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None,
+            destination_email: "owner@example.com".into(),
+        }),
+    )
+    .await
+    .expect("provision ok");
+    assert!(!res.0.data.verification_pending, "verified destination is not pending");
+    assert!(store::agent_inbox_for(&store::read(&dir).unwrap().unwrap(), co.id).unwrap().verified);
+    cleanup(state, dir).await;
+}
+
+/// A token missing the Email Routing scope surfaces a clear, actionable 400 (never
+/// a raw Cloudflare error) — the operator re-mints the token.
+#[tokio::test]
+async fn agent_inbox_missing_email_routing_scope_is_a_clear_error() {
+    let (state, dir) = test_state().await;
+    let cf = Arc::new(MockCfApi {
+        email_scope_ok: false,
+        ..Default::default()
+    });
+    state.external_access.set_cf(cf);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+
+    let res = agent_inbox_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None,
+            destination_email: "owner@example.com".into(),
+        }),
+    )
+    .await;
+    match res {
+        Err(AppError::BadRequest(msg)) => {
+            assert!(msg.contains("Email Routing"), "msg: {msg}");
+            assert!(msg.contains("scope"), "msg: {msg}");
+        }
+        other => panic!("expected a missing-scope BadRequest, got {other:?}"),
+    }
+    // Nothing persisted on the failure path.
+    assert!(
+        store::read(&dir).unwrap().map(|c| c.agent_inboxes.is_empty()).unwrap_or(true),
+        "no record written when the scope check fails"
+    );
+    cleanup(state, dir).await;
+}
+
+/// DELETE tears down the rule + record; a second delete is a benign no-op.
+#[tokio::test]
+async fn agent_inbox_delete_removes_the_record() {
+    let (state, dir) = test_state().await;
+    let _cf = inject_cf(&state);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+    agent_inbox_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None,
+            destination_email: "owner@example.com".into(),
+        }),
+    )
+    .await
+    .expect("provision ok");
+    assert!(store::agent_inbox_for(&store::read(&dir).unwrap().unwrap(), co.id).is_some());
+
+    let del = agent_inbox_delete_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Query(AgentInboxDeleteQuery { company_id: co.id }),
+    )
+    .await
+    .expect("delete ok");
+    assert!(del.0.data.deleted);
+    assert!(store::agent_inbox_for(&store::read(&dir).unwrap().unwrap(), co.id).is_none());
+
+    // Idempotent: deleting again reports nothing removed.
+    let again = agent_inbox_delete_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Query(AgentInboxDeleteQuery { company_id: co.id }),
+    )
+    .await
+    .expect("second delete ok");
+    assert!(!again.0.data.deleted);
+    cleanup(state, dir).await;
+}
+
+/// FAIL-CLOSED: no chosen base domain ⇒ agent-inbox provisioning is refused (no
+/// connected zone to route on), and nothing is written.
+#[tokio::test]
+async fn agent_inbox_without_a_base_domain_is_rejected() {
+    let (state, dir) = test_state().await;
+    let _cf = inject_cf(&state);
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+    let res = agent_inbox_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(AgentInboxInput {
+            company_id: co.id,
+            local_part: None,
+            destination_email: "owner@example.com".into(),
+        }),
+    )
+    .await;
+    assert!(matches!(res, Err(AppError::BadRequest(_))), "got {res:?}");
     cleanup(state, dir).await;
 }
 

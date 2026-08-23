@@ -28,6 +28,7 @@ import {
   Clock,
   ExternalLink,
   Globe,
+  Mail,
   Plus,
   Sparkles,
   Trash2,
@@ -39,9 +40,11 @@ import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { CompanyMark } from '@/components/roster/company-mark'
 import { SessionError } from '@/lib/api'
 import {
+  useAgentInbox,
   useCfToken,
   useCompanyHost,
   useCompanyHumans,
+  useDeleteAgentInbox,
   useExternalStatus,
   useGoogleConfig,
   useInviteHuman,
@@ -73,10 +76,12 @@ export interface WizardCompany {
   display_name: string
 }
 
-type StepKey = 'domain' | 'google' | 'person' | 'success'
-// The full (permanent-domain) order. The quick-tunnel branch omits Google — the
-// magic-link invites need no OAuth — collapsing to Domain → Add people → Done.
-const ORDER: StepKey[] = ['domain', 'google', 'person', 'success']
+type StepKey = 'domain' | 'google' | 'person' | 'inbox' | 'success'
+// The full (permanent-domain) order. `inbox` (the optional Cloudflare agent-inbox)
+// sits after people — it needs the connected domain. The quick-tunnel branch omits
+// both Google and the inbox (a trycloudflare host has no zone to route mail on),
+// collapsing to Domain → Add people → Done.
+const ORDER: StepKey[] = ['domain', 'google', 'person', 'inbox', 'success']
 const QUICK_ORDER: StepKey[] = ['domain', 'person', 'success']
 
 function errText(e: unknown): string {
@@ -149,6 +154,9 @@ export function InviteWizardSheet({
     routed.current = true
     if (!domainDone(status)) setStep('domain')
     else if (!isQuick && !googleDone(status)) setStep('google')
+    // Resume on the inbox step when an agent-inbox is already provisioned (e.g. it
+    // still needs its verification click) — otherwise land on Add people.
+    else if (!isQuick && status.company?.agent_inbox) setStep('inbox')
     else setStep('person')
   }, [open, status, isQuick])
 
@@ -188,12 +196,23 @@ export function InviteWizardSheet({
           chip: chipFor(googleDone(status), false, googleDone(status) ? 'Verified' : status?.box_status.google === 'configured' ? 'One URL to add' : 'Not set up'),
         },
         { key: 'person', title: 'Add people', chip: { state: 'idle', label: 'Invite' } },
+        { key: 'inbox', title: 'Agent email', chip: inboxChipFor(status) },
         { key: 'success', title: 'Done', chip: { state: 'idle', label: '' } },
       ]
   const railSteps = steps.slice(0, totalSteps)
 
+  // `inbox` is optional — Continue is always enabled on it (the owner may skip
+  // giving bots their own email); every other input step keeps its own gate.
   const canContinue =
-    step === 'domain' ? domainDone(status) : step === 'google' ? googleDone(status) : step === 'person' ? true : false
+    step === 'domain'
+      ? domainDone(status)
+      : step === 'google'
+        ? googleDone(status)
+        : step === 'person' || step === 'inbox'
+          ? true
+          : false
+  // The last input step before "success" shows "Finish".
+  const isLastInputStep = idx === order.length - 2
 
   const goBack = () => idx > 0 && setStep(order[idx - 1])
   const goNext = () => idx < order.length - 1 && setStep(order[idx + 1])
@@ -228,7 +247,7 @@ export function InviteWizardSheet({
               disabled={!canContinue}
               style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
             >
-              {step === 'person' ? 'Finish' : 'Continue'} <ArrowRight className="size-4" />
+              {isLastInputStep ? 'Finish' : 'Continue'} <ArrowRight className="size-4" />
             </Button>
           </div>
         )
@@ -250,6 +269,8 @@ export function InviteWizardSheet({
           <GoogleStep status={status} redirectUri={redirectUri} liveUrl={liveUrl} companyId={company.id} refetch={refetch} />
         ) : step === 'person' ? (
           <PersonStep company={company} liveUrl={liveUrl} quick={isQuick} />
+        ) : step === 'inbox' ? (
+          <AgentInboxStep status={status} companyId={company.id} baseDomain={baseDomain} refetch={refetch} />
         ) : (
           <SuccessStep company={company} liveUrl={liveUrl} quick={isQuick} onInviteAnother={() => setStep('person')} />
         )}
@@ -264,9 +285,19 @@ function chipFor(done: boolean, working: boolean, label: string): { state: ChipS
   return { state: 'idle', label }
 }
 
+/** Rail chip for the optional agent-inbox step: verified (done), pending
+ *  (working), or not set up yet (idle). */
+function inboxChipFor(status?: ExternalStatus): { state: ChipState; label: string } {
+  const ai = status?.company?.agent_inbox
+  if (!ai) return { state: 'idle', label: 'Optional' }
+  if (ai.verified) return { state: 'done', label: 'Live' }
+  return { state: 'working', label: 'Verify' }
+}
+
 // ── Step 1 — Domain / external access ─────────────────────────────────────────
 
-const CF_SCOPES = 'Account · Cloudflare Tunnel: Edit\nZone · DNS: Edit\nZone · Zone: Read'
+const CF_SCOPES =
+  'Account · Cloudflare Tunnel: Edit\nZone · DNS: Edit\nZone · Zone: Read\nZone · Email Routing Rules: Edit'
 
 function DomainStep({
   status,
@@ -1012,6 +1043,214 @@ function PersonStep({
           </ul>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Step 3b — Agent email (Cloudflare agent-inbox) ────────────────────────────
+
+/** The optional "give this company's bots their own email" step (design §3). Mints
+ *  `<local>@<domain>` via Cloudflare Email Routing forwarding to a mailbox the bot
+ *  reads. Honest about the ONE manual step: Cloudflare emails the destination a
+ *  verify link the owner must click before mail forwards. Mobile-first + DRY
+ *  (reuses the wizard chrome, `StatusChip`, `CopyField`, `Button`/`Input`). */
+function AgentInboxStep({
+  status,
+  companyId,
+  baseDomain,
+  refetch,
+}: {
+  status?: ExternalStatus
+  companyId: number
+  baseDomain: string | null
+  refetch: () => void
+}) {
+  const inbox = status?.company?.agent_inbox ?? null
+  const provision = useAgentInbox(companyId)
+  const remove = useDeleteAgentInbox(companyId)
+
+  const [localPart, setLocalPart] = React.useState('agent')
+  const [destination, setDestination] = React.useState('')
+  const domain = baseDomain ?? '<your-domain>'
+  const preview = `${(localPart.trim() || 'agent').toLowerCase()}@${domain}`
+  const destValid = /.+@.+\..+/.test(destination.trim())
+
+  // Already provisioned + verified → the live "bots have their own email" state.
+  if (inbox && inbox.verified) {
+    return (
+      <div data-vr="agent-inbox" className="flex flex-col gap-4">
+        <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
+          <StatusChip state="done" label="Agent email — live" />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[12px] text-muted-foreground">This company’s bots receive mail at</span>
+            <CopyField value={inbox.address} label="Copy the agent address" />
+          </div>
+          <p className="text-[12.5px] leading-snug text-muted-foreground">
+            Mail to <span className="font-mono text-foreground">{inbox.address}</span> forwards to{' '}
+            <span className="font-mono text-foreground">{inbox.destination}</span>. A bot granted the
+            mail connector reads only its own messages.
+          </p>
+          {remove.isError && <p className="text-sm text-destructive">{errText(remove.error)}</p>}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="self-start"
+            onClick={() => remove.mutate(undefined, { onSuccess: () => refetch() })}
+            disabled={remove.isPending}
+          >
+            {remove.isPending ? 'Removing…' : 'Remove agent email'}
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // Provisioned but the destination still needs its one verification click.
+  if (inbox && !inbox.verified) {
+    return (
+      <div data-vr="agent-inbox" className="flex flex-col gap-4">
+        <div
+          className="flex flex-col gap-3 rounded-2xl border p-4"
+          style={{
+            borderColor: 'color-mix(in oklab, var(--gr-work) 40%, var(--gr-line))',
+            background: 'color-mix(in oklab, var(--gr-work) 7%, transparent)',
+          }}
+        >
+          <StatusChip state="working" label="One step left — verify the destination" className="self-start" />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[12px] text-muted-foreground">The bot’s address</span>
+            <CopyField value={inbox.address} label="Copy the agent address" />
+          </div>
+          <div
+            className="flex items-start gap-2 rounded-xl px-3 py-2.5 text-[12.5px] leading-snug"
+            style={{ background: 'color-mix(in oklab, var(--gr-work) 12%, transparent)', color: 'var(--foreground)' }}
+          >
+            <Mail aria-hidden className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--gr-work)' }} />
+            <span>
+              Cloudflare emailed <span className="font-mono text-foreground">{inbox.destination}</span> a
+              verification link. Open that inbox and click it, then press{' '}
+              <span className="font-medium">Check again</span> — mail only forwards once it’s verified.
+            </span>
+          </div>
+          {provision.isError && <p className="text-sm text-destructive">{errText(provision.error)}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() =>
+                provision.mutate(
+                  { localPart: inbox.address.split('@')[0], destinationEmail: inbox.destination },
+                  { onSuccess: () => refetch() },
+                )
+              }
+              disabled={provision.isPending}
+              style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+            >
+              {provision.isPending ? 'Checking…' : 'Check again'}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => remove.mutate(undefined, { onSuccess: () => refetch() })}
+              disabled={remove.isPending}
+            >
+              {remove.isPending ? 'Removing…' : 'Remove'}
+            </Button>
+          </div>
+        </div>
+        <p className="text-[12px] text-muted-foreground">
+          Optional — you can skip this and add it later. Continue when you’re done.
+        </p>
+      </div>
+    )
+  }
+
+  // Not provisioned yet → the form.
+  return (
+    <div data-vr="agent-inbox" className="flex flex-col gap-4">
+      <div className="flex items-start gap-3">
+        <span
+          className="grid size-9 shrink-0 place-items-center rounded-xl"
+          style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+        >
+          <Mail aria-hidden className="size-5" />
+        </span>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <p className="text-[15px] font-semibold text-foreground">Give this company’s bots their own email</p>
+          <p className="text-[12.5px] leading-snug text-muted-foreground">
+            A dedicated address on your domain — mail forwards to a mailbox you’ve connected, and a bot
+            granted the mail connector reads only its own messages. Optional.
+          </p>
+        </div>
+      </div>
+
+      <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ai-local" className="text-sm font-medium text-foreground">
+            Address
+          </label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="ai-local"
+              value={localPart}
+              onChange={(e) => setLocalPart(e.target.value)}
+              placeholder="agent"
+              autoComplete="off"
+              className="w-32 font-mono"
+              aria-label="Local part"
+            />
+            <span className="min-w-0 flex-1 truncate font-mono text-sm text-muted-foreground">@{domain}</span>
+          </div>
+          <p className="text-[12px] text-muted-foreground">
+            Preview: <span className="font-mono text-foreground">{preview}</span>
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ai-dest" className="text-sm font-medium text-foreground">
+            Forward to a connected mailbox
+          </label>
+          <Input
+            id="ai-dest"
+            type="email"
+            inputMode="email"
+            value={destination}
+            onChange={(e) => setDestination(e.target.value)}
+            placeholder="you@example.com"
+            autoComplete="off"
+            className="font-mono"
+            aria-invalid={destination.length > 0 && !destValid ? true : undefined}
+          />
+          <p className="text-[12px] text-muted-foreground">
+            Use the address of a mailbox you already connected (iCloud, Gmail, Outlook…). Cloudflare
+            emails it a one-time verification link.
+          </p>
+        </div>
+
+        {provision.isError && <p className="text-sm text-destructive">{errText(provision.error)}</p>}
+
+        <Button
+          type="button"
+          onClick={() =>
+            provision.mutate(
+              { localPart: localPart.trim() || 'agent', destinationEmail: destination.trim() },
+              { onSuccess: () => refetch() },
+            )
+          }
+          disabled={!destValid || provision.isPending}
+          className="self-start"
+          style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+        >
+          {provision.isPending ? 'Setting up…' : 'Create agent email'}
+        </Button>
+      </div>
+
+      <p className="px-1 text-[12px] leading-snug text-muted-foreground">
+        Needs your Cloudflare token to include <span className="font-mono">Email Routing Rules: Edit</span>.
+        You can skip this step and add it later.
+      </p>
     </div>
   )
 }

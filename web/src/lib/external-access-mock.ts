@@ -22,6 +22,7 @@
 import type {
   AddHumanInput,
   AddHumanResult,
+  AgentInboxResult,
   BaseDomainResult,
   CfTokenResult,
   ExternalStatus,
@@ -39,12 +40,12 @@ import { SessionError } from '@/lib/api'
 // Entry `Q` is the "try without a domain" quick-tunnel branch. `?tunnel=1` on top
 // of it seeds an ALREADY-active temporary link so the offline rig can screenshot
 // the success screen directly (without waiting for the provisioning spinner).
-type Entry = 'A' | 'B' | 'C' | 'Q'
+type Entry = 'A' | 'B' | 'C' | 'Q' | 'I'
 
 function readEntry(): Entry {
   if (typeof window === 'undefined') return 'A'
   const e = new URLSearchParams(window.location.search).get('entry')
-  if (e === 'B' || e === 'C' || e === 'Q') return e
+  if (e === 'B' || e === 'C' || e === 'Q' || e === 'I') return e
   // `?tunnel=1` is an alias for the quick-tunnel entry.
   if (new URLSearchParams(window.location.search).get('tunnel') != null) return 'Q'
   return 'A'
@@ -76,6 +77,8 @@ interface MockState {
   verifyAttempts: number // first attempt mismatches, second clears — shows both paths
   humans: HumanInvitee[]
   quickTunnel: QuickTunnelMock | null // the "try without a domain" branch
+  agentInbox: { address: string; destination: string } | null // CF agent-inbox
+  agentInboxAttempts: number // first provision pending; a re-run ("Check again") verifies
   seededAt: number
 }
 
@@ -102,6 +105,8 @@ function initialState(entry: Entry): MockState {
     verifyAttempts: 0,
     humans: [],
     quickTunnel: null,
+    agentInbox: null,
+    agentInboxAttempts: 0,
     seededAt: now,
   }
   // Q — the "try without a domain" branch. No CF token, no base domain, no Google:
@@ -113,19 +118,26 @@ function initialState(entry: Entry): MockState {
     }
     return base
   }
-  if (entry === 'B' || entry === 'C') {
+  // I — the agent-inbox showcase: a fully-configured, verified box (like C) plus a
+  // freshly-provisioned agent-inbox in the PENDING state, so the `agent-inbox`
+  // step renders its verification-pending panel for the offline rig.
+  if (entry === 'B' || entry === 'C' || entry === 'I') {
     base.cfToken = 'valid'
     base.baseDomain = 'example.com' // already chosen
     base.provisionedAt = now - CONNECT_MS - 1000 // already healthy
     base.google = 'configured'
   }
-  if (entry === 'C') {
+  if (entry === 'C' || entry === 'I') {
     base.hostWritten = true
     base.verifyAttempts = 2 // already verified
     base.humans = [
       row(1, 'dana@acme.co', 'Dana Ruiz', 'admin', 'active', now - 86_400_000),
       row(2, 'lee@acme.co', 'Lee Park', 'member', 'pending', now - 3_600_000),
     ]
+  }
+  if (entry === 'I') {
+    base.agentInbox = { address: 'agent@example.com', destination: 'owner@example.com' }
+    base.agentInboxAttempts = 1 // provisioned but not yet verified (pending)
   }
   return base
 }
@@ -186,6 +198,8 @@ export const externalAccessMock = {
     }
     if (companyId != null) {
       const verified = state.verifyAttempts >= 2
+      const ai = state.agentInbox
+      const aiVerified = state.agentInboxAttempts >= 2
       out.company = {
         company_id: companyId,
         company_host_written: state.baseDomain != null && (state.hostWritten || state.google === 'configured'),
@@ -193,6 +207,14 @@ export const externalAccessMock = {
         reachable: verified && tunnel === 'healthy',
         host, // '' until a base domain is chosen — never a fake host
         redirect_uri: redirect,
+        agent_inbox: ai
+          ? {
+              address: ai.address,
+              destination: ai.destination,
+              verified: aiVerified,
+              verification_pending: !aiVerified,
+            }
+          : null,
       }
     }
     return out
@@ -316,6 +338,28 @@ export const externalAccessMock = {
       },
       login_url,
     }
+  },
+
+  async agentInbox(_companyId: number, localPart: string, destinationEmail: string): Promise<AgentInboxResult> {
+    await wait(700)
+    const dest = destinationEmail.trim().toLowerCase()
+    if (!/.+@.+\..+/.test(dest)) {
+      throw new SessionError('That destination isn’t a valid email — paste the mailbox mail should forward to.', 400)
+    }
+    const lp = (localPart.trim() || 'agent').toLowerCase()
+    const address = `${lp}@${state.baseDomain ?? 'example.com'}`
+    state.agentInboxAttempts += 1
+    state.agentInbox = { address, destination: dest }
+    const verified = state.agentInboxAttempts >= 2 // first provision pending, re-run verifies
+    return { address, destination: dest, verification_pending: !verified, routing_enabled: true }
+  },
+
+  async deleteAgentInbox(_companyId: number): Promise<{ deleted: boolean }> {
+    await wait(350)
+    const had = state.agentInbox != null
+    state.agentInbox = null
+    state.agentInboxAttempts = 0
+    return { deleted: had }
   },
 
   async listHumans(_companyId?: number): Promise<HumanInvitee[]> {
