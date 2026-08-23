@@ -499,16 +499,38 @@ describe('mentionSegments', () => {
     ])
   })
 
-  test('a trailing word of a Capitalized phrase is not linkified (iCloud Mail)', () => {
-    const mailIdx = mentionIndex([{ name: 'mail', display_name: 'Mail' }])
-    // "iCloud Mail" is a product name — `Mail` here is not a mention.
-    expect(mentionSegments('connect iCloud Mail today', mailIdx)).toEqual([
+  test('a Capitalized mention after another Capitalized word still linkifies (Ask Bolt)', () => {
+    // Company scoping — not a fragile Capitalized-adjacency guard — is what keeps
+    // an out-of-company "iCloud Mail" from minting a chip. So within a company a
+    // legitimate mention that trails a Capitalized word MUST still linkify.
+    const boltIdx = mentionIndex([{ name: 'acme-b', display_name: 'Bolt' }])
+    for (const lead of ['Ask', 'Then', 'Please', 'Hey']) {
+      expect(mentionSegments(`${lead} Bolt now`, boltIdx)).toEqual([
+        { text: `${lead} ` },
+        { seed: 'acme-b', label: 'Bolt' },
+        { text: ' now' },
+      ])
+    }
+  })
+
+  test('company scope — not adjacency — blocks the cross-company "iCloud Mail" leak', () => {
+    // Typing as `acme-a` (company 1): `mail` is a bot in ANOTHER company, so it is
+    // not in the scoped index and never linkifies — Capitalized lead-in or not.
+    const fleet = [
+      { name: 'acme-a', display_name: 'Aria', company_id: 1 },
+      { name: 'acme-b', display_name: 'Bolt', company_id: 1 },
+      { name: 'mail', display_name: 'Mail', company_id: 2 },
+    ]
+    const idx = scopedMentionIndex(fleet, 'acme-a')
+    // Out-of-company "Mail" stays plain text (no chip), even bare.
+    expect(mentionSegments('connect iCloud Mail today', idx)).toEqual([
       { text: 'connect iCloud Mail today' },
     ])
-    // …but a lowercase lead-in still linkifies the real colleague.
-    expect(mentionSegments('ping Mail today', mailIdx)).toEqual([
-      { text: 'ping ' },
-      { seed: 'mail', label: 'Mail' },
+    expect(mentionSegments('ping Mail today', idx)).toEqual([{ text: 'ping Mail today' }])
+    // …while a same-company "Bolt" DOES linkify, Capitalized lead-in and all.
+    expect(mentionSegments('Ask Bolt today', idx)).toEqual([
+      { text: 'Ask ' },
+      { seed: 'acme-b', label: 'Bolt' },
       { text: ' today' },
     ])
   })

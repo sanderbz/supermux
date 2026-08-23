@@ -771,15 +771,6 @@ export function mentionSegments(
   for (const match of text.matchAll(pattern)) {
     const seed = index.get(match[0].toLowerCase())
     if (seed === undefined) continue
-    // FALSE-POSITIVE GUARD (Bot Mode). Don't linkify the TRAILING word of a
-    // Capitalized multi-word phrase — "iCloud Mail" must not mint a chip on a
-    // `Mail` colleague. Cheap: fires only when the match itself is Capitalized
-    // AND the 48 chars before it end in another Capitalized word + space.
-    if (
-      /^\p{Lu}/u.test(match[0]) &&
-      /\p{Lu}[\p{L}\d]*\s+$/u.test(text.slice(Math.max(0, match.index - 48), match.index))
-    )
-      continue
     if (match.index > last) out.push({ text: text.slice(last, match.index) })
     out.push({ seed, label: match[0] })
     last = match.index + match[0].length
