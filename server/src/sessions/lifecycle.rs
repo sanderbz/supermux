@@ -1576,7 +1576,23 @@ async fn start_locked(
         // landlock_*), so under BestEffort the plan fails open and the child
         // execs UNCONFINED — behaviour-identical to a NULL-company session.
         let confine_plan = company_confinement(state, &s, name).await?;
-        rt.spawn_confined(&dir, &env, &shell, confine_plan).await?;
+        let confinement_degraded = rt.spawn_confined(&dir, &env, &shell, confine_plan).await?;
+        if confinement_degraded {
+            // FAIL-SAFE landed: the confined holder could not boot under the
+            // Landlock jail, so the native runtime retried UNCONFINED to keep the
+            // company bot startable. Record the applied level as None so the (P2)
+            // badge / logs stay honest about the degraded isolation.
+            tracing::error!(
+                session = %name,
+                company = ?s.company_id,
+                "isolation: company agent started UNCONFINED after the confined holder \
+                 failed to boot (fail-safe); applied level recorded as None — check the \
+                 allow-list in server/src/isolation",
+            );
+            state
+                .isolation_applied
+                .insert(name.to_string(), crate::isolation::IsolationLevel::None);
+        }
         state.pty_invalidate(name);
     }
 

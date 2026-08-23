@@ -96,13 +96,18 @@ pub trait SessionRuntime: Send + Sync {
     /// backend with no pre-exec seam (tmux — it forks via `tmux new-session`, and
     /// company agents run native anyway; the in-test mock) is never asked to
     /// confine a company shell. Only the native backend overrides this.
+    ///
+    /// Returns `Ok(true)` when a confined holder could not boot and was retried
+    /// UNCONFINED (the native fail-safe), so the caller records the applied level
+    /// as `None`/degraded; `Ok(false)` on a clean start. The default never
+    /// attempts confinement, so it always reports `Ok(false)`.
     async fn spawn_confined(
         &self,
         dir: &Path,
         env: &HashMap<String, String>,
         shell: &str,
         plan: Option<crate::isolation::ConfinePlan>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if plan.is_some() {
             tracing::warn!(
                 "isolation: {} backend has no pre-exec confinement seam; company shell \
@@ -110,7 +115,7 @@ pub trait SessionRuntime: Send + Sync {
                 self.target(),
             );
         }
-        self.spawn(dir, env, shell).await
+        self.spawn(dir, env, shell).await.map(|_| false)
     }
 
     /// Is the session's terminal live? Best-effort and infallible by contract:
@@ -483,7 +488,7 @@ impl SessionRuntime for NativeRuntime {
         env: &HashMap<String, String>,
         shell: &str,
         plan: Option<crate::isolation::ConfinePlan>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.session.spawn_confined(dir, env, shell, plan).await
     }
 

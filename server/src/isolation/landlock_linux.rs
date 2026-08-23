@@ -263,6 +263,143 @@ mod tests {
         )));
     }
 
+    /// The company allow-list must permit a real agent to BOOT — exec a system
+    /// binary + read a system lib + write inside its company root — while a
+    /// SIBLING company dir stays DENIED. We fork a child, apply the COMPANY
+    /// `ConfinePlan` for a temp company root, run the four probes, and report a
+    /// bitmask via exit code (mirrors `fork_probe`: the parent thread is never
+    /// jailed). On a host where Landlock is not enforced (the `@system-service`
+    /// block / an old kernel) the child reports SKIP and the denial assertions
+    /// are skipped — the allow-list wiring is still exercised.
+    #[test]
+    fn company_plan_boots_and_denies_sibling_company() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
+
+        // Exit-code protocol. SKIP = host cannot enforce (nothing to assert).
+        // Otherwise a bitmask: 1=company-write ok, 2=system-lib read ok,
+        // 4=sibling-read DENIED (good), 8=exec ok. All four ⇒ 15.
+        const SKIP: i32 = 42;
+        const B_WRITE: i32 = 1;
+        const B_LIBREAD: i32 = 2;
+        const B_SIBDENY: i32 = 4;
+        const B_EXEC: i32 = 8;
+
+        // The company root + sibling live directly under a fresh base in $HOME —
+        // NOT under /tmp (which the allow-list grants broadly), so the sibling is
+        // denied exactly as a real `<projects>/companies/<other>` tree would be.
+        let Some(home) = dirs::home_dir() else {
+            eprintln!("no home dir; skipping");
+            return;
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base = home.join(format!(".supermux-iso-test-{}-{}", std::process::id(), nanos));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Cleanup(base.clone());
+
+        let root = base.join("acme");
+        let sibling = base.join("other");
+        std::fs::create_dir_all(&root).expect("mk company root");
+        std::fs::create_dir_all(&sibling).expect("mk sibling");
+        // Create the sibling secret so an UN-jailed open would succeed — the
+        // denial then proves the jail, not a missing file.
+        std::fs::write(sibling.join("secret.txt"), b"sibling company secret").expect("write secret");
+
+        // Build the REAL company allow-list. All allocation happens in the parent,
+        // before the fork; the child only does libc syscalls + `_exit`.
+        let spec = SandboxSpec::for_company(&root, &home);
+
+        let write_c = CString::new(root.join("probe.txt").as_os_str().as_bytes()).unwrap();
+        // A system lib/binary under an RO-allowed path (/bin is on the list).
+        let lib_c = CString::new("/bin/sh").unwrap();
+        let sib_c = CString::new(sibling.join("secret.txt").as_os_str().as_bytes()).unwrap();
+        let exec_c = CString::new("/bin/true").unwrap();
+        let arg0_c = CString::new("true").unwrap();
+
+        // SAFETY: mirrors `fork_probe` — the child runs only Landlock syscalls,
+        // libc open/exec on pre-owned paths, and `_exit(2)`; it never returns into
+        // the Rust runtime.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // ── child ──
+            let level = match LandlockLinux.confine(&spec) {
+                Ok(l) => l,
+                Err(_) => unsafe { libc::_exit(SKIP) },
+            };
+            if !level.is_enforced() {
+                unsafe { libc::_exit(SKIP) };
+            }
+            let mut bits = 0i32;
+            // 1) write inside the company root.
+            let wfd =
+                unsafe { libc::open(write_c.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o600) };
+            if wfd >= 0 {
+                bits |= B_WRITE;
+                unsafe { libc::close(wfd) };
+            }
+            // 2) read a system lib/binary (RO-allowed).
+            let rfd = unsafe { libc::open(lib_c.as_ptr(), libc::O_RDONLY) };
+            if rfd >= 0 {
+                bits |= B_LIBREAD;
+                unsafe { libc::close(rfd) };
+            }
+            // 3) read the sibling secret — MUST be denied by the jail.
+            let sfd = unsafe { libc::open(sib_c.as_ptr(), libc::O_RDONLY) };
+            if sfd < 0 {
+                bits |= B_SIBDENY;
+            } else {
+                unsafe { libc::close(sfd) };
+            }
+            // 4) exec a system binary (RO+exec allowed). Nested fork so our own
+            // computed bits survive; the grandchild becomes /bin/true.
+            let epid = unsafe { libc::fork() };
+            if epid == 0 {
+                let argv = [arg0_c.as_ptr(), std::ptr::null()];
+                unsafe {
+                    libc::execv(exec_c.as_ptr(), argv.as_ptr());
+                    libc::_exit(127);
+                }
+            }
+            let mut est: libc::c_int = 0;
+            unsafe { libc::waitpid(epid, &mut est, 0) };
+            if (est & 0x7f) == 0 && ((est >> 8) & 0xff) == 0 {
+                bits |= B_EXEC;
+            }
+            unsafe { libc::_exit(bits) };
+        }
+        assert!(pid > 0, "fork failed");
+
+        // ── parent ──
+        let mut status: libc::c_int = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let exited = (status & 0x7f) == 0;
+        let code = if exited { (status >> 8) & 0xff } else { -1 };
+
+        if code == SKIP {
+            eprintln!(
+                "landlock not enforced on this host (or confine errored); \
+                 skipping the company-jail assertions"
+            );
+            return;
+        }
+        assert_eq!(
+            code,
+            B_WRITE | B_LIBREAD | B_SIBDENY | B_EXEC,
+            "confined company child: expected write|libread|sibling-denied|exec (bits {}), got {}",
+            B_WRITE | B_LIBREAD | B_SIBDENY | B_EXEC,
+            code,
+        );
+    }
+
     #[test]
     fn decode_status_maps_exit_codes() {
         // Exit code N is encoded in the high byte; low 7 bits zero = WIFEXITED.

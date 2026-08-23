@@ -324,7 +324,7 @@ impl NativeSession {
         env: &HashMap<String, String>,
         shell: &str,
     ) -> Result<()> {
-        self.spawn_confined(dir, env, shell, None).await
+        self.spawn_confined(dir, env, shell, None).await.map(|_| ())
     }
 
     /// Like [`spawn`](Self::spawn), plus an optional per-spawn OS-sandbox
@@ -339,7 +339,48 @@ impl NativeSession {
     /// deny the holder its own socket). On THIS box the confinement measures
     /// `None` (the `@system-service` filter blocks `landlock_*`), so the child
     /// execs unconfined — fail-open per §4.4.
+    /// Returns `Ok(true)` when the confined holder could NOT boot under the jail
+    /// and was RETRIED unconfined (the fail-safe), so the caller can record the
+    /// applied isolation level as `None`/degraded; `Ok(false)` on a clean start.
     pub async fn spawn_confined(
+        &self,
+        dir: &Path,
+        env: &HashMap<String, String>,
+        shell: &str,
+        plan: Option<crate::isolation::ConfinePlan>,
+    ) -> Result<bool> {
+        let confined = plan.is_some();
+        match self.spawn_holder_once(dir, env, shell, plan).await {
+            Ok(()) => Ok(false),
+            // FAIL-SAFE (companies §4.4): a company bot must NEVER be left
+            // un-startable because of isolation. If the confined holder could not
+            // boot under the Landlock jail — the "holder did not come up in time"
+            // timeout, or an exec / pre_exec failure at boot — retry the spawn
+            // UNCONFINED so the agent still starts, and signal the degradation so
+            // the applied level is recorded honestly (None) by the caller.
+            Err(e) if confined => {
+                // Race guard: if the confined holder actually came up JUST after
+                // the timeout, keep it — isolation is intact, no degradation.
+                if self.alive().await {
+                    return Ok(false);
+                }
+                tracing::error!(
+                    session = %self.name,
+                    error = %format!("{e:#}"),
+                    "company isolation degraded: holder failed under Landlock, started \
+                     unconfined — check the allow-list (server/src/isolation)"
+                );
+                self.spawn_holder_once(dir, env, shell, None).await?;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One holder-spawn attempt with an optional confinement `plan`. The retry
+    /// seam ([`spawn_confined`](Self::spawn_confined)) calls this up to twice: once
+    /// confined, then — only if that could not boot — once unconfined.
+    async fn spawn_holder_once(
         &self,
         dir: &Path,
         env: &HashMap<String, String>,
@@ -429,10 +470,10 @@ impl NativeSession {
         // spool/socket dir RW so a fully-enforced Landlock jail does not deny it
         // its socket, then move the plan into the pre-exec closure below. `None`
         // for main/PA bots and under isolation_mode=off — the closure then does
-        // only the historical `setsid`.
-        // TODO(P1-followup, Full hosts only): a fully-enforced jail also needs
-        // the holder BINARY path (current_exe) and the socket's PARENT dir on the
-        // allow-list; on THIS box the measured level is None so neither bites yet.
+        // only the historical `setsid`. The holder BINARY path (current_exe) is
+        // on the allow-list via `SandboxSpec::for_company`; the socket's PARENT
+        // dir is granted RW just below — both required for a FULLY-enforced jail
+        // to let the holder re-exec + bind its socket.
         if let Some(p) = plan.as_mut() {
             p.allow_rw(self.dir.clone());
             if let Some(parent) = self.socket.parent() {

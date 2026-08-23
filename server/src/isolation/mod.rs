@@ -152,24 +152,78 @@ pub struct SandboxSpec {
 
 impl SandboxSpec {
     /// Build the allow-list for a company session rooted at `root_dir`, with the
-    /// service user's `home` supplying the dev-cache paths.
+    /// service user's `home` supplying the toolchain / config paths.
     ///
-    /// `read_write_paths` = the company tree + `/tmp`. `read_exec_paths` = the
-    /// system paths a dev shell needs (`/usr`, `/lib`, `/lib64`, `/bin`, `/etc`)
-    /// plus the cargo / rustup / node / generic caches under `$HOME`. Paths that
-    /// do not exist are silently skipped by the Landlock backend (`PathFd::new`
-    /// fails and the rule is dropped), so listing an absent cache is harmless.
+    /// The allow-list is calibrated so a real Claude/Codex agent (and the
+    /// pty-holder that carries it) can EXEC + BOOT + run git/node/tmux inside its
+    /// company root, while sibling company trees and `~/.supermux/auth_token` stay
+    /// DENIED (they are simply never listed).
+    ///
+    /// * `read_write_paths` — the company tree (workspace); `/tmp` + `$TMPDIR`;
+    ///   and the `$HOME` config/cache/state dirs the agent must write at boot
+    ///   (`~/.claude`, `~/.claude.json`, `~/.config`, `~/.cache`, `~/.local/state`).
+    ///   The spawn wiring appends the session's own spool/socket dir via
+    ///   [`allow_rw`](Self::allow_rw).
+    /// * `read_exec_paths` — the whole standard system read/exec surface
+    ///   (`/usr`, `/bin`, `/sbin`, `/lib{,32,64}`, `/etc`, `/proc`, `/sys`), the
+    ///   pty-holder binary under us ([`current_exe`](std::env::current_exe) + its
+    ///   parent dir — the flagged gap: a Full jail must let the holder re-exec
+    ///   itself), and the language/dev toolchains + claude/codex binary trees
+    ///   under `$HOME`.
+    ///
+    /// Paths that do not exist are silently skipped by the Landlock backend
+    /// (`PathFd::new` fails and the rule is dropped), so listing an absent path is
+    /// harmless. Note `/opt` is deliberately NOT blanket-allowed so sibling
+    /// company trees under `<projects>/companies/<other>` stay denied; an
+    /// out-of-tree holder install is covered by `current_exe` instead.
     pub fn for_company(root_dir: &Path, home: &Path) -> Self {
-        let read_write_paths = vec![root_dir.to_path_buf(), PathBuf::from("/tmp")];
+        // ── RW: the company workspace + shared scratch + the agent's own
+        // config/cache/state it writes at boot. ──
+        let mut read_write_paths: Vec<PathBuf> =
+            vec![root_dir.to_path_buf(), PathBuf::from("/tmp")];
+        if let Some(tmp) = std::env::var_os("TMPDIR") {
+            let tmp = PathBuf::from(tmp);
+            if !tmp.as_os_str().is_empty() && tmp != Path::new("/tmp") {
+                read_write_paths.push(tmp);
+            }
+        }
+        for w in [".claude", ".claude.json", ".config", ".cache", ".local/state"] {
+            read_write_paths.push(home.join(w));
+        }
 
-        let mut read_exec_paths: Vec<PathBuf> = ["/usr", "/lib", "/lib64", "/bin", "/etc"]
-            .iter()
-            .map(PathBuf::from)
-            .collect();
-        // Dev caches under $HOME a build/agent shell reads (RO+exec is enough for
-        // the toolchains themselves; build *outputs* live under the company tree,
-        // which is RW). Absent ones are dropped by the backend.
-        for cache in [".cargo", ".rustup", ".npm", ".nvm", ".cache", ".local"] {
+        // ── RO+exec: the standard system surface. ──
+        let mut read_exec_paths: Vec<PathBuf> = [
+            "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/proc", "/sys",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+
+        // The pty-holder binary under us (e.g. /usr/local/bin/supermux-server)
+        // and its parent dir — THE flagged gap: a fully-enforced jail must let the
+        // holder re-exec itself to boot. `current_exe` may already fall under
+        // `/usr`; adding it explicitly covers an out-of-tree install (e.g. under
+        // `/opt/...`) without blanket-allowing any company tree.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                read_exec_paths.push(parent.to_path_buf());
+            }
+            read_exec_paths.push(exe);
+        }
+
+        // Language/dev toolchains + the claude/codex binary trees under $HOME
+        // (RO+exec is enough to RUN them; their writable state lives under the RW
+        // dirs above or the company tree). `.local` covers `.local/share/claude`
+        // and `.local/bin`; the explicit entries document the boot dependency.
+        for cache in [
+            ".cargo",
+            ".rustup",
+            ".npm",
+            ".nvm",
+            ".local",
+            ".local/share/claude",
+            ".local/bin",
+        ] {
             read_exec_paths.push(home.join(cache));
         }
 
