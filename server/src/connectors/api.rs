@@ -13,13 +13,14 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::claude_tools::MASKED;
-use crate::db::connectors::{self, ALL_AGENTS, COMPANY_PREFIX};
+use crate::db::connectors::{self, Account, Grant, ALL_AGENTS, COMPANY_PREFIX};
 use crate::error::AppError;
+use crate::scope::Scope;
 use crate::state::AppState;
 use crate::vault::Vault;
 
 use super::catalog;
-use super::manifest::{valid_connector_id, Manifest};
+use super::manifest::{valid_connector_id, CredentialField, Manifest};
 
 /// Shape one connector row into a secret-free store card (the credential SCHEMA
 /// is safe — field names/types/flags, never values).
@@ -35,6 +36,9 @@ fn card(c: &connectors::Connector) -> Value {
         // Provenance tag so the merged grid (local rows + catalog mirror) can be
         // filtered by `?source=`. Catalog cards carry `"catalog"`.
         "source": "local",
+        // Un-drop the provenance block (kind/imported/builtin markers) — secret-free
+        // (source_json never holds a value), lets the Installed tab show the KIND.
+        "provenance": serde_json::from_str::<Value>(&c.source_json).unwrap_or_else(|_| json!({})),
         "created_at": c.created_at,
     })
 }
@@ -76,13 +80,24 @@ impl ListQuery {
 /// `all`), `?q=`, `?category=`, `?featured=true`.
 pub async fn list(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let filter = q.to_filter();
     let want_catalog = filter.source.as_deref().map(|s| s != "local").unwrap_or(true);
 
     let rows = connectors::list(&state.pool).await.map_err(db_err)?;
-    let local: Vec<Value> = rows.iter().map(card).collect();
+    // Enrich each local (installed) card with its connected ACCOUNTS + per-account
+    // grant-level — the Installed tab's data — filtered to what the caller may see.
+    let mut local: Vec<Value> = Vec::with_capacity(rows.len());
+    for c in &rows {
+        let mut v = card(c);
+        let accts = accounts_json(&state, ctx.0.as_ref(), &c.id).await?;
+        if let Value::Object(ref mut o) = v {
+            o.insert("accounts".into(), Value::Array(accts));
+        }
+        local.push(v);
+    }
 
     let catalog_cards = if want_catalog {
         let mirror = catalog::mirror();
@@ -256,6 +271,16 @@ pub struct CredentialBody {
     /// grant then keeps working with the rotated value.
     #[serde(default)]
     pub secret_ref: Option<String>,
+    /// The connected-account's NON-secret display identity (e.g. `sander@acme.com`).
+    /// When omitted, the value of the connector's `identity:true` credential field
+    /// (e.g. `ICLOUD_EMAIL`) is used. Drives multi-account: a new label mints a new
+    /// [`Account`]; re-using a label updates it.
+    #[serde(default)]
+    pub account_label: Option<String>,
+    /// REPLACE an existing account in place — swap its identity/secret while keeping
+    /// every grant wired (the safe key-rotation path). Mutually informs `account_label`.
+    #[serde(default)]
+    pub account_ref: Option<String>,
 }
 
 /// `POST /api/connectors/{id}/credential` — seal a credential into the vault
@@ -283,8 +308,9 @@ pub async fn put_credential(
             None => return Err(AppError::NotFound(format!("connector '{id}'"))),
         }
     }
-    // Connector must exist (the vault row FK-references it).
-    connectors::get(&state.pool, &id)
+    // Connector must exist (the vault row FK-references it). Keep the row — its
+    // credential schema names the identity field.
+    let connector = connectors::get(&state.pool, &id)
         .await
         .map_err(db_err)?
         .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
@@ -311,12 +337,78 @@ pub async fn put_credential(
     .await
     .map_err(db_err)?;
 
-    // Optional one-tap grant.
-    if let Some(session) = body.session_name.as_deref().filter(|s| !s.is_empty()) {
-        let session = normalize_session(session);
-        connectors::grant(&state.pool, &session, &id, Some(&secret_ref), true)
+    // ── account identity (multi-account, 0035) ──────────────────────────────────
+    // The connected-account label is NON-secret: an explicit `account_label`, else
+    // the value of the connector's identity-flagged credential field (e.g.
+    // ICLOUD_EMAIL). Surfaced in cleartext; the vault still holds only the secrets.
+    let identity_label: Option<String> = body
+        .account_label
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            identity_field_key(&connector.credentials_json)
+                .and_then(|k| body.fields.get(&k).cloned())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    let account_ref: Option<String> = if let Some(aref) =
+        body.account_ref.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    {
+        // REPLACE / reconnect-with-new-key an existing account in place (keep grants).
+        let existing = connectors::account_get(&state.pool, aref).await.map_err(db_err)?;
+        if existing.as_ref().map(|a| a.connector_id.as_str()) != Some(id.as_str()) {
+            return Err(AppError::NotFound(format!("account '{aref}'")));
+        }
+        let label = identity_label
+            .clone()
+            .or_else(|| existing.map(|a| a.account_label))
+            .unwrap_or_default();
+        connectors::account_replace(&state.pool, aref, &label, Some(&secret_ref))
             .await
             .map_err(db_err)?;
+        Some(aref.to_string())
+    } else if let Some(label) = identity_label.clone() {
+        // ADD-account, idempotent by (connector, label): update a same-label account,
+        // else mint a fresh one.
+        let existing = connectors::accounts_for_connector(&state.pool, &id)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .find(|a| a.account_label == label);
+        match existing {
+            Some(a) => {
+                connectors::account_replace(&state.pool, &a.id, &label, Some(&secret_ref))
+                    .await
+                    .map_err(db_err)?;
+                Some(a.id)
+            }
+            None => Some(
+                connectors::account_add(&state.pool, &id, &label, Some(&secret_ref))
+                    .await
+                    .map_err(db_err)?,
+            ),
+        }
+    } else {
+        // Identity-less connector (no label, no identity field) — a legacy
+        // account-less grant, exactly as before multi-account.
+        None
+    };
+
+    // Optional one-tap grant — now account-aware.
+    if let Some(session) = body.session_name.as_deref().filter(|s| !s.is_empty()) {
+        let session = normalize_session(session);
+        connectors::grant_with_account(
+            &state.pool,
+            &session,
+            &id,
+            Some(&secret_ref),
+            true,
+            account_ref.as_deref(),
+        )
+        .await
+        .map_err(db_err)?;
         audit(&state, "connector.grant", &id, json!({ "session": session })).await;
     }
 
@@ -324,7 +416,8 @@ pub async fn put_credential(
     let keys: Vec<&String> = body.fields.keys().collect();
     audit(&state, "connector.credential", &id, json!({ "fields": keys, "rotate": rotate })).await;
 
-    // Masked echo — keys survive, values are the sentinel.
+    // Masked echo — keys survive, values are the sentinel. `account_label` is
+    // deliberately cleartext (it is non-secret, display-only).
     let masked: Map<String, Value> = body
         .fields
         .keys()
@@ -333,6 +426,8 @@ pub async fn put_credential(
     Ok(Json(json!({
         "ok": true,
         "secret_ref": secret_ref,
+        "account_ref": account_ref,
+        "account_label": identity_label,
         "fields": masked,
         "restartHint": true,
     })))
@@ -347,6 +442,11 @@ pub struct GrantBody {
     /// Optional vault secret to attach to the grant.
     #[serde(default)]
     pub secret_ref: Option<String>,
+    /// Optional [`Account`] this grant uses (multi-account). When present the grant
+    /// is written account-aware; when absent a re-grant KEEPS whatever account the
+    /// row already had (so a legacy grant path never clobbers it to NULL).
+    #[serde(default)]
+    pub account_ref: Option<String>,
     /// Soft toggle; defaults to enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -375,9 +475,23 @@ pub async fn grant(
         .await
         .map_err(db_err)?
         .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
-    connectors::grant(&state.pool, &session, &id, body.secret_ref.as_deref(), body.enabled)
+    match body.account_ref.as_deref().filter(|s| !s.is_empty()) {
+        // Account-aware grant (pins which account this grant feeds).
+        Some(aref) => connectors::grant_with_account(
+            &state.pool,
+            &session,
+            &id,
+            body.secret_ref.as_deref(),
+            body.enabled,
+            Some(aref),
+        )
         .await
-        .map_err(db_err)?;
+        .map_err(db_err)?,
+        // Legacy path — preserves any existing account_ref on a re-grant.
+        None => connectors::grant(&state.pool, &session, &id, body.secret_ref.as_deref(), body.enabled)
+            .await
+            .map_err(db_err)?,
+    }
     audit(&state, "connector.grant", &id, json!({ "session": session, "enabled": body.enabled })).await;
     Ok(Json(json!({ "ok": true, "id": id, "session_name": session, "restartHint": true })))
 }
@@ -435,6 +549,278 @@ pub async fn session_connectors(
     Ok(Json(json!({ "session_name": name, "connectors": out })))
 }
 
+// ── consumers / blast-radius + account lifecycle ────────────────────────────────
+
+/// `GET /api/connectors/{id}/grants` — the CONSUMERS of a connector (blast-radius):
+/// every grant, with its scope resolved (`*`→All agents, `@company:<id>`→company
+/// name/slug, else the bot's display label) and the account it uses. Secret-free.
+///
+/// A scoped **member** sees only the grants their company can see (via
+/// [`Scope::sees`]): their `@company:<id>` grants and their own bots' grants. Global
+/// all-agents grants (company-neutral) and other companies' grants are omitted —
+/// the same isolation the SSE stream and grant-target guard already apply.
+pub async fn connector_grants(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    if !valid_connector_id(&id) {
+        return Err(AppError::BadRequest("invalid connector id".into()));
+    }
+    connectors::get(&state.pool, &id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    let scope = Scope::of(ctx.0.as_ref());
+    let grants = connectors::grants_for_connector(&state.pool, &id)
+        .await
+        .map_err(db_err)?;
+    let mut out = Vec::new();
+    for g in &grants {
+        let (desc, company) = resolve_grant(&state, g).await;
+        if scope.sees(company) {
+            out.push(desc);
+        }
+    }
+    Ok(Json(json!({ "connector_id": id, "grants": out })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AccountBody {
+    /// Which [`Account`] (the `account_ref`) to act on.
+    pub account_ref: String,
+    /// reconnect only: optionally re-grant to this session/scope using the KEPT
+    /// secret. Ignored by disconnect.
+    #[serde(default)]
+    pub session_name: Option<String>,
+}
+
+/// `POST /api/connectors/{id}/disconnect` — revoke every grant an account feeds,
+/// but KEEP the sealed secret + the account row (status → `disconnected`) so a
+/// reconnect is one tap. Owner/admin-only (an account spans scopes).
+pub async fn disconnect_account(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(id): Path<String>,
+    Json(body): Json<AccountBody>,
+) -> Result<Json<Value>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/connectors/{id}/disconnect"))?;
+    let account = account_of(&state, &id, &body.account_ref).await?;
+    let revoked = connectors::revoke_by_account(&state.pool, &id, &account.id)
+        .await
+        .map_err(db_err)?;
+    connectors::account_set_status(&state.pool, &account.id, "disconnected")
+        .await
+        .map_err(db_err)?;
+    audit(&state, "connector.disconnect", &id, json!({ "account_ref": account.id, "revoked": revoked })).await;
+    Ok(Json(json!({
+        "ok": true,
+        "id": id,
+        "account_ref": account.id,
+        "status": "disconnected",
+        "revoked": revoked,
+        "restartHint": true,
+    })))
+}
+
+/// `POST /api/connectors/{id}/reconnect` — flip a disconnected account back to
+/// `active` and (optionally) re-grant it to a session/scope, REUSING the kept
+/// `secret_ref` (no re-entry of the secret). Owner/admin-only.
+pub async fn reconnect_account(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(id): Path<String>,
+    Json(body): Json<AccountBody>,
+) -> Result<Json<Value>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/connectors/{id}/reconnect"))?;
+    let account = account_of(&state, &id, &body.account_ref).await?;
+    connectors::account_set_status(&state.pool, &account.id, "active")
+        .await
+        .map_err(db_err)?;
+    if let Some(session) = body.session_name.as_deref().filter(|s| !s.is_empty()) {
+        let session = normalize_session(session);
+        connectors::grant_with_account(
+            &state.pool,
+            &session,
+            &id,
+            account.secret_ref.as_deref(),
+            true,
+            Some(&account.id),
+        )
+        .await
+        .map_err(db_err)?;
+        audit(&state, "connector.grant", &id, json!({ "session": session, "reconnect": true })).await;
+    }
+    audit(&state, "connector.reconnect", &id, json!({ "account_ref": account.id })).await;
+    Ok(Json(json!({
+        "ok": true,
+        "id": id,
+        "account_ref": account.id,
+        "status": "active",
+        "restartHint": true,
+    })))
+}
+
+/// Fetch an account and assert it belongs to `connector_id` (else a uniform 404).
+async fn account_of(state: &AppState, connector_id: &str, account_ref: &str) -> Result<Account, AppError> {
+    let account = connectors::account_get(&state.pool, account_ref)
+        .await
+        .map_err(db_err)?
+        .filter(|a| a.connector_id == connector_id)
+        .ok_or_else(|| AppError::NotFound(format!("account '{account_ref}'")))?;
+    Ok(account)
+}
+
+/// The connected accounts of a connector, each with its per-account grant-level,
+/// filtered to what the caller may see. A member with no visible grant for an
+/// account does not see that account (its label may be another company's identity).
+async fn accounts_json(
+    state: &AppState,
+    ctx: Option<&crate::auth_human::AuthContext>,
+    connector_id: &str,
+) -> Result<Vec<Value>, AppError> {
+    let scope = Scope::of(ctx);
+    let accounts = connectors::accounts_for_connector(&state.pool, connector_id)
+        .await
+        .map_err(db_err)?;
+    let grants = connectors::grants_for_connector(&state.pool, connector_id)
+        .await
+        .map_err(db_err)?;
+    let mut out = Vec::new();
+    for a in &accounts {
+        let mut resolved: Vec<Value> = Vec::new();
+        for g in grants.iter().filter(|g| g.account_ref.as_deref() == Some(a.id.as_str())) {
+            let (desc, company) = resolve_grant(state, g).await;
+            if scope.sees(company) {
+                resolved.push(desc);
+            }
+        }
+        // Hide an account a member has no visible grant for (identity privacy).
+        if matches!(scope, Scope::Company(_)) && resolved.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "id": a.id,
+            "account_label": a.account_label,
+            "status": a.status,
+            "has_secret": a.secret_ref.is_some(),
+            "last_used_at": a.last_used_at,
+            "health": a.health,
+            "grant_level": grant_level(&resolved),
+        }));
+    }
+    Ok(out)
+}
+
+/// Summarize an account's resolved grants into a single grant-level chip descriptor:
+/// all-agents wins; else one grant shows its scope; else same-company shows the
+/// company; else `N agents`.
+fn grant_level(resolved: &[Value]) -> Value {
+    if resolved.is_empty() {
+        return json!({ "scope": "none", "label": "Not granted", "count": 0 });
+    }
+    let count = resolved.len();
+    if let Some(all) = resolved.iter().find(|d| d["scope"] == "all") {
+        return json!({ "scope": "all", "label": all["label"].clone(), "count": count });
+    }
+    if count == 1 {
+        let d = &resolved[0];
+        return json!({
+            "scope": d["scope"].clone(),
+            "label": d["label"].clone(),
+            "company_id": d.get("company_id").cloned().unwrap_or(Value::Null),
+            "count": 1,
+        });
+    }
+    let first_company = resolved[0].get("company_id").cloned();
+    let same_company = resolved
+        .iter()
+        .all(|d| d["scope"] == "company" && d.get("company_id").cloned() == first_company);
+    if same_company {
+        return json!({ "scope": "company", "label": resolved[0]["label"].clone(), "count": count });
+    }
+    json!({ "scope": "bots", "label": format!("{count} agents"), "count": count })
+}
+
+/// Resolve a full grant into its consumer descriptor (scope + account), returning
+/// the descriptor and the company id used for member-visibility filtering.
+async fn resolve_grant(state: &AppState, g: &Grant) -> (Value, Option<i64>) {
+    let (mut desc, company) = resolve_grant_scope(state, &g.session_name).await;
+    let account_label = match g.account_ref.as_deref() {
+        Some(aref) => connectors::account_get(&state.pool, aref)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.account_label),
+        None => None,
+    };
+    if let Value::Object(ref mut o) = desc {
+        o.insert("enabled".into(), json!(g.enabled != 0));
+        o.insert("has_secret".into(), json!(g.secret_ref.is_some()));
+        o.insert("account_ref".into(), json!(g.account_ref));
+        o.insert("account_label".into(), json!(account_label));
+        o.insert("granted_at".into(), json!(g.granted_at));
+    }
+    (desc, company)
+}
+
+/// Map a stored `session_connectors.session_name` onto a human scope descriptor
+/// (`scope`/`label`/…), plus the company id for visibility filtering:
+///   * `*`               → `all`  (company None),
+///   * `@company:<id>`    → `company` + name/slug (company Some(id)),
+///   * a real slug        → `bot` + display label (company = the bot's company_id).
+async fn resolve_grant_scope(state: &AppState, session_name: &str) -> (Value, Option<i64>) {
+    if session_name == ALL_AGENTS {
+        return (json!({ "scope": "all", "label": "All agents" }), None);
+    }
+    if let Some(ids) = session_name.strip_prefix(COMPANY_PREFIX) {
+        let cid: Option<i64> = ids.parse().ok();
+        let (label, slug) = match cid {
+            Some(c) => match crate::db::companies::get(&state.pool, c).await.ok().flatten() {
+                Some(co) => (co.display_name, Some(co.slug)),
+                None => (format!("company {ids}"), None),
+            },
+            None => (format!("company {ids}"), None),
+        };
+        return (
+            json!({ "scope": "company", "company_id": cid, "slug": slug, "label": label }),
+            cid,
+        );
+    }
+    let (label, company) = match crate::db::sessions::get(&state.pool, session_name)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(s) => (
+            if s.display_name.trim().is_empty() {
+                session_name.to_string()
+            } else {
+                s.display_name
+            },
+            s.company_id,
+        ),
+        None => (session_name.to_string(), None),
+    };
+    (
+        json!({ "scope": "bot", "session_name": session_name, "label": label }),
+        company,
+    )
+}
+
+/// The KEY of the connector's `identity:true` credential field (e.g. `ICLOUD_EMAIL`),
+/// whose value doubles as the connected-account label. `None` if the connector
+/// declares no identity field.
+fn identity_field_key(credentials_json: &str) -> Option<String> {
+    serde_json::from_str::<Vec<CredentialField>>(credentials_json)
+        .ok()?
+        .into_iter()
+        // Identity is NON-secret by definition — never surface a `sensitive` field's
+        // value as a cleartext label, even if it was mis-flagged `identity:true`.
+        .find(|f| f.identity && !f.sensitive)
+        .map(|f| f.key)
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Normalize a grant scope string onto its stored `session_connectors.session_name`:
@@ -483,5 +869,52 @@ mod tests {
         );
         // a real slug is untouched
         assert_eq!(normalize_session("acme-bot"), "acme-bot");
+    }
+
+    #[test]
+    fn identity_field_key_finds_the_flagged_field() {
+        // iCloud-shaped schema: the email is the identity, the password is not.
+        let creds = json!([
+            { "key": "ICLOUD_EMAIL", "sensitive": false, "identity": true },
+            { "key": "ICLOUD_APP_PW", "sensitive": true }
+        ])
+        .to_string();
+        assert_eq!(identity_field_key(&creds).as_deref(), Some("ICLOUD_EMAIL"));
+        // No identity flag anywhere → None (identity-less connector).
+        let none = json!([{ "key": "TOKEN", "sensitive": true }]).to_string();
+        assert_eq!(identity_field_key(&none), None);
+        assert_eq!(identity_field_key("not json"), None);
+        // A SENSITIVE field mis-flagged identity is refused (never leak a secret).
+        let bad = json!([{ "key": "SECRET", "sensitive": true, "identity": true }]).to_string();
+        assert_eq!(identity_field_key(&bad), None);
+    }
+
+    #[test]
+    fn grant_level_summarizes_the_chip() {
+        // Nothing granted.
+        assert_eq!(grant_level(&[])["scope"], json!("none"));
+        // All-agents wins the chip even amid others.
+        let all = vec![
+            json!({ "scope": "all", "label": "All agents" }),
+            json!({ "scope": "bot", "label": "crm-bot" }),
+        ];
+        assert_eq!(grant_level(&all)["scope"], json!("all"));
+        // A single bot grant shows that bot.
+        let one = vec![json!({ "scope": "bot", "label": "crm-bot" })];
+        assert_eq!(grant_level(&one)["scope"], json!("bot"));
+        assert_eq!(grant_level(&one)["label"], json!("crm-bot"));
+        // Two grants in the SAME company collapse to the company.
+        let same = vec![
+            json!({ "scope": "company", "company_id": 7, "label": "Acme" }),
+            json!({ "scope": "company", "company_id": 7, "label": "Acme" }),
+        ];
+        assert_eq!(grant_level(&same)["scope"], json!("company"));
+        // Mixed bots → "N agents".
+        let mixed = vec![
+            json!({ "scope": "bot", "label": "a" }),
+            json!({ "scope": "bot", "label": "b" }),
+        ];
+        assert_eq!(grant_level(&mixed)["scope"], json!("bots"));
+        assert_eq!(grant_level(&mixed)["count"], json!(2));
     }
 }

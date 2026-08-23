@@ -74,8 +74,14 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/connectors/{id}", get(api::get_one).delete(api::remove))
         // Import a `.mcpb` manifest.json → a connector card.
         .route("/api/connectors/import", post(api::import_mcpb))
-        // Write a credential → vault (write-only), optionally auto-granting.
+        // Write a credential → vault (write-only), optionally auto-granting +
+        // capturing the connected-account identity (multi-account).
         .route("/api/connectors/{id}/credential", post(api::put_credential))
+        // The CONSUMERS of a connector (blast-radius): every grant, scope-resolved.
+        .route("/api/connectors/{id}/grants", get(api::connector_grants))
+        // Account lifecycle: disconnect (revoke grants, KEEP the secret) / reconnect.
+        .route("/api/connectors/{id}/disconnect", post(api::disconnect_account))
+        .route("/api/connectors/{id}/reconnect", post(api::reconnect_account))
         // Grant / revoke to a session (or the '*' all-agents sentinel).
         .route("/api/connectors/{id}/grant", post(api::grant))
         .route("/api/connectors/{id}/grant", delete(api::revoke))

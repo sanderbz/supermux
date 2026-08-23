@@ -73,6 +73,9 @@ fn credential_fields() -> Vec<CredentialField> {
             field_type: "string".into(),
             sensitive: false,
             required: true,
+            // The connected-account identity: non-secret, surfaced in cleartext as
+            // the account_label ("Connected as sander@icloud.com").
+            identity: true,
             default: None,
         },
         CredentialField {
@@ -81,6 +84,7 @@ fn credential_fields() -> Vec<CredentialField> {
             field_type: "string".into(),
             sensitive: true,
             required: true,
+            identity: false,
             default: None,
         },
     ]

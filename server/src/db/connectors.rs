@@ -47,9 +47,44 @@ pub struct Grant {
     pub session_name: String,
     pub connector_id: String,
     /// `vault.id` of the secret to inject, or `None` for a no-secret connector.
+    /// Denormalized from the account (see [`Account::secret_ref`]) so the launch
+    /// path ([`crate::sessions::connector_config`]) reads it straight off the grant
+    /// with zero JOIN — untouched by multi-account.
     pub secret_ref: Option<String>,
     pub enabled: i64,
     pub granted_at: i64,
+    /// WHICH [`Account`] this grant is using (`connector_accounts.id`), or `None`
+    /// for a legacy / no-identity grant. Rides along on the union; it never changes
+    /// grant precedence or company isolation — those key off `connector_id` only.
+    pub account_ref: Option<String>,
+}
+
+/// A row of the `connector_accounts` table (migrations 0035/0036) — one CONNECTED
+/// ACCOUNT of a connector. A connector may have N of these; a [`Grant`] references
+/// one via [`Grant::account_ref`]. `account_label` is NON-secret (display only);
+/// the sensitive material lives, sealed, in the [`vault`](crate::vault) at
+/// `secret_ref`. The row (and its `secret_ref`) survives a disconnect so a reconnect
+/// reuses the sealed secret.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct Account {
+    pub id: String,
+    pub connector_id: String,
+    /// Non-secret display identity, e.g. `"sander@acme.com"`; `""` when the
+    /// connector captures no identity field.
+    pub account_label: String,
+    /// `vault.id` of this account's sealed secret (`None` for a no-secret connector).
+    pub secret_ref: Option<String>,
+    /// `"active"` | `"disconnected"`.
+    pub status: String,
+    pub created_at: i64,
+    /// Passive freshness (stamped at launch; written by a later slice).
+    pub last_used_at: i64,
+    /// Active health (0036): `None` | `"ok"` | `"expired"` | `"error"`. Written by a
+    /// later "Test connection" probe.
+    pub health: Option<String>,
+    pub last_checked_at: i64,
+    /// Masked, human-readable last health error.
+    pub last_error: Option<String>,
 }
 
 /// A row of the `vault` table (opaque ciphertext — see [`crate::vault`]).
@@ -238,6 +273,39 @@ pub async fn grant(
     Ok(())
 }
 
+/// Account-aware [`grant`]: same idempotent upsert, but also pins which
+/// [`Account`] the grant uses (`account_ref`). Used by the connect / add-account /
+/// reconnect paths; the plain [`grant`] leaves `account_ref` untouched (a re-grant
+/// of a legacy row keeps whatever account it already had).
+pub async fn grant_with_account(
+    pool: &SqlitePool,
+    session_name: &str,
+    connector_id: &str,
+    secret_ref: Option<&str>,
+    enabled: bool,
+    account_ref: Option<&str>,
+) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO session_connectors
+            (session_name, connector_id, secret_ref, enabled, granted_at, account_ref)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_name, connector_id) DO UPDATE SET
+            secret_ref = excluded.secret_ref,
+            enabled = excluded.enabled,
+            account_ref = excluded.account_ref",
+    )
+    .bind(session_name)
+    .bind(connector_id)
+    .bind(secret_ref)
+    .bind(if enabled { 1 } else { 0 })
+    .bind(now)
+    .bind(account_ref)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Revoke a grant (delete the row). Returns true if it existed.
 pub async fn revoke(pool: &SqlitePool, session_name: &str, connector_id: &str) -> sqlx::Result<bool> {
     let res = sqlx::query(
@@ -247,6 +315,116 @@ pub async fn revoke(pool: &SqlitePool, session_name: &str, connector_id: &str) -
     .bind(connector_id)
     .execute(pool)
     .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Revoke every grant of `connector_id` that uses `account_ref` — the DISCONNECT
+/// primitive. The [`Account`] row and its sealed secret are LEFT INTACT (the caller
+/// flips its status), so a later reconnect reuses the secret. Returns the count of
+/// grants removed.
+pub async fn revoke_by_account(
+    pool: &SqlitePool,
+    connector_id: &str,
+    account_ref: &str,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "DELETE FROM session_connectors WHERE connector_id = ? AND account_ref = ?",
+    )
+    .bind(connector_id)
+    .bind(account_ref)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+// ── connector_accounts (multi-account, migrations 0035/0036) ────────────────────
+
+/// Insert a new connected [`Account`] and return its minted id (the `account_ref`).
+/// `status` starts `"active"`. `account_label` is stored in cleartext (non-secret).
+pub async fn account_add(
+    pool: &SqlitePool,
+    connector_id: &str,
+    account_label: &str,
+    secret_ref: Option<&str>,
+) -> sqlx::Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO connector_accounts
+            (id, connector_id, account_label, secret_ref, status, created_at, last_used_at)
+         VALUES (?, ?, ?, ?, 'active', ?, 0)",
+    )
+    .bind(&id)
+    .bind(connector_id)
+    .bind(account_label)
+    .bind(secret_ref)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Fetch one account by its id (the `account_ref`).
+pub async fn account_get(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Account>> {
+    sqlx::query_as::<_, Account>("SELECT * FROM connector_accounts WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Every account of a connector, oldest first — the multi-account list.
+pub async fn accounts_for_connector(
+    pool: &SqlitePool,
+    connector_id: &str,
+) -> sqlx::Result<Vec<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts WHERE connector_id = ? ORDER BY created_at ASC, id ASC",
+    )
+    .bind(connector_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Flip an account's lifecycle `status` (`"active"` | `"disconnected"`). Returns
+/// true if the row existed.
+pub async fn account_set_status(pool: &SqlitePool, id: &str, status: &str) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE connector_accounts SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// REPLACE an account's identity in place — a new `account_label` and/or a rotated
+/// `secret_ref` — keeping the same account id (so every grant referencing it stays
+/// wired) and setting status back to `"active"`. Returns true if the row existed.
+pub async fn account_replace(
+    pool: &SqlitePool,
+    id: &str,
+    account_label: &str,
+    secret_ref: Option<&str>,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query(
+        "UPDATE connector_accounts
+            SET account_label = ?, secret_ref = ?, status = 'active'
+          WHERE id = ?",
+    )
+    .bind(account_label)
+    .bind(secret_ref)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Stamp `last_used_at` (passive freshness). Best-effort; returns true if updated.
+pub async fn account_mark_used(pool: &SqlitePool, id: &str, at: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE connector_accounts SET last_used_at = ? WHERE id = ?")
+        .bind(at)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -512,6 +690,143 @@ mod tests {
         delete(&pool, "mail").await.unwrap();
         assert!(grants_for_connector(&pool, "mail").await.unwrap().is_empty());
         assert!(vault_get(&pool, "sref").await.unwrap().is_none());
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── multi-account (0035/0036) ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn multi_account_roundtrip_add_grant_consumers_disconnect_keeps_secret() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gmail").await;
+
+        // TWO accounts on ONE connector, each its own label + its own sealed secret.
+        vault_put(&pool, "sref-a", "gmail", b"ct-a", b"nonce12bytes", false).await.unwrap();
+        vault_put(&pool, "sref-b", "gmail", b"ct-b", b"nonce12bytes", false).await.unwrap();
+        let acct_a = account_add(&pool, "gmail", "sander@acme.com", Some("sref-a")).await.unwrap();
+        let acct_b = account_add(&pool, "gmail", "ops@acme.com", Some("sref-b")).await.unwrap();
+        assert_ne!(acct_a, acct_b, "each account is a distinct row");
+
+        let accts = accounts_for_connector(&pool, "gmail").await.unwrap();
+        assert_eq!(accts.len(), 2, "connector holds two accounts");
+        let labels: std::collections::HashSet<_> =
+            accts.iter().map(|a| a.account_label.clone()).collect();
+        assert!(labels.contains("sander@acme.com") && labels.contains("ops@acme.com"));
+
+        // Grant ACCOUNT A to a bot — the grant pins account_ref AND rides A's secret.
+        grant_with_account(&pool, "crm-bot", "gmail", Some("sref-a"), true, Some(&acct_a))
+            .await
+            .unwrap();
+
+        // grants_for_connector lists the consumer, carrying which account it uses.
+        let consumers = grants_for_connector(&pool, "gmail").await.unwrap();
+        assert_eq!(consumers.len(), 1);
+        assert_eq!(consumers[0].session_name, "crm-bot");
+        assert_eq!(consumers[0].account_ref.as_deref(), Some(acct_a.as_str()));
+        assert_eq!(consumers[0].secret_ref.as_deref(), Some("sref-a"));
+
+        // The launch path still resolves the grant unchanged (own secret rides it).
+        let bot = grants_for_session(&pool, "crm-bot").await.unwrap();
+        let g = bot.iter().find(|g| g.connector_id == "gmail").unwrap();
+        assert_eq!(g.account_ref.as_deref(), Some(acct_a.as_str()));
+        assert_eq!(g.secret_ref.as_deref(), Some("sref-a"));
+
+        // DISCONNECT account A: revoke its grants, KEEP the account row + its secret.
+        let removed = revoke_by_account(&pool, "gmail", &acct_a).await.unwrap();
+        assert_eq!(removed, 1, "the one grant using account A is revoked");
+        account_set_status(&pool, &acct_a, "disconnected").await.unwrap();
+
+        assert!(
+            grants_for_connector(&pool, "gmail").await.unwrap().is_empty(),
+            "no consumers after disconnect"
+        );
+        let a = account_get(&pool, &acct_a).await.unwrap().unwrap();
+        assert_eq!(a.status, "disconnected");
+        assert_eq!(a.secret_ref.as_deref(), Some("sref-a"), "the account keeps its secret_ref");
+        assert!(
+            vault_get(&pool, "sref-a").await.unwrap().is_some(),
+            "the sealed secret survives a disconnect (1-tap reconnect)"
+        );
+        // Account B (never disconnected) is untouched.
+        assert_eq!(accounts_for_connector(&pool, "gmail").await.unwrap().len(), 2);
+
+        // RECONNECT: reuse the kept secret_ref, flip status back.
+        let a = account_get(&pool, &acct_a).await.unwrap().unwrap();
+        grant_with_account(&pool, "crm-bot", "gmail", a.secret_ref.as_deref(), true, Some(&acct_a))
+            .await
+            .unwrap();
+        account_set_status(&pool, &acct_a, "active").await.unwrap();
+        let consumers = grants_for_connector(&pool, "gmail").await.unwrap();
+        assert_eq!(consumers.len(), 1, "reconnect re-grants using the kept secret");
+        assert_eq!(consumers[0].secret_ref.as_deref(), Some("sref-a"));
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn account_replace_swaps_identity_and_keeps_the_grant() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gmail").await;
+        vault_put(&pool, "sref-1", "gmail", b"ct", b"nonce12bytes", false).await.unwrap();
+        let acct = account_add(&pool, "gmail", "old@acme.com", Some("sref-1")).await.unwrap();
+        grant_with_account(&pool, "crm-bot", "gmail", Some("sref-1"), true, Some(&acct))
+            .await
+            .unwrap();
+
+        // Replace the identity in place (same account id, rotated secret in place).
+        vault_put(&pool, "sref-1", "gmail", b"ct-rotated", b"nonce12bytes", true).await.unwrap();
+        assert!(account_replace(&pool, &acct, "new@acme.com", Some("sref-1")).await.unwrap());
+
+        let a = account_get(&pool, &acct).await.unwrap().unwrap();
+        assert_eq!(a.account_label, "new@acme.com", "identity swapped");
+        assert_eq!(a.status, "active");
+        // The grant still points at the SAME account (grants kept).
+        let consumers = grants_for_connector(&pool, "gmail").await.unwrap();
+        assert_eq!(consumers.len(), 1);
+        assert_eq!(consumers[0].account_ref.as_deref(), Some(acct.as_str()));
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn account_ref_rides_the_union_without_disturbing_precedence() {
+        // Multi-account must NOT change own>company>all precedence or isolation:
+        // the account_ref just rides along on the winning tier's grant.
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "mail").await;
+        insert_session(&pool, "acme-bot", Some(7)).await;
+        let own = account_add(&pool, "mail", "own@acme.com", Some("own-sref")).await.unwrap();
+        // all-agents (plain grant, no account) + own-tier account-aware grant.
+        grant(&pool, ALL_AGENTS, "mail", Some("all-sref"), true).await.unwrap();
+        grant_with_account(&pool, "acme-bot", "mail", Some("own-sref"), true, Some(&own))
+            .await
+            .unwrap();
+
+        let bot = grants_for_session(&pool, "acme-bot").await.unwrap();
+        let mail: Vec<_> = bot.iter().filter(|g| g.connector_id == "mail").collect();
+        assert_eq!(mail.len(), 1, "still de-duped to one connector across tiers");
+        assert_eq!(mail[0].secret_ref.as_deref(), Some("own-sref"), "own tier still wins");
+        assert_eq!(mail[0].account_ref.as_deref(), Some(own.as_str()), "and carries its account");
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn delete_connector_cascades_accounts() {
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gmail").await;
+        account_add(&pool, "gmail", "a@acme.com", None).await.unwrap();
+        account_add(&pool, "gmail", "b@acme.com", None).await.unwrap();
+        assert_eq!(accounts_for_connector(&pool, "gmail").await.unwrap().len(), 2);
+        delete(&pool, "gmail").await.unwrap();
+        assert!(
+            accounts_for_connector(&pool, "gmail").await.unwrap().is_empty(),
+            "accounts CASCADE with the connector"
+        );
         pool.close().await;
         std::fs::remove_dir_all(dir).ok();
     }

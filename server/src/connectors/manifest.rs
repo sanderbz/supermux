@@ -47,6 +47,13 @@ pub struct CredentialField {
     pub sensitive: bool,
     #[serde(default)]
     pub required: bool,
+    /// Marks this NON-secret field as the connector's connected-account IDENTITY
+    /// (e.g. iCloud `ICLOUD_EMAIL`). Its value is captured at connect time and
+    /// surfaced in cleartext as the account's `account_label` ("Connected as
+    /// sander@acme.com") — the vault still stays write-only for the sensitive
+    /// fields. At most one field per connector should carry this.
+    #[serde(default)]
+    pub identity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
 }
@@ -189,6 +196,7 @@ impl Manifest {
                             .to_string(),
                         sensitive: spec.get("sensitive").and_then(Value::as_bool).unwrap_or(false),
                         required: spec.get("required").and_then(Value::as_bool).unwrap_or(false),
+                        identity: spec.get("identity").and_then(Value::as_bool).unwrap_or(false),
                         default: spec.get("default").cloned(),
                     })
                     .collect()

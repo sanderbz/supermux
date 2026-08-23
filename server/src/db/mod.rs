@@ -119,8 +119,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 32,
-            "expected thirty-two applied migrations (0001-0005, 0007-0024, 0026-0034)"
+            applied, 34,
+            "expected thirty-four applied migrations (0001-0005, 0007-0024, 0026-0036)"
         );
 
         pool.close().await;
