@@ -115,6 +115,35 @@ export function useProvisionTunnel(companyId?: number) {
   })
 }
 
+// ── "Try without a domain" — zero-config quick tunnel ─────────────────────────
+
+/** `POST /api/external-access/quick-tunnel` — start a temporary link for THIS
+ *  company. The mutation stays pending for the few seconds cloudflared takes to
+ *  report its URL (the wizard shows a spinner), then status re-reads and the
+ *  `box_status.quick_tunnel` block goes live. */
+export function useStartQuickTunnel(companyId: number) {
+  const invalidate = useInvalidateStatus(companyId)
+  return useMutation({
+    mutationFn: async () => {
+      if (devMockActive()) return (await mockClient()).startQuickTunnel(companyId)
+      return externalAccessApi.startQuickTunnel(companyId)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+/** `DELETE /api/external-access/quick-tunnel` — tear the temporary link down. */
+export function useStopQuickTunnel(companyId?: number) {
+  const invalidate = useInvalidateStatus(companyId)
+  return useMutation({
+    mutationFn: async () => {
+      if (devMockActive()) return (await mockClient()).stopQuickTunnel()
+      return externalAccessApi.stopQuickTunnel()
+    },
+    onSuccess: invalidate,
+  })
+}
+
 // ── Step 1b — Choose your domain (CF zone auto-discovery) ──────────────────────
 
 export interface UseZonesResult {

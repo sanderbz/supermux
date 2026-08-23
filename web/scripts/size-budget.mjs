@@ -1001,7 +1001,23 @@ const BUDGET_ENTRY_JS = 161 * KB
 // A genuine additive feature (BYO-domain — an open-source box can no longer be
 // pinned to the maintainer's infra), not a regression to trim: ceil(measured)=335,
 // the same rule every fase since B3 used.
-const BUDGET_APP_JS = 335 * KB
+// 335 → 337 at the quick-tunnel "try without a domain" branch (feat/companies-grok,
+// slice 8): the Domain step gains a two-card chooser (quick tunnel vs BYO-domain),
+// an ephemeral temporary-link panel, and a Google-less 2-step order with per-person
+// magic-link invites. Measured 336.13 against 335.00 — +1.77 KB over the P2c floor
+// (334.36), ALL of it OFF the hero path: it lands in the already-lazy `invite-wizard`
+// chunk + the eagerly-cached api barrel, and the ENTRY gate — the hard one guarding
+// cold load — is UNMOVED at 157.10/161 (98%), +0.01 KB (grep finds no
+// `external-access/quick-tunnel` in `index-*.js`). Where the bytes went:
+//   +~1.4 KB   `QuickTunnelChoice` + `QuickTunnelPanel` in `invite-wizard-sheet`
+//              (the flagship chooser cards, the ephemeral link panel + honesty
+//              notes) and the quick-branch forks in Domain/Person/Success. Lazy.
+//   +~0.25 KB  `useStartQuickTunnel` / `useStopQuickTunnel` in `use-external-access`
+//              + `startQuickTunnel` / `stopQuickTunnel` in the api barrel (the only
+//              eagerly-reachable bytes; the new wire types erase).
+// A genuine additive feature (no-domain onboarding), not a regression to trim:
+// ceil(measured)=337, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 337 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

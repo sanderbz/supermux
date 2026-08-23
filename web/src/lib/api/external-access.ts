@@ -41,6 +41,18 @@ export interface ProvisionResult {
   reachable_host: string
 }
 
+/** The active zero-config quick tunnel (ephemeral). Present on `box_status` only
+ *  while a temporary trial is configured — omitted otherwise. Mirrors the server's
+ *  `QuickTunnelStatus`. `active` is honest: a crashed cloudflared child ⇒ false. */
+export interface QuickTunnelStatus {
+  active: boolean
+  url: string
+  host: string
+  company_id: number
+  /** Always true — the honesty flag ("this link changes on restart"). */
+  ephemeral: boolean
+}
+
 /** Box-wide external-access state — the wizard's entry-routing + live chips. */
 export interface BoxStatus {
   /** `none` | `valid`. */
@@ -54,6 +66,23 @@ export interface BoxStatus {
    *  Absent/`null` ⇒ the "Choose your domain" sub-step has not run yet (fail-closed:
    *  external access is not configured until this is set). */
   base_domain?: string | null
+  /** The active quick tunnel (the "try without a domain" branch). Absent ⇒ no
+   *  temporary trial is running. */
+  quick_tunnel?: QuickTunnelStatus | null
+}
+
+/** `POST /api/external-access/quick-tunnel` result — the freshly-started ephemeral
+ *  tunnel. `ephemeral` is always true. */
+export interface QuickTunnelResult {
+  url: string
+  host: string
+  ephemeral: boolean
+  company_id: number
+}
+
+/** `DELETE /api/external-access/quick-tunnel` result. */
+export interface QuickTunnelTeardownResult {
+  torn_down: boolean
 }
 
 /** Per-company external-access state (present when `company_id` is passed). */
@@ -160,6 +189,21 @@ export const externalAccessApi = {
    *  tunnel + DNS + connector unit. Poll `status.tunnel` for health after. */
   provisionTunnel: (): Promise<ProvisionResult> =>
     sessionRequest('/api/external-access/provision-tunnel', { method: 'POST' }),
+
+  /** `POST /api/external-access/quick-tunnel` — the zero-config "try without a
+   *  domain" branch. Starts a Cloudflare quick tunnel FOR `companyId` (no token,
+   *  no zone, no Google) and returns the ephemeral `*.trycloudflare.com` URL. One
+   *  active quick tunnel per box — starting one for another company replaces it. */
+  startQuickTunnel: (companyId: number): Promise<QuickTunnelResult> =>
+    sessionRequest('/api/external-access/quick-tunnel', {
+      method: 'POST',
+      body: JSON.stringify({ company_id: companyId }),
+    }),
+
+  /** `DELETE /api/external-access/quick-tunnel` — stop the child + drop the
+   *  ephemeral host, hot-reloading auth. */
+  stopQuickTunnel: (): Promise<QuickTunnelTeardownResult> =>
+    sessionRequest('/api/external-access/quick-tunnel', { method: 'DELETE' }),
 
   /** `POST /api/external-access/google` — write the Google client id + secret
    *  (secret 0600, never echoed). Returns `{configured}`. */

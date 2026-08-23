@@ -13,6 +13,8 @@
 //           /dev/invite?mock=1&zones=multi   (entry A, several domains → pick-one list)
 //           /dev/invite?mock=1&entry=B       (box set up, one URL to add for a new company)
 //           /dev/invite?mock=1&entry=C       (already reachable — the repeat-invite path)
+//           /dev/invite?mock=1&entry=Q       (the "try without a domain" chooser — qt-choice)
+//           /dev/invite?mock=1&entry=Q&tunnel=1 (a temporary link already live — qt-success)
 //
 // On a 390px viewport the ResponsiveSheet renders as the Vaul bottom-sheet; on a
 // wide viewport it is the desktop side sheet.
@@ -69,7 +71,7 @@ export default function DevInvite() {
         >
           Open wizard
         </button>
-        {(['A', 'B', 'C'] as const).map((e) => (
+        {(['A', 'B', 'C', 'Q'] as const).map((e) => (
           <button
             key={e}
             type="button"
@@ -77,6 +79,7 @@ export default function DevInvite() {
               const next = new URLSearchParams(params)
               next.set('mock', '1')
               next.set('entry', e)
+              if (e !== 'Q') next.delete('tunnel')
               setParams(next)
               resetExternalAccessMock()
               setOpen(true)
@@ -86,6 +89,22 @@ export default function DevInvite() {
             Entry {e}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            const next = new URLSearchParams(params)
+            next.set('mock', '1')
+            next.set('entry', 'Q')
+            if (params.get('tunnel') === '1') next.delete('tunnel')
+            else next.set('tunnel', '1')
+            setParams(next)
+            resetExternalAccessMock()
+            setOpen(true)
+          }}
+          className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground"
+        >
+          Temp link: {params.get('tunnel') === '1' ? 'active' : 'off'}
+        </button>
         <button
           type="button"
           onClick={() => {

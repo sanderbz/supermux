@@ -29,22 +29,42 @@ import type {
   HostResult,
   HumanInvitee,
   ProvisionResult,
+  QuickTunnelResult,
+  QuickTunnelTeardownResult,
   VerifyLoginResult,
   ZonesResult,
 } from '@/lib/api'
 import { SessionError } from '@/lib/api'
 
-type Entry = 'A' | 'B' | 'C'
+// Entry `Q` is the "try without a domain" quick-tunnel branch. `?tunnel=1` on top
+// of it seeds an ALREADY-active temporary link so the offline rig can screenshot
+// the success screen directly (without waiting for the provisioning spinner).
+type Entry = 'A' | 'B' | 'C' | 'Q'
 
 function readEntry(): Entry {
   if (typeof window === 'undefined') return 'A'
   const e = new URLSearchParams(window.location.search).get('entry')
-  return e === 'B' || e === 'C' ? e : 'A'
+  if (e === 'B' || e === 'C' || e === 'Q') return e
+  // `?tunnel=1` is an alias for the quick-tunnel entry.
+  if (new URLSearchParams(window.location.search).get('tunnel') != null) return 'Q'
+  return 'A'
+}
+
+function tunnelPreactive(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('tunnel') === '1'
 }
 
 function multiZones(): boolean {
   if (typeof window === 'undefined') return false
   return new URLSearchParams(window.location.search).get('zones') === 'multi'
+}
+
+interface QuickTunnelMock {
+  host: string
+  companyId: number
+  active: boolean
+  createdAt: number
 }
 
 interface MockState {
@@ -55,10 +75,12 @@ interface MockState {
   hostWritten: boolean
   verifyAttempts: number // first attempt mismatches, second clears — shows both paths
   humans: HumanInvitee[]
+  quickTunnel: QuickTunnelMock | null // the "try without a domain" branch
   seededAt: number
 }
 
 const CONNECT_MS = 2500 // connecting → healthy dwell, long enough to SEE the spinner
+const QUICK_HOST = 'calm-frog-1a2b3c4d.trycloudflare.com'
 const SLUG = 'acme'
 
 /** Host / redirect derived from the CHOSEN base domain — empty until one is set,
@@ -79,7 +101,17 @@ function initialState(entry: Entry): MockState {
     hostWritten: false,
     verifyAttempts: 0,
     humans: [],
+    quickTunnel: null,
     seededAt: now,
+  }
+  // Q — the "try without a domain" branch. No CF token, no base domain, no Google:
+  // the wizard opens on the two-card chooser. `?tunnel=1` seeds an already-live
+  // temporary link so the success screen renders immediately.
+  if (entry === 'Q') {
+    if (tunnelPreactive()) {
+      base.quickTunnel = { host: QUICK_HOST, companyId: 42, active: true, createdAt: now - 60_000 }
+    }
+    return base
   }
   if (entry === 'B' || entry === 'C') {
     base.cfToken = 'valid'
@@ -109,6 +141,12 @@ function row(
   return { id, email, display_name, company_id: 42, role, created_at, status }
 }
 
+/** A plausible-looking (but fake) signed invite token for the offline bench. */
+function mockInviteToken(userId: number): string {
+  const payload = btoa(`${userId}:42:${Math.floor(Date.now() / 1000) + 604800}`).replace(/=+$/, '')
+  return `${payload}.f${(userId * 2654435761).toString(16).slice(0, 24)}`
+}
+
 let state: MockState = initialState(readEntry())
 
 /** Reset the mock (the dev bench calls this on mount so re-runs start clean). */
@@ -127,6 +165,7 @@ export const externalAccessMock = {
   async status(companyId?: number): Promise<ExternalStatus> {
     const tunnel = tunnelPhase()
     const { host, redirect } = derived(state.baseDomain)
+    const qt = state.quickTunnel
     const out: ExternalStatus = {
       box_status: {
         cf_token: state.cfToken,
@@ -134,6 +173,15 @@ export const externalAccessMock = {
         dns_ok: tunnel === 'healthy',
         google: state.google,
         base_domain: state.baseDomain,
+        quick_tunnel: qt
+          ? {
+              active: qt.active,
+              url: `https://${qt.host}`,
+              host: qt.host,
+              company_id: qt.companyId,
+              ephemeral: true,
+            }
+          : null,
       },
     }
     if (companyId != null) {
@@ -188,6 +236,22 @@ export const externalAccessMock = {
     }
   },
 
+  async startQuickTunnel(companyId?: number): Promise<QuickTunnelResult> {
+    // cloudflared takes a couple of seconds to come up and print its URL — the
+    // wizard shows a spinner via the mutation's pending state for this whole await.
+    await wait(2200)
+    const cid = companyId ?? 42
+    state.quickTunnel = { host: QUICK_HOST, companyId: cid, active: true, createdAt: Date.now() }
+    return { url: `https://${QUICK_HOST}`, host: QUICK_HOST, ephemeral: true, company_id: cid }
+  },
+
+  async stopQuickTunnel(): Promise<QuickTunnelTeardownResult> {
+    await wait(400)
+    const torn = state.quickTunnel != null
+    state.quickTunnel = null
+    return { torn_down: torn }
+  },
+
   async google(clientId: string, clientSecret: string): Promise<GoogleResult> {
     await wait(650)
     if (!/\.apps\.googleusercontent\.com$/.test(clientId.trim())) {
@@ -234,6 +298,13 @@ export const externalAccessMock = {
       Date.now(),
     )
     state.humans = [r, ...state.humans]
+    // On the quick-tunnel branch the colleague gets a SIGNED magic link on the
+    // ephemeral host (no Google); otherwise the permanent company host they sign
+    // in to with Google.
+    const qt = state.quickTunnel
+    const login_url = qt
+      ? `https://${qt.host}/auth/invite?token=${mockInviteToken(r.id)}`
+      : `https://${derived(state.baseDomain).host}`
     return {
       user: {
         id: r.id,
@@ -243,7 +314,7 @@ export const externalAccessMock = {
         role: r.role,
         created_at: r.created_at,
       },
-      login_url: `https://${derived(state.baseDomain).host}`,
+      login_url,
     }
   },
 
