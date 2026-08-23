@@ -1,0 +1,17 @@
+-- Company-scope a connected account (P2b isolation fix; additive/nullable).
+--
+-- 0035 keyed the account atom on (connector_id, account_label) with NO company
+-- dimension, and the dedup lives in the callers (api::put_credential,
+-- oauth::seal_and_grant). Two companies connecting the SAME identity label
+-- collapsed to one connector_accounts row: the later account_replace re-pointed
+-- the SHARED secret_ref while the other company's grant still referenced it — a
+-- cross-company token swap. This column makes company A's "alice" and company
+-- B's "alice" DISTINCT rows with DISTINCT secret_refs.
+--
+-- NULL = HQ / global scope (omniscient bots and every owner-minted, un-scoped
+-- account). Every pre-existing row backfills to NULL, which is exactly its
+-- prior meaning (global). No FK — the same free-of-coupling discipline
+-- secret_ref/account_ref already follow (0035 header), and a plain nullable add
+-- applies cleanly under foreign_keys=ON (no REFERENCES-with-non-null-default
+-- trap). SHIPPED-IMMUTABLE: sqlx checksums migrations; never edit after deploy.
+ALTER TABLE connector_accounts ADD COLUMN company_id INTEGER;  -- NULL = HQ/global

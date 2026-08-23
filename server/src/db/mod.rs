@@ -119,8 +119,37 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 34,
-            "expected thirty-four applied migrations (0001-0005, 0007-0024, 0026-0036)"
+            applied, 35,
+            "expected thirty-five applied migrations (0001-0005, 0007-0024, 0026-0037)"
+        );
+
+        // 0037 applied cleanly: the new nullable company_id column exists and a
+        // fresh account backfills/defaults to NULL (= HQ/global, its prior meaning).
+        let cols: Vec<String> = sqlx::query("PRAGMA table_info(connector_accounts)")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        assert!(
+            cols.iter().any(|c| c == "company_id"),
+            "0037 adds connector_accounts.company_id"
+        );
+        connectors::upsert(&pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        let acct = connectors::account_add(&pool, "gh", "alice", None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            connectors::account_get(&pool, &acct)
+                .await
+                .unwrap()
+                .unwrap()
+                .company_id,
+            None,
+            "a fresh account backfills to NULL company_id (HQ/global)"
         );
 
         pool.close().await;

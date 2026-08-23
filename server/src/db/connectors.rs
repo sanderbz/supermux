@@ -85,6 +85,11 @@ pub struct Account {
     pub last_checked_at: i64,
     /// Masked, human-readable last health error.
     pub last_error: Option<String>,
+    /// Company that owns this connected account (P2b isolation, 0037). `None` =
+    /// HQ / global scope. Two companies connecting the same identity label are
+    /// DISTINCT rows keyed by this; two HQ (`None`) connects still dedup to one.
+    /// `SELECT *` / `FromRow` picks up the nullable column automatically.
+    pub company_id: Option<i64>,
 }
 
 /// A row of the `vault` table (opaque ciphertext — see [`crate::vault`]).
@@ -346,22 +351,73 @@ pub async fn account_add(
     connector_id: &str,
     account_label: &str,
     secret_ref: Option<&str>,
+    company_id: Option<i64>,
 ) -> sqlx::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO connector_accounts
-            (id, connector_id, account_label, secret_ref, status, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, 'active', ?, 0)",
+            (id, connector_id, account_label, secret_ref, status, created_at,
+             last_used_at, company_id)
+         VALUES (?, ?, ?, ?, 'active', ?, 0, ?)",
     )
     .bind(&id)
     .bind(connector_id)
     .bind(account_label)
     .bind(secret_ref)
     .bind(now)
+    .bind(company_id)
     .execute(pool)
     .await?;
     Ok(id)
+}
+
+/// The one account of a connector matching `account_label` **within a company
+/// scope** — the dedup key for the paste/device connect paths (0037). `company_id`
+/// `None` means HQ/global; SQLite `IS` makes `company_id IS NULL` match (a bare
+/// `= ?` with a NULL bind never matches a NULL row). Company A's "alice" and
+/// company B's "alice" never collide; two HQ (`None`) connects find the same row.
+pub async fn account_find_by_label(
+    pool: &SqlitePool,
+    connector_id: &str,
+    account_label: &str,
+    company_id: Option<i64>,
+) -> sqlx::Result<Option<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts
+          WHERE connector_id = ? AND account_label = ? AND company_id IS ?
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1",
+    )
+    .bind(connector_id)
+    .bind(account_label)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// The company a grant TARGET resolves to — the scope an account minted for it
+/// belongs to (own > company > all, expressed as the target string, 0037):
+///   * `*` / "all" / empty  → `None` (HQ / all-agents / global)
+///   * `@company:<id>`       → `Some(id)`
+///   * a real session slug   → that session's `sessions.company_id` (`None` if the
+///                             row is missing or itself HQ/NULL)
+/// Mirrors `resolve_grant_scope`'s company arm; the single source of truth for
+/// "which company owns the account this connect creates". The caller passes the
+/// already-normalized target (`*` / `@company:<id>` / slug).
+pub async fn company_of_grant_target(pool: &SqlitePool, session_name: &str) -> Option<i64> {
+    let t = session_name.trim();
+    if t.is_empty() || t == ALL_AGENTS {
+        return None;
+    }
+    if let Some(ids) = t.strip_prefix(COMPANY_PREFIX) {
+        return ids.parse::<i64>().ok();
+    }
+    super::sessions::get(pool, t)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.company_id)
 }
 
 /// Fetch one account by its id (the `account_ref`).
@@ -729,8 +785,8 @@ mod tests {
         // TWO accounts on ONE connector, each its own label + its own sealed secret.
         vault_put(&pool, "sref-a", "gmail", b"ct-a", b"nonce12bytes", false).await.unwrap();
         vault_put(&pool, "sref-b", "gmail", b"ct-b", b"nonce12bytes", false).await.unwrap();
-        let acct_a = account_add(&pool, "gmail", "sander@acme.com", Some("sref-a")).await.unwrap();
-        let acct_b = account_add(&pool, "gmail", "ops@acme.com", Some("sref-b")).await.unwrap();
+        let acct_a = account_add(&pool, "gmail", "sander@acme.com", Some("sref-a"), None).await.unwrap();
+        let acct_b = account_add(&pool, "gmail", "ops@acme.com", Some("sref-b"), None).await.unwrap();
         assert_ne!(acct_a, acct_b, "each account is a distinct row");
 
         let accts = accounts_for_connector(&pool, "gmail").await.unwrap();
@@ -797,7 +853,7 @@ mod tests {
         // writes health + last_error + last_checked_at; clearing sets health=NULL.
         let (pool, dir) = test_pool().await;
         insert_connector(&pool, "gmail").await;
-        let acct = account_add(&pool, "gmail", "sander@acme.com", Some("sref")).await.unwrap();
+        let acct = account_add(&pool, "gmail", "sander@acme.com", Some("sref"), None).await.unwrap();
 
         let a = account_get(&pool, &acct).await.unwrap().unwrap();
         assert_eq!(a.health, None, "never-probed account has no health");
@@ -833,7 +889,7 @@ mod tests {
         let (pool, dir) = test_pool().await;
         insert_connector(&pool, "gmail").await;
         vault_put(&pool, "sref-1", "gmail", b"ct", b"nonce12bytes", false).await.unwrap();
-        let acct = account_add(&pool, "gmail", "old@acme.com", Some("sref-1")).await.unwrap();
+        let acct = account_add(&pool, "gmail", "old@acme.com", Some("sref-1"), None).await.unwrap();
         grant_with_account(&pool, "crm-bot", "gmail", Some("sref-1"), true, Some(&acct))
             .await
             .unwrap();
@@ -861,7 +917,7 @@ mod tests {
         let (pool, dir) = test_pool().await;
         insert_connector(&pool, "mail").await;
         insert_session(&pool, "acme-bot", Some(7)).await;
-        let own = account_add(&pool, "mail", "own@acme.com", Some("own-sref")).await.unwrap();
+        let own = account_add(&pool, "mail", "own@acme.com", Some("own-sref"), None).await.unwrap();
         // all-agents (plain grant, no account) + own-tier account-aware grant.
         grant(&pool, ALL_AGENTS, "mail", Some("all-sref"), true).await.unwrap();
         grant_with_account(&pool, "acme-bot", "mail", Some("own-sref"), true, Some(&own))
@@ -882,14 +938,103 @@ mod tests {
     async fn delete_connector_cascades_accounts() {
         let (pool, dir) = test_pool().await;
         insert_connector(&pool, "gmail").await;
-        account_add(&pool, "gmail", "a@acme.com", None).await.unwrap();
-        account_add(&pool, "gmail", "b@acme.com", None).await.unwrap();
+        account_add(&pool, "gmail", "a@acme.com", None, None).await.unwrap();
+        account_add(&pool, "gmail", "b@acme.com", None, None).await.unwrap();
         assert_eq!(accounts_for_connector(&pool, "gmail").await.unwrap().len(), 2);
         delete(&pool, "gmail").await.unwrap();
         assert!(
             accounts_for_connector(&pool, "gmail").await.unwrap().is_empty(),
             "accounts CASCADE with the connector"
         );
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── company-scoped accounts (0037, P2b isolation) ───────────────────────────
+
+    #[tokio::test]
+    async fn two_companies_same_label_are_distinct_rows() {
+        // Company A and company B both connect the identity "alice" on the same
+        // connector: two DISTINCT rows with DISTINCT secret_refs — never a shared
+        // row / secret_ref (the cross-company token-swap the fix closes).
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gh").await;
+        let a = account_add(&pool, "gh", "alice", Some("sref-A"), Some(1)).await.unwrap();
+        let b = account_add(&pool, "gh", "alice", Some("sref-B"), Some(2)).await.unwrap();
+        assert_ne!(a, b, "same label in two companies = two rows");
+
+        let found_a = account_find_by_label(&pool, "gh", "alice", Some(1)).await.unwrap().unwrap();
+        let found_b = account_find_by_label(&pool, "gh", "alice", Some(2)).await.unwrap().unwrap();
+        assert_eq!(found_a.id, a);
+        assert_eq!(found_b.id, b);
+        assert_eq!(found_a.secret_ref.as_deref(), Some("sref-A"));
+        assert_eq!(found_b.secret_ref.as_deref(), Some("sref-B"), "no secret_ref swap");
+        assert_eq!(found_a.company_id, Some(1));
+        assert_eq!(found_b.company_id, Some(2));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn same_company_relabel_dedups_to_one_row() {
+        // Re-connecting the same label WITHIN one company finds the existing row —
+        // the caller account_replace's it in place (one row, same id, new secret).
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gh").await;
+        let id = account_add(&pool, "gh", "alice", Some("sref-1"), Some(1)).await.unwrap();
+
+        let existing = account_find_by_label(&pool, "gh", "alice", Some(1)).await.unwrap();
+        assert_eq!(existing.as_ref().map(|a| a.id.clone()), Some(id.clone()), "dedup finds the row");
+        account_replace(&pool, &existing.unwrap().id, "alice", Some("sref-2")).await.unwrap();
+
+        let all = accounts_for_connector(&pool, "gh").await.unwrap();
+        assert_eq!(all.len(), 1, "same company + label = one row (no dup)");
+        assert_eq!(all[0].id, id, "same id preserved (grants stay wired)");
+        assert_eq!(all[0].secret_ref.as_deref(), Some("sref-2"), "secret rotated in place");
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn both_hq_null_dedup_to_one() {
+        // Two HQ (company_id = None) connects of the same label must dedup to ONE
+        // row — this GUARDS the `company_id IS ?` operator: a `= ?` NULL bind never
+        // matches a NULL row and would silently mint a duplicate HQ account.
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gh").await;
+        let id = account_add(&pool, "gh", "alice", Some("sref-hq"), None).await.unwrap();
+
+        let found = account_find_by_label(&pool, "gh", "alice", None).await.unwrap();
+        assert_eq!(
+            found.map(|a| a.id),
+            Some(id),
+            "IS NULL matches the HQ row (guards the IS-vs-= pitfall)"
+        );
+        // A company-scoped lookup of the same label finds nothing (HQ != company 1).
+        assert!(
+            account_find_by_label(&pool, "gh", "alice", Some(1)).await.unwrap().is_none(),
+            "a company lookup never sees the HQ row"
+        );
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn company_of_grant_target_maps_scope_to_company() {
+        let (pool, dir) = test_pool().await;
+        // `*` / empty → HQ/None.
+        assert_eq!(company_of_grant_target(&pool, ALL_AGENTS).await, None);
+        assert_eq!(company_of_grant_target(&pool, "  ").await, None);
+        // `@company:<id>` → Some(id).
+        assert_eq!(company_of_grant_target(&pool, &format!("{COMPANY_PREFIX}7")).await, Some(7));
+        // A real bot slug → its session's company_id.
+        insert_session(&pool, "acme-bot", Some(3)).await;
+        assert_eq!(company_of_grant_target(&pool, "acme-bot").await, Some(3));
+        // An HQ bot (NULL company) → None.
+        insert_session(&pool, "hq-bot", None).await;
+        assert_eq!(company_of_grant_target(&pool, "hq-bot").await, None);
+        // A missing session row → None (matches resolve_grant_scope).
+        assert_eq!(company_of_grant_target(&pool, "ghost").await, None);
         pool.close().await;
         std::fs::remove_dir_all(dir).ok();
     }

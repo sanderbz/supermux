@@ -852,14 +852,23 @@ async fn seal_and_grant(
     let label = fetch_identity_label(provider, access_token)
         .await
         .unwrap_or_else(|| provider_display(provider));
-    // Idempotent-by-label, mirroring the paste path (api::put_credential): a same-
-    // label account is re-pointed at the fresh secret_ref in place (keeping every
-    // grant wired) instead of minting a duplicate on each re-sign-in.
-    let account_ref = match connectors::accounts_for_connector(&state.pool, connector_id)
-        .await
-        .map_err(db_err)?
-        .into_iter()
-        .find(|a| a.account_label == label)
+    // Company scope of the account = the grant target's company (own > company >
+    // all). `session` is the already-normalized DeviceHandle target; an HQ bot
+    // (company_id NULL) or `*` target → None. A same-label account is reused ONLY
+    // within the same scope, so company A and company B never share the row /
+    // secret_ref (P2b).
+    let account_company = connectors::company_of_grant_target(&state.pool, session).await;
+    // Idempotent-by-(label, company), mirroring the paste path (api::put_credential):
+    // a same-label same-scope account is re-pointed at the fresh secret_ref in place
+    // (keeping every grant wired) instead of minting a duplicate on each re-sign-in.
+    let account_ref = match connectors::account_find_by_label(
+        &state.pool,
+        connector_id,
+        &label,
+        account_company,
+    )
+    .await
+    .map_err(db_err)?
     {
         Some(a) => {
             connectors::account_replace(&state.pool, &a.id, &label, Some(&secret_ref))
@@ -867,9 +876,11 @@ async fn seal_and_grant(
                 .map_err(db_err)?;
             a.id
         }
-        None => connectors::account_add(&state.pool, connector_id, &label, Some(&secret_ref))
-            .await
-            .map_err(db_err)?,
+        None => {
+            connectors::account_add(&state.pool, connector_id, &label, Some(&secret_ref), account_company)
+                .await
+                .map_err(db_err)?
+        }
     };
     connectors::grant_with_account(
         &state.pool,
@@ -1348,6 +1359,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(accounts.len(), 1, "one account row, not one-per-sign-in");
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn seal_and_grant_scopes_account_per_company() {
+        // The device path scopes the account atom by the grant target's company:
+        // botA (company 1) and botB (company 2) both sign in with the SAME identity
+        // label ("GitHub", the invalid-token fallback) → TWO distinct rows with
+        // DISTINCT secret_refs (no cross-company token swap, P2b).
+        let (state, dir) = test_state().await;
+        seed_session(&state, "botA", 1).await;
+        seed_session(&state, "botB", 2).await;
+        let a = seal_and_grant(
+            &state, "github", "pmcp-github", "botA", "GITHUB_TOKEN", "tok-A", None,
+        )
+        .await
+        .expect("company-1 sign-in");
+        let b = seal_and_grant(
+            &state, "github", "pmcp-github", "botB", "GITHUB_TOKEN", "tok-B", None,
+        )
+        .await
+        .expect("company-2 sign-in");
+        assert_ne!(a, b, "two companies, same label → two account rows");
+
+        let accounts = connectors::accounts_for_connector(&state.pool, "pmcp-github")
+            .await
+            .unwrap();
+        assert_eq!(accounts.len(), 2, "one row per company scope, not collapsed");
+        let acct_a = connectors::account_get(&state.pool, &a).await.unwrap().unwrap();
+        let acct_b = connectors::account_get(&state.pool, &b).await.unwrap().unwrap();
+        assert_eq!(acct_a.company_id, Some(1));
+        assert_eq!(acct_b.company_id, Some(2));
+        assert_ne!(
+            acct_a.secret_ref, acct_b.secret_ref,
+            "distinct secret_refs — company A's grant never re-points to company B's token"
+        );
+
+        // Re-sign-in of botA (same scope) reuses A's row, never touches B's.
+        let a2 = seal_and_grant(
+            &state, "github", "pmcp-github", "botA", "GITHUB_TOKEN", "tok-A2", None,
+        )
+        .await
+        .expect("company-1 re-sign-in");
+        assert_eq!(a2, a, "same company + label → the same row updated in place");
+        assert_eq!(
+            connectors::accounts_for_connector(&state.pool, "pmcp-github").await.unwrap().len(),
+            2,
+            "still two rows (A updated, B untouched)"
+        );
         cleanup(state, dir).await;
     }
 

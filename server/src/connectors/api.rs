@@ -461,13 +461,27 @@ pub async fn put_credential(
             .map_err(db_err)?;
         Some(aref.to_string())
     } else if let Some(label) = identity_label.clone() {
-        // ADD-account, idempotent by (connector, label): update a same-label account,
-        // else mint a fresh one.
-        let existing = connectors::accounts_for_connector(&state.pool, &id)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .find(|a| a.account_label == label);
+        // ADD-account, idempotent by (connector, label, company): the account's
+        // scope = the grant target's company (HQ/NULL for a bare owner seal).
+        // A same-label account is reused ONLY within the same company scope, so
+        // company A's "alice" and company B's "alice" never share a row /
+        // secret_ref (P2b). Members can only reach here with an own-company
+        // target (the P3d fence above), so their derived company is their own.
+        let account_company = match body
+            .session_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(t) => {
+                connectors::company_of_grant_target(&state.pool, &normalize_session(t)).await
+            }
+            None => None,
+        };
+        let existing =
+            connectors::account_find_by_label(&state.pool, &id, &label, account_company)
+                .await
+                .map_err(db_err)?;
         match existing {
             Some(a) => {
                 connectors::account_replace(&state.pool, &a.id, &label, Some(&secret_ref))
@@ -476,7 +490,7 @@ pub async fn put_credential(
                 Some(a.id)
             }
             None => Some(
-                connectors::account_add(&state.pool, &id, &label, Some(&secret_ref))
+                connectors::account_add(&state.pool, &id, &label, Some(&secret_ref), account_company)
                     .await
                     .map_err(db_err)?,
             ),
@@ -1193,5 +1207,132 @@ mod tests {
         ];
         assert_eq!(grant_level(&mixed)["scope"], json!("bots"));
         assert_eq!(grant_level(&mixed)["count"], json!(2));
+    }
+
+    // ── paste path: company-scoped account dedup (0037, P2b) ────────────────────
+
+    async fn paste_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-api-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    async fn seed_session(state: &AppState, name: &str, company_id: Option<i64>) {
+        sqlx::query("INSERT INTO sessions (name, dir, created_at, company_id) VALUES (?, ?, ?, ?)")
+            .bind(name)
+            .bind("/tmp")
+            .bind(0i64)
+            .bind(company_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Owner (unrestricted, Scope::All) seals `label` for `target` (a session slug,
+    /// or None for a bare HQ seal) and returns `(account_ref, secret_ref)`.
+    async fn owner_seal(
+        state: &AppState,
+        connector: &str,
+        label: &str,
+        target: Option<&str>,
+    ) -> (String, String) {
+        let mut fields = BTreeMap::new();
+        fields.insert("TOKEN".to_string(), format!("tok-for-{label}-{target:?}"));
+        let res = put_credential(
+            State(state.clone()),
+            crate::scope::OptCtx(None),
+            Path(connector.to_string()),
+            Json(CredentialBody {
+                fields,
+                session_name: target.map(str::to_string),
+                secret_ref: None,
+                account_label: Some(label.to_string()),
+                account_ref: None,
+            }),
+        )
+        .await
+        .expect("owner seal accepted");
+        (
+            res.0["account_ref"].as_str().unwrap().to_string(),
+            res.0["secret_ref"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn put_credential_scopes_account_per_company_target() {
+        let (state, dir) = paste_state().await;
+        connectors::upsert(&state.pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        seed_session(&state, "bot1", Some(1)).await;
+        seed_session(&state, "bot2", Some(2)).await;
+
+        // Same identity label sealed for two different companies' bots.
+        let (a_ref, a_secret) = owner_seal(&state, "gh", "alice", Some("bot1")).await;
+        let (b_ref, b_secret) = owner_seal(&state, "gh", "alice", Some("bot2")).await;
+        assert_ne!(a_ref, b_ref, "two companies, same label → two account rows");
+        assert_ne!(a_secret, b_secret, "distinct secret_refs — no cross-company swap");
+
+        let accts = connectors::accounts_for_connector(&state.pool, "gh").await.unwrap();
+        assert_eq!(accts.len(), 2, "one row per company scope");
+        let a = connectors::account_get(&state.pool, &a_ref).await.unwrap().unwrap();
+        let b = connectors::account_get(&state.pool, &b_ref).await.unwrap().unwrap();
+        assert_eq!(a.company_id, Some(1));
+        assert_eq!(b.company_id, Some(2));
+
+        // Re-seal for bot1 (same scope) reuses A's row; B stays put with its secret.
+        let (a2_ref, _) = owner_seal(&state, "gh", "alice", Some("bot1")).await;
+        assert_eq!(a2_ref, a_ref, "same company + label → the same row updated");
+        let b_after = connectors::account_get(&state.pool, &b_ref).await.unwrap().unwrap();
+        assert_eq!(b_after.secret_ref, b.secret_ref, "company B's secret_ref untouched");
+        assert_eq!(
+            connectors::accounts_for_connector(&state.pool, "gh").await.unwrap().len(),
+            2
+        );
+
+        state.pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn put_credential_bare_owner_seal_is_hq_and_dedups() {
+        let (state, dir) = paste_state().await;
+        connectors::upsert(&state.pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+
+        // A bare owner seal (no session_name) is HQ/global → company_id None.
+        let (r1, _) = owner_seal(&state, "gh", "alice", None).await;
+        let a = connectors::account_get(&state.pool, &r1).await.unwrap().unwrap();
+        assert_eq!(a.company_id, None, "bare owner seal is HQ/None");
+
+        // A second bare seal of the same label dedups to that one HQ row.
+        let (r2, _) = owner_seal(&state, "gh", "alice", None).await;
+        assert_eq!(r2, r1, "two HQ seals of the same label → one row (IS NULL dedup)");
+        assert_eq!(
+            connectors::accounts_for_connector(&state.pool, "gh").await.unwrap().len(),
+            1,
+            "one HQ account, not a duplicate"
+        );
+
+        state.pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
     }
 }

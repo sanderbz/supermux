@@ -722,7 +722,7 @@ mod tests {
         crate::db::sessions::insert_minimal(&state.pool, "crm-bot", "/tmp", "claude")
             .await
             .unwrap();
-        let acct = connectors::account_add(&state.pool, "gmail", "sander@acme.com", None)
+        let acct = connectors::account_add(&state.pool, "gmail", "sander@acme.com", None, None)
             .await
             .unwrap();
         // Fresh account: never used.
