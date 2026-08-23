@@ -679,7 +679,13 @@ async fn quick_tunnel_handler(
 
     // Register the ephemeral CompanyHost entry (drives login / WS-origin / cookie
     // scoping) + the quick_tunnel record, atomically, then hot-reload.
-    store.company_hosts.retain(|h| h.company_id != company_id);
+    // Only drop a prior EPHEMERAL host for this company — a permanent BYO-domain
+    // host (`ephemeral:false`) must survive so a quick trial never wipes the
+    // company's real, Google-backed login surface (they can coexist; `host_entry`
+    // resolves either host to the same company).
+    store
+        .company_hosts
+        .retain(|h| !(h.company_id == company_id && h.ephemeral));
     store.company_hosts.push(crate::config::CompanyHost {
         host: host.clone(),
         company_id,

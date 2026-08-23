@@ -290,13 +290,31 @@ pub fn assemble(
 /// rather than failing the boot.
 pub fn boot_overlay(data_dir: &Path, baseline: HumanAuthConfig) -> HumanAuthConfig {
     match read(data_dir) {
-        Ok(Some(store)) => match assemble(data_dir, &baseline, &store) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                tracing::warn!(error = %e, "companies_config overlay failed; using file baseline");
-                baseline
+        Ok(Some(mut store)) => {
+            // A quick tunnel is a supervised child that does NOT survive a restart,
+            // and Cloudflare reclaims its `*.trycloudflare.com` hostname the moment
+            // the child dies. So on boot any EPHEMERAL company_host + the
+            // quick_tunnel record are stale — a dead entry that would keep an
+            // unreachable host allowlisted. Drop them (and persist the cleanup so
+            // the store never grows a graveyard of dead ephemeral hosts). The owner
+            // re-creates a temporary link from the wizard when they want one.
+            let had_ephemeral =
+                store.quick_tunnel.is_some() || store.company_hosts.iter().any(|h| h.ephemeral);
+            if had_ephemeral {
+                store.company_hosts.retain(|h| !h.ephemeral);
+                store.quick_tunnel = None;
+                if let Err(e) = write_atomic(data_dir, &store) {
+                    tracing::warn!(error = %e, "could not persist quick-tunnel boot cleanup");
+                }
             }
-        },
+            match assemble(data_dir, &baseline, &store) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    tracing::warn!(error = %e, "companies_config overlay failed; using file baseline");
+                    baseline
+                }
+            }
+        }
         Ok(None) => baseline,
         Err(e) => {
             tracing::warn!(error = %e, "reading companies_config failed; using file baseline");

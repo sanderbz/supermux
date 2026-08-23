@@ -163,6 +163,18 @@ fn should_splice_admin_token(state: &AppState, headers: &HeaderMap) -> bool {
     if !cfg.human_surface_active() {
         return true;
     }
+    // Defense-in-depth over the Host check: a request that arrived through a
+    // Cloudflare tunnel ALWAYS carries Cloudflare edge headers (`Cf-Ray`,
+    // `Cf-Connecting-Ip`) — injected at the edge, so a client cannot strip them,
+    // and a genuine loopback/tailnet owner request never has them. Empirically
+    // Cloudflare's edge already 403s any `Host` that doesn't match the tunnel
+    // hostname (so a `Host: localhost` spoof never reaches this origin), but we do
+    // NOT want the owner bearer to depend on that single guarantee: if ANY
+    // Cloudflare edge header is present, the request is public — never splice,
+    // whatever the Host says.
+    if headers.contains_key("cf-ray") || headers.contains_key("cf-connecting-ip") {
+        return false;
+    }
     match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
         Some(host) => is_trusted_owner_transport(&cfg, host),
         // A missing / HeaderParse-failing `Host` is NOT a recognised owner
@@ -771,6 +783,28 @@ mod tests {
             "loopback owner transport must still receive the token on the invite path"
         );
 
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Defense-in-depth: a request carrying a Cloudflare edge header (`Cf-Ray`)
+    // arrived through the tunnel and must NEVER splice the admin token — EVEN if it
+    // spoofs a trusted `Host: localhost`. (Cloudflare's edge already 403s a Host
+    // that doesn't match the tunnel hostname, so this never reaches us in practice,
+    // but the owner bearer must not depend on that single guarantee.)
+    #[tokio::test]
+    async fn cloudflare_edge_header_withholds_the_token_even_with_a_spoofed_local_host() {
+        let (state, dir) = invite_only_state().await;
+        for cf in ["cf-ray", "cf-connecting-ip"] {
+            let mut h = headers_with_host(LOOPBACK_HOST); // a trusted-looking Host…
+            h.insert(cf, HeaderValue::from_static("spoofed")); // …but it came via CF.
+            let resp = index(State(state.clone()), h).await;
+            let html = body_of(resp).await;
+            assert!(
+                !html.contains("_SUPERMUX_AUTH_TOKEN"),
+                "a {cf}-bearing request must not get the admin token despite Host: localhost"
+            );
+        }
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
