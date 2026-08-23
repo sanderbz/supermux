@@ -335,6 +335,20 @@ impl SessionConfig {
         );
     }
 
+    /// Point the recall hook at this session's pre-rendered SessionStart
+    /// capability briefing (fase C). The briefing text is built server-side (it
+    /// needs the DB for the company + peer roster) and written to `path` by
+    /// [`assemble`]; here we only export the env var the hook reads on
+    /// `SessionStart`. Coupled to the memory tier because the recall hook is the
+    /// vehicle that emits it — a session with no memory has no hook and so no
+    /// briefing (its launch stays byte-identical).
+    pub fn set_briefing_env(&mut self, path: &Path) {
+        self.env.insert(
+            crate::agents::briefing::BRIEFING_FILE_ENV.to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+    }
+
     /// The account/Claude.ai connector kill switch — applied to EVERY active
     /// launch (connectors OR memory), never coupled to having ≥1 grant. Without
     /// this an ungranted-but-active bot (memory-only, or connector-less) would
@@ -534,6 +548,37 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 &session,
                 &state.config.data_dir,
             ));
+
+            // SessionStart capability briefing (fase C). Render it here (this is
+            // the seam that has the pool for the company + peer roster) and write
+            // it to the session's private config dir; the recall hook reads
+            // `SUPERMUX_BRIEFING_FILE` and emits it ONCE at SessionStart, so it is
+            // zero per-turn cost. Best-effort: a write failure just omits the env
+            // var (the hook then emits no briefing) rather than failing the launch.
+            let briefing = crate::agents::briefing::build(state, &session).await;
+            if !briefing.is_empty() {
+                let dir = state
+                    .config
+                    .data_dir
+                    .join("session-config")
+                    .join(session_name);
+                let path = dir.join("briefing.md");
+                match tokio::fs::create_dir_all(&dir).await {
+                    Ok(()) => match tokio::fs::write(&path, &briefing).await {
+                        Ok(()) => cfg.set_briefing_env(&path),
+                        Err(e) => tracing::warn!(
+                            session = %session_name,
+                            error = %e,
+                            "could not write the SessionStart briefing; skipping it"
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        session = %session_name,
+                        error = %e,
+                        "could not create the session-config dir for the briefing; skipping it"
+                    ),
+                }
+            }
         }
     }
 
@@ -1056,6 +1101,70 @@ mod tests {
 
         let a = connectors::account_get(&state.pool, &acct).await.unwrap().unwrap();
         assert!(a.last_used_at > 0, "launch stamps last_used_at on the resolved account");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A memory bot's launch renders the SessionStart capability briefing to its
+    /// private config dir and points the recall hook at it via
+    /// `SUPERMUX_BRIEFING_FILE` — so the briefing is emitted ONCE at SessionStart,
+    /// never per turn. A company bot's briefing names its company + peer roster.
+    #[tokio::test]
+    async fn a_memory_company_bot_gets_a_briefing_file_and_env() {
+        let (state, dir) = browser_state().await;
+        let acme = crate::db::companies::create(&state.pool, "acme", "acme", "/srv/acme")
+            .await
+            .unwrap()
+            .id;
+        // Two same-company bots so the roster is non-empty; the subject has CORE
+        // memory (so `session_has_memory` is true and the recall hook is wired).
+        crate::db::sessions::insert_minimal(&state.pool, "acme-a", "/tmp", "claude")
+            .await
+            .unwrap();
+        crate::db::sessions::insert_minimal(&state.pool, "acme-b", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = ?, memory = 'standing note' WHERE name = 'acme-a'")
+            .bind(acme)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET company_id = ? WHERE name = 'acme-b'")
+            .bind(acme)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "acme-a").await.unwrap().expect("active");
+        let path = fin
+            .env
+            .get("SUPERMUX_BRIEFING_FILE")
+            .expect("the recall hook is pointed at the briefing file");
+        let text = std::fs::read_to_string(path).expect("briefing file written");
+        assert!(text.contains("You are the supermux agent \"acme-a\" in company \"acme\"."));
+        assert!(text.contains("supermux-memory save"));
+        assert!(text.contains("/supermux-notify"));
+        // The peer roster names the same-company peer (and not itself) + the
+        // message affordance.
+        assert!(text.contains("acme-b"), "peer roster names the same-company peer");
+        assert!(!text.contains("teammates: acme-a"), "the roster excludes the bot itself");
+        assert!(text.contains("/supermux-message"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plain (non-bot) pane has no memory ⇒ no recall hook ⇒ no briefing, and
+    /// its launch stays byte-identical (no config dir at all).
+    #[tokio::test]
+    async fn a_plain_pane_gets_no_briefing() {
+        let (state, dir) = browser_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "plain", "/tmp", "claude")
+            .await
+            .unwrap();
+        let fin = assemble(&state, "plain").await.unwrap();
+        assert!(fin.is_none(), "a plain pane stays byte-identical (no briefing)");
+        assert!(
+            !dir.join("session-config/plain/briefing.md").exists(),
+            "no briefing file for a plain pane"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

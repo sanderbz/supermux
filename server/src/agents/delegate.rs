@@ -220,27 +220,39 @@ pub fn audit_detail(from: &str) -> serde_json::Value {
     json!({ "from": from })
 }
 
-/// `POST /api/agents/delegate` — send `prompt` to `to`, record the edge.
-pub async fn delegate(
-    State(state): State<AppState>,
-    ctx: crate::scope::OptCtx,
-    Json(input): Json<DelegateInput>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let from = input.from.trim();
-    let to = input.to.trim();
+/// The delivery core shared by the bearer route ([`delegate`]) and the
+/// hook-token route (`agents::hook::delegate_handler`).
+///
+/// `from` here is TRUSTED — the bearer route has run its P3b from-pinning, and
+/// the hook route forces `from` to the token-authenticated session — so this
+/// function does NOT re-derive it; it validates the payload, applies THE company
+/// gate ([`delegation_gate_allows`]) off both rows' `company_id`, delivers, and
+/// records the edge + audit. One implementation means the gate, the wrapper
+/// refusal, the size cap and the bookkeeping cannot drift between the two
+/// callers. Returns the delegation-edge id. `actor` is the audit label (only the
+/// exact string `Some("human")` names the owner — see [`audit_actor`]).
+pub async fn deliver_delegation(
+    state: &AppState,
+    from: &str,
+    to: &str,
+    prompt: &str,
+    actor: Option<&str>,
+) -> Result<i64, AppError> {
+    let from = from.trim();
+    let to = to.trim();
     if from.is_empty() || to.is_empty() {
         return Err(AppError::BadRequest("both 'from' and 'to' are required".into()));
     }
-    if input.prompt.trim().is_empty() {
+    if prompt.trim().is_empty() {
         return Err(AppError::BadRequest("'prompt' is required".into()));
     }
     // The size ceiling, refused BEFORE delivery for the same reason the wrapper
     // guard below is: everything past this point types into somebody else's
     // live pane. See [`PROMPT_MAX_BYTES`].
-    if input.prompt.len() > PROMPT_MAX_BYTES {
+    if prompt.len() > PROMPT_MAX_BYTES {
         return Err(AppError::BadRequest(format!(
             "'prompt' is too large ({} bytes, max {PROMPT_MAX_BYTES})",
-            input.prompt.len()
+            prompt.len()
         )));
     }
     // Refuse wrapper markup BEFORE anything is delivered or recorded, and refuse
@@ -249,7 +261,7 @@ pub async fn delegate(
     // wrapper is a provenance claim, so a prompt that could forge one is
     // rejected outright rather than escaped into something the sender did not
     // write.
-    if wrapper_markup(from) || wrapper_markup(&input.prompt) {
+    if wrapper_markup(from) || wrapper_markup(prompt) {
         return Err(AppError::BadRequest(
             "prompt may not contain supermux wrapper markup".into(),
         ));
@@ -266,20 +278,6 @@ pub async fn delegate(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session '{to}'")))?;
 
-    // P3b — FROM-PINNING. `from` is a CLIENT-CLAIMED slug; nothing proves the
-    // caller is that session. For a scoped human this is an escalation: naming a
-    // main bot (`company_id NULL`) as `from` would make the gate below see an
-    // omniscient sender and reach ANY company. So derive the caller's company
-    // from the server-side `AuthContext`, not the body, and refuse (uniform 404)
-    // unless the claimed `from` is actually in the human's own company. Owner /
-    // admin-all (Scope::All, or no context) are unaffected — they may drive any
-    // `from`, exactly as before.
-    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
-        if from_row.company_id != Some(hc) {
-            return Err(AppError::NotFound(format!("session '{from}'")));
-        }
-    }
-
     // THE COMPANY GATE. After both sessions are known to exist and BEFORE any
     // delivery / keystroke / delegation edge / audit row: a company bot may only
     // reach its own company; a main/PA bot (`company_id IS NULL`) reaches anyone.
@@ -287,8 +285,8 @@ pub async fn delegate(
     // company bot cannot even probe another company's roster by name — and it
     // returns here, before `record_delegation`, `send_harness_text`, or
     // `audit_harness`, so a refused delegation leaves NO trace. This fires for
-    // the raw-curl path too, since it lives inside `delegate()` rather than in
-    // the web @-picker (which is only defense-in-depth). See
+    // the raw-curl and the hook-token paths too, since it lives here rather than
+    // in the web @-picker (which is only defense-in-depth). See
     // [`delegation_gate_allows`] for the decision table.
     if !delegation_gate_allows(from_row.company_id, to_row.company_id) {
         return Err(AppError::NotFound(format!("session '{to}'")));
@@ -304,23 +302,22 @@ pub async fn delegate(
         // The guard above already refused markup; a slug that still fails
         // `attr_safe` here means a session name got past `db::sessions` that
         // never should have, so answer 400 rather than emit forgeable markup.
-        let wrapped = wrap_delegation(from, &input.prompt)
-            .map_err(|e| AppError::BadRequest(e.into()))?;
-        lifecycle::send_harness_text(&state, to, &wrapped, Some(&input.prompt), None).await?;
+        let wrapped = wrap_delegation(from, prompt).map_err(|e| AppError::BadRequest(e.into()))?;
+        lifecycle::send_harness_text(state, to, &wrapped, Some(prompt), None).await?;
     } else {
-        lifecycle::send_text(&state, to, &input.prompt).await?;
+        lifecycle::send_text(state, to, prompt).await?;
     }
 
     // Record the edge for the graph view (indices idx_delegations_from/to).
-    let id = db::audit::record_delegation(&state.pool, from, to, &input.prompt).await?;
+    let id = db::audit::record_delegation(&state.pool, from, to, prompt).await?;
 
     // Audit the cross-session action (prompt body intentionally omitted) and
     // tick the `harness` feed for BOTH ends: the sender's transcript shows an
     // outbound line, the receiver's shows the arrival. `detail.from` is what
     // ties the row to the sender — the target column only names the recipient.
     crate::sessions::audit_harness(
-        &state,
-        &audit_actor(input.actor.as_deref(), from),
+        state,
+        &audit_actor(actor, from),
         "session.delegate",
         to,
         audit_detail(from),
@@ -328,6 +325,40 @@ pub async fn delegate(
     )
     .await?;
 
+    Ok(id)
+}
+
+/// `POST /api/agents/delegate` — send `prompt` to `to`, record the edge.
+pub async fn delegate(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Json(input): Json<DelegateInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let from = input.from.trim();
+    let to = input.to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err(AppError::BadRequest("both 'from' and 'to' are required".into()));
+    }
+
+    // P3b — FROM-PINNING. `from` is a CLIENT-CLAIMED slug; nothing proves the
+    // caller is that session. For a scoped human this is an escalation: naming a
+    // main bot (`company_id NULL`) as `from` would make the gate see an omniscient
+    // sender and reach ANY company. So derive the caller's company from the
+    // server-side `AuthContext`, not the body, and refuse (uniform 404) unless the
+    // claimed `from` is actually in the human's own company. Owner / admin-all
+    // (Scope::All, or no context) are unaffected — they may drive any `from`,
+    // exactly as before. This runs BEFORE `deliver_delegation` so a spoofed `from`
+    // never even reaches the delivery core.
+    if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        let from_row = db::sessions::get(&state.pool, from)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("session '{from}'")))?;
+        if from_row.company_id != Some(hc) {
+            return Err(AppError::NotFound(format!("session '{from}'")));
+        }
+    }
+
+    let id = deliver_delegation(&state, from, to, &input.prompt, input.actor.as_deref()).await?;
     Ok(Json(json!({ "ok": true, "id": id })))
 }
 

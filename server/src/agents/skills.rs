@@ -130,12 +130,31 @@ pub const SUPERMUX_TASK_SKILL: &str = include_str!("supermux-task.md");
 pub const SUPERMUX_SCHEDULE_NAME: &str = "supermux-schedule";
 pub const SUPERMUX_SCHEDULE_SKILL: &str = include_str!("supermux-schedule.md");
 
+/// The `/supermux-notify` command — the agent's surface for pinging its own
+/// human (fase C). Expands to a scoped `curl` against `POST /api/hook/notify`,
+/// authed by `$SUPERMUX_HOOK_TOKEN` and scope-locked by the server to the
+/// calling session's own pane. The SessionStart briefing names it; this file is
+/// the full how-to it loads on invoke.
+pub const SUPERMUX_NOTIFY_NAME: &str = "supermux-notify";
+pub const SUPERMUX_NOTIFY_SKILL: &str = include_str!("supermux-notify.md");
+
+/// The `/supermux-message` command — the agent's surface for messaging a
+/// same-company teammate (fase C). Expands to a scoped `curl` against
+/// `POST /api/hook/delegate`, authed by `$SUPERMUX_HOOK_TOKEN`; the server forces
+/// the sender to the calling session and refuses a cross-company target with a
+/// uniform 404. The SessionStart briefing names it (with the peer roster); this
+/// file is the full how-to it loads on invoke.
+pub const SUPERMUX_MESSAGE_NAME: &str = "supermux-message";
+pub const SUPERMUX_MESSAGE_SKILL: &str = include_str!("supermux-message.md");
+
 /// The set of commands supermux manages + auto-installs. `(name, content)`.
 /// Adding a row here means it's seeded to `~/.claude/commands/<name>.md` on the
 /// next boot.
 pub const MANAGED_COMMANDS: &[(&str, &str)] = &[
     (SUPERMUX_TASK_NAME, SUPERMUX_TASK_SKILL),
     (SUPERMUX_SCHEDULE_NAME, SUPERMUX_SCHEDULE_SKILL),
+    (SUPERMUX_NOTIFY_NAME, SUPERMUX_NOTIFY_SKILL),
+    (SUPERMUX_MESSAGE_NAME, SUPERMUX_MESSAGE_SKILL),
 ];
 
 /// Skill-name slug rule — no path separators, so a name can never escape the

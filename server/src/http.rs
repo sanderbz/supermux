@@ -72,6 +72,10 @@ pub fn router(state: AppState) -> Router {
         // confirm a schedule that targets its own session). The agent-confirmed
         // finish tier for "notify me when done" schedules.
         .merge(scheduler::hook_router_for(state.clone()))
+        // Bot→app capability hooks (`/api/hook/notify`, `/api/hook/delegate`) —
+        // NO bearer layer; SAME per-session `X-Supermux-Hook-Token` auth, each
+        // scope-locked to the calling session's own pane / same-company peers.
+        .merge(agents::hook_router_for(state.clone()))
         .merge(public::router_for(state.clone()))
         // P3a — PUBLIC human-auth login surface (`/auth/login|callback|logout|me`).
         // Merged OUTSIDE the bearer layer, beside the public router. Inert unless
