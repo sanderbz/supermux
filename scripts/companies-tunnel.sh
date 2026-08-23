@@ -5,11 +5,15 @@
 #
 # Each company's external human colleagues reach exactly ONE host:
 #
-#     <slug>.s.iwd.nl   ->   the local supermux bind (default 127.0.0.1:8823)
+#     <slug>.<base_domain>   ->   the local supermux bind (default 127.0.0.1:8823)
+#
+# where <base_domain> is a Cloudflare zone YOUR token controls (passed via --zone).
+# This is the manual/scriptable equivalent of the in-app guided Cloudflare wizard,
+# which is the recommended path; this script is for operators who prefer the CLI.
 #
 # This script creates (or reuses) a named Cloudflare tunnel, adds the public
-# hostname route <slug>.s.iwd.nl -> the local bind, and then PRINTS the two config
-# fragments the operator must paste by hand:
+# hostname route <slug>.<base_domain> -> the local bind, and then PRINTS the two
+# config fragments the operator must paste by hand:
 #
 #   1. the `[[company_hosts]]` block for supermux's config.toml, and
 #   2. the Google OAuth "Authorized redirect URI" to register in the Google Cloud
@@ -20,16 +24,16 @@
 # only, and nothing here touches the supermux admin bearer or the Google secret.
 #
 # This is a CODE + RECIPE deliverable, not live provisioning: the Cloudflare API
-# token, the DNS zone (s.iwd.nl), and the Google OAuth app are OWNER infrastructure.
-# Review the printed config before restarting supermux.
+# token, the DNS zone (your --zone), and the Google OAuth app are YOUR own
+# infrastructure. Review the printed config before restarting supermux.
 #
 # ── Usage ────────────────────────────────────────────────────────────────────────
 #
 #   scripts/companies-tunnel.sh \
 #       --slug acme \
 #       --company-id 7 \
+#       --zone example.com \
 #       [--bind 127.0.0.1:8823] \
-#       [--zone s.iwd.nl] \
 #       [--tunnel-name supermux-acme] \
 #       [--cf-token <token> | env CLOUDFLARE_API_TOKEN] \
 #       [--print-only]     # skip all cloudflared calls; just print the config
@@ -44,7 +48,7 @@ set -euo pipefail
 SLUG=""
 COMPANY_ID=""
 BIND="127.0.0.1:8823"
-ZONE="s.iwd.nl"          # the canonical per-company suffix (see config::COMPANY_HOST_SUFFIX)
+ZONE=""                  # the base domain (a Cloudflare zone your token controls); REQUIRED via --zone
 TUNNEL_NAME=""
 CF_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
 PRINT_ONLY=0
@@ -61,11 +65,12 @@ while [ $# -gt 0 ]; do
     --tunnel-name) TUNNEL_NAME="${2:?}"; shift 2;;
     --cf-token)    CF_TOKEN="${2:?}"; shift 2;;
     --print-only)  PRINT_ONLY=1; shift;;
-    -h|--help)     sed -n '2,40p' "$0"; exit 0;;
+    -h|--help)     sed -n '2,43p' "$0"; exit 0;;
     *)             die "unknown argument: $1";;
   esac
 done
 
+[ -n "$ZONE" ]       || die "--zone is required (your base domain, a Cloudflare zone your token controls, e.g. example.com)"
 [ -n "$SLUG" ]       || die "--slug is required (the company slug; host becomes <slug>.$ZONE)"
 [ -n "$COMPANY_ID" ] || die "--company-id is required (the companies.id this host serves)"
 
