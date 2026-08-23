@@ -12,6 +12,7 @@ import { Search, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import {
+  connectorEaseRank,
   connectorToolCount,
   type ConnectorCard as Card,
   type SessionConnector,
@@ -159,7 +160,7 @@ export function StoreView({
 
   const filtered = React.useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return cards.filter((c) => {
+    const matched = cards.filter((c) => {
       // Don't repeat the Featured cards as the first grid rows (blocker H1).
       if (featuredIds.has(c.id)) return false
       if (cat !== 'all') {
@@ -172,6 +173,14 @@ export function StoreView({
         c.description.toLowerCase().includes(needle)
       )
     })
+    // Ease tiebreak: surface the zero-setup lanes first (mcp_oauth → oauth_device →
+    // none → paste-key) so a non-technical user connects SOMETHING before meeting a
+    // client_id. A STABLE sort by ease rank keeps the server's popularity order
+    // within each tier; the curated Featured rail (separated out above) is untouched.
+    return matched
+      .map((c, i) => [c, i] as const)
+      .sort((a, b) => connectorEaseRank(a[0]) - connectorEaseRank(b[0]) || a[1] - b[1])
+      .map(([c]) => c)
   }, [cards, q, cat, featuredIds])
 
   // The Installed tab consumes the SAME grid query — local (installed) rows carry

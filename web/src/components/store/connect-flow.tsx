@@ -31,16 +31,20 @@
  * runtime import stays relative, exactly like `connect-card.tsx` / `live-layer.tsx`.
  */
 import * as React from 'react'
-import { ArrowUpRight, Check, Eye, EyeOff, Loader2, Lock, Terminal } from 'lucide-react'
+import { ArrowUpRight, Check, Copy, Eye, EyeOff, Loader2, Lock, Terminal } from 'lucide-react'
 
 import {
   connectorAuthKind,
   plainFields,
+  pollDevice,
   secretField,
+  startDevice,
   testConnection,
   toolCountLabel,
   type ConnectorCard,
   type CredentialField,
+  type DeviceStart,
+  type DeviceTarget,
 } from '../../lib/api/connectors'
 import { cn } from '../../lib/utils'
 
@@ -58,8 +62,18 @@ export interface ConnectFlowProps {
   card: ConnectorCard
   /** Chrome + copy density: the chat card vs the store sheet. */
   variant: 'chat' | 'store'
-  /** Lane A: deliver OAuth. Absent = no live OAuth lane on this surface yet — the
-   *  card falls back to the key lane (with a calm line) rather than a dead button. */
+  /** Lane A (device grant): the destination the seal auto-grants to. When present
+   *  (and the card is an OAuth-device lane) ConnectFlow runs the built-in device
+   *  sub-flow itself — startDevice → the code panel → the poll loop. The server
+   *  auto-grants to THIS session on authorize; the store fans the account out to
+   *  any extra targets via `onDeviceGranted`. */
+  deviceTarget?: DeviceTarget
+  /** Store multi-target: after authorize, fan the returned `account_ref` to the
+   *  remaining bots (mirrors the paste `secret_ref` fan-out). May be null. */
+  onDeviceGranted?: (accountRef: string | null) => Promise<void>
+  /** Legacy/opaque escape hatch (a caller that drives OAuth itself). When neither
+   *  this nor `deviceTarget` is set, Lane A degrades to the key lane (calm line)
+   *  rather than a dead button. */
   onSignIn?: (connectorId: string) => Promise<void>
   /** Seal the collected fields + land the grant(s). The surface owns its targets /
    *  install; this component owns the fields, the lane and the test leg. Throws on
@@ -83,11 +97,15 @@ export interface ConnectFlowProps {
   initialAdded?: boolean
 }
 
-type Phase = 'collect' | 'oauth_pending' | 'saving' | 'added' | 'error'
+// The `device` phase renders the code panel + runs the poll loop; it subsumes the
+// P2 `oauth_pending` spinner (the built-in flow now owns the whole wait).
+type Phase = 'collect' | 'device' | 'saving' | 'added' | 'error'
 
 export function ConnectFlow({
   card,
   variant,
+  deviceTarget,
+  onDeviceGranted,
   onSignIn,
   onSubmit,
   onDone,
@@ -117,38 +135,118 @@ export function ConnectFlow({
   const [reveal, setReveal] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [result, setResult] = React.useState<ConnectFlowResult | null>(null)
+  // Lane A device sub-flow: the started grant (code + verification URL + handle).
+  const [dev, setDev] = React.useState<DeviceStart | null>(null)
+  const pollRef = React.useRef<number | null>(null)
   // Lane A leads with the OAuth primary; the key lane hides behind the divider
-  // until the user taps sign-in (or there is no live OAuth lane to offer).
+  // until the user taps sign-in (or the card isn't an OAuth lane at all).
   const [keyLaneOpen, setKeyLaneOpen] = React.useState(!hasOAuth)
 
   const requiredMissing =
     (secret?.required && secretVal.trim() === '') ||
     plains.some((f) => f.required && (values[f.key] ?? '').trim() === '')
 
-  const signIn = async () => {
-    if (!onSignIn) {
+  // Reset to the collect state with a calm line (denied/expired/blip). Re-offers
+  // "Sign in with {name}" (+ the key lane when there's a secret to paste).
+  const backToCollect = (message: string) => {
+    setDev(null)
+    setError(message)
+    setPhase('collect')
+  }
+
+  const startSignIn = async () => {
+    // No built-in device target on this surface — use the legacy escape hatch, or
+    // fall back to the key lane with a calm line (never a dead button).
+    if (!deviceTarget) {
+      if (!onSignIn) {
+        setKeyLaneOpen(true)
+        setError(
+          needsSecret
+            ? 'Sign-in isn’t available here yet — paste an API key instead.'
+            : 'Sign-in isn’t available here yet.',
+        )
+        return
+      }
+      setError(null)
+      try {
+        await onSignIn(card.id)
+        const r: ConnectFlowResult = { restartHint: true }
+        setResult(r)
+        setPhase('added')
+        onDone?.(r)
+      } catch {
+        setKeyLaneOpen(true)
+        setPhase('collect')
+        setError('Couldn’t finish sign-in. You can paste an API key instead.')
+      }
+      return
+    }
+    // The built-in RFC-8628 device grant: start it, then render the code panel and
+    // let the poll effect drive it to `authorized`.
+    setError(null)
+    try {
+      const d = await startDevice(card.id, deviceTarget)
+      setDev(d)
+      setPhase('device')
+    } catch {
       setKeyLaneOpen(true)
       setError(
         needsSecret
-          ? 'Sign-in isn’t available here yet — paste an API key instead.'
-          : 'Sign-in isn’t available here yet.',
+          ? 'Couldn’t start sign-in — you can paste an API key instead.'
+          : 'Couldn’t start sign-in. Try again in a moment.',
       )
-      return
-    }
-    setPhase('oauth_pending')
-    setError(null)
-    try {
-      await onSignIn(card.id)
-      const r: ConnectFlowResult = { restartHint: true }
-      setResult(r)
-      setPhase('added')
-      onDone?.(r)
-    } catch {
-      setKeyLaneOpen(true)
-      setPhase('collect')
-      setError('Couldn’t finish sign-in. You can paste an API key instead.')
     }
   }
+
+  // The poll loop — an effect keyed on the started grant. Honours the RFC-8628
+  // `interval` (raised on `slow_down`) + a client-side expiry guard, and clears
+  // its timeout on unmount / phase change so an abandoned card never keeps polling.
+  React.useEffect(() => {
+    if (phase !== 'device' || !dev) return
+    let alive = true
+    let interval = dev.interval
+    const deadline = Date.now() + dev.expires_in * 1000
+    const tick = async () => {
+      if (!alive) return
+      if (Date.now() >= deadline) {
+        backToCollect('That code expired — start again.')
+        return
+      }
+      try {
+        const r = await pollDevice(card.id, dev.handle)
+        if (!alive) return
+        if (r.status === 'authorized') {
+          const accountRef = r.account_ref ?? null
+          if (onDeviceGranted) await onDeviceGranted(accountRef)
+          if (!alive) return
+          const res: ConnectFlowResult = { restartHint: true, accountRef, accountLabel: null }
+          setResult(res)
+          setPhase('added')
+          onDone?.(res)
+          return
+        }
+        if (r.status === 'denied') {
+          backToCollect('Sign-in was declined. You can try again.')
+          return
+        }
+        if (r.status === 'expired') {
+          backToCollect('That code expired — start again.')
+          return
+        }
+        if (r.status === 'slow_down') interval += 5 // RFC-8628 §3.5, mirrors the server
+        pollRef.current = window.setTimeout(tick, interval * 1000)
+      } catch {
+        // A transient network blip — back off one interval, don't kill the flow.
+        pollRef.current = window.setTimeout(tick, interval * 1000)
+      }
+    }
+    pollRef.current = window.setTimeout(tick, interval * 1000)
+    return () => {
+      alive = false
+      if (pollRef.current) window.clearTimeout(pollRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, dev, card.id])
 
   const submit = async () => {
     setPhase('saving')
@@ -178,6 +276,10 @@ export function ConnectFlow({
     )
   }
 
+  if (phase === 'device' && dev) {
+    return <DevicePanel card={card} dev={dev} chat={variant === 'chat'} onCancel={() => backToCollect('')} />
+  }
+
   const chat = variant === 'chat'
   const showCta = keyLaneOpen // during the OAuth lead the "Sign in" button is the primary
   const ctaBase = submitLabel ?? (needsSecret ? 'Connect' : 'Add')
@@ -188,13 +290,16 @@ export function ConnectFlow({
     // The store variant carries its own bordered card chrome (the chat card lives
     // inside DialogShell, so it stays flush).
     <div className={cn('flex flex-col', chat ? 'gap-0' : 'gap-3 rounded-2xl border border-border bg-card p-4')}>
-      {/* Lane A — the branded OAuth primary (leads the trust hierarchy). */}
+      {/* Lane A — the branded OAuth primary (leads the trust hierarchy). Disabled
+          while the store's "choose who gets it" gate is unmet (submitDisabled), so
+          the GrantPicker above is picked first; startSignIn degrades to the key
+          lane if no device target / legacy handler is wired (never a dead button). */}
       {hasOAuth && !keyLaneOpen && (
         <div className={chat ? 'mt-[13px]' : ''}>
           <button
             type="button"
-            onClick={signIn}
-            disabled={phase === 'oauth_pending'}
+            onClick={startSignIn}
+            disabled={submitDisabled}
             data-vr="connect-oauth"
             className={cn(
               chat
@@ -207,8 +312,13 @@ export function ConnectFlow({
                 : undefined
             }
           >
-            {phase === 'oauth_pending' ? <>Waiting for {card.display_name}…</> : <>Sign in with {card.display_name}</>}
+            Sign in with {card.display_name}
           </button>
+          {submitDisabled && blockedLabel && (
+            <p className={cn('mt-2 text-[12px]', chat ? 'text-ink-3' : 'text-muted-foreground')}>
+              {blockedLabel}
+            </p>
+          )}
           {needsSecret && <Divider chat={chat}>or use an API key</Divider>}
           {!needsSecret && (
             <button
@@ -339,6 +449,114 @@ export function ConnectFlow({
       )}
     </div>
   )
+}
+
+// ── Lane A device sub-flow panel ──────────────────────────────────────────────
+
+/** The device-grant panel: the big copyable `user_code`, an "Open {provider} →"
+ *  button, a plain "enter this code" line, and a "waiting" spinner while the poll
+ *  loop (owned by <ConnectFlow>) runs. NEVER renders a secret / device_code — only
+ *  the human-facing `user_code` + verification URL. Both variants via `chat`. */
+function DevicePanel({
+  card,
+  dev,
+  chat,
+  onCancel,
+}: {
+  card: ConnectorCard
+  dev: DeviceStart
+  chat: boolean
+  onCancel: () => void
+}) {
+  const openUrl = dev.verification_uri_complete || dev.verification_uri
+  const host = hostOf(dev.verification_uri)
+  return (
+    <div className={cn('flex flex-col', chat ? 'mt-[13px] gap-3' : 'gap-3 rounded-2xl border border-border bg-card p-4')}>
+      {/* The hero: the code, large + letter-spaced, tap-to-copy (≥44px target). */}
+      <CodeChip code={dev.user_code} chat={chat} />
+
+      {/* Open the provider's device page (pre-filled when the provider supports it). */}
+      <a
+        href={openUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        data-vr="device-open"
+        className={cn(
+          'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-[14px] font-semibold transition-colors',
+          chat
+            ? 'bg-fill-soft-2 text-ink hover:bg-fill-soft'
+            : 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
+        )}
+      >
+        Open {card.display_name}
+        <ArrowUpRight className="size-4" aria-hidden />
+      </a>
+
+      <p className={cn('text-[13px] leading-[1.45]', chat ? 'text-ink-2' : 'text-muted-foreground')}>
+        Enter this code at <span className="font-medium">{host}</span> — I’ll wait.
+      </p>
+
+      <div className={cn('flex items-center gap-2 text-[12.5px]', chat ? 'text-ink-3' : 'text-muted-foreground')}>
+        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        Waiting for you to approve…
+        <button
+          type="button"
+          onClick={onCancel}
+          className={cn('ml-auto underline-offset-2 hover:underline', chat ? 'text-ink-2' : 'text-foreground/80')}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** The big, letter-spaced device code + a full-width tap-to-copy affordance. */
+function CodeChip({ code, chat }: { code: string; chat: boolean }) {
+  const [copied, setCopied] = React.useState(false)
+  const timer = React.useRef<number | null>(null)
+  React.useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current) }, [])
+  const copy = () => {
+    void navigator.clipboard?.writeText(code).then(
+      () => {
+        setCopied(true)
+        if (timer.current) window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => setCopied(false), 1600)
+      },
+      () => {},
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={`Copy the code ${code}`}
+      data-vr="device-code"
+      className={cn(
+        'group flex min-h-[56px] w-full items-center justify-center gap-3 rounded-xl px-4 py-3 transition-colors',
+        chat ? 'bg-fill-soft hover:bg-fill-soft-2' : 'border border-border bg-muted/40 hover:bg-muted/60',
+      )}
+    >
+      <span className={cn('select-all font-mono text-[26px] font-semibold tracking-[0.28em]', chat ? 'text-ink' : 'text-foreground')}>
+        {code}
+      </span>
+      <span className={cn('inline-flex items-center gap-1 text-[12px] font-medium', copied ? 'text-status-ready-ink' : chat ? 'text-ink-3' : 'text-muted-foreground')}>
+        {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+        {copied ? 'Copied' : 'Copy'}
+      </span>
+    </button>
+  )
+}
+
+/** The bare host of a verification URL ("github.com/login/device"), for the calm
+ *  "enter this code at …" line. Falls back to the raw string if it won't parse. */
+function hostOf(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.host}${u.pathname}`.replace(/\/$/, '')
+  } catch {
+    return url
+  }
 }
 
 // ── the added / test block ────────────────────────────────────────────────────

@@ -10,27 +10,41 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Check, Loader2, Trash2 } from 'lucide-react'
 
+import { Sparkles } from 'lucide-react'
+
 import {
   ALL_AGENTS,
   companyGrantKey,
+  connectorAuthKind,
   secretField,
   toolCountLabel,
   type ConnectorCard as Card,
   type CredentialField,
 } from '@/lib/api/connectors'
+import type { OauthProvider } from '@/lib/api/oauth'
 import { sessionsApi, displayLabel } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useConnectorActions } from '@/stores/connectors-store'
+import { useOauthApps } from '@/hooks/use-oauth-apps'
 import { useUI } from '@/stores/ui-store'
 import { useCompanies } from '@/hooks/use-companies'
 import { CompanyMark } from '@/components/roster/company-mark'
 import { cn } from '@/lib/utils'
 
 import { ConnectorIcon } from './connector-icon'
-import { OfficialBadge } from './connector-card'
+import { EaseBadge, OfficialBadge } from './connector-card'
 import { GrantControl, type GrantScope } from './grant-control'
 import { ConnectFlow, type ConnectFlowResult } from './connect-flow'
 import { ConnectInBotPicker } from './connect-in-bot-picker'
+import { EnableSigninSheet } from './enable-signin-sheet'
+
+/** The device-flow provider a card is backed by, or `null` when the card isn't a
+ *  provider we can enable one-tap sign-in for. Only GitHub is wired (P2b); the
+ *  Google connectors sign in from the bot terminal (`mcp_oauth`), so they're left
+ *  out deliberately — no client_id to make a non-technical user create. */
+function deviceProvider(card: Card): OauthProvider | null {
+  return card.id === 'pmcp-github' ? 'github' : null
+}
 
 /** A pickable grant target in the library "Grant to" step. */
 export interface BotChoice {
@@ -66,6 +80,25 @@ export function ConnectorDetail({
   const actions = useConnectorActions()
   const secret = secretField(card)
   const needsSecret = !!secret
+
+  // ── guided do-once "Enable Sign-in with GitHub" (the Lane A enabler) ──
+  // The entry is owner/admin-only: there is NO client role context, so the probe
+  // IS the gate — `GET /api/oauth/apps` 404s for a member, keeping `ownerCanRegister`
+  // false and the entry hidden. Only surfaced on a provider-backed card whose lane
+  // is still the key paste (no app yet); once registered the server flips the card
+  // to oauth_device and this vanishes.
+  const provider = deviceProvider(card)
+  const laneIsKey = connectorAuthKind(card) === 'api_key' || connectorAuthKind(card) === 'form'
+  const { ownerCanRegister } = useOauthApps({ enabled: provider !== null && laneIsKey })
+  const [signinOpen, setSigninOpen] = React.useState(false)
+  // A nonce bumped on each open so <EnableSigninSheet key={nonce}> remounts fresh
+  // (starts at step "why", clean mutation) — the lint-clean alternative to a
+  // reset-on-open effect.
+  const [signinNonce, setSigninNonce] = React.useState(0)
+  const openSignin = () => {
+    setSigninNonce((n) => n + 1)
+    setSigninOpen(true)
+  }
   // The connect flow's outcome once sealed/granted (seeded to an added state when
   // the connector is already granted, so re-opening it shows the confirmation).
   const [added, setAdded] = React.useState<ConnectFlowResult | null>(
@@ -169,6 +202,26 @@ export function ConnectorDetail({
     })
   }
 
+  // The grant targets for THIS open: the library "Grant to" selection (N bots /
+  // company / the `*` all-agents row), or in a bot scope the one target the sheet
+  // carries. Shared by the paste seal (onSubmit) and the Lane-A device flow.
+  const targetsFor = (): string[] => (isLibrary ? chosenTargets : grantTarget ? [grantTarget] : [])
+
+  // Record what a seal/device-grant landed on, for the "Added to …" confirmation +
+  // the RestartTargets buttons. Shared so paste and device agree byte-for-byte.
+  const markLanded = (targets: string[]) => {
+    setAddedTargets(targets)
+    setLocalGrant(
+      targets.includes(ALL_AGENTS)
+        ? 'all'
+        : companyKey && targets.includes(companyKey)
+          ? 'company'
+          : isLibrary
+            ? null
+            : 'bot',
+    )
+  }
+
   // The seal + grant strategy the SHARED <ConnectFlow> calls. It owns the fields,
   // the lane and the test leg; this owns the store's install + multi-target grant.
   const onSubmit = async ({ fields }: { fields: Record<string, string> }): Promise<ConnectFlowResult> => {
@@ -189,7 +242,7 @@ export function ConnectorDetail({
     // Resolve the scope to the grant targets. Library view = the "Grant to"
     // selection (N bots, or the single `*` all-agents row); a bot scope = the one
     // target the sheet was opened with.
-    const targets = isLibrary ? chosenTargets : grantTarget ? [grantTarget] : []
+    const targets = targetsFor()
     let restartHint = false
     let accountRef: string | null = null
     let accountLabel: string | null = null
@@ -213,16 +266,7 @@ export function ConnectorDetail({
         restartHint = (await actions.grant(card.id, t)) || restartHint
       }
     }
-    setAddedTargets(targets)
-    setLocalGrant(
-      targets.includes(ALL_AGENTS)
-        ? 'all'
-        : companyKey && targets.includes(companyKey)
-          ? 'company'
-          : isLibrary
-            ? null
-            : 'bot',
-    )
+    markLanded(targets)
     return { restartHint, accountRef, accountLabel }
   }
 
@@ -246,6 +290,7 @@ export function ConnectorDetail({
               {card.display_name}
             </h2>
             {card.official && <OfficialBadge label />}
+            <EaseBadge card={card} />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground">
             {tools && <span className="font-medium">{tools}</span>}
@@ -267,6 +312,23 @@ export function ConnectorDetail({
       <ConnectFlow
         card={card}
         variant="store"
+        // Lane A (device sign-in): grant to the SAME targets the paste path uses.
+        // The server auto-grants the FIRST target (+ installs the row, P2b); the
+        // rest are fanned out from the returned account_ref in onDeviceGranted,
+        // mirroring the paste secret_ref/account_ref fan-out. `company_id` scopes
+        // the server's OAuth-app lookup (company app → else the box-wide global).
+        deviceTarget={
+          targetsFor()[0]
+            ? { session: targetsFor()[0], company_id: activeCompany ?? null }
+            : undefined
+        }
+        onDeviceGranted={async (accountRef) => {
+          const targets = targetsFor()
+          for (const t of targets.slice(1)) {
+            await actions.grant(card.id, t, undefined, accountRef ?? undefined)
+          }
+          markLanded(targets)
+        }}
         onSubmit={onSubmit}
         onDone={(r) => setAdded(r)}
         initialAdded={!!added}
@@ -291,6 +353,31 @@ export function ConnectorDetail({
           />
         )}
       </ConnectFlow>
+
+      {/* Owner setup: turn the key-paste lane into one-tap sign-in. A do-once
+          per-box (or per-company) registration; hidden for members (probe 404)
+          and once the app is registered (the card is then Lane A, not a key). */}
+      {provider && laneIsKey && ownerCanRegister && (
+        <button
+          type="button"
+          onClick={openSignin}
+          data-vr="enable-signin-entry"
+          className="inline-flex items-center gap-1.5 self-start rounded-lg px-2 py-1.5 text-[12.5px] font-medium text-primary underline-offset-2 transition-colors hover:bg-primary/10"
+        >
+          <Sparkles className="size-3.5" aria-hidden />
+          Enable one-tap sign-in (owner setup)
+        </button>
+      )}
+      {provider && (
+        <EnableSigninSheet
+          key={signinNonce}
+          open={signinOpen}
+          onOpenChange={setSigninOpen}
+          provider={provider}
+          companyId={activeCompany}
+          companyName={company?.display_name ?? null}
+        />
+      )}
 
       {/* Connect in a bot — push the connect card into a running bot's chat and
           finish sign-in there. The PRIMARY path for mcp_oauth (Lane D has no key

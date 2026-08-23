@@ -169,6 +169,11 @@ export function ConnectCard({
             <ConnectFlow
               card={effectiveCard}
               variant="chat"
+              // The bot's own company is resolved server-side from
+              // `sessions.company_id`, so only the session rides here. When the
+              // card is an OAuth-device lane, ConnectFlow runs the built-in device
+              // sub-flow (code panel + poll) and auto-grants to THIS bot.
+              deviceTarget={{ session: sessionName }}
               onSignIn={onSignIn}
               onDismiss={onDismiss}
               onSubmit={seal}

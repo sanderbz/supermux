@@ -6,9 +6,9 @@
 // active scope?) — see `chipFor`. Tapping the card (or its chip) opens the detail
 // sheet, which hosts the connect / grant flow.
 import * as React from 'react'
-import { BadgeCheck, Check, MoreHorizontal } from 'lucide-react'
+import { BadgeCheck, Check, MoreHorizontal, Sparkles } from 'lucide-react'
 
-import { toolCountLabel, type ConnectorCard as Card } from '@/lib/api/connectors'
+import { connectorAuthKind, toolCountLabel, type ConnectorCard as Card } from '@/lib/api/connectors'
 
 import { ConnectorIcon } from './connector-icon'
 import type { GrantScope } from './grant-control'
@@ -49,6 +49,7 @@ export function ConnectorCard({
   // catalog card beside it (jury STORE_CARD #2).
   const chips = (
     <>
+      <EaseBadge card={card} />
       {card.kind === 'builtin_browser' && <ToolPill>built-in</ToolPill>}
       {tools && <ToolPill>{tools}</ToolPill>}
     </>
@@ -94,7 +95,9 @@ export function ConnectorCard({
             <h3 className="truncate text-[15px] font-medium leading-tight text-foreground">{card.display_name}</h3>
             {card.official && <OfficialBadge />}
           </div>
-          {tools && <div className="mt-1.5 flex flex-wrap items-center gap-1.5">{chips}</div>}
+          {(tools || card.kind === 'builtin_browser' || connectorAuthKind(card) === 'mcp_oauth' || connectorAuthKind(card) === 'oauth_device' || connectorAuthKind(card) === 'oauth_redirect') && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">{chips}</div>
+          )}
         </div>
         {onMenu && (
           <button
@@ -130,6 +133,40 @@ export function ConnectorCard({
       </div>
     </div>
   )
+}
+
+/** The ease pill — surfaces the zero-setup lanes so a non-technical user reaches
+ *  for them first. `mcp_oauth` (the bot signs in in its own terminal, no app, no
+ *  key) is the EASIEST; `oauth_device` is one-tap once an owner has enabled it.
+ *  Grok-token styled and kept SUBTLE (quieter than the Official badge). Nothing
+ *  for the paste/none lanes — the absence is the signal. */
+export function EaseBadge({ card }: { card: Card }) {
+  const kind = connectorAuthKind(card)
+  if (kind === 'mcp_oauth') {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium"
+        style={{ color: 'var(--gr-done)', background: 'color-mix(in oklab, var(--gr-done) 13%, transparent)' }}
+        title="Easiest — your bot signs in from its own terminal. No app, no key to set up."
+      >
+        <Sparkles className="size-3" aria-hidden />
+        Easiest
+      </span>
+    )
+  }
+  if (kind === 'oauth_device' || kind === 'oauth_redirect') {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+        style={{ background: 'color-mix(in oklab, var(--sm-accent) 10%, transparent)' }}
+        title="One-tap sign-in — connect with a short code, no key to paste."
+      >
+        <Sparkles className="size-3" aria-hidden />
+        1-tap
+      </span>
+    )
+  }
+  return null
 }
 
 /** The "Official" trust badge — a first-party Anthropic/MCP reference server. */

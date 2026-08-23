@@ -368,6 +368,72 @@ export async function putCredential(
   )
 }
 
+// ── RFC-8628 device-grant (Lane A) ────────────────────────────────────────────
+//
+// SECRET HYGIENE: the `handle` is an OPAQUE server id binding {connector, session,
+// device_code}. The `device_code`, the `client_secret` and the `token_url` NEVER
+// leave the server — nothing here reads or renders them. The client only ever sees
+// the human-facing `user_code` + the verification URL, and polls by handle.
+
+/** `POST /{id}/oauth/device/start` result — the human-facing bits + the opaque handle. */
+export interface DeviceStart {
+  /** The short code the human types at the provider (big, copyable). */
+  user_code: string
+  /** Where the human enters the code (e.g. `https://github.com/login/device`). */
+  verification_uri: string
+  /** Some providers pre-fill the code at this URL; still show `user_code`. */
+  verification_uri_complete?: string
+  /** Seconds until the code expires (client mirrors the server's expiry guard). */
+  expires_in: number
+  /** Seconds between polls (RFC-8628; the server may raise it on `slow_down`). */
+  interval: number
+  /** The opaque poll handle — binds this grant server-side; carries no secret. */
+  handle: string
+}
+
+export type DevicePollStatus =
+  | 'pending'
+  | 'slow_down'
+  | 'authorized'
+  | 'denied'
+  | 'expired'
+
+/** `POST /{id}/oauth/device/poll` result. On `authorized` the server has already
+ *  sealed the token into the vault + granted the bound session; `account_ref` is
+ *  the minted/updated account (the token itself never rides here). */
+export interface DevicePoll {
+  status: DevicePollStatus
+  account_ref?: string
+}
+
+/** The device-grant destination the seal auto-grants to. `company_id` scopes the
+ *  server's OAuth-app lookup (company app → else the box-wide global app). */
+export interface DeviceTarget {
+  session: string
+  company_id?: number | null
+}
+
+/** `POST /api/connectors/{id}/oauth/device/start { session, company_id? }` — begin
+ *  a device grant. The response carries the `user_code` + verification URL + an
+ *  opaque `handle`; no secret ever comes back. */
+export async function startDevice(
+  id: string,
+  target: DeviceTarget,
+): Promise<DeviceStart> {
+  return settingsRequest<DeviceStart>(
+    `/api/connectors/${enc(id)}/oauth/device/start`,
+    { method: 'POST', body: JSON.stringify(target) },
+  )
+}
+
+/** `POST /api/connectors/{id}/oauth/device/poll { handle }` — poll the grant. */
+export async function pollDevice(id: string, handle: string): Promise<DevicePoll> {
+  return settingsRequest<DevicePoll>(
+    `/api/connectors/${enc(id)}/oauth/device/poll`,
+    { method: 'POST', body: JSON.stringify({ handle }) },
+  )
+}
+
 export interface GrantArgs {
   /** Session slug, or `*` / `"all"` for every agent. */
   session_name: string
@@ -535,6 +601,27 @@ export function connectorHasOAuth(card: ConnectorCard): boolean {
 export function connectorNeedsCredential(card: ConnectorCard): boolean {
   const k = connectorAuthKind(card)
   return k === 'api_key' || k === 'form' || k === 'oauth_device' || k === 'oauth_redirect'
+}
+
+/** How EASY is this connector to connect, as an ordering rank (lower = easier)?
+ *  The store surfaces zero-setup lanes first so a non-technical user connects
+ *  something before ever meeting a `client_id`:
+ *    0 `mcp_oauth`   — the bot signs in in its own terminal (no app, no key).
+ *    1 `oauth_device`/`oauth_redirect` — one-tap sign-in (once the app is enabled).
+ *    2 `none`        — built-ins, nothing to hand over.
+ *    3 `api_key`/`form`/anything else — paste a key. */
+export function connectorEaseRank(card: ConnectorCard): number {
+  switch (connectorAuthKind(card)) {
+    case 'mcp_oauth':
+      return 0
+    case 'oauth_device':
+    case 'oauth_redirect':
+      return 1
+    case 'none':
+      return 2
+    default:
+      return 3
+  }
 }
 
 /** The single sensitive field (the secure paste), if the schema declares one. */

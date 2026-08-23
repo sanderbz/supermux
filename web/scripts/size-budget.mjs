@@ -958,7 +958,27 @@ const BUDGET_ENTRY_JS = 161 * KB
 //   +~0.1 KB  the `sessionsApi.connectInBot` client method.
 // A genuine additive feature (the store→chat handoff), not a regression to trim:
 // ceil(measured)=329, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 329 * KB
+// 329 → 334 at P2b guided-connect (feat/companies-grok, slice 6): the device-code
+// engine (P2a) gets its two web surfaces + ease-badging. Measured 333.36 against
+// 329.00 — +4.36 KB, ALL of it OFF the hero path (it lands in the already-lazy
+// `store-view`/connect chunks; the ENTRY gate — the hard one guarding cold load —
+// is UNMOVED at 157.10/161 (98%), +0.01 KB). Where the bytes went:
+//   +~2.4 KB  `store/enable-signin-sheet` — the guided do-once OAuth-app
+//             registration wizard (4 steps on the shared `ResponsiveSheet` +
+//             `wizard-primitives`: why / create-app deep-link + pre-filled
+//             CopyFields + scopes / paste client_id+secret / done). Owner-only,
+//             store-route code.
+//   +~1.2 KB  the Lane A device sub-flow inside the shared `<ConnectFlow>` (the
+//             `device` phase: the big copyable user_code panel, "Open {provider} →",
+//             the RFC-8628 poll loop honouring interval/slow_down/expiry) — shared
+//             by the store detail AND the in-chat ConnectCard via ONE component.
+//   +~0.5 KB  `lib/api/oauth` + `hooks/use-oauth-apps` (the owner-probe query +
+//             register mutation) and the `lib/api/connectors` device types/calls.
+//   +~0.3 KB  ease-badging: the `EaseBadge` pill (mcp_oauth "Easiest" / oauth_device
+//             "1-tap") + the `connectorEaseRank` tiebreak in the store grid sort.
+// A genuine additive feature (the "Claude-guided connect" payoff), not a regression
+// to trim: ceil(measured)=334, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 334 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -4,6 +4,7 @@
 // is seeded, and the ConnectCard renders against a seed card. Both themes and
 // the [data-grok] skin on one page so the offline Playwright rig can screenshot
 // the whole surface. Not a product route.
+import * as React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ToastProvider } from '@/components/ui/toast'
@@ -12,6 +13,7 @@ import { StoreView } from '@/components/store/store-view'
 import { CURATED_FALLBACK } from '@/components/store/catalog'
 import { ConnectCard } from '@/components/chat/ui/connect-card'
 import { TakeoverCard } from '@/components/chat/ui/takeover-card'
+import { EnableSigninSheet } from '@/components/store/enable-signin-sheet'
 import type { ConnectorCard } from '@/lib/api/connectors'
 
 const BENCH_QC = new QueryClient({
@@ -28,7 +30,30 @@ const MOCK_BOTS = [
   { name: 'Linus', status: 'waiting' },
 ]
 
-const OAUTH_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'pmcp-notion')!
+// P2b bench seeds — no live derive_auth offline, so stamp the auth lanes the
+// server would set once an OAuth app is registered / for a hosted-OAuth card, so
+// the rig can screenshot Lane A (device sign-in) + the ease pills.
+const BENCH_CARDS: ConnectorCard[] = CURATED_FALLBACK.map((c) => {
+  if (c.id === 'pmcp-github') {
+    // GitHub with an app enabled → Lane A device sign-in + the "1-tap" pill.
+    return {
+      ...c,
+      auth: { kind: 'oauth_device', device_url: 'https://github.com/login/device', scopes: ['repo', 'read:org'] },
+    }
+  }
+  if (c.id === 'pmcp-notion') {
+    // Hosted-OAuth (signs in in the bot terminal) → the "Easiest" pill + Lane D.
+    return {
+      ...c,
+      auth: { kind: 'mcp_oauth', help_text: 'Notion signs in the first time your bot uses it — approve it in the bot’s terminal.' },
+    }
+  }
+  return c
+})
+
+// Lane A device card (GitHub, app enabled) for the inline connect-card + a plain
+// key card (iCloud) for the paste lane.
+const OAUTH_CARD: ConnectorCard = BENCH_CARDS.find((c) => c.id === 'pmcp-github')!
 const KEY_CARD: ConnectorCard = CURATED_FALLBACK.find((c) => c.id === 'icloud-mail')!
 
 function Slab({
@@ -56,7 +81,7 @@ function Slab({
           data-vr={`store-grid-${theme}${grok ? '-grok' : ''}`}
           className="h-[720px] overflow-hidden rounded-3xl border border-border"
         >
-          <StoreView grantTarget={null} mock={CURATED_FALLBACK} mockGranted={GRANTED} mockBots={MOCK_BOTS} detailTheme={theme} />
+          <StoreView grantTarget={null} mock={BENCH_CARDS} mockGranted={GRANTED} mockBots={MOCK_BOTS} detailTheme={theme} />
         </div>
 
         {/* bot-scoped variant (rows) */}
@@ -64,7 +89,7 @@ function Slab({
           data-vr={`store-sheet-${theme}${grok ? '-grok' : ''}`}
           className="mx-auto h-[560px] w-full max-w-[560px] overflow-hidden rounded-3xl border border-border"
         >
-          <StoreView grantTarget="Ada" mock={CURATED_FALLBACK} mockGranted={GRANTED} variant="sheet" detailTheme={theme} />
+          <StoreView grantTarget="Ada" mock={BENCH_CARDS} mockGranted={GRANTED} variant="sheet" detailTheme={theme} />
         </div>
 
         {/* the inline connect-cards (chat surface — needs the sm token slab) */}
@@ -112,6 +137,30 @@ function Slab({
   )
 }
 
+// The guided "Enable Sign-in with GitHub" registration wizard — mounted ONCE (one
+// body-portal, so it never obscures the slab screenshots) and opened on demand.
+// The rig captures it by loading `/dev/store#signin` (or tapping the trigger); the
+// sheet uses only the register MUTATION (no auto-fetch), so it renders offline.
+function RegistrationPreview() {
+  const [open, setOpen] = React.useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#signin',
+  )
+  return (
+    <div className="mx-auto w-full max-w-[1120px] px-4 py-8">
+      <h2 className="mb-3 text-sm font-medium text-foreground">Guided OAuth-app registration</h2>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-vr="open-enable-signin"
+        className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-[14px] font-semibold text-foreground hover:bg-muted"
+      >
+        Preview: Enable Sign-in with GitHub
+      </button>
+      <EnableSigninSheet open={open} onOpenChange={setOpen} provider="github" companyId={null} companyName={null} />
+    </div>
+  )
+}
+
 export default function DevStore() {
   return (
     <QueryClientProvider client={BENCH_QC}>
@@ -122,6 +171,7 @@ export default function DevStore() {
             <Slab theme="light" grok />
             <Slab theme="dark" />
             <Slab theme="dark" grok />
+            <RegistrationPreview />
           </div>
         </ToastProvider>
       </TooltipProvider>
