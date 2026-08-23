@@ -8,12 +8,16 @@
 // installed before the adoption wiring existed, or one whose `update()` check is
 // being served a stale `sw.js` from some cache — can never reach `onNeedRefresh`,
 // so the SW path alone can never break that deadlock. This poll sidesteps the SW
-// entirely: it asks the live server "what sha are you?" and compares that to the
-// sha THIS bundle was built from (`__APP_BUILD_SHA__`, injected by
-// vite.config.ts `define`; the server's `/api/version` `current.sha` is baked by
-// server/build.rs from the SAME checkout at deploy time, so the two are equal for
-// a given deploy and differ the instant a new build ships). On a mismatch it
-// surfaces the exact same one-tap reload bar via the shared adoption store.
+// entirely: it asks the live server "what sha is your EMBEDDED FRONTEND?" and
+// compares that to the sha THIS bundle was built from (`__APP_BUILD_SHA__`,
+// injected by vite.config.ts `define`). The server reports `data.frontend_sha` —
+// read at runtime from the embedded `dist/version.json`, which vite stamps from
+// the SAME sha source as `__APP_BUILD_SHA__` — so the two are equal for a given
+// FRONTEND build and differ the instant a new FRONTEND bundle ships. Crucially
+// this is NOT the backend build sha (`data.current.sha`, baked by
+// server/build.rs): a backend-only deploy re-embeds no frontend, so frontend_sha
+// is unchanged and no false bar appears (the stuck-bar bug this replaced). On a
+// genuine mismatch it surfaces the same one-tap reload bar via the shared store.
 //
 // KISS + no data loss: it reuses `markWaiting`, so the idle-guard still applies
 // (unsent composer text vetoes any silent reload; a visible tab gets the button,
@@ -106,7 +110,15 @@ export async function fetchServedSha(): Promise<string | null> {
     })
     if (!res.ok) return null
     const env = await res.json().catch(() => null)
-    const sha = env?.data?.current?.sha
+    // The EMBEDDED FRONTEND sha (from dist/version.json, stamped by
+    // vite.config.ts), NOT `data.current.sha` (the BACKEND build sha from
+    // build.rs). A server-only deploy re-embeds nothing, so frontend_sha is
+    // byte-identical and equals this bundle's __APP_BUILD_SHA__ → no false bar;
+    // a genuine frontend rebuild changes it → the bar shows and clears on reload.
+    // Deliberately NO fallback to current.sha — that would reintroduce the
+    // stuck-bar bug. Absent/unparseable frontend_sha → null → no bar (honoring
+    // the existing "transient/unknown never shows a false bar" contract).
+    const sha = env?.data?.frontend_sha
     return isRealSha(sha) ? sha : null
   } catch {
     return null

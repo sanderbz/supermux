@@ -23,6 +23,30 @@ const BUILD_SHA: string =
     }
   })()
 
+// Emit `dist/version.json` = {"sha": BUILD_SHA} — the SAME sha baked into
+// `__APP_BUILD_SHA__` above — so the server can serve the EMBEDDED FRONTEND's sha
+// as the client-reload freshness signal (see server/src/updates/preflight.rs +
+// src/lib/version-guard.ts). Because it reuses BUILD_SHA, dist/version.json.sha
+// and __APP_BUILD_SHA__ are ALWAYS equal for a given frontend build. It is a
+// build-only hook (generateBundle never runs on the dev server); the wholesale
+// `cp -r web/dist server/static` in scripts/build.sh embeds it via rust-embed,
+// and the embed is hash-gated on the dist tree so it re-embeds ONLY when the
+// frontend genuinely rebuilds. Not matched by the SW precache glob
+// (`**/*.{js,css,svg,png,woff2}`); read server-side only, never fetched by the
+// client — no service-worker interaction.
+const stampFrontendSha = {
+  name: 'supermux-frontend-sha-stamp',
+  generateBundle() {
+    // `this` is the rollup plugin context inside generateBundle.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(this as any).emitFile({
+      type: 'asset',
+      fileName: 'version.json',
+      source: JSON.stringify({ sha: BUILD_SHA }),
+    })
+  },
+}
+
 // https://vite.dev/config/
 // Tailwind v4 is wired via the first-party Vite plugin —
 // no postcss.config.js / tailwind.config.ts pipeline required.
@@ -30,6 +54,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    stampFrontendSha,
     // Installable PWA for iOS Safari.
     //
     // The service worker caches ONLY the static app shell (fingerprinted JS/CSS

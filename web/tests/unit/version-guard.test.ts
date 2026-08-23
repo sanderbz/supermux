@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 import {
   adoptNewBuild,
+  fetchServedSha,
   isNewerServedSha,
   isRealSha,
   reconcileServedSha,
@@ -88,6 +89,73 @@ describe('reconcileServedSha — the bar surfaces on a newer build, retracts whe
     markWaiting(() => {})
     expect(getSWUpdateWaiting()).toBe(true)
     reconcileServedSha(null, A)
+    expect(getSWUpdateWaiting()).toBe(true)
+  })
+})
+
+describe('fetchServedSha — reads the EMBEDDED FRONTEND sha, not the backend build sha', () => {
+  type G = { window?: unknown; fetch?: unknown }
+  const g = globalThis as unknown as G
+  const saved: G = {}
+
+  beforeEach(() => {
+    saved.window = g.window
+    saved.fetch = g.fetch
+    // A minimal window so fetchServedSha's `window._SUPERMUX_BASE_URL` read works.
+    g.window = { _SUPERMUX_BASE_URL: '', _SUPERMUX_AUTH_TOKEN: undefined }
+  })
+  afterEach(() => {
+    if (saved.window === undefined) delete g.window
+    else g.window = saved.window
+    if (saved.fetch === undefined) delete g.fetch
+    else g.fetch = saved.fetch
+  })
+
+  /** Stub the network with one `/api/version` envelope. */
+  const stubVersion = (data: unknown) => {
+    g.fetch = mock(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, data }),
+    }))
+  }
+
+  test('returns data.frontend_sha, NOT data.current.sha (a server-only deploy)', async () => {
+    // Backend build sha (B) differs from the embedded FRONTEND sha (A) — the
+    // exact server-only-deploy shape. The guard must read the FRONTEND sha.
+    stubVersion({ current: { sha: B }, frontend_sha: A })
+    expect(await fetchServedSha()).toBe(A)
+  })
+
+  test('missing frontend_sha → null (no fallback to current.sha — that was the bug)', async () => {
+    stubVersion({ current: { sha: B } })
+    expect(await fetchServedSha()).toBeNull()
+  })
+
+  test('null / unparseable frontend_sha → null', async () => {
+    stubVersion({ current: { sha: B }, frontend_sha: null })
+    expect(await fetchServedSha()).toBeNull()
+    stubVersion({ current: { sha: B }, frontend_sha: 'not-a-sha' })
+    expect(await fetchServedSha()).toBeNull()
+  })
+})
+
+describe('server-only deploy does NOT surface the bar (the regression this fixes)', () => {
+  beforeEach(() => __resetSWUpdateForTest())
+  afterEach(() => __resetSWUpdateForTest())
+
+  test('backend sha differs but the frontend sha EQUALS the built sha → no bar', () => {
+    // The running bundle was built at sha A (its __APP_BUILD_SHA__). A backend-
+    // only deploy leaves the embedded frontend unchanged, so the server reports
+    // frontend_sha = A even though its backend build sha moved to B. Reconciling
+    // the FRONTEND sha (A) against the built sha (A) must NOT surface a bar.
+    reconcileServedSha(A, A)
+    expect(getSWUpdateWaiting()).toBe(false)
+  })
+
+  test('a genuine frontend deploy (frontend sha differs) → the bar shows', () => {
+    // A real frontend rebuild re-embeds a new version.json (sha B) while the
+    // running bundle is still A → the bar surfaces.
+    reconcileServedSha(B, A)
     expect(getSWUpdateWaiting()).toBe(true)
   })
 })

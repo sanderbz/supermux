@@ -159,6 +159,15 @@ pub struct PreflightStatus {
     /// can write to (the dashboard shows the "Updates" section only in that
     /// case; a Docker / unknown install hides it entirely).
     pub manageable: bool,
+    /// Git sha of the EMBEDDED FRONTEND bundle (from `dist/version.json`, read at
+    /// runtime by `crate::static_assets::embedded_frontend_sha`). THIS — not
+    /// `current.sha` (this binary's build sha, kept for diagnostics + the in-UI
+    /// updater) — is the client-reload freshness signal the version-guard reads:
+    /// it reflects the FRONTEND, so a backend-only deploy (embedded dist
+    /// unchanged) leaves it byte-identical and never wedges the reload bar.
+    /// `None` on a build produced without the version.json stamp → the guard
+    /// surfaces no bar (safe: never a false positive).
+    pub frontend_sha: Option<String>,
 }
 
 /// Check whether a build tool is available, mirroring what build.sh does:
@@ -403,6 +412,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
         blocked_reasons: blocked,
         install_mode,
         manageable,
+        frontend_sha: crate::static_assets::embedded_frontend_sha(),
     }
 }
 

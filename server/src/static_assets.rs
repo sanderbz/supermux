@@ -56,6 +56,27 @@ use crate::state::AppState;
 #[folder = "static/"]
 struct Assets;
 
+/// The git sha of the EMBEDDED frontend bundle, read at runtime from the
+/// `version.json` that `web/vite.config.ts` stamps into `web/dist` (the SAME sha
+/// baked into the bundle's `__APP_BUILD_SHA__`). This is the client-reload
+/// freshness signal the version-guard reads via `/api/version` `data.frontend_sha`:
+/// it is byte-identical across a backend-only deploy (the embedded dist is
+/// unchanged, so no false reload bar) and changes only when the frontend is
+/// genuinely rebuilt. `None` when the asset is absent (a build produced without
+/// the stamp) or unparseable — the guard then surfaces no bar (safe).
+pub fn embedded_frontend_sha() -> Option<String> {
+    Assets::get("version.json").and_then(|f| parse_frontend_sha(&f.data))
+}
+
+/// Pure JSON parse of a `version.json` body → its `sha` (trimmed, non-empty).
+/// Unit-testable without the embed. `None` on malformed JSON, a missing `sha`,
+/// a non-string `sha`, or an empty/whitespace `sha`.
+fn parse_frontend_sha(bytes: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let sha = v.get("sha")?.as_str()?.trim();
+    (!sha.is_empty()).then(|| sha.to_string())
+}
+
 /// Build the public (no-auth) static-asset sub-router: the SPA shell at `/` and
 /// a catch-all fallback that serves hashed assets or falls back to the shell.
 pub fn router_for(state: AppState) -> Router {
@@ -377,7 +398,38 @@ fn cache_control(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::cache_control;
+    use super::{cache_control, parse_frontend_sha};
+
+    // ── frontend-sha parse (the client-reload freshness signal) ────────────────
+
+    #[test]
+    fn parse_frontend_sha_reads_a_valid_stamp() {
+        let sha = "a".repeat(40);
+        let body = format!("{{\"sha\":\"{sha}\"}}");
+        assert_eq!(parse_frontend_sha(body.as_bytes()), Some(sha));
+    }
+
+    #[test]
+    fn parse_frontend_sha_trims_surrounding_whitespace() {
+        assert_eq!(
+            parse_frontend_sha(b"{\"sha\":\"  abc1234  \"}"),
+            Some("abc1234".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_frontend_sha_rejects_malformed_missing_and_empty() {
+        // Malformed JSON.
+        assert_eq!(parse_frontend_sha(b"not json"), None);
+        assert_eq!(parse_frontend_sha(b""), None);
+        // Missing `sha` key.
+        assert_eq!(parse_frontend_sha(b"{\"other\":\"x\"}"), None);
+        // Non-string `sha`.
+        assert_eq!(parse_frontend_sha(b"{\"sha\":123}"), None);
+        // Empty / whitespace-only `sha`.
+        assert_eq!(parse_frontend_sha(b"{\"sha\":\"\"}"), None);
+        assert_eq!(parse_frontend_sha(b"{\"sha\":\"   \"}"), None);
+    }
 
     // ── P3a CRITICAL: withhold the admin bearer on company tunnel hosts ─────────
 
