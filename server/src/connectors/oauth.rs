@@ -40,7 +40,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use dashmap::DashMap;
+
 use crate::config::{read_secret_file, write_token_0600};
+use crate::connectors::catalog;
 use crate::db::connectors;
 use crate::error::AppError;
 use crate::external_access::store::{self, OauthApp};
@@ -72,6 +75,79 @@ pub fn connector_provider(id: &str) -> Option<&'static str> {
         "pmcp-google" | "pmcp-gmail" | "pmcp-google-calendar" => Some("google"),
         _ => None,
     }
+}
+
+// ── catalog resolution + install parity (mirrors api::get_one / store_manifest) ──
+
+/// The catalog-mirror card for `id` (curated ∪ last-good live) — the SAME cache
+/// [`crate::connectors::api::get_one`] falls back to. `cached_cards()` always folds
+/// the curated set in (`merge_featured`), so a cold mirror still resolves
+/// `pmcp-github`.
+async fn catalog_card(id: &str) -> Option<Value> {
+    catalog::mirror()
+        .cached_cards()
+        .await
+        .into_iter()
+        .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
+}
+
+/// True when `id` resolves to a catalog card even with no installed DB row yet.
+async fn catalog_has(id: &str) -> bool {
+    catalog_card(id).await.is_some()
+}
+
+/// Idempotent server-side install of a catalog connector into the local registry —
+/// the device-flow analogue of the store's client `actions.install`
+/// (`POST /api/connectors` → `store_manifest`). No-op when the row already exists.
+///
+/// Deliberately bypasses the `require_admin` HTTP gate: the caller already passed
+/// the member fence (`authorize_session_for_human` + `authorize_connector_target`,
+/// own-company only) and `id` is a curated/mirror-resolved id (never arbitrary
+/// member input), so no member can author an arbitrary global definition here.
+/// Provenance = `{ imported:true }` only (secret-free, same as `store_manifest`):
+/// `derive_auth` STEP 0 re-derives the `oauth_device` lane from the registered app,
+/// so no auth descriptor needs persisting.
+async fn ensure_connector_installed(state: &AppState, id: &str) -> Result<(), AppError> {
+    if connectors::get(&state.pool, id).await.map_err(db_err)?.is_some() {
+        return Ok(());
+    }
+    let card = catalog_card(id)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    let s = |k: &str| card.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let j = |k: &str, d: &str| {
+        card.get(k)
+            .filter(|v| !v.is_null())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| d.to_string())
+    };
+    let kind = card
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or(super::manifest::KIND_MCP_CATALOG);
+    connectors::upsert(
+        &state.pool,
+        id,
+        kind,
+        &s("display_name"),
+        &s("icon"),
+        &s("description"),
+        &j("tools", "[]"),
+        &j("credentials", "[]"),
+        &j("emit", "{}"),
+        r#"{"imported":true}"#,
+    )
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// Drop every device handle whose window has closed. Pure over the map + a clock so
+/// the sweep is unit-testable without the network. Handles hold a `client_secret` +
+/// `device_code` in RAM and are otherwise pruned only on a poll, so an abandoned
+/// flow would leak until process exit without this.
+fn sweep_expired(handles: &DashMap<String, DeviceHandle>, now: i64) {
+    handles.retain(|_, h| h.expires_at > now);
 }
 
 /// `(device_url, token_url, token_field)` for a validated provider.
@@ -470,13 +546,22 @@ async fn device_start(
     if !valid_connector_id(&id) {
         return Err(AppError::BadRequest("invalid connector id".into()));
     }
+    // Opportunistic sweep: drop any handles whose window has closed (they hold a
+    // client_secret + device_code in RAM; a poll normally prunes them, but an
+    // abandoned flow never polls). O(n) over a handful of in-flight entries.
+    sweep_expired(&state.oauth_device_handles, chrono::Utc::now().timestamp());
+
     let provider = connector_provider(&id)
         .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
-    // The connector row must exist (the vault row FK-references it on grant).
-    connectors::get(&state.pool, &id)
-        .await
-        .map_err(db_err)?
-        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    // The connector must be RESOLVABLE (installed DB row OR a catalog-mirror card),
+    // exactly like `api::get_one`. A curated connector like pmcp-github is not a DB
+    // row until installed — the row is FK-created later in `seal_and_grant`
+    // (`ensure_connector_installed` before `vault_put`), so an abandoned flow leaves
+    // no orphan row. A genuinely-unknown id still 404s.
+    let installed = connectors::get(&state.pool, &id).await.map_err(db_err)?.is_some();
+    if !installed && !catalog_has(&id).await {
+        return Err(AppError::NotFound(format!("connector '{id}'")));
+    }
 
     // Member fence: own-company session target only (uniform 404 otherwise).
     let session = normalize_session(&body.session);
@@ -735,6 +820,11 @@ async fn seal_and_grant(
     access_token: &str,
     refresh_token: Option<&str>,
 ) -> Result<String, AppError> {
+    // FK-safe + paste parity: the vault row references connectors(id), and a catalog
+    // connector has no DB row until now. Install it exactly like the store paste path
+    // (client `actions.install` → store_manifest) does before its own vault_put.
+    ensure_connector_installed(state, connector_id).await?;
+
     let mut fields: BTreeMap<String, String> = BTreeMap::new();
     fields.insert(token_field.to_string(), access_token.to_string());
     if let Some(rt) = refresh_token {
@@ -762,9 +852,25 @@ async fn seal_and_grant(
     let label = fetch_identity_label(provider, access_token)
         .await
         .unwrap_or_else(|| provider_display(provider));
-    let account_ref = connectors::account_add(&state.pool, connector_id, &label, Some(&secret_ref))
+    // Idempotent-by-label, mirroring the paste path (api::put_credential): a same-
+    // label account is re-pointed at the fresh secret_ref in place (keeping every
+    // grant wired) instead of minting a duplicate on each re-sign-in.
+    let account_ref = match connectors::accounts_for_connector(&state.pool, connector_id)
         .await
-        .map_err(db_err)?;
+        .map_err(db_err)?
+        .into_iter()
+        .find(|a| a.account_label == label)
+    {
+        Some(a) => {
+            connectors::account_replace(&state.pool, &a.id, &label, Some(&secret_ref))
+                .await
+                .map_err(db_err)?;
+            a.id
+        }
+        None => connectors::account_add(&state.pool, connector_id, &label, Some(&secret_ref))
+            .await
+            .map_err(db_err)?,
+    };
     connectors::grant_with_account(
         &state.pool,
         session,
@@ -1158,6 +1264,90 @@ mod tests {
         .expect("wrong-route handle answered");
         assert_eq!(res.0["status"], json!("expired"));
 
+        cleanup(state, dir).await;
+    }
+
+    fn handle_expiring_at(expires_at: i64) -> DeviceHandle {
+        DeviceHandle {
+            connector_id: "pmcp-github".into(),
+            provider: "github",
+            session: "botX".into(),
+            company_id: None,
+            token_url: "https://github.com/login/oauth/access_token",
+            token_field: "GITHUB_TOKEN".into(),
+            client_id: "cid".into(),
+            client_secret: "shh".into(),
+            device_code: "dc".into(),
+            interval: 5,
+            expires_at,
+            last_poll: 0,
+        }
+    }
+
+    #[test]
+    fn sweep_expired_drops_only_closed_windows() {
+        let handles: DashMap<String, DeviceHandle> = DashMap::new();
+        handles.insert("past".into(), handle_expiring_at(100));
+        handles.insert("future".into(), handle_expiring_at(10_000_000_000));
+        // now = 1000: the past handle's window has closed, the future one has not.
+        sweep_expired(&handles, 1000);
+        assert!(!handles.contains_key("past"), "expired handle (holding a secret) must be swept");
+        assert!(handles.contains_key("future"), "a live handle must survive the sweep");
+        assert_eq!(handles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ensure_connector_installed_mirrors_paste_and_is_idempotent() {
+        let (state, dir) = test_state().await;
+        // A curated catalog connector resolves via the mirror even with no DB row…
+        assert!(
+            connectors::get(&state.pool, "pmcp-github").await.unwrap().is_none(),
+            "precondition: no installed row (catalog-only)"
+        );
+        assert!(catalog_has("pmcp-github").await, "curated connector must resolve");
+        assert!(!catalog_has("pmcp-not-a-real-connector").await, "unknown id must not resolve");
+
+        // …and the device path installs it byte-identically to the store paste path.
+        ensure_connector_installed(&state, "pmcp-github").await.unwrap();
+        let row = connectors::get(&state.pool, "pmcp-github")
+            .await
+            .unwrap()
+            .expect("device flow installs the catalog row before vault_put");
+        assert_eq!(row.display_name, "GitHub");
+        assert_eq!(row.source_json, r#"{"imported":true}"#);
+
+        // Idempotent: a second call is a no-op (early-returns on the existing row).
+        ensure_connector_installed(&state, "pmcp-github").await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM connectors WHERE id = 'pmcp-github'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "no duplicate row on re-install");
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn seal_and_grant_is_idempotent_by_label() {
+        let (state, dir) = test_state().await;
+        // No pre-seeded connector row: seal_and_grant must install it (FK parity) and
+        // seal + grant. The identity fetch uses an invalid token, so the label
+        // deterministically falls back to the provider display ("GitHub").
+        let a1 = seal_and_grant(
+            &state, "github", "pmcp-github", "botX", "GITHUB_TOKEN", "tok-1", None,
+        )
+        .await
+        .expect("first sign-in seals + grants");
+        // A re-sign-in of the SAME identity must update the one account, not mint a dup.
+        let a2 = seal_and_grant(
+            &state, "github", "pmcp-github", "botX", "GITHUB_TOKEN", "tok-2", None,
+        )
+        .await
+        .expect("re-sign-in seals + grants");
+        assert_eq!(a1, a2, "same-label account is reused (account_replace), not duplicated");
+        let accounts = connectors::accounts_for_connector(&state.pool, "pmcp-github")
+            .await
+            .unwrap();
+        assert_eq!(accounts.len(), 1, "one account row, not one-per-sign-in");
         cleanup(state, dir).await;
     }
 
