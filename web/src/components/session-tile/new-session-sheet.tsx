@@ -102,7 +102,9 @@ export function NewSessionSheet({
       open={open}
       onOpenChange={onOpenChange}
       title={botVoiced ? 'Hire a teammate' : 'New session'}
-      description={botVoiced ? "Tell them what to do — that's all you need." : MISC.newSessionSubtitle}
+      // Hero (botVoiced) shows title only — no subtitle. Base "New session"
+      // keeps its subtitle byte-identical.
+      description={botVoiced ? undefined : MISC.newSessionSubtitle}
     >
       {open && (
         <NewSessionPanel
@@ -457,27 +459,32 @@ function AgentForm({
 
   return (
     <form onSubmit={onGoalSubmit} className="flex min-h-0 flex-col">
-      {/* Step rail — two dots + a Back affordance on Step 2. Keeps the sheet's
-          own header as the chrome; this is the lightweight wizard line. */}
-      <div className="flex items-center justify-between gap-3 px-6 pt-3">
-        <div className="flex items-center gap-2">
-          {step === 'connect' && (
-            <button
-              type="button"
-              onClick={() => setStep('describe')}
-              className="-ml-1 mr-1 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Back to describe"
-            >
-              <ChevronRight className="size-4 rotate-180" aria-hidden />
-            </button>
-          )}
-          <StepDots step={step} />
+      {/* Step rail — a Back affordance on Step 2, plus the two-dot step line in
+          the base flow. The hero (botVoiced) drops the visible dots: the header
+          title carries the context, so the rail only renders there when there's
+          a Back button to show (Step 2). Base "New session" keeps its dots. */}
+      {(!botVoiced || step === 'connect') && (
+        <div className="flex items-center justify-between gap-3 px-6 pt-3">
+          <div className="flex items-center gap-2">
+            {step === 'connect' && (
+              <button
+                type="button"
+                onClick={() => setStep('describe')}
+                className="-ml-1 mr-1 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Back to describe"
+              >
+                <ChevronRight className="size-4 rotate-180" aria-hidden />
+              </button>
+            )}
+            {/* Hero hides the dots (title carries the context); base shows them. */}
+            {!botVoiced && <StepDots step={step} />}
+          </div>
+          {/* The provider (engine) toggle is no longer the hero's lead — it now
+              lives inside Advanced as "Engine" (default Claude). Most users are
+              Claude (two steps); the Codex single-step path only appears once
+              someone deliberately switches engine. */}
         </div>
-        {/* The provider (engine) toggle is no longer the hero's lead — it now
-            lives inside Advanced as "Engine" (default Claude). Most users are
-            Claude (two steps); the Codex single-step path only appears once
-            someone deliberately switches engine. */}
-      </div>
+      )}
 
       <div className="relative overflow-hidden">
         <AnimatePresence mode="wait" initial={false}>
@@ -683,7 +690,7 @@ function DescribeStep(props: {
           rows={3}
           placeholder={
             botVoiced
-              ? 'Research the top options and write me a short summary.'
+              ? 'Research a topic and summarize the best sources.'
               : 'Review my PRs and post a summary to Slack.'
           }
           className="w-full resize-y rounded-xl border border-input bg-transparent px-3 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
@@ -692,13 +699,26 @@ function DescribeStep(props: {
           Describe the job in a sentence — you can refine everything later.
         </p>
         {!goal.trim() && (
-          <div className="flex flex-wrap gap-1.5">
+          // Hero: a single-row horizontal scroller so the example jobs sit
+          // side-by-side and swipe on mobile (no-wrap + overflow-x-auto; the
+          // mobile target's overlay scrollbars auto-hide). Base flow keeps the
+          // wrapping cloud, byte-identical.
+          <div
+            className={
+              botVoiced
+                ? 'flex flex-nowrap gap-1.5 overflow-x-auto'
+                : 'flex flex-wrap gap-1.5'
+            }
+          >
             {GOAL_EXAMPLES.map((ex) => (
               <button
                 key={ex}
                 type="button"
                 onClick={() => setGoal(ex)}
-                className="rounded-full border border-border bg-muted/40 px-3 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                  'rounded-full border border-border bg-muted/40 px-3 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  botVoiced && 'shrink-0 whitespace-nowrap',
+                )}
               >
                 {ex.replace(/\.$/, '')}
               </button>
@@ -707,12 +727,15 @@ function DescribeStep(props: {
         )}
       </div>
 
-      {/* Identity — avatar (TAP to shuffle) + a plain-English caption, one row.
-          The Role and Name inputs, the folder slug, and the labelled "Reroll"
-          button all moved out: the name is auto-drafted (never blocks hiring),
-          the server owns the dir in a company, and the avatar itself is now the
-          shuffle affordance. Role + a Name override live in Advanced. */}
-      <div className="flex items-center gap-3">
+      {/* Identity — avatar (TAP to shuffle) + name, one row. In the hero
+          (botVoiced) `order-first` lifts this whole row to the TOP of the flex
+          column (above the goal) and the name is an inline EDITABLE input — the
+          single name field for the hire, auto-drafted from the goal but
+          overridable here (`onNameChange` flips `nameTouched` upstream). The
+          base flow keeps its caption-only row in its original position below the
+          goal, byte-identical (no `order`, unchanged inner DOM). The avatar is
+          the shuffle affordance; the company/HQ caption sits beneath. */}
+      <div className={cn('flex items-center gap-3', botVoiced && 'order-first')}>
         <button
           type="button"
           onClick={onReroll}
@@ -729,14 +752,31 @@ function DescribeStep(props: {
             label={null}
           />
         </button>
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-semibold text-foreground">
-            {nameValue || 'New teammate'}
-          </span>
-          <span className="truncate text-[12px] text-muted-foreground">
-            {companyLabel ? `Works in ${companyLabel}` : 'Tap the avatar to reroll'}
-          </span>
-        </div>
+        {botVoiced ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <Input
+              value={nameValue}
+              onChange={(e) => onNameChange(e.target.value)}
+              aria-label="Name"
+              placeholder="Name"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-9 text-sm font-semibold"
+            />
+            <span className="truncate text-[12px] text-muted-foreground">
+              {companyLabel ? `Works in ${companyLabel}` : 'Tap the avatar to reroll'}
+            </span>
+          </div>
+        ) : (
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate text-sm font-semibold text-foreground">
+              {nameValue || 'New teammate'}
+            </span>
+            <span className="truncate text-[12px] text-muted-foreground">
+              {companyLabel ? `Works in ${companyLabel}` : 'Tap the avatar to reroll'}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Advanced — everything infra, tucked; animated disclosure w/ aria-expanded. */}
@@ -795,20 +835,25 @@ function DescribeStep(props: {
                   />
                 </Field>
 
-                <Field
-                  label="Name"
-                  htmlFor="ns-name"
-                  hint="Auto-drafted from the goal — override it here if you like."
-                >
-                  <Input
-                    id="ns-name"
-                    value={nameValue}
-                    onChange={(e) => onNameChange(e.target.value)}
-                    placeholder="my-bot"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </Field>
+                {/* Base flow keeps the Name override here. In the hero the
+                    name is the editable field at the TOP (next to the avatar),
+                    so there is exactly ONE name input — this one is omitted. */}
+                {!botVoiced && (
+                  <Field
+                    label="Name"
+                    htmlFor="ns-name"
+                    hint="Auto-drafted from the goal — override it here if you like."
+                  >
+                    <Input
+                      id="ns-name"
+                      value={nameValue}
+                      onChange={(e) => onNameChange(e.target.value)}
+                      placeholder="my-bot"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                )}
 
                 <Field label="Model" htmlFor="ns-model">
                   <CreateModelPicker provider={provider} value={props.model} onChange={props.setModel} />
