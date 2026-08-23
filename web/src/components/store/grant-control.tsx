@@ -27,6 +27,7 @@ export function GrantControl({
   onGranted,
   onRevoked,
   compact,
+  accountRef,
 }: {
   connectorId: string
   /** The bot this control grants to. `null` = library view (only All agents). */
@@ -36,6 +37,11 @@ export function GrantControl({
   onGranted?: (target: string, restartHint: boolean) => void
   onRevoked?: (target: string) => void
   compact?: boolean
+  /** Multi-account (Installed detail): pin grants to THIS account. When set, a
+   *  grant routes through the account-aware `reconnect` path so the server binds
+   *  the account's KEPT secret (the plain grant can't — the client never sees a
+   *  secret_ref). Absent everywhere else, so the legacy behaviour is unchanged. */
+  accountRef?: string | null
 }) {
   const actions = useConnectorActions()
   const [busy, setBusy] = React.useState<'bot' | 'company' | 'all' | 'revoke' | null>(null)
@@ -56,7 +62,11 @@ export function GrantControl({
     if (!target) return
     setBusy(which)
     try {
-      const restart = await actions.grant(connectorId, target)
+      // Account-aware grant rides `reconnect` (server reuses the account's kept
+      // secret); the legacy grant is used only when no account is in scope.
+      const restart = accountRef
+        ? await actions.reconnect(connectorId, accountRef, target)
+        : await actions.grant(connectorId, target)
       onGranted?.(target, restart)
     } finally {
       setBusy(null)

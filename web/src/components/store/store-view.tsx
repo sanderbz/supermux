@@ -29,7 +29,19 @@ import { ConnectorCard, OfficialBadge, StateChip, chipFor } from './connector-ca
 import { ConnectorDetail } from './connector-detail'
 import { ConnectorIcon } from './connector-icon'
 import type { GrantScope } from './grant-control'
+// The Installed tab's body — one row per connected account, plus the per-account
+// detail (grants + consumers + reconnect/replace/disconnect/uninstall). Imported
+// into THIS already-lazy `store-view` chunk (the `/store` route + the bot sheet
+// both `React.lazy` it), so the whole surface stays OFF the cold hero path without
+// adding a second chunk's preload wiring to the entry map.
+import { InstalledPanel } from './installed-panel'
 import './store.css'
+
+type StoreTab = 'browse' | 'installed'
+const STORE_TABS: { key: StoreTab; label: string }[] = [
+  { key: 'browse', label: 'Browse' },
+  { key: 'installed', label: 'Installed' },
+]
 
 export interface StoreViewProps {
   /** The active grant scope: a bot slug, `*`, or `null` (library view). */
@@ -69,6 +81,11 @@ export function StoreView({
   const [q, setQ] = React.useState('')
   const [cat, setCat] = React.useState('all')
   const [openId, setOpenId] = React.useState<string | null>(initialOpenId ?? null)
+  // Browse | Installed — a tab on the SAME `/store` route (DRY, one nav slot).
+  // Only offered on the page variant (the library `/store`); the bot-scoped sheet
+  // is already a working "installed for this bot" list and keeps its single view.
+  const [tab, setTab] = React.useState<StoreTab>('browse')
+  const showTabs = variant === 'page' && !botName
 
   const live = useConnectors(mock ? { source: 'local' } : {})
   const cards: Card[] = mock ?? live.data ?? []
@@ -157,6 +174,14 @@ export function StoreView({
     })
   }, [cards, q, cat, featuredIds])
 
+  // The Installed tab consumes the SAME grid query — local (installed) rows carry
+  // their connected `accounts`. Filtering here means no second fetch.
+  const localCards = React.useMemo(() => cards.filter((c) => c.source === 'local'), [cards])
+  const installedCount = React.useMemo(
+    () => localCards.reduce((n, c) => n + Math.max(1, c.accounts?.length ?? 0), 0),
+    [localCards],
+  )
+
   const openCard = cards.find((c) => c.id === openId) ?? null
   const isRow = variant === 'sheet'
 
@@ -178,29 +203,111 @@ export function StoreView({
           <SearchBox value={q} onChange={setQ} />
         </div>
 
-        {/* category chips */}
-        <div className="cs-chips -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
-          {CATEGORIES.map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              onClick={() => setCat(c.key)}
-              aria-pressed={cat === c.key}
-              className={cn(
-                'shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-[transform,color,background-color] duration-100 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                cat === c.key
-                  ? 'bg-foreground text-background'
-                  : 'bg-secondary text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
+        {/* Browse | Installed tablist (page variant only) — the bot-panel WAI-ARIA
+            tab idiom verbatim: roving tabindex, arrow-key movement, active underline. */}
+        {showTabs && <StoreTabs tab={tab} onTab={setTab} installedCount={installedCount} />}
+
+        {/* category chips — Browse only (the Installed list has no categories) */}
+        {(!showTabs || tab === 'browse') && (
+          <div className="cs-chips -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => setCat(c.key)}
+                aria-pressed={cat === c.key}
+                className={cn(
+                  'shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-[transform,color,background-color] duration-100 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  cat === c.key
+                    ? 'bg-foreground text-background'
+                    : 'bg-secondary text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-1 sm:px-6">
-        {/* featured — a filling responsive shelf at rest (no search, All/Featured).
+        {showTabs && tab === 'installed' ? (
+          <div role="tabpanel" id="store-tabpanel-installed" aria-labelledby="store-tab-installed" className="pt-2">
+            <InstalledPanel cards={localCards} q={q} />
+          </div>
+        ) : (
+          <BrowseBody
+            railVisible={railVisible}
+            featured={featured}
+            grantedFor={grantedFor}
+            botName={botName}
+            live={live}
+            mock={mock}
+            filtered={filtered}
+            isRow={isRow}
+            q={q}
+            setOpenId={setOpenId}
+          />
+        )}
+      </div>
+
+      {/* detail sheet (Browse) */}
+      {openCard && (
+        <ResponsiveSheet
+          open={!!openId}
+          onOpenChange={(o) => !o && setOpenId(null)}
+          title={openCard.display_name}
+          description={botName ? `For ${botName}` : 'Connector'}
+          contentTheme={detailTheme}
+        >
+          {/* `detailTheme` (bench only) stamps the sheet shell via `contentTheme`; the
+              `[data-grok]` skin here resolves against that `[data-theme='…']` root
+              (grok-mode's `[data-theme='…'] [data-grok]` rules). Production leaves
+              `detailTheme` undefined and the portal inherits the global theme. */}
+          <div data-grok>
+            <ConnectorDetail
+              card={openCard}
+              installed={openCard.source === 'local'}
+              granted={grantedFor(openCard.id)}
+              grantTarget={grantTarget}
+              onDone={() => setOpenId(null)}
+              botsOverride={mockBots}
+            />
+          </div>
+        </ResponsiveSheet>
+      )}
+    </div>
+  )
+}
+
+// The Browse tab body — the featured shelf + the catalog grid. Extracted so the
+// tab swap in `StoreView` reads as one branch; every piece is unchanged.
+function BrowseBody({
+  railVisible,
+  featured,
+  grantedFor,
+  botName,
+  live,
+  mock,
+  filtered,
+  isRow,
+  q,
+  setOpenId,
+}: {
+  railVisible: boolean
+  featured: Card[]
+  grantedFor: (id: string) => GrantScope
+  botName: string | null
+  live: { isLoading: boolean }
+  mock: Card[] | undefined
+  filtered: Card[]
+  isRow: boolean
+  q: string
+  setOpenId: (id: string) => void
+}) {
+  return (
+    <>
+      {/* featured — a filling responsive shelf at rest (no search, All/Featured).
             A grid, not a fixed-width scroll rail, so a short curated set never
             leaves a dead void on wide desktops (blocker H1). */}
         {railVisible && featured.length > 0 && (
@@ -247,33 +354,65 @@ export function StoreView({
             ))}
           </div>
         )}
-      </div>
+    </>
+  )
+}
 
-      {/* detail sheet */}
-      {openCard && (
-        <ResponsiveSheet
-          open={!!openId}
-          onOpenChange={(o) => !o && setOpenId(null)}
-          title={openCard.display_name}
-          description={botName ? `For ${botName}` : 'Connector'}
-          contentTheme={detailTheme}
+// The Browse | Installed tab bar — the bot-panel WAI-ARIA tab idiom verbatim
+// (`role="tablist"` + `role="tab"`, roving tabindex, arrow-key movement, the
+// active underline). One route, two views; DRY with the roster's tabs.
+function StoreTabs({
+  tab,
+  onTab,
+  installedCount,
+}: {
+  tab: StoreTab
+  onTab: (t: StoreTab) => void
+  installedCount: number
+}) {
+  return (
+    <div role="tablist" aria-label="Store view" className="-mb-px flex items-center gap-1">
+      {STORE_TABS.map((t, ti) => (
+        <button
+          key={t.key}
+          type="button"
+          role="tab"
+          id={`store-tab-${t.key}`}
+          aria-selected={tab === t.key}
+          aria-controls={t.key === 'installed' ? 'store-tabpanel-installed' : undefined}
+          tabIndex={tab === t.key ? 0 : -1}
+          data-vr="store-tab"
+          data-vr-tab={t.key}
+          onClick={() => onTab(t.key)}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+            e.preventDefault()
+            const next =
+              e.key === 'ArrowRight'
+                ? (ti + 1) % STORE_TABS.length
+                : (ti - 1 + STORE_TABS.length) % STORE_TABS.length
+            onTab(STORE_TABS[next].key)
+            e.currentTarget.parentElement
+              ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]
+              ?.focus()
+          }}
+          className={cn(
+            'relative min-h-10 px-3 text-[14px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            tab === t.key
+              ? 'text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
         >
-          {/* `detailTheme` (bench only) stamps the sheet shell via `contentTheme`; the
-              `[data-grok]` skin here resolves against that `[data-theme='…']` root
-              (grok-mode's `[data-theme='…'] [data-grok]` rules). Production leaves
-              `detailTheme` undefined and the portal inherits the global theme. */}
-          <div data-grok>
-            <ConnectorDetail
-              card={openCard}
-              installed={openCard.source === 'local'}
-              granted={grantedFor(openCard.id)}
-              grantTarget={grantTarget}
-              onDone={() => setOpenId(null)}
-              botsOverride={mockBots}
-            />
-          </div>
-        </ResponsiveSheet>
-      )}
+          <span className="inline-flex items-center gap-1.5">
+            {t.label}
+            {t.key === 'installed' && installedCount > 0 && (
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-secondary px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground">
+                {installedCount}
+              </span>
+            )}
+          </span>
+        </button>
+      ))}
     </div>
   )
 }

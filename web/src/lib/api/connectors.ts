@@ -31,6 +31,11 @@ export interface CredentialField {
   sensitive?: boolean
   required?: boolean
   default?: unknown
+  /** This NON-secret field's value doubles as the connected-account label (e.g.
+   *  `ICLOUD_EMAIL` → `sander@icloud.com`). The server derives the account_label
+   *  from it when no explicit label is sent. A `sensitive` field is never treated
+   *  as identity (secret hygiene), even if mis-flagged. */
+  identity?: boolean
 }
 
 /** Connector kind (mirrors `connectors.kind`). */
@@ -39,6 +44,35 @@ export type ConnectorKind =
   | 'agent_authored'
   | 'builtin_browser'
   | string
+
+/** The single-chip summary of an account's grants (server `grant_level`). The
+ *  broadest tier wins: `all` > a lone `company`/`bot` > same-company > `bots`
+ *  ("N agents"). `none` = the account exists but feeds no visible grant. */
+export interface GrantLevel {
+  scope: 'all' | 'company' | 'bot' | 'bots' | 'none'
+  label: string
+  count: number
+  /** Present when `scope === 'company'` (drives the `CompanyMark` hue lookup). */
+  company_id?: number | null
+}
+
+/** A connected ACCOUNT on a local connector (multi-account, migration 0035). Each
+ *  carries its own display identity, lifecycle status, and grant-level summary.
+ *  Secret-free: `has_secret` is a boolean, the sealed value never rides here. A
+ *  member only receives accounts they hold a visible grant for (identity privacy). */
+export interface ConnectorAccount {
+  /** The `account_ref` — the stable id grants and lifecycle verbs reference. */
+  id: string
+  /** Cleartext, display-only (e.g. `sander@acme.com`). NON-secret by construction. */
+  account_label: string
+  /** `active` | `disconnected` (secret kept for one-tap reconnect). */
+  status: 'active' | 'disconnected' | string
+  has_secret: boolean
+  last_used_at: number
+  /** `null` | `ok` | `expired` | `error` (passive freshness, migration 0036). */
+  health: string | null
+  grant_level: GrantLevel
+}
 
 /** A store card — secret-free by construction. Local rows carry a subset;
  *  catalog rows add `tool_count`, `featured`, `categories`, popularity. */
@@ -70,12 +104,36 @@ export interface ConnectorCard {
   hook?: string
   categories?: string[]
   created_at?: string
+  /** Local (installed) rows only: the connected accounts, each with its own
+   *  identity + status + grant-level. Empty/absent for a catalog card and for an
+   *  installed-but-never-connected connector (built-in browser, etc). */
+  accounts?: ConnectorAccount[]
+  /** Local rows only: the provenance block (`imported`/`builtin` markers) —
+   *  secret-free (`source_json` never holds a value). Drives the KIND label. */
+  provenance?: Record<string, unknown>
   // Catalog popularity / provenance (optional, all secret-free).
   stars?: number | null
   downloads?: number | null
   homepage_url?: string | null
   source_url?: string | null
   pulsemcp_url?: string | null
+}
+
+/** One CONSUMER of a connector — a resolved grant from `GET /{id}/grants` (the
+ *  blast-radius). Secret-free; `account_label` names which account it feeds. */
+export interface ConnectorConsumer {
+  scope: 'all' | 'company' | 'bot'
+  label: string
+  enabled: boolean
+  has_secret: boolean
+  account_ref: string | null
+  account_label: string | null
+  granted_at: number
+  /** `scope === 'company'`. */
+  company_id?: number | null
+  slug?: string | null
+  /** `scope === 'bot'`. */
+  session_name?: string | null
 }
 
 /** A grant that applies to one session (own or the `*` all-agents sentinel),
@@ -226,6 +284,21 @@ export interface PutCredentialArgs {
   session_name?: string
   /** Reuse this secret_ref (rotation) instead of minting a new one. */
   secret_ref?: string
+  /** The connected-account's NON-secret display identity (e.g. `sander@acme.com`).
+   *  When omitted, the server derives it from the connector's `identity:true`
+   *  credential field. A new label mints a new account; re-using one updates it. */
+  account_label?: string
+  /** REPLACE an existing account in place — swap its identity/secret while keeping
+   *  every grant wired (the safe key-rotation path). */
+  account_ref?: string
+}
+
+interface AccountMutationResponse {
+  ok: boolean
+  id?: string
+  account_ref?: string
+  status?: string
+  restartHint?: boolean
 }
 
 /** `POST /api/connectors/{id}/credential` — seal a credential into the vault
@@ -245,6 +318,9 @@ export interface GrantArgs {
   /** Session slug, or `*` / `"all"` for every agent. */
   session_name: string
   secret_ref?: string
+  /** Pin which account this grant feeds (multi-account). Absent = the legacy path
+   *  (a re-grant KEEPS whatever account the row already had). */
+  account_ref?: string
   enabled?: boolean
 }
 
@@ -279,6 +355,44 @@ export async function sessionConnectors(
     `/api/sessions/${enc(name)}/connectors`,
   )
   return r.connectors ?? []
+}
+
+/** `GET /api/connectors/{id}/grants` — the CONSUMERS of a connector (blast-radius):
+ *  every grant resolved to its scope + the account it feeds. Member-filtered
+ *  server-side. Secret-free. */
+export async function connectorGrants(id: string): Promise<ConnectorConsumer[]> {
+  const r = await settingsRequest<{ connector_id: string; grants: ConnectorConsumer[] }>(
+    `/api/connectors/${enc(id)}/grants`,
+  )
+  return r.grants ?? []
+}
+
+/** `POST /api/connectors/{id}/disconnect` — revoke every grant an account feeds
+ *  but KEEP the sealed secret + the account row (status → `disconnected`) so a
+ *  reconnect is one tap. Owner/admin-only. */
+export async function disconnectAccount(
+  id: string,
+  accountRef: string,
+): Promise<AccountMutationResponse> {
+  return settingsRequest<AccountMutationResponse>(`/api/connectors/${enc(id)}/disconnect`, {
+    method: 'POST',
+    body: JSON.stringify({ account_ref: accountRef }),
+  })
+}
+
+/** `POST /api/connectors/{id}/reconnect` — flip a disconnected account back to
+ *  `active` and (optionally) re-grant it to a session/scope, REUSING the kept
+ *  secret (no re-entry). Owner/admin-only. This is the account-aware grant path:
+ *  the server resolves the account's `secret_ref` so the launch path stays wired. */
+export async function reconnectAccount(
+  id: string,
+  accountRef: string,
+  sessionName?: string,
+): Promise<AccountMutationResponse> {
+  return settingsRequest<AccountMutationResponse>(`/api/connectors/${enc(id)}/reconnect`, {
+    method: 'POST',
+    body: JSON.stringify({ account_ref: accountRef, session_name: sessionName }),
+  })
 }
 
 // ── derived helpers (pure, shared by the UI) ──────────────────────────────────

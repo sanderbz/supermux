@@ -1092,18 +1092,35 @@ function useDevMockSeed() {
     void Promise.all([
       import('@/components/session-tile/mock'),
       import('@/routes/dev-teams.fixture'),
-    ]).then(([{ MOCK_TILES, MOCK_COMPANIES }, { MOCK_TEAMS, MOCK_LEAD_SESSIONS }]) => {
-      if (!alive) return
-      qc.setQueryData(SESSIONS_KEY, [
-        ...(MOCK_TILES as ApiSession[]),
-        ...MOCK_LEAD_SESSIONS,
-      ])
-      qc.setQueryData(TEAMS_KEY, MOCK_TEAMS)
-      // Companies (Bot Mode): seed the switcher's ['companies'] cache so the
-      // HQ/company switcher + scoping are exercisable at `/?mock` offline. The
-      // hook disables its live fetch under `?mock`, so this seed is the source.
-      qc.setQueryData(COMPANIES_KEY, MOCK_COMPANIES)
-    })
+      import('@/components/store/mock'),
+    ]).then(
+      ([
+        { MOCK_TILES, MOCK_COMPANIES },
+        { MOCK_TEAMS, MOCK_LEAD_SESSIONS },
+        { MOCK_STORE_CARDS, MOCK_CONNECTOR_CONSUMERS },
+      ]) => {
+        if (!alive) return
+        qc.setQueryData(SESSIONS_KEY, [
+          ...(MOCK_TILES as ApiSession[]),
+          ...MOCK_LEAD_SESSIONS,
+        ])
+        qc.setQueryData(TEAMS_KEY, MOCK_TEAMS)
+        // Companies (Bot Mode): seed the switcher's ['companies'] cache so the
+        // HQ/company switcher + scoping are exercisable at `/?mock` offline. The
+        // hook disables its live fetch under `?mock`, so this seed is the source.
+        qc.setQueryData(COMPANIES_KEY, MOCK_COMPANIES)
+        // Connector store: seed the merged grid (local rows carry their connected
+        // `accounts`) + each connector's consumers, so `/store → Installed` and its
+        // per-account detail render offline. Fresh seed → the live fetch stays put.
+        // Keys inlined (mirroring `connectors-store`'s `connectorsKey`/
+        // `connectorGrantsKey`) to keep the heavy store module OFF the entry chunk —
+        // this whole block is `import.meta.env.DEV`-gated and tree-shakes from prod.
+        qc.setQueryData(['connectors', {}], MOCK_STORE_CARDS)
+        for (const [id, consumers] of Object.entries(MOCK_CONNECTOR_CONSUMERS)) {
+          qc.setQueryData(['connector-grants', id], consumers)
+        }
+      },
+    )
     return () => {
       alive = false
     }

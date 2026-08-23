@@ -22,9 +22,35 @@ const DIST_ROOT = join(import.meta.dirname, '..', 'dist')
 const DIST = join(DIST_ROOT, 'assets')
 
 // Budgets in bytes (gzipped).
-// HERO-PATH gate (new, strict): the ENTRY chunk is what every cold load pays
-// before anything renders — hold it tight (~6% headroom over today's 151 KB).
-const BUDGET_ENTRY_JS = 160 * KB
+// HERO-PATH gate (strict): the ENTRY chunk is what every cold load pays before
+// anything renders — hold it tight.
+//
+// 160 → 161 at the connector-store Installed tab (feat/companies-grok, slice 2).
+// This is the FIRST time this gate has moved, and it is a RE-BASELINE, not a
+// hero-path spend — documented in full because the entry gate is the one this
+// ledger guards hardest:
+//   • The branch parent was parked at EXACTLY 160.00/160.00 (100%, ~1 byte of
+//     headroom): the entry chunk drifted up from the companies-wizard fase's
+//     156.40 across the intervening chat/companies commits WITHOUT a ledger
+//     update, so it had silently become a tripwire the next web change of ANY
+//     kind would trip.
+//   • This slice's hero-path CODE cost is ZERO. Every symbol it adds — the
+//     Installed tab, the per-account rows, the detail, the consumers /
+//     disconnect / reconnect endpoints — lands in the LAZY `store-view` chunk or
+//     the separate `connectors` / `grant-control` chunks; `grep` finds NONE of it
+//     in `index-*.js`.
+//   • The +0.09 KB is chunk-hash gzip churn: editing `store-view` (the tab lives
+//     there) and `connectors` (the client) re-rolls their content-hash filenames,
+//     which the entry chunk embeds in its import/preload map — the exact ±tens-
+//     of-bytes perturbation the "297" entry below documents for a CSS hash
+//     re-roll. Rearranging the code (a second lazy chunk; the endpoints in the
+//     store vs the client) moved it between 160.09 and 160.18; 160.09 is the floor.
+// Per this file's OWN policy (the "220" entry: "a gate nobody can pass without
+// first raising it is not enforcing anything ... tracking it with the measurement
+// attached is the point"), the honest fix is ceil(measured)=161 with the
+// measurement here — not clawing 92 unrelated bytes off the hero path. It is still
+// the tightest gate in this file and still guards first paint (now 160.09/161).
+const BUDGET_ENTRY_JS = 161 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
@@ -851,7 +877,27 @@ const BUDGET_ENTRY_JS = 160 * KB
 // switcher's "Invite to <company>" trigger) and the DEV mock is dynamic-imported
 // behind the `?mock` guard — so the ENTRY gate, the one that guards cold load,
 // stays green at 156.40/160 (98%), unmoved by this fase.
-const BUDGET_APP_JS = 321 * KB
+// 321 → 324 at the connector-store Installed tab (feat/companies-grok, slice 2):
+// the Browse|Installed tablist on `/store`, one row PER CONNECTED ACCOUNT (multi-
+// account — a connector with 2 accounts shows 2 rows), and the per-account detail
+// (grants via the shared GrantControl, the consumers blast-radius, reconnect /
+// replace-account / disconnect / uninstall, add-account). Measured 323.95 against
+// 320.04 for the branch parent — +3.91 KB, ALL of it OFF the hero path (the entry
+// gate's +0.09 is hash churn, see BUDGET_ENTRY_JS above):
+//   +~3.4 KB  `store/installed-panel` — the whole Installed surface, IMPORTED INTO
+//             the already-lazy `store-view` chunk (not a second chunk: folding it
+//             in avoids adding a chunk's preload wiring to the entry map). The
+//             list, the per-account row (status + grant-level chips), and the
+//             detail sheet (account block + the lifecycle verbs + the account-aware
+//             GrantControl + the consumers list + the add/replace credential form).
+//   +~0.5 KB  the `connectors` client + `connectors-store` additions (the consumers
+//             read, the disconnect/reconnect verbs, `useConnectorGrants`, the
+//             account-aware grant routing threaded through `grant-control`) — on
+//             the store / grant-control chunks, reached only under the store route.
+// A genuine additive feature — the owner's flagship multi-account surface, not a
+// regression to trim: ceil(measured)=324, the same rule every fase since B3 used.
+// The `/?mock` seed is DEV-gated + dynamic-imported (tree-shaken from prod).
+const BUDGET_APP_JS = 324 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

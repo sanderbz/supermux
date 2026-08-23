@@ -680,7 +680,7 @@ function GrantOption({
   )
 }
 
-function PlainField({
+export function PlainField({
   field,
   value,
   onChange,
@@ -712,7 +712,7 @@ function defaultStr(f: CredentialField): string {
   return typeof f.default === 'string' ? f.default : String(f.default)
 }
 
-function kindLabel(kind: string): string {
+export function kindLabel(kind: string): string {
   if (kind === 'mcp_catalog') return 'Catalog'
   if (kind === 'agent_authored') return 'Agent-authored'
   if (kind === 'builtin_browser') return 'Built-in'

@@ -28,10 +28,14 @@ import {
   sessionConnectors,
   upsertConnector,
   type ConnectorCard,
+  type ConnectorConsumer,
   type ListParams,
   type Manifest,
   type PutCredentialArgs,
   type SessionConnector,
+  connectorGrants as apiConnectorGrants,
+  disconnectAccount as apiDisconnect,
+  reconnectAccount as apiReconnect,
 } from '@/lib/api/connectors'
 import { ApiError } from '@/lib/api/client'
 import { useToast } from '@/components/ui/use-toast'
@@ -44,6 +48,8 @@ export const connectorsKey = (params: ListParams = {}) =>
 export const sessionConnectorsKey = (name: string) =>
   ['session-connectors', name] as const
 export const connectorKey = (id: string) => ['connector', id] as const
+export const connectorGrantsKey = (id: string) =>
+  ['connector-grants', id] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
@@ -79,6 +85,18 @@ export function useConnector(id: string | null | undefined) {
   })
 }
 
+/** The CONSUMERS of one connector (its grants' blast-radius) — powers the
+ *  Installed detail's "Used by" list. Member-filtered server-side. */
+export function useConnectorGrants(id: string | null | undefined) {
+  return useQuery<ConnectorConsumer[]>({
+    queryKey: connectorGrantsKey(id ?? ''),
+    queryFn: () => apiConnectorGrants(id as string),
+    enabled: !!id,
+    staleTime: 15_000,
+    retry: (count, err) => !(err instanceof ApiError) && count < 2,
+  })
+}
+
 // ── mutation verbs ────────────────────────────────────────────────────────────
 
 export interface ConnectorActions {
@@ -86,10 +104,18 @@ export interface ConnectorActions {
   /** Install a catalog card into the local registry (idempotent upsert). Returns
    *  the stored id. */
   install: (manifest: Manifest) => Promise<string>
-  /** Grant a connector to one session or `*`. Resolves `restartHint`. */
-  grant: (id: string, sessionName: string, secretRef?: string) => Promise<boolean>
+  /** Grant a connector to one session or `*`. Resolves `restartHint`. Pass
+   *  `accountRef` to pin which account the grant feeds (multi-account). */
+  grant: (id: string, sessionName: string, secretRef?: string, accountRef?: string) => Promise<boolean>
   /** Revoke a grant from one session. Resolves `restartHint`. */
   revoke: (id: string, sessionName: string) => Promise<boolean>
+  /** Disconnect an account — revoke every grant it feeds but KEEP the sealed
+   *  secret + the account row (status → disconnected) for one-tap reconnect. */
+  disconnect: (id: string, accountRef: string) => Promise<boolean>
+  /** Reconnect / re-grant an account reusing its KEPT secret (server resolves the
+   *  secret_ref, so this is the account-aware grant path). Flips it back to active
+   *  and, with a session, re-grants that scope. Resolves `restartHint`. */
+  reconnect: (id: string, accountRef: string, sessionName?: string) => Promise<boolean>
   /** Flip a grant's `enabled` flag WITHOUT dropping the grant row — an at-a-glance
    *  enable/disable that survives a re-enable (revoke would forget it). Re-grants
    *  to the same session with the new flag. Resolves `restartHint`. */
@@ -109,6 +135,9 @@ export function useConnectorActions(): ConnectorActions {
     (sessionName?: string) => {
       void qc.invalidateQueries({ queryKey: CONNECTORS_KEY })
       void qc.invalidateQueries({ queryKey: ['session-connectors'] })
+      // The Installed tab's per-account rows + the detail's consumers ride the
+      // grid + the grants route — refresh both so a grant/disconnect lands live.
+      void qc.invalidateQueries({ queryKey: ['connector-grants'] })
       if (sessionName) {
         void qc.invalidateQueries({ queryKey: sessionConnectorsKey(sessionName) })
       }
@@ -124,11 +153,30 @@ export function useConnectorActions(): ConnectorActions {
   })
 
   const grantM = useMutation({
-    mutationFn: (v: { id: string; sessionName: string; secretRef?: string }) =>
-      apiGrant(v.id, { session_name: v.sessionName, secret_ref: v.secretRef }),
+    mutationFn: (v: { id: string; sessionName: string; secretRef?: string; accountRef?: string }) =>
+      apiGrant(v.id, {
+        session_name: v.sessionName,
+        secret_ref: v.secretRef,
+        account_ref: v.accountRef,
+      }),
     onSuccess: (_r, v) => invalidateAll(v.sessionName),
     onError: (e: unknown) =>
       toast({ message: `Grant failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const disconnectM = useMutation({
+    mutationFn: (v: { id: string; accountRef: string }) => apiDisconnect(v.id, v.accountRef),
+    onSuccess: () => invalidateAll(),
+    onError: (e: unknown) =>
+      toast({ message: `Disconnect failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
+  const reconnectM = useMutation({
+    mutationFn: (v: { id: string; accountRef: string; sessionName?: string }) =>
+      apiReconnect(v.id, v.accountRef, v.sessionName),
+    onSuccess: (_r, v) => invalidateAll(v.sessionName),
+    onError: (e: unknown) =>
+      toast({ message: `Couldn't reconnect — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
   })
 
   const revokeM = useMutation({
@@ -168,17 +216,27 @@ export function useConnectorActions(): ConnectorActions {
     revokeM.isPending ||
     enableM.isPending ||
     credM.isPending ||
-    removeM.isPending
+    removeM.isPending ||
+    disconnectM.isPending ||
+    reconnectM.isPending
 
   return {
     pending,
     install: (m) => install.mutateAsync(m),
-    grant: async (id, sessionName, secretRef) => {
-      const r = await grantM.mutateAsync({ id, sessionName, secretRef })
+    grant: async (id, sessionName, secretRef, accountRef) => {
+      const r = await grantM.mutateAsync({ id, sessionName, secretRef, accountRef })
       return !!r.restartHint
     },
     revoke: async (id, sessionName) => {
       const r = await revokeM.mutateAsync({ id, sessionName })
+      return !!r.restartHint
+    },
+    disconnect: async (id, accountRef) => {
+      const r = await disconnectM.mutateAsync({ id, accountRef })
+      return !!r.restartHint
+    },
+    reconnect: async (id, accountRef, sessionName) => {
+      const r = await reconnectM.mutateAsync({ id, accountRef, sessionName })
       return !!r.restartHint
     },
     setEnabled: async (id, sessionName, enabled) => {
