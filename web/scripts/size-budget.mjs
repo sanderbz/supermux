@@ -1068,7 +1068,17 @@ const BUDGET_APP_JS = 338 * KB
 // so it could not land without a ratchet; ceil(measured)=33, the same rule the
 // ratchets above use. Grok-scoped + the store utilities: the ENTRY gate is
 // unmoved and green, and the base app off grok matches none of the grok rules.
-const BUDGET_CSS = 33 * KB
+// RATCHETED 33 → 34 by the scroll-away overview header (phone). The header now
+// overlays the list and slides out on a downward read / back on an upward nudge
+// (`useScrollAway` → `[data-head-hidden]`): the phone `.gr-head` gains the overlay
+// (absolute/inset/z-index/opaque bg) + a GPU `transform` transition + `will-change`,
+// and `.gr-list` gains the scroll-content clearance (`--gr-head-h` padding-top) so
+// hiding never reflows. Measured 33.03 against 32.98 for the base at this branch
+// head — +0.05 KB. The base was already at 32.98/33 (100%), so it could not land
+// without a ratchet; ceil(measured)=34, the same rule the ratchets above use.
+// Phone-scoped + grok-scoped: the ENTRY gate is unmoved and green (157.10/161),
+// desktop keeps its static header, and the base app off grok matches none of it.
+const BUDGET_CSS = 34 * KB
 
 function gzipSize(path) {
   return gzipSync(readFileSync(path), { level: 9 }).length

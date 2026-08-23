@@ -44,6 +44,7 @@ import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import { restSessionInput } from '@/lib/session-input'
 import { useLongPress } from '@/hooks/use-long-press'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { useScrollAway } from '@/hooks/use-scroll-away'
 import { SessionActionsMenu } from '@/components/session-tile/session-actions-menu'
 import { isRowMenuKey, requestRowMenu } from '@/components/session-tile/row-menu-bus'
 import type { TileSession } from '@/components/session-tile/types'
@@ -912,6 +913,46 @@ export default function GrokRoster() {
     onScroll()
   }, [onScroll, sorted, density])
 
+  // ── Scroll-away header (the iOS "chrome that slides out of the way") ─────────
+  // The header overlays the top of the list (absolute in CSS); the list content
+  // carries the clearance so hiding leaves NO gap — the rows fill straight to the
+  // top once the header slides off. We measure the header's live height into
+  // `--gr-head-h` (it wraps to ~3 bands on a phone, one bar on desktop) so both
+  // the clearance and the "always shown near the top" anchor track it exactly.
+  const headRef = React.useRef<HTMLElement>(null)
+  const [headH, setHeadH] = React.useState(0)
+  React.useEffect(() => {
+    const el = headRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setHeadH(el.offsetHeight))
+    ro.observe(el)
+    setHeadH(el.offsetHeight)
+    return () => ro.disconnect()
+  }, [])
+  // Phone-only affordance: the desktop two-pane keeps its static header (a
+  // scroll-away over the rail would strand the fixed detail pane), matching the
+  // CSS, which scopes the overlay + transform to `(max-width: 767px)`.
+  const isPhone = useMediaQuery('(max-width: 767px)')
+  const {
+    hidden: headHiddenRaw,
+    onScroll: onScrollAway,
+    reveal: revealHead,
+  } = useScrollAway(listRef, {
+    downThreshold: 10,
+    upThreshold: 6,
+    topReveal: Math.max(56, headH),
+    disabled: !isPhone,
+  })
+  // Focusing or typing in the search field pins the chrome shown — the header
+  // must never slide away from under an input the user is using.
+  const [searchFocused, setSearchFocused] = React.useState(false)
+  const headHidden = headHiddenRaw && !searchFocused
+  // ONE scroll signal drives both the edge-fade mask and the scroll-away.
+  const handleListScroll = React.useCallback(() => {
+    onScroll()
+    onScrollAway()
+  }, [onScroll, onScrollAway])
+
   const openSession = React.useCallback(
     (s: ApiSession) => {
       attention.markRead(s)
@@ -1012,8 +1053,14 @@ export default function GrokRoster() {
   let rowIndex = 0
 
   return (
-    <div className="grok-roster" data-detail={hasDetail ? '1' : '0'} data-density={density}>
-      <header className="gr-head">
+    <div
+      className="grok-roster"
+      data-detail={hasDetail ? '1' : '0'}
+      data-density={density}
+      data-head-hidden={headHidden ? '' : undefined}
+      style={headH ? ({ '--gr-head-h': `${headH}px` } as React.CSSProperties) : undefined}
+    >
+      <header className="gr-head" ref={headRef}>
         {/* The HQ/company scope chip is the overview TITLE — the leftmost
             identity. The old `.gr-brand` wordmark (a rainbow spark tile + the
             literal "supermux") was dropped: the switcher already renders the
@@ -1055,7 +1102,15 @@ export default function GrokRoster() {
           <input
             type="search"
             value={rawQuery}
-            onChange={(e) => setRawQuery(e.target.value)}
+            onChange={(e) => {
+              setRawQuery(e.target.value)
+              revealHead()
+            }}
+            onFocus={() => {
+              setSearchFocused(true)
+              revealHead()
+            }}
+            onBlur={() => setSearchFocused(false)}
             placeholder="Search bots, tags, last lines…"
             aria-label="Search bots, tags and last lines"
           />
@@ -1156,7 +1211,7 @@ export default function GrokRoster() {
           <div
             className="gr-list"
             ref={listRef}
-            onScroll={onScroll}
+            onScroll={handleListScroll}
             data-fade-top={fade.top ? '' : undefined}
             data-fade-bottom={fade.bottom ? '' : undefined}
           >

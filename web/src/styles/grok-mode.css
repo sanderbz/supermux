@@ -1377,6 +1377,7 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  position: relative; /* containing block for the scroll-away header */
   background: var(--gr-bg);
   color: var(--sm-text-primary);
   font-family: var(--sm-font-sans);
@@ -2585,6 +2586,14 @@
     flex-wrap: wrap;
     /* Row-gap between the three stacked bands (title+actions · count · search). */
     row-gap: 10px;
+    /* Scroll-away (`useScrollAway` → `[data-head-hidden]`): overlay the list;
+       clearance rides on `.gr-list` padding-top, so only a transform moves. */
+    position: absolute;
+    inset: 0 0 auto 0;
+    z-index: 30;
+    background: var(--gr-bg);
+    transition: transform 0.26s ease-out;
+    will-change: transform;
   }
   [data-grok] .grok-roster .gr-seg {
     display: none;
@@ -2633,22 +2642,20 @@
     height: 44px;
   }
 
-  /* ── EDGE-TO-EDGE under the floating nav ──────────────────────────────────
-     With the footer strip gone, the roster runs continuously to the bottom of
-     the window and the translucent floating nav floats OVER it. The shell's
-     generic clearance pads `<main>` bottom (so a page-scrolled route clears the
-     bar), but here the scroller is the roster's own `.gr-list`, not `<main>` —
-     so padding `<main>` would just lift the whole roster off the nav and stop
-     the list at a hard edge (the exact "solid footer" look the owner cut). We
-     zero that padding for the overview and move the clearance onto `.gr-list`
-     instead: the list fills the full height, its content scrolls BEHIND the
-     glass, and the bottom padding lets the last row rise fully clear of the nav.
-     Specificity clears the generic rule (which is (0,4,0)); this is (0,5,0). */
+  /* EDGE-TO-EDGE under the floating nav: the scroller is the roster's own
+     `.gr-list`, not `<main>`, so zero the shell's generic `<main>` bottom pad
+     (which would lift the roster off the nav to a hard edge) and move the
+     clearance onto `.gr-list` instead — content scrolls BEHIND the glass, the
+     last row rises clear. This (0,5,0) rule clears the generic (0,4,0). */
   [data-grok] [data-shell-main]:has([data-shell-tabs]) [data-shell-content]:has(.grok-roster) {
     padding-bottom: 0;
   }
   [data-grok] .grok-roster .gr-list {
+    padding-top: var(--gr-head-h, 132px); /* scroll-away clearance (see .gr-head) */
     padding-bottom: calc(env(safe-area-inset-bottom) + 92px);
+  }
+  [data-grok] .grok-roster[data-head-hidden] .gr-head {
+    transform: translateY(-100%);
   }
 }
 
