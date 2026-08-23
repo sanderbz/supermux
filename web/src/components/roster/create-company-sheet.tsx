@@ -65,13 +65,17 @@ export function CreateCompanySheet({
   const rootDir = slug ? deriveRootDir(slug) : ''
   const canSubmit = slug.length > 0 && rootDir.length > 0 && !create.isPending
 
-  // Reset the field each time the sheet opens fresh.
-  React.useEffect(() => {
+  // Reset the field each time the sheet opens fresh. Done on the open TRANSITION
+  // during render (the "adjust state when a prop changes" pattern) rather than in
+  // an effect — same result, one fewer commit, and no react-hooks/set-state-in-effect.
+  const [wasOpen, setWasOpen] = React.useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) {
       setName('')
       setError(null)
     }
-  }, [open])
+  }
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault()

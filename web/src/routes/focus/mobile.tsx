@@ -605,10 +605,14 @@ export function MobileFocus({ mockSessions, mockTeams, mockName }: MobileFocusPr
   const panelHint = (location.state ?? null) as { openPanel?: boolean; panelTab?: typeof infoTab } | null
   React.useEffect(() => {
     if (panelHint?.openPanel) {
+      // Legitimately an effect: consuming this one-shot router hint pairs the two
+      // setStates with a real side effect — `navigate(..., { state: {} })` clears
+      // the hint so back/forward or a resize can't re-open the panel. It cannot
+      // move to render (navigation during render is illegal), so the
+      // set-state-in-effect here is by design, not the anti-pattern the rule hunts.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setInfoTab(panelHint.panelTab ?? 'overview')
       setInfoOpen(true)
-      // Consume the one-shot hint so a back-and-forward or a resize doesn't
-      // re-open the panel; keep the URL, drop only the state.
       navigate(location.pathname + location.search, { replace: true, state: {} })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

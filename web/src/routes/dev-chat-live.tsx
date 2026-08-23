@@ -381,7 +381,7 @@ function BenchComposer({
   const handle: ComposerHandle = {
     draft,
     setDraft: noop,
-    ref,
+    fieldRef: ref,
     sending: false,
     notice: spec?.notice ?? null,
     dismissNotice: noop,

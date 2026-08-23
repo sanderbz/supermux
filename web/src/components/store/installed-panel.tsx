@@ -437,7 +437,7 @@ function InstalledDetail({
               <span className="truncate text-[12.5px] text-muted-foreground">
                 {account.account_label} · {usedAgo(account.last_used_at)}
               </span>
-              <span className="truncate text-[11.5px] text-muted-foreground/80">{checkedLabel(account)}</span>
+              <span className="truncate text-[11.5px] text-muted-foreground">{checkedLabel(account)}</span>
             </div>
             <StatusChip account={account} kind={authKind} />
           </div>

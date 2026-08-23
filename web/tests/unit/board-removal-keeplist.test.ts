@@ -232,12 +232,17 @@ describe('and the PAGE is really gone', () => {
     expect(app).not.toContain("from '@/routes/board'")
   })
 
-  test('nav is four items, and the deletion keyed on the PATH', () => {
+  test('the board slot is gone from nav, and the deletion keyed on the PATH', () => {
     const layout = read('web/src/components/layout.tsx')
     expect(layout).not.toContain("to: '/board'")
     expect(layout).not.toContain('SquareKanban')
     const navBlock = layout.slice(layout.indexOf('const NAV'), layout.indexOf('/** Tiny notification dot'))
-    expect(navBlock.match(/to: '/g)?.length).toBe(4)
+    // The array is FIVE entries — the base four (Overview / Focus / Files /
+    // Settings) plus the `grokOnly` Connector-store doorway (`/store`, #22) that
+    // this branch added; each rendered nav still filters by mode. What this guard
+    // fixes is that NO entry is the removed board slot (asserted above); the count
+    // just pins the array size so a board slot cannot quietly return.
+    expect(navBlock.match(/to: '/g)?.length).toBe(5)
   })
 
   test('the palette lost its four board verbs and its issue rows', () => {

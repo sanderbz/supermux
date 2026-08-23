@@ -259,10 +259,17 @@ export function PlainEditable({
 }: PlainEditableProps) {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const caret = React.useRef(0)
+  // Latest-callback refs so the mount-time listeners below always call the
+  // CURRENT prop without rebinding. The sync happens in a passive effect (not
+  // during render — react-hooks/refs forbids writing a ref while rendering);
+  // both `.current`s are read only from event handlers that fire after commit,
+  // so an after-render write is on time.
   const onChangeRef = React.useRef(onChange)
-  onChangeRef.current = onChange
   const onSelectRef = React.useRef(onSelect)
-  onSelectRef.current = onSelect
+  React.useEffect(() => {
+    onChangeRef.current = onChange
+    onSelectRef.current = onSelect
+  })
 
   // The node has to answer `value` / `selectionStart` BEFORE anything reads it,
   // and `bindComposerField` (in `use-composer.ts`) publishes the getter in an

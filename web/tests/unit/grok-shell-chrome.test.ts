@@ -65,6 +65,18 @@ function walk(source: string): Decl[] {
 const decls = walk(css)
 const properties = decls.filter((d) => /^[-a-zA-Z]+\s*:/.test(d.text))
 
+/**
+ * The shell COLUMNS that are ancestors of the fixed overlays (palette, tour,
+ * connection, tips), and so must never become a containing block. The mobile
+ * bottom-nav capsule `[data-shell-tabs]` is deliberately NOT in this set: it is
+ * itself `position: fixed` with NO fixed descendants (its children are flow + one
+ * absolute pill/chip), so its own glass blur and the leaf transforms of the
+ * "Liquid Rail" pill glide / icon lift / press-ack are self-contained leaf
+ * effects that make nobody's overlay a wrong containing block — the exact
+ * reasoning documented at grok-mode.css §"CONTAINING-BLOCK CAVEAT". The invariant
+ * still bites every OTHER shell column. */
+const OVERLAY_HOSTING_COLUMN = /\[data-shell-(rail|pane|main|content|root)/
+
 describe('grok mode — one substrate blur, on a leaf pseudo only', () => {
   const blurs = properties.filter((d) =>
     /^-?(webkit-)?backdrop-filter\s*:/.test(d.text),
@@ -110,14 +122,14 @@ describe('grok mode — one substrate blur, on a leaf pseudo only', () => {
     expect(offenders).toEqual([])
   })
 
-  test('the blur is NEVER on a shell column', () => {
+  test('the blur is NEVER on an overlay-hosting shell column', () => {
     const offenders = blurs
-      .filter((d) => d.path.some((p) => /\[data-shell-/.test(p)))
+      .filter((d) => d.path.some((p) => OVERLAY_HOSTING_COLUMN.test(p)))
       .map((d) => d.path.join(' > '))
     expect(offenders).toEqual([])
   })
 
-  test('no other containing-block trigger on a grok shell column', () => {
+  test('no other containing-block trigger on an overlay-hosting shell column', () => {
     // filter / transform / perspective / contain:paint / will-change:transform
     // create the SAME containing block as backdrop-filter.
     const triggers = properties.filter((d) => {
@@ -131,7 +143,7 @@ describe('grok mode — one substrate blur, on a leaf pseudo only', () => {
       return false
     })
     const offenders = triggers
-      .filter((d) => d.path.some((p) => /\[data-shell-/.test(p)))
+      .filter((d) => d.path.some((p) => OVERLAY_HOSTING_COLUMN.test(p)))
       .map((d) => `${d.path.join(' > ')} { ${d.text} }`)
     expect(offenders).toEqual([])
   })

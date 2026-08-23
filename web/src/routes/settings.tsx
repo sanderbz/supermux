@@ -999,18 +999,34 @@ function BuildVersionRow() {
   const shortSha = real ? built.slice(0, 7) : 'dev'
   const [status, setStatus] = React.useState<BuildStatus>(real ? 'checking' : 'unknown')
 
+  const applyServed = React.useCallback(
+    (served: string | null) => {
+      if (served == null) setStatus('unknown')
+      else setStatus(isNewerServedSha(served, built) ? 'stale' : 'latest')
+    },
+    [built],
+  )
+
+  // Manual re-check (the "recheck" button): flips to the spinner, then fetches.
   const check = React.useCallback(() => {
     if (!real) return
     setStatus('checking')
-    void fetchServedSha().then((served) => {
-      if (served == null) setStatus('unknown')
-      else setStatus(isNewerServedSha(served, built) ? 'stale' : 'latest')
-    })
-  }, [real, built])
+    void fetchServedSha().then(applyServed)
+  }, [real, applyServed])
 
+  // Initial fetch. `status` already starts at 'checking' when `real`, so the
+  // effect does the async fetch WITHOUT a synchronous setState (which would trip
+  // react-hooks/set-state-in-effect) — the state settles in the async callback.
   React.useEffect(() => {
-    check()
-  }, [check])
+    if (!real) return
+    let alive = true
+    void fetchServedSha().then((served) => {
+      if (alive) applyServed(served)
+    })
+    return () => {
+      alive = false
+    }
+  }, [real, applyServed])
 
   return (
     <>

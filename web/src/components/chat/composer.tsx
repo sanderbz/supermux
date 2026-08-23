@@ -195,6 +195,26 @@ export function ChatComposer({
   blocked,
   className,
 }: ChatComposerProps) {
+  // Destructure the handle up front. `handle` carries `fieldRef` (a RefObject),
+  // so reading its members as `x` during render trips react-hooks/refs
+  // ("cannot access refs during render") for EVERY field — the rule taints the
+  // whole ref-bearing object. Pulling the fields into locals reads the ref only
+  // where it's meant to be read (the effect below) and keeps render clean.
+  const {
+    draft,
+    fieldRef,
+    picker,
+    insert,
+    handoff,
+    sending,
+    submit,
+    stop,
+    notice,
+    dismissNotice,
+    onChange,
+    onKeyDown,
+    onSelect,
+  } = handle
   const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
   // Fork the add-menu's OPEN SURFACE on input modality, not on the `phone`
@@ -222,18 +242,18 @@ export function ChatComposer({
   // draft-derived (`use-composer.ts`), so it shows regardless — this only keeps
   // the field hot.
   const refocusField = React.useCallback(() => {
-    window.requestAnimationFrame(() => handle.ref.current?.focus())
-  }, [handle.ref])
+    window.requestAnimationFrame(() => fieldRef.current?.focus())
+  }, [fieldRef])
   const onMention = React.useCallback(() => {
     setMenuOpen(false)
-    handle.insert('@')
+    insert('@')
     refocusField()
-  }, [handle, refocusField])
+  }, [insert, refocusField])
   const onSlash = React.useCallback(() => {
     setMenuOpen(false)
-    handle.insert('/')
+    insert('/')
     refocusField()
-  }, [handle, refocusField])
+  }, [insert, refocusField])
   // ── the rest-state mic IS dictation ─────────────────────────────────────────
   // Not decoration: at rest the trailing cell is a real mic that toggles Web
   // Speech through `useDictation` — the SAME hook the dock's mic uses, which
@@ -252,7 +272,6 @@ export function ChatComposer({
   // two paths so a segment can never land twice.
   const pendingTranscriptRef = React.useRef('')
   const sentLenRef = React.useRef(0)
-  const insert = handle.insert
   const dictation = useDictation({
     // Cumulative interim — buffered for the safety-tail flush; never inserted here.
     onTranscript: React.useCallback((text: string) => {
@@ -362,11 +381,10 @@ export function ChatComposer({
   // field's own box (per surface). Re-read on every draft change — the same
   // signal `growTextarea` runs on.
   const [multiline, setMultiline] = React.useState(false)
-  const fieldRef = handle.ref
   React.useEffect(() => {
     const el = fieldRef.current
     setMultiline(!!el && el.scrollHeight > (phone ? 44 : 40))
-  }, [handle.draft, fieldRef, phone])
+  }, [draft, fieldRef, phone])
   const grown = multiline || stagedFiles.length > 0
 
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
@@ -376,23 +394,23 @@ export function ChatComposer({
   // An IMAGE ALONE is a valid message (`hasReady`), and Send WAITS for uploads
   // (`!uploading`): while bytes are in flight the disc shows disabled, the same
   // honest "asked, not yet answered" `handle.sending` already uses.
-  const canSend = (handle.draft.trim().length > 0 || hasReady) && !uploading && !blocked
+  const canSend = (draft.trim().length > 0 || hasReady) && !uploading && !blocked
   // The Send disc is SHOWN (not swapped for the mic) whenever there is anything
   // to send — including while an upload is still settling — so it can present as
   // disabled rather than vanishing. `canSend` is the enabled gate; this is the
   // visibility gate.
   const showSend =
-    (handle.draft.trim().length > 0 || stagedFiles.length > 0) && !blocked
+    (draft.trim().length > 0 || stagedFiles.length > 0) && !blocked
   // WHICH ROW THE POPOVER IS ON (A4 review). The list lives in the picker, but
   // the only element that ever has focus is the textarea — so the textarea is
   // what has to carry `aria-activedescendant`, and the highlight travels up
   // here to be written onto it. −1 = the list has nothing to point at.
   const [activeOption, setActiveOption] = React.useState(-1)
-  const pickerOpen = handle.picker.open
+  const pickerOpen = picker.open
   const pickerProps: EntityPickerProps = {
     name,
-    kind: handle.picker.kind,
-    query: handle.picker.query,
+    kind: picker.kind,
+    query: picker.query,
     surface,
     ...pickerData,
     // The picker hands over the ROW; the composer's insert seam wants the text
@@ -405,8 +423,8 @@ export function ChatComposer({
     // is unreachable; making it a no-op rather than an assertion means a future
     // surface that hands chat a verb row inserts nothing instead of putting the
     // string "undefined" into somebody's message.
-    onPick: (row) => handle.picker.pick(row.value ?? ''),
-    bind: handle.picker.bind,
+    onPick: (row) => picker.pick(row.value ?? ''),
+    bind: picker.bind,
     onActive: setActiveOption,
   }
 
@@ -432,12 +450,12 @@ export function ChatComposer({
         </p>
       )}
       <ComposerBanner
-        notice={handle.notice}
+        notice={notice}
         onOpenTerminal={onOpenTerminal}
-        onDismiss={handle.dismissNotice}
+        onDismiss={dismissNotice}
         reduce={reduce}
       />
-      {handle.picker.open &&
+      {picker.open &&
         (renderPicker ? (
           renderPicker(pickerProps)
         ) : (
@@ -524,7 +542,7 @@ export function ChatComposer({
                   onSnippets={actions.onSnippets}
                   // The draft is COPIED, not moved (T9.2): schedule opens a sheet
                   // seeded from the prompt and the composer keeps every character.
-                  onSchedule={onSchedule ? () => onSchedule(handle.draft) : undefined}
+                  onSchedule={onSchedule ? () => onSchedule(draft) : undefined}
                   // Omitted on desktop (the persistent session list makes it
                   // redundant) ⇒ the Switch-session row simply won't render.
                   onSwitchSession={actions.onSwitchSession}
@@ -557,7 +575,7 @@ export function ChatComposer({
                 // Types the trigger and opens the ONE picker this surface has —
                 // the caret ends up where the user would have put it. Now drawn
                 // as an `@`, the glyph of what it does.
-                onClick={() => handle.insert('@')}
+                onClick={() => insert('@')}
               >
                 {/* `@` is the 18px reference the paperclip and clock are now sized
                     to (they were a small 17 and a 16 beside it). */}
@@ -570,7 +588,7 @@ export function ChatComposer({
                   phone={phone}
                   // The draft is COPIED, not moved (T9.2): the sheet starts from
                   // a prompt and the composer keeps every character.
-                  onClick={() => onSchedule(handle.draft)}
+                  onClick={() => onSchedule(draft)}
                 >
                   {/* 18px, matching `@` and the paperclip — was `size-4` (16px),
                       the third of three mismatched sizes. */}
@@ -581,16 +599,16 @@ export function ChatComposer({
           )
         }
         field={{
-          ref: handle.ref,
-          value: handle.draft,
+          ref: fieldRef,
+          value: draft,
           // READ-ONLY rather than `disabled`: the draft stays selectable and
           // copyable, so a message typed just before the limit landed can be
           // rescued into another session instead of being taken away.
           readOnly: blocked ? true : undefined,
           'aria-disabled': blocked ? true : undefined,
-          onChange: handle.onChange,
-          onKeyDown: handle.onKeyDown,
-          onSelect: handle.onSelect,
+          onChange: onChange,
+          onKeyDown: onKeyDown,
+          onSelect: onSelect,
           // Paste an image → a chip. Only wired when uploads are (so an unwired
           // composer carries no extra handler); the desktop textarea reads it
           // off `rest`, and the phone contenteditable keeps its own plain-text
@@ -657,18 +675,18 @@ export function ChatComposer({
                     label={
                       uploading
                         ? 'Waiting for uploads…'
-                        : handle.handoff
-                          ? `Hand to ${handle.handoff.label}`
+                        : handoff
+                          ? `Hand to ${handoff.label}`
                           : `Send to ${label}`
                     }
-                    data-handoff={handle.handoff ? handle.handoff.to : undefined}
+                    data-handoff={handoff ? handoff.to : undefined}
                     phone={phone}
-                    onClick={handle.submit}
+                    onClick={submit}
                     // Disabled while a POST is in flight, while an upload is
                     // still settling, or when there is nothing actually sendable
                     // (only errored chips + an empty box) — `!canSend` folds all
                     // three: the disc stays visible, present but not yet armed.
-                    disabled={handle.sending || !canSend}
+                    disabled={sending || !canSend}
                   >
                     {/* THE GLYPH CHANGES TOO, not just the label (fase B4
                         T4.4). An `aria-label` alone is not "visible before the
@@ -676,9 +694,9 @@ export function ChatComposer({
                         holds the arrow becomes the RECIPIENT'S FACE, which is
                         this app's word for "this is going to them" everywhere
                         else. Same cell, same size, no reflow. */}
-                    {handle.handoff ? (
+                    {handoff ? (
                       <SessionMark
-                        seed={handle.handoff.to}
+                        seed={handoff.to}
                         size={phone ? 19 : 21}
                         animate={false}
                         label={null}
@@ -692,14 +710,14 @@ export function ChatComposer({
                     testId="chat-stop"
                     label="Stop"
                     phone={phone}
-                    onClick={handle.stop}
+                    onClick={stop}
                   >
                     <StopIcon />
                   </TrailingButton>
                 ) : dictation.supported ? (
                   /* AT REST THE MIC IS DICTATION — a real button, not decoration.
                      Tapping it toggles Web Speech; transcribed text lands in the
-                     draft via `handle.insert`. It exists on iOS too
+                     draft via `insert`. It exists on iOS too
                      (`webkitSpeechRecognition`), so it is NOT hidden there.
 
                      While listening it shows a recording state: `aria-pressed`
@@ -754,7 +772,7 @@ export function ChatComposer({
           onOpenChange={setMenuOpen}
           onMention={onMention}
           onSlash={onSlash}
-          onSchedule={onSchedule ? () => onSchedule(handle.draft) : undefined}
+          onSchedule={onSchedule ? () => onSchedule(draft) : undefined}
           onSnippets={actions.onSnippets}
           onSwitchSession={actions.onSwitchSession}
           onCommandPalette={actions.onCommandPalette}

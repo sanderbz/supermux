@@ -265,16 +265,26 @@ function keyframeBody(name: string): string {
 }
 
 /** The single `@media (prefers-reduced-motion: reduce)` block body. */
+/** Every `prefers-reduced-motion: reduce` block in grok-mode.css, concatenated.
+ *  The file now carries MORE than one (the WS3 entrance/receipt/typing twin AND
+ *  the mobile "Liquid Rail" nav twin, which sits earlier in source); the WS3
+ *  contract lives across all of them, so gather them rather than assume order. */
 function reduceBlock(): string {
   const needle = '@media (prefers-reduced-motion: reduce) {'
-  const i = cssCode.indexOf(needle)
-  if (i < 0) return ''
-  let depth = 0
-  let j = i + needle.length - 1
-  do {
-    if (cssCode[j] === '{') depth++
-    else if (cssCode[j] === '}') depth--
-    j++
-  } while (depth > 0 && j < cssCode.length)
-  return cssCode.slice(i + needle.length, j - 1)
+  const blocks: string[] = []
+  let from = 0
+  for (;;) {
+    const i = cssCode.indexOf(needle, from)
+    if (i < 0) break
+    let depth = 0
+    let j = i + needle.length - 1
+    do {
+      if (cssCode[j] === '{') depth++
+      else if (cssCode[j] === '}') depth--
+      j++
+    } while (depth > 0 && j < cssCode.length)
+    blocks.push(cssCode.slice(i + needle.length, j - 1))
+    from = j
+  }
+  return blocks.join('\n')
 }

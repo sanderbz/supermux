@@ -410,7 +410,7 @@ export interface ComposerPickerState {
 export interface ComposerHandle {
   draft: string
   setDraft: (value: string) => void
-  ref: React.RefObject<ComposerField | null>
+  fieldRef: React.RefObject<ComposerField | null>
   /** A POST is in flight. The control disables so a slow pty cannot be
    *  double-fired; it is NOT a delivery claim (that is T4's watchdog). */
   sending: boolean
@@ -831,7 +831,7 @@ export function useComposer({
   return {
     draft,
     setDraft: set,
-    ref,
+    fieldRef: ref,
     sending,
     notice,
     dismissNotice,

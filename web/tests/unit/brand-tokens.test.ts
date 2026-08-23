@@ -115,7 +115,10 @@ describe('hslTripleToHex', () => {
 })
 
 describe('brand + status tokens', () => {
-  const root = declarations(':root')
+  // The brand/status/shadcn token block is declared on `:root, [data-theme='light']`
+  // (globals.css §"Light theme") so a `[data-theme]` subtree is a COMPLETE theme
+  // switch — see the documented intent there. Read that exact selector list.
+  const root = declarations(":root, [data-theme='light']")
 
   test.each(HSL_TOKENS)('%s: TS triple matches the CSS declaration', (v, hsl) => {
     expect(root[v]).toBe(hsl)
@@ -129,7 +132,9 @@ describe('brand + status tokens', () => {
 
   test('background mirror == resolved HSL, and == the dark theme surface', () => {
     expect(hslTripleToHex(BACKGROUND_HSL)).toBe(BRAND.background)
-    expect(declarations('.dark')['--background']).toBe(BRAND.background)
+    expect(declarations(".dark, [data-theme='dark']")['--background']).toBe(
+      BRAND.background,
+    )
   })
 })
 
@@ -174,7 +179,15 @@ describe('B0 warm paper/ink/hairline ladder', () => {
       )
 
       test('declares the whole ladder and nothing extra', () => {
-        expect(Object.keys(decls).sort()).toEqual(Object.values(VARS).sort())
+        // The ladder block shares `:root, [data-theme='light']` (and the dark
+        // equivalent) with the shadcn/brand block — both need the subtree-switch
+        // selector — so the merged decls also carry `--background`, `--brand`, …
+        // Restrict to the `--sm-*` namespace: the guard is that every ladder rung
+        // in that block is a known VAR, with nothing stray added.
+        const smKeys = Object.keys(decls)
+          .filter((k) => k.startsWith('--sm-'))
+          .sort()
+        expect(smKeys).toEqual(Object.values(VARS).sort())
       })
     })
   }

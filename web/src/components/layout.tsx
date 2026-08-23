@@ -98,10 +98,11 @@ const NAV: NavItem[] = [
   // `/scheduler` → /settings#schedules (App.tsx) so old bookmarks land in the
   // right section. Settings therefore carries the onboarding tour's step-3
   // anchor, which used to point at the Scheduler item.
-  // Nav is at FOUR items after B2: the Board page left once issues became
-  // reachable from the session that owns them (and from the team card). The
-  // deletion keyed on `to === '/board'`, never on an index — one removal, both
-  // surfaces (SideNav + BottomNav).
+  // The Board page left after B2 (issues became reachable from the session that
+  // owns them and from the team card); the deletion keyed on `to === '/board'`,
+  // never on an index — one removal, both surfaces (SideNav + BottomNav). The
+  // base rail is FOUR items (Overview / Focus / Files / Settings); the array also
+  // carries the `grokOnly` `/store` doorway above, filtered per mode.
   {
     to: '/settings',
     label: 'Settings',

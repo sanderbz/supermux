@@ -144,21 +144,22 @@ export function InviteWizardSheet({
   // The active panel. Initialised ONCE from status to the first unfinished step
   // (resumable), then user-driven via Back/Continue.
   const [step, setStep] = React.useState<StepKey>('domain')
-  const routed = React.useRef(false)
-  React.useEffect(() => {
-    if (!open) {
-      routed.current = false
-      return
-    }
-    if (routed.current || !status) return
-    routed.current = true
+  // Route to the resume step ONCE, the first render after the sheet opens with a
+  // loaded status. Done during render (the "adjust state when a prop changes"
+  // pattern) with a state latch rather than an effect + ref: it avoids both
+  // react-hooks/set-state-in-effect and a ref write during render, and is one
+  // fewer commit than the effect was.
+  const [routedOpen, setRoutedOpen] = React.useState(false)
+  if (!open && routedOpen) setRoutedOpen(false)
+  if (open && status && !routedOpen) {
+    setRoutedOpen(true)
     if (!domainDone(status)) setStep('domain')
     else if (!isQuick && !googleDone(status)) setStep('google')
     // Resume on the inbox step when an agent-inbox is already provisioned (e.g. it
     // still needs its verification click) — otherwise land on Add people.
     else if (!isQuick && status.company?.agent_inbox) setStep('inbox')
     else setStep('person')
-  }, [open, status, isQuick])
+  }
 
   // The active order branches: the quick-tunnel path skips Google entirely.
   const order = isQuick ? QUICK_ORDER : ORDER
@@ -629,10 +630,8 @@ function ChooseDomainStep({ company, refetch }: { company: WizardCompany; refetc
 
   const [selected, setSelected] = React.useState<string | null>(null)
   // Auto-select the sole zone so the common case is one confirm, not a choice.
-  React.useEffect(() => {
-    if (selected == null && zones.length >= 1) setSelected(zones[0])
-  }, [zones, selected])
-
+  // Derived, not synced through an effect: while nothing is explicitly picked,
+  // `chosen` already falls back to the first zone.
   const chosen = selected ?? (zones.length >= 1 ? zones[0] : null)
   const preview = chosen ? `${company.slug}.${chosen}` : `${company.slug}.<your-domain>`
 

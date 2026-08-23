@@ -116,6 +116,10 @@ export function CompanySwitcher({
 
   const triggerRef = React.useRef<HTMLButtonElement>(null)
   const menuRef = React.useRef<HTMLDivElement>(null)
+  // Stable id so the combobox trigger can `aria-controls` its popup (required for
+  // role="combobox"); the menu it names is rendered only while open, which is a
+  // valid controls target.
+  const menuId = React.useId()
 
   const active = companies.find((c) => c.id === activeCompany) ?? null
 
@@ -171,10 +175,17 @@ export function CompanySwitcher({
   }, [companies, setActiveCompany])
 
   // Seat the highlight on the active row whenever the list opens (both shells).
-  React.useEffect(() => {
-    if (!open) return
-    setCursor(active ? companies.findIndex((c) => c.id === active.id) + 1 : 0)
-  }, [open, active, companies])
+  // Done on the open TRANSITION during render (the "adjust state when a prop
+  // changes" pattern) rather than in an effect — so it never re-seats mid-nav
+  // when the company list changes under an open menu, and never trips
+  // react-hooks/set-state-in-effect.
+  const [seatedOpen, setSeatedOpen] = React.useState(open)
+  if (open !== seatedOpen) {
+    setSeatedOpen(open)
+    if (open) {
+      setCursor(active ? companies.findIndex((c) => c.id === active.id) + 1 : 0)
+    }
+  }
 
   // ── Desktop only: dismiss on outside-click, focus the menu on open ───────────
   // The touch sheet is a Vaul modal — it owns its own backdrop-tap / drag-away
@@ -387,6 +398,7 @@ export function CompanySwitcher({
           role="combobox"
           aria-haspopup="menu"
           aria-expanded={open}
+          aria-controls={menuId}
           aria-label="Company scope"
           onClick={() => setOpen((v) => !v)}
         >
@@ -408,6 +420,7 @@ export function CompanySwitcher({
         {open && !isMobile && (
           <div
             ref={menuRef}
+            id={menuId}
             role="menu"
             tabIndex={-1}
             aria-label="Companies"

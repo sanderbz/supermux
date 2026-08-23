@@ -124,10 +124,9 @@ export function useScrollAway(
     [],
   )
 
-  // A container that stops scrolling (disabled toggled on) snaps back to shown.
-  React.useEffect(() => {
-    if (disabled) setHidden(false)
-  }, [disabled])
-
-  return { hidden, onScroll, reveal }
+  // A disabled container is always shown: derive it rather than resetting state
+  // in an effect (which flashes a frame and trips react-hooks/set-state-in-effect).
+  // `measure` still forces `hidden=false` while disabled, so the stored state and
+  // this derived value never disagree once a scroll settles.
+  return { hidden: disabled ? false : hidden, onScroll, reveal }
 }
