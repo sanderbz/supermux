@@ -1489,7 +1489,7 @@
   appearance: none;
   border: 0;
   background: transparent;
-  /* AA fix (overview minor): inactive segmented labels (A-Z / Compact / Cards)
+  /* AA fix (overview minor): inactive segmented labels (A-Z / Compact)
      at tertiary read 3.23:1 dark / 2.36:1 light — both fail 4.5. `--gr-seg-ink`
      clears 4.5 on the seg track in both themes (light solid meta grey ~4.6:1,
      dark secondary ~6.2:1); hover steps to primary so the state still moves. */
@@ -2456,10 +2456,10 @@
 }
 
 /* ══ WS6 — density options wired into the header segmented control ════════════
-   Comfortable = Row A (default). Compact = Row C (dense one-line feed). Cards =
-   Row B (budget-watcher opt-in, cost/context first-class). Same data, same rows,
-   a `data-density` switch on the rail — supermux's density affordance kept, in
-   Grok's idiom. (overview.md §6 recommendation + §6 B/C anatomy.) */
+   Comfortable = Row A (default). Compact = Row C (dense one-line feed). Same
+   data, same rows, a `data-density` switch on the rail — supermux's density
+   affordance kept, in Grok's idiom. (The 'cards'/Row B option was retired —
+   it wasted space and earned nothing.) */
 
 /* COMPACT (Row C) — one line per bot, 26px mark, cost fades in on hover */
 [data-grok] .grok-roster[data-density='compact'] .gr-rowA {
@@ -2495,75 +2495,8 @@
   display: block;
 }
 
-/* CARDS (Row B) — each bot a rounded card, context bar + cost/ctx first-class */
-[data-grok] .grok-roster[data-density='cards'] .gr-list {
-  padding: 4px 0;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA {
-  /* an explicit width, NOT `auto`: a <button> is a form control and shrinks to
-     fit-content under `width:auto` even as a flex box (it will not stretch like a
-     div), so `calc(100% - 2*margin)` is what fills the list minus the inset. */
-  width: calc(100% - 28px);
-  box-sizing: border-box;
-  margin: 10px 14px;
-  padding: 13px 15px 12px;
-  border-radius: 16px;
-  border: 0.5px solid var(--gr-line);
-  background: var(--gr-surf);
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 0;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA:hover {
-  background: var(--gr-surf);
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA[data-active] {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sm-accent) 40%, transparent);
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .gr-top {
-  display: flex;
-  gap: 12px;
-  /* MEASURED-GAP FIX (jury a/b): centring the 42px mark against a taller column
-     floated it into a dead band and left the title top-anchored above it. Anchor
-     the mark to the title baseline (flex-start) so it reads as ONE row and the
-     card hugs its content instead of reserving a centred void. */
-  align-items: flex-start;
-  width: 100%;
-}
 [data-grok] .grok-roster .gr-rowA .gr-top {
   display: contents;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .l3 {
-  width: 100%;
-  /* tightened from 12/11 — the context bar still gets its hairline divider, but
-     the card no longer reserves a ~2-line empty band above it (jury a). */
-  margin-top: 9px;
-  padding-top: 9px;
-  border-top: 0.5px solid var(--sm-sidebar-separator);
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .cbar {
-  flex: 1;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--gr-track);
-  overflow: hidden;
-  max-width: 150px;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .cbar i {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--rc);
-}
-[data-grok] .grok-roster .gr-rowA .cbar {
-  display: none;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .cbar {
-  display: block;
-}
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .ring,
-[data-grok] .grok-roster[data-density='cards'] .gr-rowA .ctx {
-  display: inline-flex;
 }
 
 /* ── phone: one column, no detail pane (row tap → thread) ───────────────────── */

@@ -1053,7 +1053,26 @@ const BUDGET_ENTRY_JS = 161 * KB
 // A genuine additive feature (the question is now clickable from chat instead of a
 // dead prompt), not a regression to trim: ceil(measured)=339, the same rule every
 // fase since B3 used.
-const BUDGET_APP_JS = 339 * KB
+// 339 → 342 at the DESKTOP SIDE-PANEL CHAT⇄TERMINAL TOGGLE (feat/companies-grok):
+// the grok overview's right pane mounted the chat renderer ONLY, with the terminal
+// as an escape that LEFT the roster for /focus ("Phase 1 does not reproduce the
+// terminal in the pane"). Phase 2 mounts the SAME live terminal in the pane behind
+// the SAME `RendererSwitch` the mobile seam uses — one toggle, one persisted mode
+// pref, one `RendererShell` retention shell — so a desktop user switches chat↔term
+// in place instead of losing the roster. Measured 341.17 against 339.00 — +2.17 KB,
+// and NONE of it on the hero path: the ENTRY gate MOVED DOWN (154.25 / 161, from
+// 157.10) because the new lazy `thread-pane` boundary pulled `use-chat-renderer` /
+// `use-keyboard-viewport` / `status-dot` OUT of the entry chunk into their own
+// shared chunks. Where the +2.17 KB of app-total went:
+//   +~1.3 KB   the `thread-pane` chunk itself (the RendererShell composition, the
+//              switch's two homes, the terminal wiring — all reused, lazy).
+//   +~0.9 KB   gzip overhead of the three tiny shared chunks Vite split out once a
+//              second import edge (the pane) reached them — raw bytes barely moved
+//              (entry raw 587→577 KB); the app-total delta is small-chunk gzip loss.
+// A genuine additive feature (the desktop pane now has the terminal in place), not a
+// regression to trim, and the guarded hero gate improved: ceil(measured)=342, the
+// same rule every fase since B3 used.
+const BUDGET_APP_JS = 342 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

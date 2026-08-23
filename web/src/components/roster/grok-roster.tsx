@@ -17,9 +17,9 @@
  * It keeps supermux's edges, not Grok's flat list: search over every field, the
  * `smart | alpha` sort, the tag chips, the per-agent context ring + token count
  * on a quiet L3, teams as facepile rows, and the needs-you rollup as a header
- * count + a red section. Density (Comfortable = Row A default / Compact = Row C /
- * Cards = Row B) is the existing density affordance in Grok's idiom, driven by
- * one `data-density` attribute the CSS forks on.
+ * count + a red section. Density (Comfortable = Row A default / Compact = Row C)
+ * is the existing density affordance in Grok's idiom, driven by one
+ * `data-density` attribute the CSS forks on.
  *
  * Every visual lives in `styles/grok-mode.css` under `[data-grok]`; this file is
  * structure + data only. The marks, their expressions, the needs-you halo and
@@ -101,10 +101,14 @@ const BotPanel = React.lazy(() =>
 
 // The live conversation thread — the SAME renderer the focus routes mount, reused
 // verbatim in the roster's right pane (desktop grok's "thread-in-pane", approach
-// (a)). It is self-wiring from `name` alone (its own chat WS + peek + REST plane),
-// needs no xterm, and is lazy so the roster's first paint never pays for it — it
-// only arrives once a chat-eligible bot is opened.
-const ChatPanel = React.lazy(() => import('@/components/chat/chat-panel'))
+// (a)). `ThreadPane` wraps it with the in-pane live terminal + the shared
+// Chat⇄Terminal switch (Phase 2), self-wiring from `name` alone (its own chat WS
+// + peek + REST plane, and the pty only when the terminal is selected). Lazy so
+// the roster's first paint never pays for the chat/xterm chunk — it only arrives
+// once a chat-eligible bot is opened.
+const ThreadPane = React.lazy(() =>
+  import('@/components/chat/thread-pane').then((m) => ({ default: m.ThreadPane })),
+)
 
 // The per-TEAM page — the crew half of "talk to the lead". Lazy for the same
 // reason BotPanel is: a roster with no team open must not pay for it.
@@ -254,13 +258,15 @@ function matches(s: ApiSession, needle: string): boolean {
   return s.tags?.some((t) => t.toLowerCase().includes(needle)) ?? false
 }
 
-/* ── persisted, tiny: the density lane (Comfortable | Compact | Cards) ───────── */
-type Density = 'comfortable' | 'compact' | 'cards'
+/* ── persisted, tiny: the density lane (Comfortable | Compact) ───────────────── */
+type Density = 'comfortable' | 'compact'
 const DENSITY_KEY = 'supermux:grok-density'
 function readDensity(): Density {
   if (typeof localStorage === 'undefined') return 'comfortable'
   const v = localStorage.getItem(DENSITY_KEY)
-  return v === 'compact' || v === 'cards' ? v : 'comfortable'
+  // A persisted 'cards' (the retired third option) falls back to 'comfortable'
+  // so anyone who had it selected is not left in a stuck, unreachable state.
+  return v === 'compact' ? v : 'comfortable'
 }
 
 /* ── the row (Row A anatomy; density forks in CSS) ──────────────────────────── */
@@ -382,10 +388,6 @@ export const GrokRow = React.memo(function GrokRow({ session, group, active, onO
                   className={`ring ${rcClass(pct)}`}
                   style={{ '--p': pct } as React.CSSProperties}
                 />
-                {/* cards mode swaps the ring for a bar (CSS decides visibility) */}
-                <span className={`cbar ${rcClass(pct)}`}>
-                  <i style={{ width: `${pct}%` }} />
-                </span>
                 <span className="ctx">{pct}% ctx</span>
               </>
             )}
@@ -1150,14 +1152,6 @@ export default function GrokRoster() {
           >
             Compact
           </button>
-          <button
-            type="button"
-            aria-pressed={density === 'cards'}
-            onClick={() => setDensityPersist('cards')}
-            title="Cards — budget watcher"
-          >
-            Cards
-          </button>
         </span>
 
         {/* Trailing utility cluster — the overview's footer strip is gone (owner
@@ -1338,24 +1332,21 @@ export default function GrokRoster() {
             <React.Suspense
               fallback={<div className="gr-pane gr-threadpane" data-shell-pane aria-hidden />}
             >
-              <div className="gr-pane gr-threadpane" data-shell-pane>
-                <ChatPanel
-                  name={threadRow.name}
-                  session={toTile(threadRow)}
-                  input={threadInput ?? undefined}
-                  surface="desktop"
-                  onOpenTerminal={openInFocus}
-                  // THE CREW SIGNAL (jury R1 TEAM_THREAD fix). The bare people
-                  // icon read as "one bot"; the crew chip carries the teammates'
-                  // faces with their live status, an `N bots` count and a
-                  // needs/working glance, so the lead's thread and its crew read
-                  // as ONE surface. Same tap target as before — it opens
-                  // TeamPanel (the `pane-team-toggle` VR the roster e2e drives).
-                  headerTrailing={
-                    <TeamCrewChip team={selectedTeam} onOpen={openSettings} vr="pane-team-toggle" />
-                  }
-                />
-              </div>
+              <ThreadPane
+                name={threadRow.name}
+                session={toTile(threadRow)}
+                chatOn={threadEligible}
+                input={threadInput ?? undefined}
+                // THE CREW SIGNAL (jury R1 TEAM_THREAD fix). The bare people
+                // icon read as "one bot"; the crew chip carries the teammates'
+                // faces with their live status, an `N bots` count and a
+                // needs/working glance, so the lead's thread and its crew read
+                // as ONE surface. Same tap target as before — it opens
+                // TeamPanel (the `pane-team-toggle` VR the roster e2e drives).
+                headerTrailing={
+                  <TeamCrewChip team={selectedTeam} onOpen={openSettings} vr="pane-team-toggle" />
+                }
+              />
             </React.Suspense>
           ) : (
             <React.Suspense fallback={<div className="gr-pane" data-shell-pane aria-hidden />}>
@@ -1373,32 +1364,30 @@ export default function GrokRoster() {
           paneView === 'thread' && threadEligible ? (
             // THE LIVE THREAD in the right pane — the reused chat renderer, one
             // shell, one composer, no route change. The settings page is one tap
-            // away via the header-pill toggle we inject here; the terminal is an
-            // honest /focus escape (Phase 1).
+            // away via the header-pill toggle we inject here; the terminal is now
+            // an IN-PANE renderer (Phase 2, `ThreadPane`) reached by the same
+            // Chat⇄Terminal switch the mobile seam uses — no /focus escape.
             <React.Suspense
               fallback={<div className="gr-pane gr-threadpane" data-shell-pane aria-hidden />}
             >
-              <div className="gr-pane gr-threadpane" data-shell-pane>
-                <ChatPanel
-                  name={selectedSession.name}
-                  session={toTile(selectedSession)}
-                  input={threadInput ?? undefined}
-                  surface="desktop"
-                  onOpenTerminal={openInFocus}
-                  headerTrailing={
-                    <button
-                      type="button"
-                      onClick={openSettings}
-                      data-vr="pane-settings-toggle"
-                      aria-label="Bot settings"
-                      title="Bot settings"
-                      className="grid size-8 shrink-0 place-items-center rounded-full border-[0.5px] border-hairline text-ink-3 transition-colors hover:bg-fill-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <SlidersHorizontal className="size-4" aria-hidden />
-                    </button>
-                  }
-                />
-              </div>
+              <ThreadPane
+                name={selectedSession.name}
+                session={toTile(selectedSession)}
+                chatOn={threadEligible}
+                input={threadInput ?? undefined}
+                headerTrailing={
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    data-vr="pane-settings-toggle"
+                    aria-label="Bot settings"
+                    title="Bot settings"
+                    className="grid size-8 shrink-0 place-items-center rounded-full border-[0.5px] border-hairline text-ink-3 transition-colors hover:bg-fill-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <SlidersHorizontal className="size-4" aria-hidden />
+                  </button>
+                }
+              />
             </React.Suspense>
           ) : (
             // SETTINGS (the toggle's other face) — or the only face for a bot that

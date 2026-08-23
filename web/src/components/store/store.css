@@ -38,11 +38,12 @@
   display: none;
 }
 
-/* Header stays legible over the scrolling grid without a hard seam. */
+/* OPAQUE, so a scrolled card can never show through the sticky header (it has
+ * to fully mask the grid under it — a translucent tint let the top row bleed
+ * through the title/tabs/chips). Matches the store surface the cards float on:
+ * `--background` in the base skin, so light/dark come for free. */
 .cs-header {
-  background: color-mix(in oklab, var(--background) 88%, transparent);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  background: var(--background);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -57,10 +58,11 @@
 /* ── [data-grok] glass skin ──────────────────────────────────────────────────
  * Calm frosted panels that sit BACK; the soft glow lands on the active/hovered
  * card only. Grok accent comes from --sm-accent. */
+/* OPAQUE in the Grok skin too — the store's own ground is `--sm-bg-chrome`
+ * (the same token the roster rail sits on, `--gr-bg`), so the header paints that
+ * flat and the scrolled cards behind it are fully masked, in both themes. */
 [data-grok] .cs-header {
-  background: color-mix(in oklab, var(--sm-bg-chrome, var(--background)) 70%, transparent);
-  backdrop-filter: var(--sm-glass-title, blur(28px) saturate(165%));
-  -webkit-backdrop-filter: var(--sm-glass-title, blur(28px) saturate(165%));
+  background: var(--sm-bg-chrome, var(--background));
 }
 
 [data-grok] .cs-card,
