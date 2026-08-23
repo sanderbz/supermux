@@ -93,23 +93,6 @@ function stripTrailingSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p
 }
 
-/** The store's company-filter predicate — the owner-lens over the connector grid.
- *  HQ (`activeCompany === null`) shows the FULL catalog (`true` for every card,
- *  whatever its grant). With a company active, the grid is SCOPED to what reaches
- *  that company: a `company`-tier grant (`@company:<id>`), an `all`-agents grant
- *  (applies everywhere, including here), or a `bot` grant on a bot inside the
- *  company. An un-granted catalog card (`null`) is hidden while a company is the
- *  active lens. `granted` is the store's own `GrantScope` (broadest-first: `all`
- *  > `company` > `bot`). Pure + unit-tested; the store view applies it as a grid
- *  filter. */
-export function connectorInCompanyView(
-  granted: 'bot' | 'company' | 'all' | null,
-  activeCompany: number | null,
-): boolean {
-  if (activeCompany === null) return true
-  return granted !== null
-}
-
 /** Which companies (by id; `null` = HQ) have at least one bot in the NEEDS-YOU
  *  state — the set the switcher's per-company attention dots read.
  *

@@ -18,7 +18,6 @@ import {
   companyFirstOrder,
   companyForDigit,
   confineToCompanyRoot,
-  connectorInCompanyView,
   inCompanyScope,
   resolveActiveCompany,
   type Company,
@@ -245,25 +244,6 @@ describe('confineToCompanyRoot — the Files-browser confinement clamp', () => {
     expect(confineToCompanyRoot(`${root}/`, root)).toBe(`${root}/`)
     expect(confineToCompanyRoot(`${root}/docs`, `${root}/`)).toBe(`${root}/docs`)
     expect(confineToCompanyRoot('/opt/projects', `${root}/`)).toBe(`${root}/`)
-  })
-})
-
-describe('connectorInCompanyView — the store company-filter predicate', () => {
-  test('HQ (null) shows the FULL catalog — every card, whatever its grant', () => {
-    expect(connectorInCompanyView('all', null)).toBe(true)
-    expect(connectorInCompanyView('company', null)).toBe(true)
-    expect(connectorInCompanyView('bot', null)).toBe(true)
-    expect(connectorInCompanyView(null, null)).toBe(true)
-  })
-
-  test('a company scopes the view to what reaches it — company + all-agents + a company bot', () => {
-    expect(connectorInCompanyView('company', 1)).toBe(true)
-    expect(connectorInCompanyView('all', 1)).toBe(true)
-    expect(connectorInCompanyView('bot', 1)).toBe(true)
-  })
-
-  test('a company HIDES un-granted catalog cards (nothing reaches this company)', () => {
-    expect(connectorInCompanyView(null, 1)).toBe(false)
   })
 })
 

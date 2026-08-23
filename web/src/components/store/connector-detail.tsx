@@ -101,7 +101,13 @@ export function ConnectorDetail({
   const company =
     activeCompany !== null ? companies.find((c) => c.id === activeCompany) ?? null : null
   const companyKey = company ? companyGrantKey(company.id) : null
-  const [companyChosen, setCompanyChosen] = React.useState(false)
+  // With a company active in the library view, the company is the DEFAULT install
+  // target — so one tap on "Install" grants the connector to `@company:<id>` and
+  // it lands in the company store, no picker step required. HQ (no company) keeps
+  // the deliberate empty default (Connect stays disabled until a scope is chosen).
+  const [companyChosen, setCompanyChosen] = React.useState(
+    () => isLibrary && activeCompany !== null,
+  )
   // "All agents" is a superset — when it is on, the per-bot rows AND the company
   // row show as checked (and locked), and the grant resolves to a single `*` row.
   const chosenTargets: string[] = allAgents

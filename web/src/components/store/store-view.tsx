@@ -17,7 +17,7 @@ import {
   type SessionConnector,
 } from '@/lib/api/connectors'
 import { companyGrantKey } from '@/lib/api/connectors'
-import { connectorInCompanyView, resolveActiveCompany } from '@/lib/companies'
+import { resolveActiveCompany } from '@/lib/companies'
 import { useConnectors, useSessionConnectors } from '@/stores/connectors-store'
 import { useCompanies } from '@/hooks/use-companies'
 import { useUI } from '@/stores/ui-store'
@@ -115,28 +115,21 @@ export function StoreView({
     [allSet, companySet, botSet, botName],
   )
 
-  // Company lens: the library `/store` page, with a company active, SCOPES the
-  // grid to the connectors that reach that company (its own `@company:` grants +
-  // all-agents + a company bot's grant) — the owner-lens over "what tools does
-  // this company have". The bot-scoped sheet keeps the full catalog (it's a
-  // grant-to-this-bot working list), and HQ (activeCompany null) is the global
-  // library as before. A non-empty SEARCH lifts the scope so the owner can still
-  // find + grant any connector to the company (mirrors the roster search-lifts-
-  // scope idiom). `grantedFor` reflects the same tiers, so this reuses it.
-  const companyScoped = variant === 'page' && !botName && resolvedCompany !== null
-  const inCompanyView = React.useCallback(
-    (id: string): boolean =>
-      !companyScoped || connectorInCompanyView(grantedFor(id), resolvedCompany),
-    [companyScoped, grantedFor, resolvedCompany],
-  )
+  // Company context: the library `/store` page with a company active shows the
+  // SAME full installable catalog as HQ — the company never HIDES connectors, it
+  // is the install/grant TARGET (a card installs into `@company:<id>`; see the
+  // detail sheet's default grant target). So the grid/Featured are unfiltered in
+  // every scope; `grantedFor` already surfaces a `company`-tier grant as "Added"
+  // on a card, which is how active-in-company reads. `companyRow` is kept only for
+  // the header subtitle ("The tools <company> can use").
+  const inCompany = variant === 'page' && !botName && resolvedCompany !== null
 
   // Featured is a curated highlight, not the whole catalog: cap the rail so it
   // reads as an editorial shelf and never sprawls (blocker H1). In a bot scope
   // (row layout) the rail is skipped entirely — the sheet is a working list.
-  // Under the company lens the rail is filtered to the company's own connectors.
   const featured = React.useMemo(
-    () => cards.filter((c) => c.featured && inCompanyView(c.id)).slice(0, 3),
-    [cards, inCompanyView],
+    () => cards.filter((c) => c.featured).slice(0, 3),
+    [cards],
   )
 
   // The featured rail is only shown at rest (no search, All/Featured) and not in
@@ -152,9 +145,6 @@ export function StoreView({
     return cards.filter((c) => {
       // Don't repeat the Featured cards as the first grid rows (blocker H1).
       if (featuredIds.has(c.id)) return false
-      // Company lens (at rest only — a search lifts it): keep only the connectors
-      // that reach the active company.
-      if (!needle && !inCompanyView(c.id)) return false
       if (cat !== 'all') {
         if (cat === 'featured' ? !c.featured : !(c.categories ?? []).includes(cat)) return false
       }
@@ -165,7 +155,7 @@ export function StoreView({
         c.description.toLowerCase().includes(needle)
       )
     })
-  }, [cards, q, cat, featuredIds, inCompanyView])
+  }, [cards, q, cat, featuredIds])
 
   const openCard = cards.find((c) => c.id === openId) ?? null
   const isRow = variant === 'sheet'
@@ -180,8 +170,8 @@ export function StoreView({
             <p className="mt-0.5 text-[13.5px] text-muted-foreground">
               {botName
                 ? `Give ${botName} the tools it needs.`
-                : companyScoped && companyRow
-                  ? `The tools ${companyRow.display_name} can use — search to add more.`
+                : inCompany && companyRow
+                  ? `The tools ${companyRow.display_name} can use — add one to install it.`
                   : 'Give your bots the tools they need.'}
             </p>
           </div>
@@ -235,10 +225,7 @@ export function StoreView({
         {live.isLoading && !mock ? (
           <GridSkeleton />
         ) : filtered.length === 0 ? (
-          <EmptyState
-            q={q}
-            companyName={companyScoped ? companyRow?.display_name ?? null : null}
-          />
+          <EmptyState q={q} />
         ) : (
           <div
             className={cn(
@@ -421,19 +408,10 @@ function GridSkeleton() {
   )
 }
 
-function EmptyState({ q, companyName }: { q: string; companyName?: string | null }) {
-  // Under the company lens with nothing granted, tell the owner HOW to add —
-  // search lifts the scope to the full catalog so they can grant to the company.
-  if (!q && companyName) {
-    return (
-      <div className="grid place-items-center rounded-2xl border border-dashed border-border py-16 text-center">
-        <p className="text-[14px] font-medium text-foreground">No connectors for {companyName} yet</p>
-        <p className="mt-1 text-[13px] text-muted-foreground">
-          Search to find a connector and grant it to this company.
-        </p>
-      </div>
-    )
-  }
+function EmptyState({ q }: { q: string }) {
+  // The grid is the FULL catalog in every scope (a company is the install target,
+  // not a filter), so this only fires when the catalog itself is empty or a search
+  // matched nothing — never for a fresh company that simply has no grants yet.
   return (
     <div className="grid place-items-center rounded-2xl border border-dashed border-border py-16 text-center">
       <p className="text-[14px] font-medium text-foreground">
