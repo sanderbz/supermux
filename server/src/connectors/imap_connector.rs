@@ -139,6 +139,7 @@ fn credential_fields(display_name: &str) -> Vec<CredentialField> {
             required: true,
             identity: true,
             default: None,
+            file_env: None,
         },
         CredentialField {
             key: ENV_APP_PW.into(),
@@ -148,6 +149,7 @@ fn credential_fields(display_name: &str) -> Vec<CredentialField> {
             required: true,
             identity: false,
             default: None,
+            file_env: None,
         },
     ]
 }

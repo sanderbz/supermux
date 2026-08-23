@@ -56,6 +56,15 @@ pub struct CredentialField {
     pub identity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
+    /// Marks this as a FILE credential. When set, the field's (vaulted, write-only)
+    /// content is NOT exported as an env value; instead it is materialized AT LAUNCH
+    /// to a 0600 file inside the granted session's own runtime dir, and the env var
+    /// named here is set to that file's PATH. For MCP servers that authenticate with
+    /// a credential FILE rather than an env value — e.g. GA4's `analytics-mcp`, which
+    /// reads a Google service-account JSON via `GOOGLE_APPLICATION_CREDENTIALS`. The
+    /// raw content therefore never becomes an env value and is never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_env: Option<String>,
 }
 
 fn default_field_type() -> String {
@@ -267,6 +276,7 @@ impl Manifest {
                         required: spec.get("required").and_then(Value::as_bool).unwrap_or(false),
                         identity: spec.get("identity").and_then(Value::as_bool).unwrap_or(false),
                         default: spec.get("default").cloned(),
+                        file_env: spec.get("file_env").and_then(Value::as_str).map(str::to_string),
                     })
                     .collect()
             })

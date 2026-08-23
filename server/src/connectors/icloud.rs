@@ -79,6 +79,7 @@ fn credential_fields() -> Vec<CredentialField> {
             // the account_label ("Connected as sander@icloud.com").
             identity: true,
             default: None,
+            file_env: None,
         },
         CredentialField {
             key: ENV_APP_PW.into(),
@@ -88,6 +89,7 @@ fn credential_fields() -> Vec<CredentialField> {
             required: true,
             identity: false,
             default: None,
+            file_env: None,
         },
     ]
 }

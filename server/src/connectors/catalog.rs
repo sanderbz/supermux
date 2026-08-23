@@ -360,6 +360,9 @@ const CURATED_IDS: &[&str] = &[
     "pmcp-openai-image",
     "pmcp-cloudflare-builds",
     "pmcp-inhouseseo",
+    // Google Analytics (GA4) — official `analytics-mcp`, service-account JSON
+    // materialized to a 0600 FILE at launch (Lane C form; file credential).
+    "pmcp-google-analytics",
 ];
 
 /// Is a mirrored card part of the curated featured (marquee) set?
@@ -548,6 +551,28 @@ fn auth_and_creds_for(id: &str) -> (Value, Value) {
             ]),
         ),
 
+        // Google Analytics (GA4) — the OFFICIAL `analytics-mcp` server authenticates
+        // with a Google service-account JSON FILE (env GOOGLE_APPLICATION_CREDENTIALS
+        // = a file path), NOT a pasted key value. Lane C form: one SENSITIVE JSON
+        // field flagged `file_env`, so at launch the vaulted blob is materialized to
+        // a 0600 file in the session's own dir and the env var points at that path.
+        "pmcp-google-analytics" => (
+            auth_descriptor(
+                "form",
+                Some("https://console.cloud.google.com/iam-admin/serviceaccounts"),
+                Some("Paste your GA4 service-account JSON key. Create one in Google Cloud with the Analytics Data API enabled and read access to your GA4 property."),
+                None,
+            ),
+            json!([{
+                "key": "GA_SERVICE_ACCOUNT_JSON",
+                "title": "Service-account JSON key",
+                "type": "string",
+                "sensitive": true,
+                "required": true,
+                "file_env": "GOOGLE_APPLICATION_CREDENTIALS"
+            }]),
+        ),
+
         // Lane D — hosted remote MCP, client-driven OAuth (no key here).
         "pmcp-sentry" | "pmcp-linear" | "pmcp-notion" | "pmcp-slack" | "pmcp-asana"
         | "pmcp-atlassian" | "pmcp-paypal" | "pmcp-plaid" | "pmcp-square" | "pmcp-intercom"
@@ -591,8 +616,8 @@ fn pulse_auth_descriptor(method: Option<&str>) -> Value {
 /// The always-present curated catalog — the full store. These render instantly
 /// with zero network (the store is never empty) and are merged/deduped with the
 /// live mirror when it warms — a live PulseMCP row for the same id wins (richer
-/// metadata). 42 cards: the 7 first-party Anthropic/MCP reference servers
-/// (`official: true`) plus 35 widely-used official-directory vendor connectors.
+/// metadata). 43 cards: the 7 first-party Anthropic/MCP reference servers
+/// (`official: true`) plus 36 widely-used official-directory vendor connectors.
 pub fn featured_cards() -> Vec<Value> {
     #[allow(clippy::too_many_arguments)]
     fn card(
@@ -910,6 +935,18 @@ pub fn featured_cards() -> Vec<Value> {
             "Google Search Console analytics and SEO insights for Claude.",
             "claude mcp add --transport http inhouseseo https://app.inhouseseo.ai/api/mcp",
             remote("https://app.inhouseseo.ai/api/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-google-analytics", "Google Analytics (GA4)", "data", "bar-chart-3", false, false,
+            "Query GA4 reports and metadata via Google's official Analytics MCP server (service-account JSON).",
+            "uvx analytics-mcp   (env GOOGLE_APPLICATION_CREDENTIALS = your service-account JSON file)",
+            // The credential is a FILE: the emit references ${GOOGLE_APPLICATION_CREDENTIALS},
+            // which the launch path sets to the materialized 0600 file's path.
+            json!({
+                "command": "uvx",
+                "args": ["analytics-mcp"],
+                "env": { "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}" }
+            }), "stdio",
         ),
     ];
     // Stamp the per-connector auth descriptor + credential schema onto each card
@@ -1379,7 +1416,7 @@ mod tests {
     fn curated_catalog_is_present_without_network() {
         let cards = merge_featured(vec![]);
         // The full curated catalog renders with zero network.
-        assert_eq!(cards.len(), CURATED_IDS.len(), "all 42 curated cards present");
+        assert_eq!(cards.len(), CURATED_IDS.len(), "all 43 curated cards present");
         // The 13 featured ids sort to the front and are flagged featured.
         let featured: Vec<&str> = cards
             .iter()
@@ -1554,6 +1591,44 @@ mod tests {
             );
             assert!(c["auth"]["help_text"].as_str().unwrap().contains("terminal"));
         }
+    }
+
+    #[test]
+    fn google_analytics_is_a_file_credential_form_lane() {
+        let cards = merge_featured(vec![]);
+        let ga = cards
+            .iter()
+            .find(|c| c["id"] == json!("pmcp-google-analytics"))
+            .expect("GA4 card present");
+
+        // Lane C form, with the Google Cloud service-account console as the help link.
+        assert_eq!(ga["auth"]["kind"], json!("form"), "GA4 is a form lane");
+        assert!(
+            ga["auth"]["help_url"].as_str().unwrap().contains("console.cloud.google.com"),
+            "links the service-account console"
+        );
+
+        // The official server launched via `uvx analytics-mcp`, its emit referencing
+        // the FILE-path env var (resolved to the materialized 0600 file at launch).
+        assert_eq!(ga["emit"]["command"], json!("uvx"));
+        assert_eq!(ga["emit"]["args"][0], json!("analytics-mcp"));
+        assert_eq!(
+            ga["emit"]["env"]["GOOGLE_APPLICATION_CREDENTIALS"],
+            json!("${GOOGLE_APPLICATION_CREDENTIALS}"),
+            "emit references the file-path env var"
+        );
+
+        // ONE sensitive FILE credential: the JSON blob, flagged to materialize to a
+        // file and point GOOGLE_APPLICATION_CREDENTIALS at it.
+        let creds = ga["credentials"].as_array().unwrap();
+        assert_eq!(creds.len(), 1, "a single service-account JSON field");
+        assert_eq!(creds[0]["key"], json!("GA_SERVICE_ACCOUNT_JSON"));
+        assert_eq!(creds[0]["sensitive"], json!(true), "the JSON key is sealed");
+        assert_eq!(
+            creds[0]["file_env"],
+            json!("GOOGLE_APPLICATION_CREDENTIALS"),
+            "the field materializes to a file and sets this env to its path"
+        );
     }
 
     #[test]

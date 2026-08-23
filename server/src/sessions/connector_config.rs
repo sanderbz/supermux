@@ -44,6 +44,7 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 
 use crate::claude_tools::atomic::write_json_atomic;
+use crate::connectors::manifest::CredentialField;
 use crate::db::connectors::{self, Grant};
 use crate::state::AppState;
 use crate::vault::Vault;
@@ -56,8 +57,28 @@ pub struct ResolvedGrant {
     /// The `mcpServers` entry template (`${VAR}` placeholders intact).
     pub emit: Value,
     /// Decrypted secret fields to inject as env (env-var-name → value). Empty for
-    /// a no-secret connector.
+    /// a no-secret connector. A FILE credential (see [`files`]) is NEVER here — its
+    /// raw content must not become an env value.
     pub secrets: BTreeMap<String, String>,
+    /// Decrypted FILE credentials to materialize at launch: each is written to a
+    /// 0600 file in the session's own dir and its `env_var` is set to that file's
+    /// PATH (not the content). Empty for the common (no-file) connector.
+    pub files: Vec<FileCredential>,
+}
+
+/// A decrypted FILE credential to materialize at launch. The `content` is written
+/// to a 0600 file inside the session's runtime dir and `env_var` is pointed at the
+/// resulting path — the raw content is never exported as an env value, never logged.
+#[derive(Debug, Clone)]
+pub struct FileCredential {
+    /// The env var to set to the materialized file's PATH (e.g.
+    /// `GOOGLE_APPLICATION_CREDENTIALS`).
+    pub env_var: String,
+    /// The credential field key the content was vaulted under — the filename stem
+    /// (`<connector>-<field_key>`) so the file is deterministic per connector/field.
+    pub field_key: String,
+    /// The decrypted file content (e.g. a service-account JSON blob).
+    pub content: String,
 }
 
 /// The assembled per-session config: the settings-overlay JSON to write, the env
@@ -132,16 +153,50 @@ impl SessionConfig {
         if grants.is_empty() {
             return;
         }
-        self.active = true;
+
+        // FILE credentials are materialized under `<session dir>/creds`. Clear it
+        // once per launch (deterministic overwrite) so a revoked file-credential
+        // connector never leaves its secret file behind for the next launch.
+        let creds_dir = self.settings_dir.join("creds");
+        if grants.iter().any(|g| !g.files.is_empty()) {
+            let _ = std::fs::remove_dir_all(&creds_dir);
+        }
 
         // Accumulate into the shared inline mcp-config + allow list; `finish`
         // emits the single `--mcp-config`/`--strict-mcp-config` pair and writes
         // `permissions.allow` once (so the `connect` affordance and the memory
         // write-CLI grant can join the SAME strict config / allow list).
         for g in grants {
+            // Materialize any FILE credentials FIRST. Fail-safe: if a file can't be
+            // written, skip this connector's launch entirely (no server, no allow
+            // rule, no env) rather than leaking a secret or wiring a half-broken
+            // connector — a broken file-credential must not brick the session.
+            let mut file_env: Vec<(String, String)> = Vec::with_capacity(g.files.len());
+            let mut file_failed = false;
+            for f in &g.files {
+                match materialize_cred_file(&creds_dir, &g.connector_id, f) {
+                    Ok(path) => file_env.push((f.env_var.clone(), path)),
+                    Err(e) => {
+                        // Never log the content — only the connector id + io error.
+                        tracing::warn!(connector = %g.connector_id, error = %e, "connector launch: could not materialize credential file; skipping connector");
+                        file_failed = true;
+                        break;
+                    }
+                }
+            }
+            if file_failed {
+                continue;
+            }
+
+            self.active = true;
             self.mcp_servers.insert(g.connector_id.clone(), g.emit.clone());
             self.allow_rules
                 .push(Value::String(format!("mcp__{}__*", g.connector_id)));
+            // Point each file-credential's env var at the materialized PATH (never
+            // the raw content).
+            for (k, v) in file_env {
+                self.env.insert(k, v);
+            }
             // Inject decrypted secrets as env; the emit block's ${VAR} refs
             // resolve from the process environment at Claude startup. This keeps
             // the plaintext out of `~/.claude.json`, the transcript, and the
@@ -444,10 +499,15 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 }
             }
             let secrets = resolve_secret(state, vault.as_ref(), g).await;
+            // Peel FILE credentials out of the env map using the connector's schema:
+            // a `file_env` field is materialized to a 0600 file at launch and its env
+            // var points at the PATH — the content is never an env value.
+            let (secrets, files) = split_file_credentials(&connector.credentials_json, secrets);
             resolved.push(ResolvedGrant {
                 connector_id: g.connector_id.clone(),
                 emit,
                 secrets,
+                files,
             });
         }
         cfg.apply_connectors(&resolved);
@@ -563,6 +623,76 @@ async fn resolve_secret(
     }
 }
 
+/// Split a decrypted vault field-map into (plain env secrets, file credentials),
+/// using the connector's credential SCHEMA to identify FILE fields. A field with
+/// `file_env` set whose key has a value in the map is moved OUT of the env map into
+/// a [`FileCredential`] — so its raw content is never exported as an env value.
+/// Every non-file field stays in the plain map, byte-identical to before.
+fn split_file_credentials(
+    credentials_json: &str,
+    mut secrets: BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, Vec<FileCredential>) {
+    let fields: Vec<CredentialField> = serde_json::from_str(credentials_json).unwrap_or_default();
+    let mut files = Vec::new();
+    for field in fields {
+        let Some(env_var) = field.file_env.filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if let Some(content) = secrets.remove(&field.key) {
+            files.push(FileCredential {
+                env_var,
+                field_key: field.key,
+                content,
+            });
+        }
+    }
+    (secrets, files)
+}
+
+/// Write one file credential's content to a 0600 file under `creds_dir`, named
+/// `<connector>-<field_key>`, and return its path. The directory is created 0700
+/// and the file opened 0600 from the start (no world-readable window). Inside the
+/// session's own runtime dir — never a shared/world-readable location.
+#[cfg(unix)]
+fn materialize_cred_file(
+    creds_dir: &Path,
+    connector_id: &str,
+    f: &FileCredential,
+) -> std::io::Result<String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    std::fs::create_dir_all(creds_dir)?;
+    // Lock the creds dir down so a sibling can't traverse/list it.
+    std::fs::set_permissions(creds_dir, std::fs::Permissions::from_mode(0o700))?;
+    let path = creds_dir.join(format!("{connector_id}-{}", f.field_key));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)?;
+    file.write_all(f.content.as_bytes())?;
+    file.sync_all()?;
+    // Enforce 0600 even if the file pre-existed with other permissions.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Non-unix fallback (the server targets Linux; kept so the crate still compiles
+/// elsewhere). Best-effort plain write — no mode bits available.
+#[cfg(not(unix))]
+fn materialize_cred_file(
+    creds_dir: &Path,
+    connector_id: &str,
+    f: &FileCredential,
+) -> std::io::Result<String> {
+    std::fs::create_dir_all(creds_dir)?;
+    let path = creds_dir.join(format!("{connector_id}-{}", f.field_key));
+    std::fs::write(&path, f.content.as_bytes())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +718,7 @@ mod tests {
             connector_id: id.to_string(),
             emit: json!({ "command": "python", "args": ["s.py"], "env": { "K": "${K}" } }),
             secrets,
+            files: Vec::new(),
         }
     }
 
@@ -967,6 +1098,103 @@ mod tests {
         assert_eq!(v["disableClaudeAiConnectors"], json!(true));
         assert!(!text.contains("sekret"), "secret must NEVER be written to settings.json on disk");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// THE FILE-CREDENTIAL MECHANISM: a granted connector with a file credential
+    /// materializes a 0600 file holding the EXACT content inside the session's own
+    /// dir, and sets the target env var to that file's PATH — the raw content is
+    /// NEVER an env value and never lands in settings.json.
+    #[tokio::test]
+    async fn a_file_credential_materializes_a_0600_file_and_env_points_at_it() {
+        let dir = temp_dir();
+        let content = r#"{"type":"service_account","private_key":"TOP-SECRET-KEY"}"#;
+        let mut cfg = SessionConfig::new(&dir, "ga-bot");
+        cfg.apply_connectors(&[ResolvedGrant {
+            connector_id: "pmcp-google-analytics".to_string(),
+            emit: json!({
+                "command": "uvx",
+                "args": ["analytics-mcp"],
+                "env": { "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}" }
+            }),
+            secrets: BTreeMap::new(),
+            files: vec![FileCredential {
+                env_var: "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                field_key: "GA_SERVICE_ACCOUNT_JSON".to_string(),
+                content: content.to_string(),
+            }],
+        }]);
+        let fin = cfg.finish().await.unwrap().expect("active");
+
+        // The env points at a file PATH inside the session's OWN dir — not content.
+        let path = fin
+            .env
+            .get("GOOGLE_APPLICATION_CREDENTIALS")
+            .expect("file env set to the path");
+        assert!(
+            path.ends_with("session-config/ga-bot/creds/pmcp-google-analytics-GA_SERVICE_ACCOUNT_JSON"),
+            "file lives under the session dir: {path}"
+        );
+
+        // Exact content on disk.
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+
+        // 0600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "credential file must be 0600");
+        }
+
+        // The raw content is NEVER an env value.
+        for (k, v) in &fin.env {
+            assert!(!v.contains("TOP-SECRET-KEY"), "raw content leaked into env {k}");
+        }
+        // …and never written into the settings.json overlay on disk.
+        let text =
+            std::fs::read_to_string(dir.join("session-config/ga-bot/settings.json")).unwrap();
+        assert!(!text.contains("TOP-SECRET-KEY"), "content must never reach settings.json");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A NON-file connector is byte-identical: its secret stays a plain env value and
+    /// NO `creds` dir is created.
+    #[tokio::test]
+    async fn a_non_file_connector_env_is_unchanged_and_writes_no_creds_dir() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "plainc");
+        cfg.apply_connectors(&[resolved("icloud-mail", Some(("ICLOUD_APP_PW", "sekret")))]);
+        let fin = cfg.finish().await.unwrap().expect("active");
+        assert_eq!(fin.env.get("ICLOUD_APP_PW").map(String::as_str), Some("sekret"));
+        assert!(
+            !dir.join("session-config/plainc/creds").exists(),
+            "no creds dir for a connector without a file credential"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `split_file_credentials` peels a `file_env` field OUT of the plain env map
+    /// (so the content is never exported as env), while leaving every non-file
+    /// secret in place.
+    #[test]
+    fn split_file_credentials_moves_only_file_fields() {
+        let schema = json!([
+            { "key": "GA_SERVICE_ACCOUNT_JSON", "sensitive": true, "file_env": "GOOGLE_APPLICATION_CREDENTIALS" },
+            { "key": "PLAIN_TOKEN", "sensitive": true }
+        ])
+        .to_string();
+        let mut vault_map = BTreeMap::new();
+        vault_map.insert("GA_SERVICE_ACCOUNT_JSON".to_string(), "JSON-BLOB".to_string());
+        vault_map.insert("PLAIN_TOKEN".to_string(), "tok".to_string());
+
+        let (secrets, files) = split_file_credentials(&schema, vault_map);
+        // The plain token remains an env secret; the file blob is peeled out.
+        assert_eq!(secrets.get("PLAIN_TOKEN").map(String::as_str), Some("tok"));
+        assert!(!secrets.contains_key("GA_SERVICE_ACCOUNT_JSON"), "file field removed from env map");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].env_var, "GOOGLE_APPLICATION_CREDENTIALS");
+        assert_eq!(files[0].field_key, "GA_SERVICE_ACCOUNT_JSON");
+        assert_eq!(files[0].content, "JSON-BLOB");
     }
 
     /// Two sessions with different grants must get DIFFERENT inline --mcp-config
