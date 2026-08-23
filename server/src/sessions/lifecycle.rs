@@ -1198,9 +1198,31 @@ async fn company_confinement(
         return Ok(None);
     }
     // StrictRequired fail-closed: refuse to start a company session on a host
-    // that enforces no OS sandbox, BEFORE any spawn.
+    // that enforces no OS sandbox — or one where the startup self-test showed a
+    // confined child cannot boot + exec — BEFORE any spawn.
     if let Some(reason) = state.isolation.strict_refusal() {
         return Err(AppError::Conflict(reason));
+    }
+    // SELF-TEST GATE (companies §4.4, the primary guarantee): if the startup
+    // self-test showed a confined child cannot BOOT + EXEC on this host (a broken
+    // Landlock allow-list, or a host without a working jail), DISABLE company
+    // confinement for this boot so the bot still starts UNCONFINED rather than
+    // dying at exec. Under StrictRequired this branch is unreachable (the refusal
+    // above already fired); it is the BestEffort fail-open path. The loud one-time
+    // warning was already logged by `confinement_self_test`.
+    if !state.isolation.confinement_usable() {
+        tracing::warn!(
+            session = name,
+            company = cid,
+            "isolation: company agent '{name}' spawning UNCONFINED — the startup self-test \
+             showed a confined child cannot boot + exec on this host (Landlock jail not \
+             functional / allow-list insufficient). secret-floor still applies; check the \
+             allow-list in server/src/isolation.",
+        );
+        state
+            .isolation_applied
+            .insert(name.to_string(), crate::isolation::IsolationLevel::None);
+        return Ok(None);
     }
     let company = db::companies::get(&state.pool, cid)
         .await

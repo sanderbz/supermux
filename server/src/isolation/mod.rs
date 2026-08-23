@@ -211,10 +211,22 @@ impl SandboxSpec {
             read_exec_paths.push(exe);
         }
 
-        // Language/dev toolchains + the claude/codex binary trees under $HOME
-        // (RO+exec is enough to RUN them; their writable state lives under the RW
-        // dirs above or the company tree). `.local` covers `.local/share/claude`
-        // and `.local/bin`; the explicit entries document the boot dependency.
+        // Language/dev toolchains + the claude/codex/node binary trees under
+        // $HOME (RO+exec is enough to RUN them; their writable state lives under
+        // the RW dirs above or the company tree). `.local` covers
+        // `.local/share/claude` and `.local/bin`; the explicit entries document
+        // the boot dependency.
+        //
+        // Landlock matches on the RESOLVED path, so a provider launched through a
+        // symlink (`~/.local/bin/codex` → `~/.codex/…/bin/codex`,
+        // `~/.local/bin/claude` → `~/.local/share/claude/versions/X`,
+        // `~/node-local/current` → `~/node-local/node-vX`) needs its REAL target
+        // tree allow-listed too — `push_ro_resolved` adds both the listed path and
+        // its `canonicalize`d target. The provider trees are named explicitly:
+        //   * `.codex`  — the codex standalone package tree (covers `packages/
+        //     standalone/current` → `releases/<ver>/bin/codex`, all under `.codex`).
+        //   * `node-local` — the node toolchain (covers `current` → `node-vX`).
+        //   * `.local/share/claude` — the claude ELF (kimi runs it too).
         for cache in [
             ".cargo",
             ".rustup",
@@ -223,8 +235,24 @@ impl SandboxSpec {
             ".local",
             ".local/share/claude",
             ".local/bin",
+            ".codex",
+            "node-local",
         ] {
-            read_exec_paths.push(home.join(cache));
+            push_ro_resolved(&mut read_exec_paths, home.join(cache));
+        }
+        // The holder/provider binaries above may be reached through a symlink;
+        // also resolve the pty-holder binary itself (an out-of-tree install could
+        // be symlinked). `current_exe` was already pushed as-is above; add its
+        // resolved target so a Full jail still permits the holder to re-exec.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Ok(real) = std::fs::canonicalize(&exe) {
+                if real != exe {
+                    if let Some(parent) = real.parent() {
+                        read_exec_paths.push(parent.to_path_buf());
+                    }
+                    read_exec_paths.push(real);
+                }
+            }
         }
 
         Self {
@@ -238,6 +266,21 @@ impl SandboxSpec {
     pub fn allow_rw(&mut self, path: PathBuf) {
         self.read_write_paths.push(path);
     }
+}
+
+/// Push a RO+exec allow-list entry, adding BOTH the given path and — when it (or
+/// a component) is a symlink — its `canonicalize`d target. Landlock enforces
+/// against the RESOLVED path, so a provider binary reached through a symlink
+/// (`~/.local/bin/codex` → `~/.codex/…`) is only runnable if the real target
+/// tree is on the list. An absent path canonicalizes to an error and only the
+/// literal (harmlessly-absent) entry is kept; the Landlock backend drops it.
+fn push_ro_resolved(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if let Ok(real) = std::fs::canonicalize(&path) {
+        if real != path {
+            paths.push(real);
+        }
+    }
+    paths.push(path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,6 +501,69 @@ pub(crate) fn probe_home() -> PathBuf {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Startup self-test — can a confined child actually BOOT + EXEC on this host?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run the company-confinement self-test ONCE per process (subsequent calls
+/// return the cached result). This is the robust, self-correcting guarantee that
+/// a broken jail can never silently make every company bot un-startable
+/// (companies §4.4).
+///
+/// It forks a throwaway child, applies the **real** company [`ConfinePlan`] for a
+/// temp company root (the same [`SandboxSpec::for_company`] the spawn path uses),
+/// and then actually `execv`s a real binary (`/bin/sh -c "exit 0"`) under it. The
+/// child's exit code reports whether a confined process can BOOT + EXEC on THIS
+/// host: exit 0 ⇒ usable; anything else (the allow-list is insufficient, so the
+/// kernel denied the exec; a wedged child we SIGKILL; a fork/exec failure) ⇒ not
+/// usable.
+///
+/// * On a host that enforces nothing (this box's `@system-service` block, or an
+///   old kernel), `confine` measures `None`, the child is unrestricted, the exec
+///   succeeds, and the test PASSES — company bots then run unconfined via
+///   fail-open, exactly as before.
+/// * On a host that DOES enforce Landlock but whose allow-list cannot exec a real
+///   binary, the confined child's exec is denied → the test FAILS → the spawn
+///   path disables company confinement for this boot (see
+///   [`IsolationRuntime::confinement_usable`] / `company_confinement`), so bots
+///   still start (unconfined) instead of every one dying at exec.
+///
+/// Logs exactly one line (loud warning on failure) the first time it runs.
+pub fn confinement_self_test() -> bool {
+    static TEST: OnceLock<bool> = OnceLock::new();
+    *TEST.get_or_init(|| {
+        let usable = run_confinement_self_test();
+        if usable {
+            tracing::debug!(
+                "isolation self-test: a confined child can boot + exec on this host \
+                 (company confinement enabled where the host enforces it)"
+            );
+        } else {
+            tracing::warn!(
+                "isolation self-test FAILED: a confined child could NOT boot + exec with the \
+                 real company allow-list on this host — company Landlock jail not functional; \
+                 company bots run UNCONFINED this boot. Check the allow-list in \
+                 server/src/isolation (SandboxSpec::for_company)."
+            );
+        }
+        usable
+    })
+}
+
+/// Platform dispatch for [`confinement_self_test`]. On Linux this forks + confines
+/// + execs (the only honest test). Everywhere else the backend does not restrict
+/// the caller (Noop / Seatbelt stub), so a confined child always execs ⇒ `true`.
+fn run_confinement_self_test() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        landlock_linux::self_test_confined_exec(&probe_home())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // IsolationRuntime — the per-process handle stored in AppState
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -468,17 +574,25 @@ pub struct IsolationRuntime {
     mode: IsolationMode,
     probe: ProbeResult,
     provider: Arc<dyn IsolationProvider>,
+    /// The startup self-test result: `true` when a confined child could actually
+    /// BOOT + EXEC on this host with the real company allow-list. `false` disables
+    /// company Landlock confinement for this boot (bots run unconfined) so a
+    /// broken jail can never leave every company bot un-startable (§4.4).
+    confinement_usable: bool,
 }
 
 impl IsolationRuntime {
-    /// Build from the resolved config mode. Runs (or reuses) the startup probe.
+    /// Build from the resolved config mode. Runs (or reuses) the startup probe
+    /// AND the startup confinement self-test.
     pub fn from_mode(mode: IsolationMode) -> Self {
         let provider = active_provider();
         let probe = probe_isolation();
+        let confinement_usable = confinement_self_test();
         Self {
             mode,
             probe,
             provider,
+            confinement_usable,
         }
     }
 
@@ -490,6 +604,13 @@ impl IsolationRuntime {
     /// The probe result (backend + best enforceable level on this host).
     pub fn probe(&self) -> &ProbeResult {
         &self.probe
+    }
+
+    /// Whether the startup self-test proved a confined child can BOOT + EXEC on
+    /// this host. When `false`, the spawn path MUST run company bots unconfined
+    /// (the jail would break them) — see `company_confinement`.
+    pub fn confinement_usable(&self) -> bool {
+        self.confinement_usable
     }
 
     /// Build a [`ConfinePlan`] for a company session rooted at `root_dir`, or
@@ -514,13 +635,29 @@ impl IsolationRuntime {
     /// not strict. The v1 floor is "any enforcement" — `None` fails, `Partial`
     /// and `Full` pass. (A configurable ABI floor is future work.)
     pub fn strict_refusal(&self) -> Option<String> {
-        if self.mode == IsolationMode::StrictRequired && !self.probe.best_level.is_enforced() {
+        if self.mode != IsolationMode::StrictRequired {
+            return None;
+        }
+        if !self.probe.best_level.is_enforced() {
             Some(format!(
                 "isolation_mode=strict-required but this host enforces no OS sandbox \
                  (backend {} measured {}); refusing to start the company session. \
                  On Linux, add SystemCallFilter=@sandbox to supermux.service, or set \
                  isolation_mode=best-effort to run unconfined with a warning.",
                 self.probe.backend, self.probe.best_level,
+            ))
+        } else if !self.confinement_usable {
+            // The host enforces Landlock, but the startup self-test showed a
+            // confined child cannot boot + exec with the real allow-list. Under
+            // strict we REFUSE (fail-closed) rather than silently unconfine; under
+            // best-effort the spawn path unconfines instead (never reaches here).
+            Some(format!(
+                "isolation_mode=strict-required and this host enforces {} but the startup \
+                 self-test showed a confined child cannot boot + exec with the allow-list; \
+                 refusing to start the company session. Fix the allow-list in \
+                 server/src/isolation (SandboxSpec::for_company), or set \
+                 isolation_mode=best-effort to run unconfined with a warning.",
+                self.probe.best_level,
             ))
         } else {
             None
@@ -596,6 +733,98 @@ mod tests {
         assert!(spec.read_exec_paths.contains(&home.join(".cargo")));
         // The company root is NOT in the RO list (it is RW-only).
         assert!(!spec.read_exec_paths.contains(&root));
+    }
+
+    #[test]
+    fn allow_list_includes_provider_binary_trees() {
+        // The broadened allow-list (finding #1) must RO+exec the codex standalone
+        // package tree, the node toolchain, and the claude ELF tree — the provider
+        // binary homes a dev agent execs — so a Full jail can RUN any provider.
+        let home = PathBuf::from("/home/supermux");
+        let spec = SandboxSpec::for_company(Path::new("/srv/companies/acme"), &home);
+        for p in [".codex", "node-local", ".local/share/claude", ".local/bin"] {
+            assert!(
+                spec.read_exec_paths.contains(&home.join(p)),
+                "{p} must be RO+exec on the allow-list: {:?}",
+                spec.read_exec_paths
+            );
+        }
+        // Provider trees are RO, never RW (their writable state lives elsewhere).
+        for p in [".codex", "node-local"] {
+            assert!(
+                !spec.read_write_paths.contains(&home.join(p)),
+                "{p} must NOT be RW"
+            );
+        }
+        // Sibling company trees + the auth token are DENIED (never listed): no
+        // blanket /opt, and ~/.supermux is absent from both lists.
+        assert!(!spec.read_exec_paths.contains(&PathBuf::from("/opt")));
+        assert!(!spec.read_write_paths.contains(&PathBuf::from("/opt")));
+        assert!(!spec
+            .read_exec_paths
+            .contains(&home.join(".supermux/auth_token")));
+        assert!(!spec.read_write_paths.contains(&home.join(".supermux")));
+    }
+
+    #[test]
+    fn push_ro_resolved_adds_both_link_and_target() {
+        // A symlinked provider path must land BOTH the link and its resolved
+        // target on the list (Landlock matches the resolved path). Build a real
+        // symlink under a temp dir and assert both are pushed.
+        let base = std::env::temp_dir().join(format!(
+            "supermux-iso-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let target = base.join("real-tree");
+        let link = base.join("link");
+        std::fs::create_dir_all(&target).expect("mk target");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let mut v = Vec::new();
+        push_ro_resolved(&mut v, link.clone());
+        assert!(v.contains(&link), "the link itself is listed: {v:?}");
+        #[cfg(unix)]
+        {
+            let real = std::fs::canonicalize(&link).expect("canonicalize");
+            assert!(v.contains(&real), "the resolved target is listed too: {v:?}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn confinement_self_test_is_a_bool_and_memoised() {
+        // The startup self-test (finding #2) must return a bool without panicking,
+        // and be idempotent (cached). On THIS box Landlock is @system-service-
+        // blocked, so confine measures None, the confined child is unrestricted,
+        // its `/bin/sh -c "exit 0"` execs, and the test PASSES (true). We assert
+        // the contract (a stable bool), not a host-specific value — except that a
+        // host where the self-test child can exec must report true.
+        let a = confinement_self_test();
+        let b = confinement_self_test();
+        assert_eq!(a, b, "self-test must be memoised (stable across calls)");
+        // The runtime surfaces it, and on a host that enforces nothing the
+        // self-test passes (unrestricted child execs fine).
+        let rt = IsolationRuntime::from_mode(IsolationMode::BestEffort);
+        assert_eq!(rt.confinement_usable(), a);
+        if !rt.probe().best_level.is_enforced() {
+            assert!(
+                rt.confinement_usable(),
+                "a host that enforces nothing must pass the self-test (child execs unconfined)"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_refuses_when_self_test_fails_but_best_effort_never_does() {
+        // strict_refusal must fire under StrictRequired whenever confinement is
+        // not usable OR the host is unenforced; BestEffort never refuses (it
+        // unconfines instead, handled in company_confinement).
+        let best = IsolationRuntime::from_mode(IsolationMode::BestEffort);
+        assert!(best.strict_refusal().is_none());
     }
 
     #[test]

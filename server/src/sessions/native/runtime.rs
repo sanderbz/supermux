@@ -351,6 +351,25 @@ impl NativeSession {
     ) -> Result<bool> {
         let confined = plan.is_some();
         match self.spawn_holder_once(dir, env, shell, plan).await {
+            // The confined holder BOOTED. Belt-and-suspenders agent-exec fail-safe
+            // (companies §4.4): the holder itself came up, but a jailed AGENT whose
+            // provider binary is not reachable under the Landlock allow-list execs,
+            // fails immediately, and the holder's child dies within a short window.
+            // Watch that window; if the session died abnormally right after boot,
+            // retry UNCONFINED so the bot still starts and record the degradation.
+            Ok(()) if confined => {
+                if self.confined_agent_died_quickly().await && !self.alive().await {
+                    tracing::error!(
+                        session = %self.name,
+                        "company isolation degraded: the confined agent exited immediately \
+                         after boot (provider binary likely unreachable under the Landlock \
+                         jail), retrying UNCONFINED — check the allow-list (server/src/isolation)"
+                    );
+                    self.spawn_holder_once(dir, env, shell, None).await?;
+                    return Ok(true);
+                }
+                Ok(false)
+            }
             Ok(()) => Ok(false),
             // FAIL-SAFE (companies §4.4): a company bot must NEVER be left
             // un-startable because of isolation. If the confined holder could not
@@ -375,6 +394,26 @@ impl NativeSession {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// After a confined holder BOOTS, watch a short window for the AGENT exiting
+    /// abnormally — the failure mode the holder-boot fail-safe cannot see, where
+    /// the holder came up but the jailed provider binary is unreachable, so the
+    /// holder's child execs, fails, and dies within milliseconds. Returns `true`
+    /// if the session died inside the window. A session that stays alive (the
+    /// normal case) returns `false` after the window; the bounded wait keeps the
+    /// added start latency small and never fires on a healthy long-running agent.
+    async fn confined_agent_died_quickly(&self) -> bool {
+        const WINDOW: Duration = Duration::from_millis(400);
+        const STEP: Duration = Duration::from_millis(20);
+        let deadline = std::time::Instant::now() + WINDOW;
+        while std::time::Instant::now() < deadline {
+            if self.dead().await {
+                return true;
+            }
+            tokio::time::sleep(STEP).await;
+        }
+        false
     }
 
     /// One holder-spawn attempt with an optional confinement `plan`. The retry

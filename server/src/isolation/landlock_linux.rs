@@ -183,6 +183,109 @@ pub(crate) fn fork_probe(provider: &dyn IsolationProvider) -> IsolationLevel {
     wait_for_probe_child(pid)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Startup confinement self-test (fork → confine → EXEC a real binary)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fork a child, apply the REAL company [`SandboxSpec`] for a temp company root,
+/// and `execv` a real binary (`/bin/sh -c "exit 0"`) under the confinement.
+/// Returns `true` iff the confined child could boot + exec (child exit 0).
+///
+/// This is the honest, self-correcting guarantee: it mirrors exactly what a real
+/// company holder does — confine (BestEffort: fail-open on a confine error, so a
+/// blocked/mechanism-less host still execs), then exec a real binary. If a Full
+/// jail's allow-list cannot exec, the kernel denies the exec, the child exits
+/// non-zero, and the caller disables confinement for this boot so bots still
+/// start. Runs in the PARENT; never restricts the daemon (the child `_exit`s /
+/// `execv`s and never returns into the Rust runtime).
+///
+/// `home` supplies the toolchain/provider paths for the spec (same as the spawn
+/// path). A temp company root under `home` is created (RW-allowed) so the spec is
+/// realistic; it is removed after the fork.
+pub(crate) fn self_test_confined_exec(home: &Path) -> bool {
+    use std::path::PathBuf;
+
+    // A realistic temp company root (RW-allowed) under $HOME. Cleaned up after.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root: PathBuf = home.join(format!(".supermux-iso-selftest-{}-{}", std::process::id(), nanos));
+    let created_root = std::fs::create_dir_all(&root).is_ok();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = created_root.then(|| Cleanup(root.clone()));
+
+    // Build the REAL company allow-list + the exec target in the PARENT (all
+    // allocation before the fork; the child only does libc syscalls + _exit).
+    let spec = SandboxSpec::for_company(&root, home);
+    let sh = std::ffi::CString::new("/bin/sh").unwrap();
+    let arg0 = std::ffi::CString::new("sh").unwrap();
+    let dashc = std::ffi::CString::new("-c").unwrap();
+    let prog = std::ffi::CString::new("exit 0").unwrap();
+
+    // SAFETY: mirrors `fork_probe` — the child runs only Landlock syscalls and
+    // `execv`/`_exit` on pre-owned paths; it never returns into the Rust runtime.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // ── child ── Confine (BestEffort fail-open: a confine error still execs,
+        // matching `ConfinePlan::apply_in_child` under the default mode), then
+        // exec a real binary. A Full jail whose allow-list denies the exec makes
+        // execv fail ⇒ we _exit(127) ⇒ the caller reads "not usable".
+        let _ = LandlockLinux.confine(&spec);
+        let argv = [arg0.as_ptr(), dashc.as_ptr(), prog.as_ptr(), std::ptr::null()];
+        unsafe {
+            libc::execv(sh.as_ptr(), argv.as_ptr());
+            // execv only returns on failure (e.g. the jail denied it).
+            libc::_exit(127);
+        }
+    }
+    if pid < 0 {
+        // fork failed — cannot prove a confined child boots; be conservative and
+        // report NOT usable so bots run unconfined rather than risk a broken jail.
+        tracing::warn!("isolation self-test: fork() failed; reporting confinement not usable");
+        return false;
+    }
+
+    // ── parent ── bounded reap; exit 0 ⇒ usable.
+    self_test_exit_ok(pid)
+}
+
+/// Reap the self-test child with a bounded poll. `true` iff it exited 0. A wedged
+/// child is SIGKILLed and reaped and reported as NOT usable (so a hang can neither
+/// block boot nor enable a jail we could not verify).
+fn self_test_exit_ok(pid: libc::pid_t) -> bool {
+    const MAX_POLLS: u32 = 200; // ≈2s
+    const POLL_SLEEP: std::time::Duration = std::time::Duration::from_millis(10);
+
+    for _ in 0..MAX_POLLS {
+        let mut status: libc::c_int = 0;
+        // SAFETY: waitpid(2) with WNOHANG on a child we forked.
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            let exited = (status & 0x7f) == 0;
+            let code = (status >> 8) & 0xff;
+            return exited && code == 0;
+        }
+        if r < 0 {
+            return false;
+        }
+        std::thread::sleep(POLL_SLEEP);
+    }
+    tracing::warn!("isolation self-test: child did not exit in time; killing and reporting not usable");
+    // SAFETY: kill(2)/waitpid(2) on our own child pid.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        let mut status: libc::c_int = 0;
+        libc::waitpid(pid, &mut status, 0);
+    }
+    false
+}
+
 /// Reap the probe child with a bounded poll (≈1.5s). If it does not exit in
 /// time it is SIGKILLed and reaped, and we report `None`.
 fn wait_for_probe_child(pid: libc::pid_t) -> IsolationLevel {
