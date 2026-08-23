@@ -183,9 +183,15 @@ impl SessionConfig {
         self.active = true;
         self.mcp_servers
             .insert(crate::connectors::connect_server::SERVER_KEY.to_string(), emit);
-        let rule = Value::String("mcp__connect__connect".to_string());
-        if !self.allow_rules.contains(&rule) {
-            self.allow_rules.push(rule);
+        // Allow-list BOTH tools: the interactive `connect` (still stops for the human
+        // via its `requiresUserInteraction` marker) and the NON-interactive
+        // `list_connectors` (P2d — a plain read that auto-approves, never routed to
+        // the human).
+        for rule in ["mcp__connect__connect", "mcp__connect__list_connectors"] {
+            let r = Value::String(rule.to_string());
+            if !self.allow_rules.contains(&r) {
+                self.allow_rules.push(r);
+            }
         }
     }
 
@@ -463,10 +469,34 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
     // server is materialized best-effort; a write failure just omits the affordance
     // rather than failing the launch.
     if cfg.is_active() {
-        if let Some(path) =
+        if let Some(server) =
             crate::connectors::connect_server::ensure(&state.config.data_dir).await
         {
-            cfg.apply_connect_affordance(crate::connectors::connect_server::emit(&path));
+            // P2d — inject a secret-free, company-scoped catalog SNAPSHOT the bot's
+            // `list_connectors` tool reads. Scope comes from the bot's OWN session
+            // row: a company bot (company_id Some) resolves its company's oauth-app
+            // effects; an HQ/omniscient bot (NULL) resolves the global set. This is
+            // the ONLY place that knows the session AND its company, and it is under
+            // `is_active()`, so a plain pane never gets a snapshot (invariant holds).
+            let scope = match crate::db::sessions::get(&state.pool, session_name).await? {
+                Some(s) => match s.company_id {
+                    Some(c) => crate::scope::Scope::Company(c),
+                    None => crate::scope::Scope::All,
+                },
+                None => crate::scope::Scope::All,
+            };
+            let snapshot = crate::connectors::connect_server::build_snapshot(state, scope).await;
+            let session_dir = state
+                .config
+                .data_dir
+                .join("session-config")
+                .join(session_name);
+            let snap_path =
+                crate::connectors::connect_server::write_snapshot(&session_dir, &snapshot).await;
+            cfg.apply_connect_affordance(crate::connectors::connect_server::emit(
+                &server,
+                snap_path.as_deref(),
+            ));
         }
     }
 
@@ -818,9 +848,10 @@ mod tests {
         let mut cfg = SessionConfig::new(&dir, "ada");
         // A bot with one granted connector AND the connect affordance.
         cfg.apply_connectors(&[resolved("pmcp-notion", None)]);
-        let emit = crate::connectors::connect_server::emit(std::path::Path::new(
-            "/data/connectors/connect/server.py",
-        ));
+        let emit = crate::connectors::connect_server::emit(
+            std::path::Path::new("/data/connectors/connect/server.py"),
+            None,
+        );
         cfg.apply_connect_affordance(emit);
         let fin = cfg.finish().await.unwrap().expect("active");
 
@@ -851,6 +882,147 @@ mod tests {
             allow.contains(&json!("mcp__connect__connect")),
             "connect tool allow-listed: {allow:?}"
         );
+        // P2d: the NON-interactive discovery read is allow-listed alongside connect.
+        assert!(
+            allow.contains(&json!("mcp__connect__list_connectors")),
+            "list_connectors tool allow-listed: {allow:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P2d: `apply_connect_affordance` allow-lists BOTH the interactive `connect`
+    /// and the non-interactive `list_connectors`, and adds each only once.
+    #[tokio::test]
+    async fn connect_affordance_allow_lists_both_tools() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "ada");
+        cfg.apply_connect_affordance(crate::connectors::connect_server::emit(
+            std::path::Path::new("/x/server.py"),
+            Some(std::path::Path::new("/x/connect/catalog.json")),
+        ));
+        // Idempotent-ish: re-applying doesn't duplicate the rules.
+        cfg.apply_connect_affordance(crate::connectors::connect_server::emit(
+            std::path::Path::new("/x/server.py"),
+            Some(std::path::Path::new("/x/connect/catalog.json")),
+        ));
+        let fin = cfg.finish().await.unwrap().expect("active");
+        // The snapshot path rides argv[1] of the connect server.
+        let v = mcp_config_json(&fin);
+        assert_eq!(
+            v["mcpServers"]["connect"]["args"][1],
+            json!("/x/connect/catalog.json"),
+            "snapshot path is args[1]"
+        );
+        assert!(
+            v["mcpServers"]["connect"].get("env").is_none(),
+            "connect still carries no env (catalog path is argv, not env)"
+        );
+        let text = std::fs::read_to_string(dir.join("session-config/ada/settings.json")).unwrap();
+        let s: Value = serde_json::from_str(&text).unwrap();
+        let allow = s["permissions"]["allow"].as_array().unwrap();
+        let both = |r: &str| allow.iter().filter(|x| *x == &json!(r)).count();
+        assert_eq!(both("mcp__connect__connect"), 1, "connect once: {allow:?}");
+        assert_eq!(both("mcp__connect__list_connectors"), 1, "list_connectors once: {allow:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P2d: a bot launch writes the secret-free snapshot at
+    /// `session-config/<name>/connect/catalog.json` (0600), and the connect
+    /// server's `args[1]` points at it.
+    #[tokio::test]
+    async fn assemble_writes_snapshot_only_for_a_bot() {
+        let (state, dir) = browser_state().await;
+        // A memory bot (no connector grants) is active → gets the connect affordance
+        // + snapshot. Seed a sensitive-credential connector so the snapshot has a row
+        // to project (and we can prove it stays secret-free).
+        connectors::upsert(
+            &state.pool,
+            "pmcp-github",
+            "mcp_catalog",
+            "GitHub",
+            "",
+            "",
+            "[]",
+            &json!([{ "key": "GITHUB_TOKEN", "sensitive": true }]).to_string(),
+            "{}",
+            &json!({ "imported": true }).to_string(),
+        )
+        .await
+        .unwrap();
+        // Insert a bot session with memory so `assemble` activates.
+        crate::db::sessions::insert_minimal(&state.pool, "botly", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET memory = 1 WHERE name = 'botly'")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let fin = assemble(&state, "botly")
+            .await
+            .unwrap()
+            .expect("a memory bot is active");
+
+        // The connect server rides argv with args[1] = the snapshot path.
+        let cfg = mcp_config_json(&fin);
+        let snap_arg = cfg["mcpServers"]["connect"]["args"][1]
+            .as_str()
+            .expect("connect server carries a snapshot path");
+        let snap_path = dir.join("session-config/botly/connect/catalog.json");
+        assert_eq!(snap_arg, snap_path.to_string_lossy());
+        assert!(snap_path.exists(), "snapshot written to disk");
+
+        // 0600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&snap_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "snapshot must be 0600");
+        }
+
+        // Secret-free + concierge shape.
+        let raw = std::fs::read_to_string(&snap_path).unwrap();
+        assert!(!raw.contains("secret_ref"), "no secret_ref in snapshot: {raw}");
+        // Key-match: a help_url may legitimately contain the word "credentials".
+        assert!(!raw.contains("\"credentials\""), "no credentials schema in snapshot");
+        assert!(!raw.contains("GITHUB_TOKEN"), "no token field name in snapshot");
+        let snap: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(snap["version"], json!(1));
+        assert_eq!(snap["scope"], json!("hq"), "an HQ bot (company_id NULL) is hq-scoped");
+        let gh = snap["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == json!("pmcp-github"))
+            .expect("github projected into the snapshot");
+        // Only the concierge keys — never a secret.
+        for k in gh.as_object().unwrap().keys() {
+            assert!(
+                ["id", "name", "description", "tool_count", "auth_kind", "ease", "help_url", "help_text", "how_to"]
+                    .contains(&k.as_str()),
+                "unexpected snapshot key {k}"
+            );
+        }
+        assert_eq!(gh["auth_kind"], json!("api_key"), "no oauth app → api_key");
+        assert_eq!(gh["ease"], json!("key"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P2d byte-identical invariant: a no-grant/no-memory pane gets NO snapshot,
+    /// no session-config dir, and `assemble` returns `None`.
+    #[tokio::test]
+    async fn no_snapshot_for_a_plain_pane() {
+        let (state, dir) = browser_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "plainpane", "/tmp", "claude")
+            .await
+            .unwrap();
+        let fin = assemble(&state, "plainpane").await.unwrap();
+        assert!(fin.is_none(), "a plain pane stays byte-identical");
+        assert!(
+            !dir.join("session-config").exists(),
+            "no session-config dir, so no connect/catalog.json"
+        );
+        assert!(!dir.join("session-config/plainpane/connect/catalog.json").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -866,6 +1038,7 @@ mod tests {
         assert!(cfg.is_active());
         cfg.apply_connect_affordance(crate::connectors::connect_server::emit(
             std::path::Path::new("/x/server.py"),
+            None,
         ));
         let fin = cfg.finish().await.unwrap().expect("active");
         let json_arg = &fin.launch_flags[1];

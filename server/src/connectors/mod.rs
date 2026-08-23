@@ -50,7 +50,7 @@ pub const REQUIRES_USER_INTERACTION_META: &str = "anthropic/requiresUserInteract
 pub fn connect_tool_descriptor(service: &str) -> Value {
     json!({
         "name": "connect",
-        "description": format!("Connect the '{service}' connector (opens a secure sign-in / API-key card; the credential is stored in the supermux vault and never shown to the agent)."),
+        "description": format!("Connect the '{service}' connector so its tools become available to you. TIP: call list_connectors FIRST to find the right connector id and how it signs in, explain it to the human in plain language, then connect. This opens a secure sign-in / API-key card; the credential is stored in the supermux vault and never shown to the agent. After the human finishes, the connector's tools (mcp__<service>__*) appear on your next turn — retry then and confirm it works."),
         "inputSchema": {
             "type": "object",
             "properties": {

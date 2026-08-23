@@ -130,6 +130,24 @@ mod tests {
     }
 
     #[test]
+    fn list_connectors_never_raises_the_connect_card() {
+        // P2d: the discovery read `mcp__connect__list_connectors` ends in
+        // `__list_connectors`, NOT `__connect`, and carries no `service` — so it can
+        // never be mistaken for the credential affordance, even if a `service` arg
+        // is somehow present (belt-and-suspenders).
+        assert!(parse(&payload(json!({
+            "tool_name": "mcp__connect__list_connectors",
+            "tool_input": {}
+        })))
+        .is_none());
+        assert!(parse(&payload(json!({
+            "tool_name": "mcp__connect__list_connectors",
+            "tool_input": { "service": "pmcp-github" }
+        })))
+        .is_none());
+    }
+
+    #[test]
     fn an_ordinary_tool_call_is_ignored() {
         assert!(parse(&payload(json!({
             "tool_name": "Bash",

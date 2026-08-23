@@ -29,7 +29,7 @@ use super::manifest::{valid_connector_id, CredentialField, Manifest};
 /// `oauth_apps` + `scope` are threaded through so the P2a context-aware
 /// [`derive_auth`] can flip a provider-backed connector to `oauth_device` when an
 /// OAuth app is registered for the caller's scope (else it keeps its current lane).
-fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
+pub(crate) fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
     json!({
         "id": c.id,
         "kind": c.kind,
@@ -59,7 +59,7 @@ fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Val
 /// installed catalog card keeps its Lane even though the install didn't carry it)
 /// → a shape-derivation from the credential schema (identity+secret ⇒ `form`, a
 /// lone secret ⇒ `api_key`, nothing to seal ⇒ `none` — no fake sign-in).
-fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
+pub(crate) fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
     // 0) P2a — a provider-backed, non-`mcp_oauth` connector upgrades to a
     //    supermux-driven device sign-in WHEN an OAuth app is registered for the
     //    caller's scope (their active company, else the HQ/global app). If none is

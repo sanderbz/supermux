@@ -13,9 +13,17 @@ connector it wants; the secret plane is entirely out of band.
 
 This is the SERVER BINARY the store injects into every bot launch so a real agent
 actually HAS a `connect` tool in its toolset (connector-store spec §8 step 2;
-round-2 jury, claim 5 — the tool-exposure half). It is deliberately tiny: one
-tool, no credentials, no network, stdlib only, so it ships as one embedded file
+round-2 jury, claim 5 — the tool-exposure half). It is deliberately tiny: two
+tools, no credentials, no network, stdlib only, so it ships as one embedded file
 the way the agent-authored iCloud server does.
+
+The second tool, `list_connectors` (P2d), is the CONCIERGE discovery half: a plain,
+NON-interactive read of a secret-free, company-scoped catalog snapshot the launch
+path drops next to this server (`python3 <server.py> <catalog.json>` → the snapshot
+path arrives as `sys.argv[1]`). It carries NO `requiresUserInteraction` marker, so
+it never routes to the human — the bot calls it to learn WHICH connector id it wants
+and HOW that connector signs in, explains it in plain language, and only THEN calls
+the interactive `connect(<id>)`.
 
 Transport: MCP stdio — newline-delimited JSON-RPC 2.0. One message per line on
 stdin; one JSON object per line on stdout. Nothing but protocol JSON is written
@@ -46,20 +54,21 @@ REQUIRES_USER_INTERACTION_META = "anthropic/requiresUserInteraction"
 CONNECT_TOOL = {
     "name": "connect",
     "description": (
-        "Connect a connector so its tools become available to you. Pass the "
-        "connector id as `service` (e.g. 'pmcp-notion', 'pmcp-github', "
-        "'icloud-mail'). This opens a secure sign-in / API-key card for the "
-        "human: the credential is stored in the supermux vault and is NEVER "
-        "shown to you. After the human completes the card, the connector's own "
-        "tools (mcp__<service>__*) appear on your next turn — retry your task "
-        "then."
+        "Connect an external service so its tools become available to you. FIRST "
+        "call `list_connectors` to find the right connector `id` and how it signs "
+        "in, and explain it to the human in plain language. Then call `connect` "
+        "with that id as `service` (e.g. 'pmcp-github', 'pmcp-notion', "
+        "'icloud-mail'). This opens a secure sign-in / API-key card for the human: "
+        "the credential is stored in the supermux vault and is NEVER shown to you. "
+        "After they finish, the connector's own tools (mcp__<service>__*) appear on "
+        "your next turn — retry your task then, and confirm it works."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
             "service": {
                 "type": "string",
-                "description": "The connector id to connect (from the store).",
+                "description": "The connector id to connect (from list_connectors).",
             }
         },
         "required": ["service"],
@@ -67,7 +76,56 @@ CONNECT_TOOL = {
     "_meta": {REQUIRES_USER_INTERACTION_META: True},
 }
 
-TOOLS = [CONNECT_TOOL]
+# P2d — the discovery half. A plain, NON-interactive read (NO interaction marker,
+# so it never routes to the human) that returns the injected, secret-free catalog
+# snapshot: which connectors exist and HOW each one signs in.
+LIST_TOOL = {
+    "name": "list_connectors",
+    "description": (
+        "List the external services (connectors) you can connect for the human, and "
+        "HOW each one signs in. Call this FIRST whenever the user wants their bot to "
+        "use an outside service (email, GitHub, Slack, a database, …): find the right "
+        "connector `id` and its sign-in method, explain it in plain language (there is "
+        "a one-time app setup only where noted), THEN call connect(<id>) to show the "
+        "sign-in card, and confirm it works afterwards. Each entry carries id, name, "
+        "what it does, tool_count, auth_kind, ease, and a one-line how_to. Honest by "
+        "lane: mcp_oauth signs in right in the bot's terminal (nothing to paste); "
+        "oauth_device uses a short device code approved in a browser; api_key/form "
+        "means paste a key/DSN (with a get-it link); none needs no sign-in. Read-only "
+        "— this does NOT sign anything in or ask the human anything."
+    ),
+    "inputSchema": {"type": "object", "properties": {}},
+    # NO _meta: this is a normal read, never routed to the human.
+}
+
+TOOLS = [CONNECT_TOOL, LIST_TOOL]
+
+# The honest fallback when no snapshot was injected (or it can't be read).
+NO_CATALOG_NOTE = "No connector catalog was provided to this bot."
+
+
+def _list_connectors_text():
+    """Return the injected catalog snapshot's `connectors` array as pretty JSON.
+
+    The snapshot path is `sys.argv[1]` (the launch runs `python3 <server.py>
+    <catalog.json>`). It is read at CALL time (small file; picks up a snapshot
+    written slightly after spawn). Any miss — no argv, missing file, bad JSON, an
+    OSError — degrades to an empty list with a note and NEVER raises; the snapshot
+    is secret-free, so nothing sensitive is ever surfaced here."""
+    path = sys.argv[1] if len(sys.argv) > 1 else None
+    if not path:
+        return json.dumps(
+            {"connectors": [], "note": NO_CATALOG_NOTE}, indent=2, ensure_ascii=False
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+        connectors = snap.get("connectors", []) if isinstance(snap, dict) else []
+        return json.dumps({"connectors": connectors}, indent=2, ensure_ascii=False)
+    except (OSError, ValueError):
+        return json.dumps(
+            {"connectors": [], "note": NO_CATALOG_NOTE}, indent=2, ensure_ascii=False
+        )
 
 
 def _connect_result(service):
@@ -142,12 +200,16 @@ def _handle(msg):
         params = msg.get("params") or {}
         name = params.get("name")
         args = params.get("arguments") or {}
-        if name != "connect":
-            _error(req_id, -32602, f"unknown tool: {name}")
+        if name == "connect":
+            payload = _connect_result(args.get("service"))
+            text = json.dumps(payload, indent=2, ensure_ascii=False)
+            _result(req_id, {"content": [{"type": "text", "text": text}]})
             return
-        payload = _connect_result(args.get("service"))
-        text = json.dumps(payload, indent=2, ensure_ascii=False)
-        _result(req_id, {"content": [{"type": "text", "text": text}]})
+        if name == "list_connectors":
+            # A plain read: return the injected snapshot, never route to the human.
+            _result(req_id, {"content": [{"type": "text", "text": _list_connectors_text()}]})
+            return
+        _error(req_id, -32602, f"unknown tool: {name}")
         return
 
     if is_notification:
