@@ -13,11 +13,23 @@ import { sessionRequest } from './sessions'
 
 // ── Wire types (mirror the Rust `Serialize` structs) ─────────────────────────
 
-/** `POST /api/external-access/cf-token` result. Never echoes the token. */
+/** `POST /api/external-access/cf-token` result. Never echoes the token. The zone
+ *  is no longer known at token-verify time — the operator picks a base domain from
+ *  `zones()` in the next wizard step, which is where Zone:Read is proven. */
 export interface CfTokenResult {
   valid: boolean
   account_id: string
-  zone_id: string
+}
+
+/** `GET /api/external-access/zones` result — the apex names the saved CF token
+ *  controls (never ids/token). The wizard's "Choose your domain" step lists these. */
+export interface ZonesResult {
+  zones: string[]
+}
+
+/** `POST /api/external-access/base-domain` result — the persisted base domain. */
+export interface BaseDomainResult {
+  base_domain: string
 }
 
 /** `POST /api/external-access/provision-tunnel` result. `connector` is
@@ -38,6 +50,10 @@ export interface BoxStatus {
   dns_ok: boolean
   /** `unset` | `configured`. */
   google: string
+  /** The operator's chosen base domain (a CF zone they control), e.g. `example.com`.
+   *  Absent/`null` ⇒ the "Choose your domain" sub-step has not run yet (fail-closed:
+   *  external access is not configured until this is set). */
+  base_domain?: string | null
 }
 
 /** Per-company external-access state (present when `company_id` is passed). */
@@ -119,11 +135,25 @@ export const externalAccessApi = {
     ),
 
   /** `POST /api/external-access/cf-token` — verify + store the Cloudflare API
-   *  token (0600, never echoed). Returns `{valid, account_id, zone_id}`. */
+   *  token (0600, never echoed). Returns `{valid, account_id}`. */
   cfToken: (token: string): Promise<CfTokenResult> =>
     sessionRequest('/api/external-access/cf-token', {
       method: 'POST',
       body: JSON.stringify({ token }),
+    }),
+
+  /** `GET /api/external-access/zones` — the DNS zones the saved CF token controls,
+   *  the operator's base-domain choices. Names only; never the token. */
+  zones: (): Promise<ZonesResult> =>
+    sessionRequest<ZonesResult>('/api/external-access/zones'),
+
+  /** `POST /api/external-access/base-domain` — persist the chosen base domain
+   *  (server re-checks it is a zone the token controls; fail-closed on a typo),
+   *  hot-reloading the live config. Returns `{base_domain}`. */
+  setBaseDomain: (base_domain: string): Promise<BaseDomainResult> =>
+    sessionRequest('/api/external-access/base-domain', {
+      method: 'POST',
+      body: JSON.stringify({ base_domain }),
     }),
 
   /** `POST /api/external-access/provision-tunnel` — idempotent one-time wildcard

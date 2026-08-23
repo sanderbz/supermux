@@ -12,13 +12,17 @@
 //
 // Entry condition is chosen by `?entry=A|B|C` (default A) so a reviewer can see
 // each of the three resumable starting points the design specifies:
-//   A — box has NO external access        → Domain → Google → Add person → Success
+//   A — box has NO external access        → Domain (token → Choose domain → tunnel) → …
 //   B — box set up, company not yet wired  → "add one URL" mini Google step → …
 //   C — company already reachable+verified → Add person → Success (repeat invite)
+//
+// `?zones=multi` returns TWO zones from `zones()` so the reviewer can see the
+// pick-one radio list; the default returns ONE, exercising the auto-select+confirm.
 
 import type {
   AddHumanInput,
   AddHumanResult,
+  BaseDomainResult,
   CfTokenResult,
   ExternalStatus,
   GoogleResult,
@@ -26,6 +30,7 @@ import type {
   HumanInvitee,
   ProvisionResult,
   VerifyLoginResult,
+  ZonesResult,
 } from '@/lib/api'
 import { SessionError } from '@/lib/api'
 
@@ -37,8 +42,14 @@ function readEntry(): Entry {
   return e === 'B' || e === 'C' ? e : 'A'
 }
 
+function multiZones(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('zones') === 'multi'
+}
+
 interface MockState {
   cfToken: 'none' | 'valid'
+  baseDomain: string | null // chosen in the "Choose your domain" sub-step (null ⇒ unset)
   provisionedAt: number | null // when provision-tunnel was called (drives connecting→healthy)
   google: 'unset' | 'configured'
   hostWritten: boolean
@@ -48,13 +59,21 @@ interface MockState {
 }
 
 const CONNECT_MS = 2500 // connecting → healthy dwell, long enough to SEE the spinner
-const HOST = 'acme.s.iwd.nl'
-const REDIRECT = 'https://acme.s.iwd.nl/auth/callback'
+const SLUG = 'acme'
+
+/** Host / redirect derived from the CHOSEN base domain — empty until one is set,
+ *  mirroring the server's fail-closed `CompanyStatus` (never a fake host). */
+function derived(baseDomain: string | null): { host: string; redirect: string } {
+  if (!baseDomain) return { host: '', redirect: '' }
+  const host = `${SLUG}.${baseDomain}`
+  return { host, redirect: `https://${host}/auth/callback` }
+}
 
 function initialState(entry: Entry): MockState {
   const now = Date.now()
   const base: MockState = {
     cfToken: 'none',
+    baseDomain: null,
     provisionedAt: null,
     google: 'unset',
     hostWritten: false,
@@ -64,6 +83,7 @@ function initialState(entry: Entry): MockState {
   }
   if (entry === 'B' || entry === 'C') {
     base.cfToken = 'valid'
+    base.baseDomain = 'example.com' // already chosen
     base.provisionedAt = now - CONNECT_MS - 1000 // already healthy
     base.google = 'configured'
   }
@@ -106,23 +126,25 @@ function tunnelPhase(): 'none' | 'connecting' | 'healthy' {
 export const externalAccessMock = {
   async status(companyId?: number): Promise<ExternalStatus> {
     const tunnel = tunnelPhase()
+    const { host, redirect } = derived(state.baseDomain)
     const out: ExternalStatus = {
       box_status: {
         cf_token: state.cfToken,
         tunnel,
         dns_ok: tunnel === 'healthy',
         google: state.google,
+        base_domain: state.baseDomain,
       },
     }
     if (companyId != null) {
       const verified = state.verifyAttempts >= 2
       out.company = {
         company_id: companyId,
-        company_host_written: state.hostWritten || state.google === 'configured',
+        company_host_written: state.baseDomain != null && (state.hostWritten || state.google === 'configured'),
         redirect_registered: verified ? 'ok' : state.verifyAttempts > 0 ? 'mismatch' : 'unknown',
         reachable: verified && tunnel === 'healthy',
-        host: HOST,
-        redirect_uri: REDIRECT,
+        host, // '' until a base domain is chosen — never a fake host
+        redirect_uri: redirect,
       }
     }
     return out
@@ -137,7 +159,23 @@ export const externalAccessMock = {
       throw new SessionError('Token active but missing DNS · Edit — recreate it with the listed scopes.', 400)
     }
     state.cfToken = 'valid'
-    return { valid: true, account_id: 'a1b2c3d4e5f6a7b8c9d0', zone_id: 'z9y8x7w6v5u4t3s2r1q0' }
+    return { valid: true, account_id: 'a1b2c3d4e5f6a7b8c9d0' }
+  },
+
+  async zones(): Promise<ZonesResult> {
+    await wait(500)
+    return { zones: multiZones() ? ['example.com', 'other.test'] : ['example.com'] }
+  },
+
+  async setBaseDomain(baseDomain: string): Promise<BaseDomainResult> {
+    await wait(450)
+    const allowed = multiZones() ? ['example.com', 'other.test'] : ['example.com']
+    const d = baseDomain.trim().toLowerCase()
+    if (!allowed.includes(d)) {
+      throw new SessionError(`${d} isn’t a domain this Cloudflare token controls — pick one from the list.`, 400)
+    }
+    state.baseDomain = d
+    return { base_domain: d }
   },
 
   async provisionTunnel(): Promise<ProvisionResult> {
@@ -146,7 +184,7 @@ export const externalAccessMock = {
     return {
       tunnel_id: 'e1a2b3c4-5678-90ab-cdef-1234567890ab',
       connector: 'started',
-      reachable_host: HOST,
+      reachable_host: `*.${state.baseDomain ?? 'example.com'}`,
     }
   },
 
@@ -166,19 +204,21 @@ export const externalAccessMock = {
   async host(_companyId?: number): Promise<HostResult> {
     await wait(400)
     state.hostWritten = true
-    return { host: HOST, redirect_uri: REDIRECT }
+    const { host, redirect } = derived(state.baseDomain)
+    return { host, redirect_uri: redirect }
   },
 
   async verifyLogin(_companyId?: number): Promise<VerifyLoginResult> {
     await wait(800)
+    const { redirect } = derived(state.baseDomain)
     state.verifyAttempts += 1
     if (state.verifyAttempts >= 2) {
-      return { ok: true, detail: 'Google recognises this address.', redirect_uri: REDIRECT }
+      return { ok: true, detail: 'Google recognises this address.', redirect_uri: redirect }
     }
     return {
       ok: false,
-      detail: `Google doesn’t recognise ${REDIRECT} yet — add it under Authorized redirect URIs and press Check again.`,
-      redirect_uri: REDIRECT,
+      detail: `Google doesn’t recognise ${redirect} yet — add it under Authorized redirect URIs and press Check again.`,
+      redirect_uri: redirect,
     }
   },
 
@@ -203,7 +243,7 @@ export const externalAccessMock = {
         role: r.role,
         created_at: r.created_at,
       },
-      login_url: `https://${HOST}`,
+      login_url: `https://${derived(state.baseDomain).host}`,
     }
   },
 

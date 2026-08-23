@@ -17,6 +17,7 @@ import {
   type AddHumanInput,
   type ExternalStatus,
   type HumanInvitee,
+  type ZonesResult,
 } from '@/lib/api'
 import { devMockActive } from '@/hooks/use-sessions'
 
@@ -30,6 +31,9 @@ async function mockClient() {
 
 export function externalStatusKey(companyId?: number) {
   return ['external-status', companyId ?? null] as const
+}
+export function externalZonesKey() {
+  return ['external-zones'] as const
 }
 export function companyHumansKey(companyId: number) {
   return ['company-humans', companyId] as const
@@ -106,6 +110,51 @@ export function useProvisionTunnel(companyId?: number) {
     mutationFn: async () => {
       if (devMockActive()) return (await mockClient()).provisionTunnel()
       return externalAccessApi.provisionTunnel()
+    },
+    onSuccess: invalidate,
+  })
+}
+
+// ── Step 1b — Choose your domain (CF zone auto-discovery) ──────────────────────
+
+export interface UseZonesResult {
+  zones: string[]
+  isLoading: boolean
+  isError: boolean
+  error: unknown
+  refetch: () => void
+}
+
+/** `GET /api/external-access/zones` — the base-domain choices the saved CF token
+ *  controls. `enabled` should be flipped on only once the token is valid AND the
+ *  base domain is still unset, so we never hit CF before there is a token. */
+export function useZones(opts: { enabled?: boolean } = {}): UseZonesResult {
+  const query = useQuery({
+    queryKey: externalZonesKey(),
+    queryFn: async (): Promise<ZonesResult> => {
+      if (devMockActive()) return (await mockClient()).zones()
+      return externalAccessApi.zones()
+    },
+    enabled: opts.enabled ?? false,
+    staleTime: 30_000,
+  })
+  return {
+    zones: query.data?.zones ?? [],
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error,
+    refetch: () => void query.refetch(),
+  }
+}
+
+/** `POST /api/external-access/base-domain` — persist the chosen base domain, then
+ *  invalidate status so the wizard advances from "Choose your domain" to provision. */
+export function useSetBaseDomain(companyId?: number) {
+  const invalidate = useInvalidateStatus(companyId)
+  return useMutation({
+    mutationFn: async (baseDomain: string) => {
+      if (devMockActive()) return (await mockClient()).setBaseDomain(baseDomain)
+      return externalAccessApi.setBaseDomain(baseDomain)
     },
     onSuccess: invalidate,
   })

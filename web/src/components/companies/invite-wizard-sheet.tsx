@@ -1,8 +1,9 @@
 /**
  * `<InviteWizardSheet>` — the guided, resumable onboarding wizard an owner opens
- * from "Invite to <company>". It gives non-expert self-hosters external access to
- * `https://<slug>.s.iwd.nl` (Cloudflare tunnel + Google login) and seeds
- * colleague `human_users`, entirely in-app with live verification at every step.
+ * from "Invite to <company>". It gives non-expert self-hosters external access at
+ * `https://<slug>.<their-own-domain>` (a Cloudflare zone they control + Google
+ * login) and seeds colleague `human_users`, entirely in-app with live verification
+ * at every step. The base domain is operator-chosen (BYO) — nothing is hardcoded.
  *
  * GROK-NATIVE + MOBILE-FIRST + DRY. The shell is the app's canonical
  * `<ResponsiveSheet>` (Vaul drag-detent bottom-sheet on coarse pointers · shadcn
@@ -36,7 +37,9 @@ import {
   useInviteHuman,
   useProvisionTunnel,
   useRemoveHuman,
+  useSetBaseDomain,
   useVerifyLogin,
+  useZones,
 } from '@/hooks/use-external-access'
 import {
   CopyField,
@@ -89,11 +92,26 @@ export function InviteWizardSheet({
 }) {
   const { status, isLoading, refetch } = useExternalStatus(company.id, { enabled: open })
 
-  // Derived host/redirect: prefer the server's computed values, else derive the
-  // canonical shape locally so the panels can render before status lands.
-  const host = status?.company?.host ?? `${company.slug}.s.iwd.nl`
-  const redirectUri = status?.company?.redirect_uri ?? `https://${host}/auth/callback`
-  const liveUrl = `https://${host}`
+  // Derived host/redirect. The base domain is operator-chosen (BYO) — there is NO
+  // hardcoded suffix fallback. Prefer the server's computed host; else derive from
+  // the chosen base domain; else empty (the copy shows a `<your-domain>` placeholder,
+  // never a fake host). The Google/People/Success steps only render once the tunnel
+  // is healthy, by which point the base is set and the server host is populated.
+  const baseDomain = status?.box_status.base_domain ?? null
+  const serverHost = status?.company?.host
+  const host =
+    serverHost && serverHost.length > 0
+      ? serverHost
+      : baseDomain
+        ? `${company.slug}.${baseDomain}`
+        : ''
+  const redirectUri =
+    status?.company?.redirect_uri && status.company.redirect_uri.length > 0
+      ? status.company.redirect_uri
+      : host
+        ? `https://${host}/auth/callback`
+        : ''
+  const liveUrl = host ? `https://${host}` : ''
 
   // The active panel. Initialised ONCE from status to the first unfinished step
   // (resumable), then user-driven via Back/Continue.
@@ -186,7 +204,7 @@ export function InviteWizardSheet({
         {isLoading && !status ? (
           <p className="py-8 text-center text-sm text-muted-foreground">Checking access…</p>
         ) : step === 'domain' ? (
-          <DomainStep status={status} host={host} companyId={company.id} onDone={goNext} refetch={refetch} />
+          <DomainStep status={status} host={host} company={company} refetch={refetch} />
         ) : step === 'google' ? (
           <GoogleStep status={status} redirectUri={redirectUri} liveUrl={liveUrl} companyId={company.id} refetch={refetch} />
         ) : step === 'person' ? (
@@ -212,21 +230,20 @@ const CF_SCOPES = 'Account · Cloudflare Tunnel: Edit\nZone · DNS: Edit\nZone �
 function DomainStep({
   status,
   host,
-  companyId,
-  onDone,
+  company,
   refetch,
 }: {
   status?: ExternalStatus
   host: string
-  companyId: number
-  onDone: () => void
+  company: WizardCompany
   refetch: () => void
 }) {
   const [token, setToken] = React.useState('')
-  const cf = useCfToken(companyId)
-  const provision = useProvisionTunnel(companyId)
+  const cf = useCfToken(company.id)
+  const provision = useProvisionTunnel(company.id)
 
   const cfValid = status?.box_status.cf_token === 'valid'
+  const baseDomain = status?.box_status.base_domain ?? null
   const tunnel = status?.box_status.tunnel ?? 'none'
   const done = tunnel === 'healthy'
 
@@ -241,23 +258,21 @@ function DomainStep({
     )
   }
 
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="text-sm text-muted-foreground">
-        Give your colleagues a web address to reach this supermux —{' '}
-        <span className="font-mono text-foreground">{host}</span>.
-      </p>
-
-      {/* 1a — the Cloudflare token */}
-      {!cfValid ? (
+  // Sub-step 1a — no token yet.
+  if (!cfValid) {
+    return (
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-muted-foreground">
+          Give your colleagues a web address to reach this supermux. First connect the Cloudflare
+          account that manages your domain.
+        </p>
         <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
           <label htmlFor="cf-token" className="text-sm font-medium text-foreground">
             Cloudflare API token
           </label>
           <p className="text-[12.5px] leading-snug text-muted-foreground">
-            Create a token scoped to the <span className="font-mono">s.iwd.nl</span> zone with these
-            permissions, then paste it here. Cloudflare shows the token once — copy it before you
-            close that page.
+            Create a token scoped to the zone for your domain with these permissions, then paste it
+            here. Cloudflare shows the token once — copy it before you close that page.
           </p>
           <CopyField value={CF_SCOPES.replace(/\n/g, '  ·  ')} label="Copy the required scopes" />
           <SecretInput id="cf-token" value={token} onChange={setToken} placeholder="Paste the token" invalid={cf.isError} />
@@ -276,45 +291,162 @@ function DomainStep({
             </Button>
           </div>
         </div>
+      </div>
+    )
+  }
+
+  // Sub-step 1b — token valid but no base domain chosen yet.
+  if (!baseDomain) {
+    return <ChooseDomainStep company={company} refetch={refetch} />
+  }
+
+  // Sub-step 1c — base domain chosen; provision (or watch it come up).
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Your colleagues will reach this supermux at{' '}
+        <span className="font-mono text-foreground">{host}</span>.
+      </p>
+      <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
+        <StatusChip state="done" label={`Domain set · ${baseDomain}`} />
+
+        {tunnel === 'connecting' || provision.isPending ? (
+          <div className="flex flex-col gap-2">
+            <StatusChip state="working" label="Connecting… setting up the tunnel" />
+            <p className="text-[12.5px] text-muted-foreground">
+              This runs the connector on your box and waits for Cloudflare to report it healthy.
+            </p>
+            <Button type="button" variant="ghost" size="sm" className="self-start" onClick={refetch}>
+              Check again
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <p className="text-sm text-muted-foreground">
+              One click sets up a wildcard tunnel + DNS and starts the connector — no terminal
+              commands.
+            </p>
+            {provision.isError && <p className="text-sm text-destructive">{errText(provision.error)}</p>}
+            <Button
+              type="button"
+              onClick={() => provision.mutate(undefined, { onSuccess: () => refetch() })}
+              disabled={provision.isPending}
+              className="self-start"
+              style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+            >
+              Set up access
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Step 1b — Choose your domain (CF zone auto-discovery) ─────────────────────
+
+/** After the CF token verifies, the operator picks WHICH of the domains that token
+ *  controls their teammates will use. Exactly one → auto-select + confirm; several →
+ *  a pick-one radio list; none → an empty state pointing back to Cloudflare. Setting
+ *  it (`useSetBaseDomain`) is what un-gates provisioning — the box stays fail-closed
+ *  (no external host) until a domain the token actually controls is chosen. */
+function ChooseDomainStep({ company, refetch }: { company: WizardCompany; refetch: () => void }) {
+  const { zones, isLoading, isError, error, refetch: refetchZones } = useZones({ enabled: true })
+  const setBase = useSetBaseDomain(company.id)
+
+  const [selected, setSelected] = React.useState<string | null>(null)
+  // Auto-select the sole zone so the common case is one confirm, not a choice.
+  React.useEffect(() => {
+    if (selected == null && zones.length >= 1) setSelected(zones[0])
+  }, [zones, selected])
+
+  const chosen = selected ?? (zones.length >= 1 ? zones[0] : null)
+  const preview = chosen ? `${company.slug}.${chosen}` : `${company.slug}.<your-domain>`
+
+  const confirm = () => {
+    if (!chosen) return
+    setBase.mutate(chosen, { onSuccess: () => refetch() })
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium text-foreground">Choose your domain</p>
+        <p className="text-sm text-muted-foreground">
+          Pick the domain your teammates will use — e.g.{' '}
+          <span className="font-mono text-foreground">company.&lt;your-domain&gt;</span>.
+        </p>
+      </div>
+
+      {isLoading ? (
+        <p className="cs-card rounded-xl border border-border px-4 py-6 text-center text-sm text-muted-foreground">
+          Finding the domains this token controls…
+        </p>
+      ) : isError ? (
+        <div className="cs-card flex flex-col gap-2 rounded-xl border border-border p-4">
+          <p className="text-sm text-destructive">{errText(error)}</p>
+          <Button type="button" variant="ghost" size="sm" className="self-start" onClick={refetchZones}>
+            Try again
+          </Button>
+        </div>
+      ) : zones.length === 0 ? (
+        <div className="cs-card flex flex-col gap-2 rounded-xl border border-border p-4">
+          <StatusChip state="idle" label="No domains found" />
+          <p className="text-[12.5px] leading-snug text-muted-foreground">
+            This Cloudflare account has no domains yet. Add one in Cloudflare (Websites → Add a
+            site), then check again.
+          </p>
+          <Button type="button" variant="ghost" size="sm" className="self-start" onClick={refetchZones}>
+            Check again
+          </Button>
+        </div>
       ) : (
         <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
-          <StatusChip state="done" label="Token valid · account & zone found" />
-
-          {/* 1b — provision the tunnel */}
-          {tunnel === 'connecting' || provision.isPending ? (
-            <div className="flex flex-col gap-2">
-              <StatusChip state="working" label="Connecting… setting up the tunnel" />
-              <p className="text-[12.5px] text-muted-foreground">
-                This runs the connector on your box and waits for Cloudflare to report it healthy.
-              </p>
-              <Button type="button" variant="ghost" size="sm" className="self-start" onClick={refetch}>
-                Check again
-              </Button>
-            </div>
+          {zones.length === 1 ? (
+            <p className="text-sm text-muted-foreground">
+              Your teammates will reach{' '}
+              <span className="font-mono text-foreground">{preview}</span> — use this domain?
+            </p>
           ) : (
-            <div className="flex flex-col gap-2">
-              <p className="text-sm text-muted-foreground">
-                One click sets up a wildcard tunnel + DNS and starts the connector — no terminal
-                commands.
-              </p>
-              {provision.isError && <p className="text-sm text-destructive">{errText(provision.error)}</p>}
-              <Button
-                type="button"
-                onClick={() => provision.mutate(undefined, { onSuccess: () => refetch() })}
-                disabled={provision.isPending}
-                className="self-start"
-                style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
-              >
-                Set up access
-              </Button>
-            </div>
+            <fieldset className="flex flex-col gap-2">
+              <legend className="mb-1 text-[12px] text-muted-foreground">
+                Domains this token controls
+              </legend>
+              {zones.map((z) => (
+                <label
+                  key={z}
+                  className="flex min-h-[44px] w-full cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm text-foreground has-[:checked]:border-[var(--sm-accent)]"
+                >
+                  <input
+                    type="radio"
+                    name="base-domain"
+                    value={z}
+                    checked={chosen === z}
+                    onChange={() => setSelected(z)}
+                    className="size-4 shrink-0 accent-[var(--sm-accent)]"
+                  />
+                  <span className="min-w-0 flex-1 truncate font-mono">{z}</span>
+                </label>
+              ))}
+            </fieldset>
           )}
+
+          <p className="text-[12px] text-muted-foreground">
+            Preview: <span className="font-mono text-foreground">{preview}</span>
+          </p>
+
+          {setBase.isError && <p className="text-sm text-destructive">{errText(setBase.error)}</p>}
+
+          <Button
+            type="button"
+            onClick={confirm}
+            disabled={!chosen || setBase.isPending}
+            className="self-start"
+            style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+          >
+            {setBase.isPending ? 'Saving…' : 'Use this domain'}
+          </Button>
         </div>
-      )}
-      {done && (
-        <Button type="button" onClick={onDone} className="self-end">
-          Continue
-        </Button>
       )}
     </div>
   )

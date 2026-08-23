@@ -4,13 +4,15 @@
 //
 // The wizard's whole data plane routes to the in-memory mock
 // (`external-access-mock.ts`) when `?mock` is present, so this page exercises the
-// FULL stepper — Cloudflare token → tunnel "Connecting… → Connected ✓" → Google
-// login (with a first-try redirect_uri_mismatch that clears on Check again) →
-// invite people → success — with NO live token, Google app, or server.
+// FULL stepper — Cloudflare token → Choose your domain (CF zone auto-discovery) →
+// tunnel "Connecting… → Connected ✓" → Google login (with a first-try
+// redirect_uri_mismatch that clears on Check again) → invite people → success —
+// with NO live token, Google app, or server.
 //
-// Open at:  /dev/invite?mock=1            (entry A — the full box setup)
-//           /dev/invite?mock=1&entry=B    (box set up, one URL to add for a new company)
-//           /dev/invite?mock=1&entry=C    (already reachable — the repeat-invite path)
+// Open at:  /dev/invite?mock=1               (entry A — the full box setup)
+//           /dev/invite?mock=1&zones=multi   (entry A, several domains → pick-one list)
+//           /dev/invite?mock=1&entry=B       (box set up, one URL to add for a new company)
+//           /dev/invite?mock=1&entry=C       (already reachable — the repeat-invite path)
 //
 // On a 390px viewport the ResponsiveSheet renders as the Vaul bottom-sheet; on a
 // wide viewport it is the desktop side sheet.
@@ -28,6 +30,7 @@ export default function DevInvite() {
   const grok = params.get('grok') === '1'
   const mockOn = params.has('mock')
   const entry = (params.get('entry') ?? 'A').toUpperCase()
+  const zonesMulti = params.get('zones') === 'multi'
   const [open, setOpen] = React.useState(true)
 
   // Fresh mock state on every mount so a re-run of the rig starts clean.
@@ -83,6 +86,21 @@ export default function DevInvite() {
             Entry {e}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            const next = new URLSearchParams(params)
+            next.set('mock', '1')
+            if (zonesMulti) next.delete('zones')
+            else next.set('zones', 'multi')
+            setParams(next)
+            resetExternalAccessMock()
+            setOpen(true)
+          }}
+          className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground"
+        >
+          Domains: {zonesMulti ? 'multi' : 'single'}
+        </button>
       </div>
 
       <InviteWizardSheet open={open} onOpenChange={setOpen} company={MOCK_COMPANY} />

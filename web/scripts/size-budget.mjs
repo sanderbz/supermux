@@ -978,7 +978,30 @@ const BUDGET_ENTRY_JS = 161 * KB
 //             "1-tap") + the `connectorEaseRank` tiebreak in the store grid sort.
 // A genuine additive feature (the "Claude-guided connect" payoff), not a regression
 // to trim: ceil(measured)=334, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 334 * KB
+// 334 → 335 at P2c BYO-domain (feat/companies-grok, slice 7): the wizard's Domain
+// step gains a "Choose your domain" sub-step so the operator picks their OWN base
+// domain (a Cloudflare zone their token controls) instead of the de-hardcoded
+// `s.iwd.nl`. Measured 334.20 against 334.00 — +0.86 KB over the P2b floor
+// (333.34), ALL of it OFF the hero path: it lands in the already-lazy
+// `invite-wizard` chunk + the eagerly-cached api barrel, and the ENTRY gate — the
+// hard one guarding cold load — is UNMOVED at 157.09/161 (98%), +0.00 KB (grep
+// finds none of `external-access/zones` / `base-domain` in `index-*.js`). Where
+// the bytes went:
+//   +~0.55 KB  `ChooseDomainStep` in `invite-wizard-sheet` — the CF zone
+//              auto-discovery UI: the pick-one radio list (multi-zone), the
+//              auto-select+confirm (single zone), the no-domains / error empty
+//              states, and the live `{slug}.{zone}` preview. Wizard-route-only,
+//              lazy code.
+//   +~0.20 KB  `useZones` + `useSetBaseDomain` (+ `externalZonesKey`) in
+//              `use-external-access` — the query/mutation pair that reads the
+//              token's zones and persists the choice; both route through the DEV
+//              mock, both lazy with the wizard.
+//   +~0.10 KB  `externalAccessApi.zones` / `.setBaseDomain` in the api barrel
+//              (the only eagerly-reachable bytes; the new wire types erase).
+// A genuine additive feature (BYO-domain — an open-source box can no longer be
+// pinned to the maintainer's infra), not a regression to trim: ceil(measured)=335,
+// the same rule every fase since B3 used.
+const BUDGET_APP_JS = 335 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
