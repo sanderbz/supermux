@@ -69,7 +69,7 @@ import { useDeferredFollow } from './follow-bottom'
 import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 import { useTapToDismissKeyboard } from './use-tap-to-dismiss'
 import { usePendingSends } from './use-pending-sends'
-import { displayNames, entryLabels, mentionIndex } from './grouping'
+import { displayNames, entryLabels, scopedMentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
 import type { ScheduleRef } from './transcript-item'
@@ -195,11 +195,14 @@ export default function ChatPanel({
   // identity) untouched, while a real rename / add / remove still changes it and
   // still updates.
   const nameSig = React.useMemo(
-    () => sessions.map((s) => `${s.name} ${s.display_name ?? ''}`).join(''),
+    () =>
+      sessions
+        .map((s) => `${s.name} ${s.display_name ?? ''} ${s.company_id ?? ''}`)
+        .join(''),
     [sessions],
   )
   // eslint-disable-next-line react-hooks/exhaustive-deps -- key on nameSig, not the sessions ref (see above)
-  const mentions = React.useMemo(() => mentionIndex(sessions), [nameSig])
+  const mentions = React.useMemo(() => scopedMentionIndex(sessions, name), [nameSig, name])
   // slug → what that session is CALLED. The arrival divider names a colleague,
   // and the wire's teammate envelope carries only the slug.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- key on nameSig, not the sessions ref (see above)

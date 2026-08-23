@@ -39,6 +39,7 @@
  * reverse.
  */
 import type { HarnessEvent } from '../../lib/api/harness'
+import { scopeMentionPeers } from '../../lib/mention-scope'
 
 import type { ChatAuthor, ChatEntry, ChatItem, ReceiptLine } from './entries'
 import { harnessNotice, stripEmojiPrefix } from './entries'
@@ -685,6 +686,32 @@ export function mentionIndex(
 }
 
 /**
+ * Company-scoped `mentionIndex` — the prose→chip index a CHAT SESSION should
+ * linkify its transcript against (Bot Mode).
+ *
+ * A company bot's chat must NOT mint a clickable chip to a bot OUTSIDE its
+ * company: the chip would leak the mere existence of another company's fleet in
+ * the UI, even though the server delegation gate already refuses the message.
+ * So the index is built from ONLY the same-company peers (+ itself) — exactly
+ * the set the `@`-picker offers (`scopeMentionPeers`), keyed off the CHAT
+ * SESSION's OWN `company_id`, looked up from the live session list BY NAME (not
+ * the global `activeCompany` — the transcript follows whose chat this is, not
+ * where the switcher is parked). A main/HQ session (`self` `company_id` null) is
+ * left omniscient: it keeps the FULL index and may reference any bot.
+ */
+export function scopedMentionIndex(
+  sessions: readonly {
+    name: string
+    display_name?: string | null
+    company_id?: number | null
+  }[],
+  selfName: string,
+): Map<string, string> {
+  const selfCompanyId = sessions.find((s) => s.name === selfName)?.company_id ?? null
+  return mentionIndex(scopeMentionPeers(sessions, selfCompanyId))
+}
+
+/**
  * The other direction: slug → the name that session is CALLED.
  *
  * `mentionIndex` answers "is this word a colleague?"; this answers "what do we
@@ -723,7 +750,15 @@ export function mentionSegments(
   self?: string,
 ): ProseSegment[] {
   const tokens = [...index.keys()]
-    .filter((token) => token.length > 1 && index.get(token) !== self)
+    .filter(
+      (token) =>
+        index.get(token) !== self &&
+        // FALSE-POSITIVE GUARD (Bot Mode). A bare 1-2 char SINGLE word is almost
+        // always a coincidence, not a mention — a bot slugged `ci`/`ok` would
+        // otherwise linkify every "ok" in prose. Multi-word names (they carry a
+        // space) are specific enough to keep at any length.
+        (token.length > 2 || token.includes(' ')),
+    )
     .sort((a, b) => b.length - a.length)
   if (tokens.length === 0 || !text) return [{ text }]
 
@@ -736,6 +771,15 @@ export function mentionSegments(
   for (const match of text.matchAll(pattern)) {
     const seed = index.get(match[0].toLowerCase())
     if (seed === undefined) continue
+    // FALSE-POSITIVE GUARD (Bot Mode). Don't linkify the TRAILING word of a
+    // Capitalized multi-word phrase — "iCloud Mail" must not mint a chip on a
+    // `Mail` colleague. Cheap: fires only when the match itself is Capitalized
+    // AND the 48 chars before it end in another Capitalized word + space.
+    if (
+      /^\p{Lu}/u.test(match[0]) &&
+      /\p{Lu}[\p{L}\d]*\s+$/u.test(text.slice(Math.max(0, match.index - 48), match.index))
+    )
+      continue
     if (match.index > last) out.push({ text: text.slice(last, match.index) })
     out.push({ seed, label: match[0] })
     last = match.index + match[0].length

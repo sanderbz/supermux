@@ -30,6 +30,7 @@ import {
   mentionIndex,
   mentionSegments,
   receiptsFirst,
+  scopedMentionIndex,
   SESSION_GAP_S,
   toReceiptRows,
 } from '../../src/components/chat/grouping'
@@ -483,6 +484,71 @@ describe('mentionSegments', () => {
       { text: 'Patch and ' },
       { seed: 'quill', label: 'quill' },
     ])
+  })
+
+  test('a bare 1-2 char single-word name never linkifies (false-positive guard)', () => {
+    // A bot slugged `ok` would otherwise mint a chip on every "ok" in prose.
+    const shorty = mentionIndex([{ name: 'ok' }])
+    expect(mentionSegments('ok, will do', shorty)).toEqual([{ text: 'ok, will do' }])
+    // …but a multi-word name (carries a space) stays matchable at any length.
+    const twoWord = mentionIndex([{ name: 'qa', display_name: 'QA Bot' }])
+    expect(mentionSegments('ask QA Bot now', twoWord)).toEqual([
+      { text: 'ask ' },
+      { seed: 'qa', label: 'QA Bot' },
+      { text: ' now' },
+    ])
+  })
+
+  test('a trailing word of a Capitalized phrase is not linkified (iCloud Mail)', () => {
+    const mailIdx = mentionIndex([{ name: 'mail', display_name: 'Mail' }])
+    // "iCloud Mail" is a product name — `Mail` here is not a mention.
+    expect(mentionSegments('connect iCloud Mail today', mailIdx)).toEqual([
+      { text: 'connect iCloud Mail today' },
+    ])
+    // …but a lowercase lead-in still linkifies the real colleague.
+    expect(mentionSegments('ping Mail today', mailIdx)).toEqual([
+      { text: 'ping ' },
+      { seed: 'mail', label: 'Mail' },
+      { text: ' today' },
+    ])
+  })
+})
+
+describe('scopedMentionIndex — a company chat only linkifies its own company', () => {
+  // Acme (1) has two bots, Globex (2) one, and there is one main/HQ bot.
+  const fleet = [
+    { name: 'acme-a', display_name: 'Aria', company_id: 1 },
+    { name: 'acme-b', display_name: 'Bolt', company_id: 1 },
+    { name: 'globex-a', display_name: 'Gizmo', company_id: 2 },
+    { name: 'pa', display_name: 'Assistant', company_id: null },
+  ]
+
+  test('a company session EXCLUDES an out-of-company bot (no cross-company link)', () => {
+    // Typing as `acme-a` (company 1): its index knows its own colleagues…
+    const idx = scopedMentionIndex(fleet, 'acme-a')
+    expect(idx.get('acme-a')).toBe('acme-a')
+    expect(idx.get('acme-b')).toBe('acme-b')
+    expect(idx.get('bolt')).toBe('acme-b')
+    // …but NOT the Globex bot, nor the HQ/main bot — no chip, no existence leak.
+    expect(idx.has('globex-a')).toBe(false)
+    expect(idx.has('gizmo')).toBe(false)
+    expect(idx.has('pa')).toBe(false)
+    expect(idx.has('assistant')).toBe(false)
+  })
+
+  test('a main/HQ session (company_id null) keeps the FULL fleet index', () => {
+    // The owner is omniscient — a PA bot may reference any bot in any company.
+    const idx = scopedMentionIndex(fleet, 'pa')
+    expect(idx.get('acme-a')).toBe('acme-a')
+    expect(idx.get('globex-a')).toBe('globex-a')
+    expect(idx.get('gizmo')).toBe('globex-a')
+    expect(idx.get('pa')).toBe('pa')
+  })
+
+  test('an unknown self name is treated as HQ (full index), never a silent empty', () => {
+    const idx = scopedMentionIndex(fleet, 'nobody')
+    expect(idx.get('acme-a')).toBe('acme-a')
+    expect(idx.get('globex-a')).toBe('globex-a')
   })
 })
 
