@@ -62,6 +62,71 @@ fn default_field_type() -> String {
     "string".to_string()
 }
 
+/// How a connector authenticates — the per-connector **auth descriptor** the card
+/// UI branches on to render the RIGHT lane instead of guessing from a brand-name
+/// regex. Carried onto the store card (see [`crate::connectors::catalog`]) and
+/// derived for every card by [`crate::connectors::api::card`].
+///
+/// `Unspecified` is the pre-descriptor default (a manifest that never declared its
+/// auth): the card layer then *derives* the kind from the catalog + the credential
+/// schema rather than trusting a blank. The five real lanes mirror the design:
+///   * `None`          — no sign-in needed (Filesystem, Time, Fetch).
+///   * `ApiKey`        — one secret to paste (GitHub PAT, Stripe secret key).
+///   * `Form`          — identity + secret + non-secret fields (iCloud, a DSN).
+///   * `OauthDevice` / `OauthRedirect` — supermux-driven OAuth (wired in P2).
+///   * `McpOauth`      — a hosted remote MCP that runs its OWN OAuth in the bot's
+///     terminal (Slack/Notion/Linear/Sentry …); supermux holds no token and shows
+///     an honest "signs in when first used" note, never a fake key field.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    /// Not declared — the card layer derives the real kind (catalog + schema).
+    #[default]
+    Unspecified,
+    None,
+    ApiKey,
+    Form,
+    OauthDevice,
+    OauthRedirect,
+    McpOauth,
+}
+
+/// The per-connector auth descriptor (additive to the manifest; `credentials[]`
+/// still carries the Lane B/C field schema). The OAuth URL fields are RESERVED for
+/// P2 (supermux-driven OAuth) and stay `None` in P0/P1.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AuthDescriptor {
+    #[serde(default)]
+    pub kind: AuthKind,
+    /// "Get your key →" deep link (Lane A/B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_url: Option<String>,
+    /// One-line steer shown under the field (where to get the key / what happens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_text: Option<String>,
+    /// The vault field-map key the token/secret seals under (Lane A/B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_field: Option<String>,
+    /// Least-privilege scopes to request (Lane A, reserved for P2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// OAuth endpoints — reserved for P2 (supermux-driven device/redirect grant).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_url: Option<String>,
+}
+
+impl AuthDescriptor {
+    /// Is this descriptor unset (a manifest that never declared its auth)? The card
+    /// layer treats `Unspecified` as "derive me", not as an authoritative answer.
+    pub fn is_unspecified(&self) -> bool {
+        self.kind == AuthKind::Unspecified
+    }
+}
+
 /// The full connector manifest (parsed form of a `connectors` row's `*_json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -78,6 +143,10 @@ pub struct Manifest {
     pub tools: Vec<ToolDecl>,
     #[serde(default)]
     pub credentials: Vec<CredentialField>,
+    /// The per-connector auth descriptor (Lane taxonomy). `Unspecified` when the
+    /// manifest never declared one — the card layer then derives it.
+    #[serde(default)]
+    pub auth: AuthDescriptor,
     /// The `mcpServers` entry template (`{ command|url, args?, env?, headers? }`)
     /// with `${VAR}` placeholders — the SAME shape `claude_tools::mcp::add`
     /// accepts.
@@ -211,6 +280,14 @@ impl Manifest {
             .map(|v| rewrite_user_config_placeholders(&v))
             .unwrap_or_else(|| json!({}));
 
+        // Optional per-connector auth descriptor (forward-compat: a `.mcpb` may
+        // declare its lane). Absent → `Unspecified`, and the card layer derives it.
+        let auth = obj
+            .get("auth")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<AuthDescriptor>(v).ok())
+            .unwrap_or_default();
+
         let manifest = Manifest {
             id,
             kind: KIND_MCP_CATALOG.to_string(),
@@ -219,6 +296,7 @@ impl Manifest {
             description,
             tools,
             credentials,
+            auth,
             emit,
         };
         manifest.validate()?;
@@ -335,6 +413,35 @@ mod tests {
     }
 
     #[test]
+    fn manifest_auth_defaults_to_unspecified() {
+        // A manifest with no `auth` block parses to the derive-me sentinel.
+        let m: Manifest = serde_json::from_value(json!({ "id": "x" })).unwrap();
+        assert_eq!(m.auth.kind, AuthKind::Unspecified);
+        assert!(m.auth.is_unspecified());
+    }
+
+    #[test]
+    fn from_mcpb_parses_an_auth_descriptor() {
+        let bundle = json!({
+            "name": "Acme",
+            "auth": {
+                "kind": "api_key",
+                "help_url": "https://acme.example/keys",
+                "help_text": "Create a restricted key.",
+                "token_field": "ACME_TOKEN"
+            },
+            "server": { "mcp_config": { "url": "https://mcp.acme.example" } }
+        });
+        let m = Manifest::from_mcpb(&bundle).unwrap();
+        assert_eq!(m.auth.kind, AuthKind::ApiKey);
+        assert_eq!(m.auth.help_url.as_deref(), Some("https://acme.example/keys"));
+        assert_eq!(m.auth.token_field.as_deref(), Some("ACME_TOKEN"));
+        // The descriptor round-trips through the card JSON shape.
+        let v = serde_json::to_value(&m.auth).unwrap();
+        assert_eq!(v["kind"], json!("api_key"));
+    }
+
+    #[test]
     fn to_columns_roundtrips_tools() {
         let m = Manifest {
             id: "x".into(),
@@ -344,6 +451,7 @@ mod tests {
             description: "".into(),
             tools: vec![ToolDecl { name: "t".into(), description: "d".into() }],
             credentials: vec![],
+            auth: AuthDescriptor::default(),
             emit: json!({ "command": "npx" }),
         };
         let cols = m.to_columns();

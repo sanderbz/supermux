@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use crate::db::connectors;
 use crate::state::AppState;
 
-use super::super::manifest::{Manifest, ToolDecl, KIND_BUILTIN_BROWSER};
+use super::super::manifest::{AuthDescriptor, AuthKind, Manifest, ToolDecl, KIND_BUILTIN_BROWSER};
 
 /// The connector id / store slug (spec: `kind = builtin_browser`).
 pub const BROWSER_ID: &str = "shared-browser";
@@ -149,6 +149,8 @@ pub fn manifest(server_path: &str) -> Manifest {
             .into(),
         tools: tool_decls(),
         credentials: Vec::new(),
+        // Lane E: nothing to sign in to (the takeover handles per-site logins live).
+        auth: AuthDescriptor { kind: AuthKind::None, ..Default::default() },
         emit: emit(std::path::Path::new(server_path)),
     }
 }

@@ -33,6 +33,11 @@ fn card(c: &connectors::Connector) -> Value {
         "description": c.description,
         "tools": serde_json::from_str::<Value>(&c.tools_json).unwrap_or_else(|_| json!([])),
         "credentials": serde_json::from_str::<Value>(&c.credentials_json).unwrap_or_else(|_| json!([])),
+        // The per-connector auth DESCRIPTOR (`{ kind, help_url?, … }`) — so the card
+        // stops guessing its lane from a brand regex and starts reading the real
+        // auth method. Derived (installed catalog card keeps its Lane; a local
+        // connector derives from its own schema). Was dropped here entirely.
+        "auth": derive_auth(c),
         // Provenance tag so the merged grid (local rows + catalog mirror) can be
         // filtered by `?source=`. Catalog cards carry `"catalog"`.
         "source": "local",
@@ -41,6 +46,41 @@ fn card(c: &connectors::Connector) -> Value {
         "provenance": serde_json::from_str::<Value>(&c.source_json).unwrap_or_else(|_| json!({})),
         "created_at": c.created_at,
     })
+}
+
+/// The per-connector auth descriptor for a LOCAL (installed) row. Authoritative
+/// order: an explicit descriptor folded into `source_json` (an imported manifest
+/// that declared its lane) → the curated catalog's descriptor for this id (so an
+/// installed catalog card keeps its Lane even though the install didn't carry it)
+/// → a shape-derivation from the credential schema (identity+secret ⇒ `form`, a
+/// lone secret ⇒ `api_key`, nothing to seal ⇒ `none` — no fake sign-in).
+fn derive_auth(c: &connectors::Connector) -> Value {
+    // 1) An explicit, non-`unspecified` descriptor persisted with the manifest.
+    if let Some(auth) = serde_json::from_str::<Value>(&c.source_json)
+        .ok()
+        .and_then(|v| v.get("auth").cloned())
+    {
+        let kind = auth.get("kind").and_then(Value::as_str).unwrap_or("");
+        if !kind.is_empty() && kind != "unspecified" {
+            return auth;
+        }
+    }
+    // 2) The curated catalog's descriptor (installed catalog card keeps its Lane).
+    if let Some(auth) = catalog::curated_auth(&c.id) {
+        return auth;
+    }
+    // 3) Derive from the credential schema.
+    let creds: Vec<CredentialField> = serde_json::from_str(&c.credentials_json).unwrap_or_default();
+    let has_secret = creds.iter().any(|f| f.sensitive);
+    let has_plain = creds.iter().any(|f| !f.sensitive);
+    let kind = if has_secret && has_plain {
+        "form"
+    } else if has_secret {
+        "api_key"
+    } else {
+        "none"
+    };
+    json!({ "kind": kind })
 }
 
 /// Query for the merged store grid.
@@ -181,15 +221,30 @@ fn sniff_image_type(b: &[u8]) -> &'static str {
 }
 
 /// `GET /api/connectors/{id}` — one card (secret-free).
+///
+/// An INSTALLED connector resolves from its DB row. An UN-installed catalog id
+/// (never turned into a local row) falls back to the catalog mirror, so the chat
+/// Connect card and the store detail still resolve its real schema + auth
+/// descriptor instead of 404-ing and degrading to a hardcoded generic API-key
+/// field. Secret-free either way.
 pub async fn get_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let c = connectors::get(&state.pool, &id)
+    if let Some(c) = connectors::get(&state.pool, &id).await.map_err(db_err)? {
+        return Ok(Json(card(&c)));
+    }
+    // Catalog-mirror fallback (curated ∪ last-good live), which already carries the
+    // per-connector auth descriptor + Lane B/C paste schema.
+    let found = catalog::mirror()
+        .cached_cards()
         .await
-        .map_err(db_err)?
-        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
-    Ok(Json(card(&c)))
+        .into_iter()
+        .find(|c| c.get("id").and_then(Value::as_str) == Some(id.as_str()));
+    match found {
+        Some(v) => Ok(Json(v)),
+        None => Err(AppError::NotFound(format!("connector '{id}'"))),
+    }
 }
 
 /// `POST /api/connectors` — create or update a connector from a supermux
@@ -223,6 +278,15 @@ pub async fn import_mcpb(
 async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Value>, AppError> {
     manifest.validate()?;
     let cols = manifest.to_columns();
+    // Provenance blob (secret-free). When the manifest DECLARED its auth lane, fold
+    // the descriptor in so it survives the round-trip and `derive_auth` prefers it
+    // over the shape-derivation. `Unspecified` stays out (the card layer derives).
+    let mut provenance = json!({ "imported": true });
+    if !manifest.auth.is_unspecified() {
+        if let Ok(a) = serde_json::to_value(&manifest.auth) {
+            provenance["auth"] = a;
+        }
+    }
     connectors::upsert(
         &state.pool,
         &manifest.id,
@@ -233,7 +297,7 @@ async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Val
         &cols.tools_json,
         &cols.credentials_json,
         &cols.emit_json,
-        &serde_json::to_string(&json!({ "imported": true })).unwrap_or_else(|_| "{}".into()),
+        &serde_json::to_string(&provenance).unwrap_or_else(|_| "{}".into()),
     )
     .await
     .map_err(db_err)?;
@@ -978,6 +1042,57 @@ mod tests {
         // A SENSITIVE field mis-flagged identity is refused (never leak a secret).
         let bad = json!([{ "key": "SECRET", "sensitive": true, "identity": true }]).to_string();
         assert_eq!(identity_field_key(&bad), None);
+    }
+
+    fn connector_row(id: &str, credentials_json: &str, source_json: &str) -> connectors::Connector {
+        connectors::Connector {
+            id: id.to_string(),
+            kind: "mcp_catalog".to_string(),
+            display_name: id.to_string(),
+            icon: String::new(),
+            description: String::new(),
+            tools_json: "[]".to_string(),
+            credentials_json: credentials_json.to_string(),
+            emit_json: "{}".to_string(),
+            source_json: source_json.to_string(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn derive_auth_prefers_explicit_then_curated_then_shape() {
+        // 1) An explicit descriptor folded into source_json wins outright.
+        let explicit = connector_row(
+            "anything",
+            "[]",
+            &json!({ "imported": true, "auth": { "kind": "oauth_device" } }).to_string(),
+        );
+        assert_eq!(derive_auth(&explicit)["kind"], json!("oauth_device"));
+
+        // …but an `unspecified` explicit descriptor is ignored (fall through).
+        let unspec = connector_row(
+            "icloud-mail",
+            &json!([
+                { "key": "ICLOUD_EMAIL", "sensitive": false, "identity": true },
+                { "key": "ICLOUD_APP_PW", "sensitive": true }
+            ])
+            .to_string(),
+            &json!({ "auth": { "kind": "unspecified" } }).to_string(),
+        );
+        // 3) Shape-derive: identity(non-secret) + secret ⇒ form.
+        assert_eq!(derive_auth(&unspec)["kind"], json!("form"));
+
+        // 2) An installed CATALOG id keeps its curated Lane even with empty schema.
+        let installed_gh = connector_row("pmcp-github", "[]", &json!({ "imported": true }).to_string());
+        assert_eq!(derive_auth(&installed_gh)["kind"], json!("api_key"));
+        let installed_slack = connector_row("pmcp-slack", "[]", "{}");
+        assert_eq!(derive_auth(&installed_slack)["kind"], json!("mcp_oauth"));
+
+        // 3) A lone secret ⇒ api_key; no credentials ⇒ none (no fake sign-in).
+        let key_only = connector_row("x-key", &json!([{ "key": "TOKEN", "sensitive": true }]).to_string(), "{}");
+        assert_eq!(derive_auth(&key_only)["kind"], json!("api_key"));
+        let no_creds = connector_row("x-none", "[]", "{}");
+        assert_eq!(derive_auth(&no_creds)["kind"], json!("none"));
     }
 
     #[test]

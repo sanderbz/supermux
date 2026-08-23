@@ -265,7 +265,10 @@ pub fn map_server(s: &PulseServer, featured: bool, icon: String) -> Option<Value
         "registry": s.package_registry,
         "package_name": s.package_name,
         "transport": transport,
-        "auth": s.remotes.iter().find_map(|r| r.authentication_method.clone()),
+        // The per-connector auth DESCRIPTOR (`{ kind, … }`), mapped from the coarse
+        // PulseMCP `authentication_method` hint. A curated id's real descriptor
+        // still wins in `merge_featured`; a mirrored non-curated row is retired.
+        "auth": pulse_auth_descriptor(s.remotes.iter().find_map(|r| r.authentication_method.as_deref())),
         "categories": categories(s, featured),
         "created_at": 0,
     }))
@@ -354,6 +357,157 @@ pub fn is_curated(id: &str) -> bool {
     CURATED_IDS.contains(&id)
 }
 
+// ── per-connector AUTH descriptor (the Lane taxonomy) ─────────────────────────
+
+/// Build a card-shaped auth descriptor (`{ kind, help_url?, help_text?,
+/// token_field? }`). Mirrors [`super::manifest::AuthDescriptor`]'s serialized
+/// shape — the OAuth-URL fields stay absent (reserved for P2). Null keys are
+/// omitted so the web reads a stable `{ kind, … }`.
+fn auth_descriptor(
+    kind: &str,
+    help_url: Option<&str>,
+    help_text: Option<&str>,
+    token_field: Option<&str>,
+) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("kind".into(), json!(kind));
+    if let Some(u) = help_url {
+        m.insert("help_url".into(), json!(u));
+    }
+    if let Some(t) = help_text {
+        m.insert("help_text".into(), json!(t));
+    }
+    if let Some(f) = token_field {
+        m.insert("token_field".into(), json!(f));
+    }
+    Value::Object(m)
+}
+
+/// A single sensitive-field credential schema (Lane B/C paste input).
+fn one_secret(key: &str, title: &str) -> Value {
+    json!([{ "key": key, "title": title, "type": "string", "sensitive": true, "required": true }])
+}
+
+/// The steer copy for a hosted remote MCP that runs its OWN OAuth in the bot's
+/// terminal (Lane D) — the honest "no key here" note.
+const MCP_OAUTH_HELP: &str = "Signs in the first time your bot uses it — approve the sign-in in the bot's own terminal. There's no key to paste here.";
+
+/// The **per-connector auth descriptor + credential schema** for a curated card,
+/// keyed by id. This is the single source of the Lane taxonomy (§0 of the design):
+///
+///   * **Lane E `none`** — local reference servers + local dev tooling that need no
+///     sign-in (Filesystem/Fetch/Git/Memory/Sequential-Thinking/Time/Everything,
+///     Figma Dev-Mode on `127.0.0.1`, Playwright, Puppeteer).
+///   * **Lane B `api_key`** — a genuine token/secret to paste: GitHub PAT, Stripe
+///     secret key, the Zapier personal-MCP URL (carries its key), Google-Maps API
+///     key, Airtable PAT. Each gets a "Get your key →" deep link + a steer.
+///   * **Lane C `form`** — Postgres: a read-only connection string (DSN).
+///   * **Lane D `mcp_oauth`** — a hosted remote MCP whose endpoint runs its OWN
+///     OAuth in the client (Slack/Notion/Linear/Sentry/Asana/Atlassian/PayPal/
+///     Plaid/Square/Intercom/Cloudflare/HubSpot/Webflow/Canva/Google-Drive). NO
+///     key field — the honest "signs in in the terminal" note instead.
+///
+/// Returns `(auth, credentials)`; `credentials` is `[]` for `none`/`mcp_oauth`.
+fn auth_and_creds_for(id: &str) -> (Value, Value) {
+    let none = || (auth_descriptor("none", None, None, None), json!([]));
+    let mcp_oauth = || (auth_descriptor("mcp_oauth", None, Some(MCP_OAUTH_HELP), None), json!([]));
+    match id {
+        // Lane E — no sign-in.
+        "pmcp-filesystem" | "pmcp-fetch" | "pmcp-git" | "pmcp-memory"
+        | "pmcp-sequential-thinking" | "pmcp-time" | "pmcp-everything" | "pmcp-figma"
+        | "pmcp-playwright" | "pmcp-puppeteer" => none(),
+
+        // Lane B — a real key/token to paste.
+        "pmcp-github" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://github.com/settings/personal-access-tokens"),
+                Some("Create a fine-grained personal access token with only the repo scopes this bot needs."),
+                Some("GITHUB_TOKEN"),
+            ),
+            one_secret("GITHUB_TOKEN", "Personal access token"),
+        ),
+        "pmcp-stripe" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://dashboard.stripe.com/apikeys"),
+                Some("Use a restricted secret key scoped to what this bot needs."),
+                Some("STRIPE_SECRET_KEY"),
+            ),
+            one_secret("STRIPE_SECRET_KEY", "Secret key"),
+        ),
+        "pmcp-zapier" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://mcp.zapier.com/"),
+                Some("Paste your personal Zapier MCP URL — it carries your key, so treat it like one."),
+                Some("ZAPIER_MCP_URL"),
+            ),
+            one_secret("ZAPIER_MCP_URL", "Your Zapier MCP URL"),
+        ),
+        "pmcp-google-maps" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://console.cloud.google.com/google/maps-apis/credentials"),
+                Some("Create a Maps Platform API key restricted to the APIs this bot uses."),
+                Some("GOOGLE_MAPS_API_KEY"),
+            ),
+            one_secret("GOOGLE_MAPS_API_KEY", "API key"),
+        ),
+        "pmcp-airtable" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://airtable.com/create/tokens"),
+                Some("Create a personal access token scoped to the base this bot needs."),
+                Some("AIRTABLE_API_KEY"),
+            ),
+            one_secret("AIRTABLE_API_KEY", "Personal access token"),
+        ),
+
+        // Lane C — a structured connection string.
+        "pmcp-postgres" => (
+            auth_descriptor(
+                "form",
+                None,
+                Some("Paste a read-only Postgres connection string (DSN) — the bot queries through it."),
+                Some("POSTGRES_DSN"),
+            ),
+            one_secret("POSTGRES_DSN", "Connection string (DSN)"),
+        ),
+
+        // Lane D — hosted remote MCP, client-driven OAuth (no key here).
+        "pmcp-sentry" | "pmcp-linear" | "pmcp-notion" | "pmcp-slack" | "pmcp-asana"
+        | "pmcp-atlassian" | "pmcp-paypal" | "pmcp-plaid" | "pmcp-square" | "pmcp-intercom"
+        | "pmcp-cloudflare" | "pmcp-hubspot" | "pmcp-webflow" | "pmcp-canva"
+        | "pmcp-google-drive" => mcp_oauth(),
+
+        // Any other curated id defaults to no-auth rather than a fake key field.
+        _ => none(),
+    }
+}
+
+/// The auth descriptor for a curated catalog id, or `None` when the id is not part
+/// of the curated set (a local connector then derives its lane from its schema).
+/// Used by [`super::api::card`] so an installed catalog card keeps its real lane.
+pub fn curated_auth(id: &str) -> Option<Value> {
+    if !is_curated(id) {
+        return None;
+    }
+    Some(auth_and_creds_for(id).0)
+}
+
+/// Map a PulseMCP `authentication_method` string onto a card auth descriptor. A
+/// mirrored row's method is a coarse hint; a curated id's descriptor still wins in
+/// [`merge_featured`]. Unknown/absent → `none` rather than a fake key field.
+fn pulse_auth_descriptor(method: Option<&str>) -> Value {
+    let kind = match method.map(|m| m.trim().to_ascii_lowercase()).as_deref() {
+        Some("oauth") | Some("oauth2") => "mcp_oauth",
+        Some("api_key") | Some("apikey") | Some("token") | Some("bearer") => "api_key",
+        _ => "none",
+    };
+    auth_descriptor(kind, None, None, None)
+}
+
 /// The always-present curated catalog — the full store. These render instantly
 /// with zero network (the store is never empty) and are merged/deduped with the
 /// live mirror when it warms — a live PulseMCP row for the same id wins (richer
@@ -420,7 +574,7 @@ pub fn featured_cards() -> Vec<Value> {
     fn remote(url: &str) -> Value {
         json!({ "url": url })
     }
-    vec![
+    let mut cards = vec![
         // ── Tier 1 — first-party Anthropic / MCP reference servers (official) ──
         card(
             "pmcp-filesystem", "Filesystem", "developer", "folder", true, true,
@@ -609,7 +763,24 @@ pub fn featured_cards() -> Vec<Value> {
             "npx -y @modelcontextprotocol/server-puppeteer",
             npx(&["-y", "@modelcontextprotocol/server-puppeteer"]), "stdio",
         ),
-    ]
+    ];
+    // Stamp the per-connector auth descriptor + credential schema onto each card
+    // from the single Lane taxonomy, so a card stops guessing and starts *reading*
+    // its real auth method (§0). Done as a post-pass to keep the 31 rows above one
+    // clean call each (the taxonomy lives in `auth_and_creds_for`, not inline).
+    for c in cards.iter_mut() {
+        if let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_string) {
+            let (auth, creds) = auth_and_creds_for(&id);
+            if let Value::Object(ref mut o) = c {
+                o.insert("auth".into(), auth);
+                // Only a Lane B/C card carries a paste field; leave Lane D/E at `[]`.
+                if creds.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                    o.insert("credentials".into(), creds);
+                }
+            }
+        }
+    }
+    cards
 }
 
 // ── merge + filter (pure; the handler's core) ─────────────────────────────────
@@ -791,14 +962,37 @@ pub fn mirror() -> &'static CatalogMirror {
 
 /// Merge the curated featured cards with a live/mirrored set, deduped by id with
 /// the live row winning (it carries stars/registry/etc. the static card lacks).
+///
+/// A live row that SHADOWS a curated id inherits the curated card's authoritative
+/// fields the mirror can't know — the `auth` descriptor above all, plus the curated
+/// `lucide` glyph / `install` line / `official` badge / paste `credentials`. Without
+/// this a live GitHub row (mirror `auth: none`, `lucide: null`) would erase the
+/// carefully-classified Lane, re-opening the "every card is a generic dialog" bug.
 fn merge_featured(mirrored: Vec<Value>) -> Vec<Value> {
+    use std::collections::HashMap;
     use std::collections::HashSet;
+    // The curated set in its fixed order (drives the deterministic push order below).
+    let curated: Vec<Value> = featured_cards();
+    let by_id: HashMap<String, usize> = curated
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.get("id").and_then(Value::as_str).map(|id| (id.to_string(), i)))
+        .collect();
     let live_ids: HashSet<String> = mirrored
         .iter()
         .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
         .collect();
     let mut out = mirrored;
-    for f in featured_cards() {
+    for c in out.iter_mut() {
+        let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if let Some(&i) = by_id.get(&id) {
+            enrich_from_curated(c, &curated[i]);
+        }
+    }
+    // Push the curated cards the live set doesn't cover, in curated (fixed) order.
+    for f in curated {
         let id = f.get("id").and_then(Value::as_str).unwrap_or("");
         if !live_ids.contains(id) {
             out.push(f);
@@ -810,6 +1004,48 @@ fn merge_featured(mirrored: Vec<Value>) -> Vec<Value> {
         fb.cmp(&fa)
     });
     out
+}
+
+/// Fold a curated card's authoritative fields onto a live mirrored row that shares
+/// its id. `auth` is always taken (the Lane is classified, not guessed); the visual
+/// + paste fields are taken only when the live row lacks a real value.
+fn enrich_from_curated(live: &mut Value, curated: &Value) {
+    let Value::Object(o) = live else { return };
+    // The Lane descriptor is authoritative — always adopt the curated one.
+    if let Some(auth) = curated.get("auth") {
+        o.insert("auth".into(), auth.clone());
+    }
+    // A curated lucide glyph fills in for the mirror's null.
+    if o.get("lucide").and_then(Value::as_str).unwrap_or("").is_empty() {
+        if let Some(l) = curated.get("lucide") {
+            o.insert("lucide".into(), l.clone());
+        }
+    }
+    // The exact install/connect one-liner (the mirror carries none).
+    if o.get("install").and_then(Value::as_str).unwrap_or("").is_empty() {
+        if let Some(v) = curated.get("install") {
+            o.insert("install".into(), v.clone());
+        }
+    }
+    // The Official badge (a live row defaults to false).
+    if !o.get("official").and_then(Value::as_bool).unwrap_or(false) {
+        if let Some(v) = curated.get("official") {
+            o.insert("official".into(), v.clone());
+        }
+    }
+    // The Lane B/C paste field, so an api_key/form card still shows its input.
+    let live_has_creds = o
+        .get("credentials")
+        .and_then(Value::as_array)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !live_has_creds {
+        if let Some(creds) = curated.get("credentials").filter(|c| {
+            c.as_array().map(|a| !a.is_empty()).unwrap_or(false)
+        }) {
+            o.insert("credentials".into(), creds.clone());
+        }
+    }
 }
 
 /// Where a mirrored icon lives on disk.
@@ -983,7 +1219,8 @@ mod tests {
         assert_eq!(x711["id"], json!("pmcp-0580iris-lang-x711"));
         assert_eq!(x711["emit"]["url"], json!("https://x711.io/mcp"));
         assert_eq!(x711["transport"], json!("streamable_http"));
-        assert_eq!(x711["auth"], json!("api_key"));
+        // `auth` is now a DESCRIPTOR object, mapped from the PulseMCP method hint.
+        assert_eq!(x711["auth"]["kind"], json!("api_key"));
         assert!(x711["categories"]
             .as_array()
             .unwrap()
@@ -1037,6 +1274,58 @@ mod tests {
         let gh: Vec<_> = merged.iter().filter(|c| c["id"] == json!("pmcp-github")).collect();
         assert_eq!(gh.len(), 1, "no duplicate github card");
         assert_eq!(gh[0]["stars"], json!(999), "live row won");
+        // …but it INHERITS the curated auth descriptor + paste field the mirror
+        // can't know — so GitHub stays Lane B (api_key), never the mirror's guess.
+        assert_eq!(gh[0]["auth"]["kind"], json!("api_key"), "curated Lane preserved");
+        assert_eq!(gh[0]["lucide"], json!("github"), "curated glyph filled in");
+        assert!(
+            gh[0]["credentials"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            "curated paste field preserved"
+        );
+    }
+
+    #[test]
+    fn curated_cards_carry_the_right_auth_lane() {
+        let cards = merge_featured(vec![]);
+        let kind = |id: &str| -> String {
+            cards
+                .iter()
+                .find(|c| c["id"] == json!(id))
+                .and_then(|c| c["auth"]["kind"].as_str())
+                .unwrap_or("<missing>")
+                .to_string()
+        };
+        // Lane E — no sign-in.
+        assert_eq!(kind("pmcp-filesystem"), "none");
+        assert_eq!(kind("pmcp-figma"), "none");
+        // Lane B — a genuine key/token to paste, WITH a "Get your key" link.
+        assert_eq!(kind("pmcp-github"), "api_key");
+        assert_eq!(kind("pmcp-stripe"), "api_key");
+        let gh = cards.iter().find(|c| c["id"] == json!("pmcp-github")).unwrap();
+        assert!(gh["auth"]["help_url"].as_str().unwrap().contains("github.com"));
+        assert_eq!(gh["credentials"][0]["sensitive"], json!(true));
+        // Lane C — a structured DSN.
+        assert_eq!(kind("pmcp-postgres"), "form");
+        // Lane D — a hosted remote MCP that runs its OWN OAuth (no fake key field).
+        assert_eq!(kind("pmcp-slack"), "mcp_oauth");
+        assert_eq!(kind("pmcp-notion"), "mcp_oauth");
+        let slack = cards.iter().find(|c| c["id"] == json!("pmcp-slack")).unwrap();
+        assert_eq!(
+            slack["credentials"].as_array().map(Vec::len).unwrap_or(0),
+            0,
+            "an mcp_oauth card carries NO credential paste field (no fake API key)"
+        );
+        assert!(slack["auth"]["help_text"].as_str().unwrap().contains("terminal"));
+        // Every curated id resolves an auth descriptor (no card left guessing).
+        assert!(cards.iter().all(|c| c["auth"]["kind"].is_string()));
+    }
+
+    #[test]
+    fn curated_auth_is_none_for_a_non_catalog_id() {
+        // A locally-authored connector (not in the curated set) has no curated auth
+        // — the card layer then derives its lane from its own credential schema.
+        assert!(curated_auth("icloud-mail").is_none());
+        assert_eq!(curated_auth("pmcp-slack").unwrap()["kind"], json!("mcp_oauth"));
     }
 
     #[test]

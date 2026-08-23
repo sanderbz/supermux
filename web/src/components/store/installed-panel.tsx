@@ -30,9 +30,11 @@ import {
 
 import { cn } from '@/lib/utils'
 import {
+  connectorAuthKind,
   plainFields,
   secretField,
   toolCountLabel,
+  type AuthKind,
   type ConnectorAccount,
   type ConnectorCard,
   type ConnectorConsumer,
@@ -195,7 +197,7 @@ function InstalledRow({
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
-          {account && <StatusChip account={account} />}
+          {account && <StatusChip account={account} kind={connectorAuthKind(card)} />}
           {account ? (
             <GrantLevelChip level={account.grant_level} />
           ) : (
@@ -213,14 +215,22 @@ function InstalledRow({
 
 type StatusTone = 'active' | 'warn' | 'error' | 'muted'
 
-// The honest health mapping (Slice 3). A tested-bad account NEVER reads Active:
-// `error` → Error (red), `expired` → Expired (amber). Only a present secret with
-// no known problem is Active; a never-connected account is "Needs sign-in".
-function statusMeta(a: ConnectorAccount): { label: string; tone: StatusTone } {
+// The honest health mapping (Slice 3), now AUTH-LANE aware. A tested-bad account
+// NEVER reads Active: `error` → Error (red), `expired` → Expired (amber). A
+// secret-less account is read against the connector's real lane: a `none`
+// connector needs nothing (Ready, not a fake "Needs sign-in"); an `mcp_oauth`
+// connector signs in in the bot's terminal (an honest note, never a false green);
+// only the paste/OAuth lanes genuinely "Need sign-in". A present secret with no
+// known problem is Active.
+function statusMeta(a: ConnectorAccount, kind: AuthKind): { label: string; tone: StatusTone } {
   if (a.health === 'error') return { label: 'Error', tone: 'error' }
   if (a.health === 'expired') return { label: 'Expired', tone: 'warn' }
   if (a.status === 'disconnected') return { label: 'Disconnected', tone: 'muted' }
-  if (!a.has_secret) return { label: 'Needs sign-in', tone: 'warn' }
+  if (!a.has_secret) {
+    if (kind === 'none') return { label: 'Ready', tone: 'active' }
+    if (kind === 'mcp_oauth') return { label: 'Signs in in terminal', tone: 'muted' }
+    return { label: 'Needs sign-in', tone: 'warn' }
+  }
   return { label: 'Active', tone: 'active' }
 }
 
@@ -231,8 +241,8 @@ const TONE_CLASS: Record<StatusTone, string> = {
   muted: 'bg-muted text-muted-foreground',
 }
 
-function StatusChip({ account }: { account: ConnectorAccount }) {
-  const { label, tone } = statusMeta(account)
+function StatusChip({ account, kind }: { account: ConnectorAccount; kind: AuthKind }) {
+  const { label, tone } = statusMeta(account, kind)
   return (
     <span
       className={cn(
@@ -384,7 +394,8 @@ function InstalledDetail({
   }
 
   const tools = toolCountLabel(card)
-  const st = account ? statusMeta(account) : null
+  const authKind = connectorAuthKind(card)
+  const st = account ? statusMeta(account, authKind) : null
 
   return (
     <div className="flex flex-col gap-5 px-5 py-5">
@@ -428,7 +439,7 @@ function InstalledDetail({
               </span>
               <span className="truncate text-[11.5px] text-muted-foreground/80">{checkedLabel(account)}</span>
             </div>
-            <StatusChip account={account} />
+            <StatusChip account={account} kind={authKind} />
           </div>
           {/* the honest health error (persists across renders until re-tested) */}
           {account.last_error && (account.health === 'error' || account.health === 'expired') && (

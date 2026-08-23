@@ -913,7 +913,35 @@ const BUDGET_ENTRY_JS = 161 * KB
 //             store chunk, reached only under the store route.
 // A genuine additive feature (Slice 3's freshness+validity layer), not a
 // regression to trim: ceil(measured)=326, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 326 * KB
+// 326 → 328 at the Claude-driven connect flow P0+P1 (feat/companies-grok, slice 4):
+// the per-connector AUTH DESCRIPTOR carried end-to-end (server `manifest::AuthKind`
+// + the curated Lane taxonomy in `catalog::auth_and_creds_for` + `api::derive_auth`;
+// web `ConnectorAuth`/`connectorAuthKind`), which DELETES the `OAUTH_BRANDS` brand
+// regex and stops the card guessing — Slack no longer shows a fake "API key" field,
+// an api_key card shows a "Get your key →" link, "No sign-in needed" shows ONLY for
+// kind=none — and the ONE shared `<ConnectFlow>` renderer that both the in-chat
+// ConnectCard and the store detail mount (the store's duplicate lane/seal/AddedPanel
+// render is deleted). Measured 327.78 against 325.50 for slice 3 — +2.28 KB, and the
+// ENTRY gate — the hard one guarding cold load — MOVED DOWN 159.77 → 157.02/161 (98%)
+// because the on-demand connect renderer is now `React.lazy`-split out of the chat
+// chunk into its own `connect-flow` chunk (the same treatment StoreView /
+// InviteWizardSheet get — the connect card only ever shows when a bot's connect()
+// stalls):
+//   +~2.0 KB  the shared `store/connect-flow` chunk — the 5 auth lanes (OAuth / key
+//             / form / the honest mcp_oauth terminal note / none), the fields, the
+//             seal, and the agent-as-probe + Test-connection leg. A NET ADD that
+//             pays for TWO deletions folded elsewhere: ConnectCard's bespoke lane
+//             (chat chunk) and connector-detail's duplicate lane + AddedPanel
+//             (store-view) both came OUT; the shared file is richer than either copy
+//             it replaces, plus a lazy chunk's own preload wiring.
+//   +~0.3 KB  the `connectors` client + descriptor types (`ConnectorAuth`/`AuthKind`,
+//             `connectorAuthKind`/`connectorNeedsCredential` replacing the deleted
+//             `OAUTH_BRANDS` regex, `putCredentialFull`, `account_ref`/`account_label`
+//             on the credential response) + the auth-kind status fixes in
+//             `granted-connectors` (the false-green `needsSignIn`) and `installed-panel`.
+// A genuine additive feature (the connect-flow correctness layer), not a regression
+// to trim: ceil(measured)=328, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 328 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

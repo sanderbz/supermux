@@ -45,6 +45,41 @@ export type ConnectorKind =
   | 'builtin_browser'
   | string
 
+/** The per-connector AUTH lane (mirrors server `connectors::manifest::AuthKind`).
+ *  This — not a brand-name regex — decides which card the connect flow renders:
+ *   - `none`          → "No sign-in needed" (Filesystem, Time, Fetch).
+ *   - `api_key`       → one secret field + a "Get your key →" link (GitHub PAT…).
+ *   - `form`          → identity + secret + non-secret fields (iCloud, a DSN).
+ *   - `oauth_device`/`oauth_redirect` → a "Sign in with X" primary (wired in P2).
+ *   - `mcp_oauth`     → a hosted MCP that signs in IN THE BOT'S TERMINAL — an
+ *     honest note, never a fake key field (Slack/Notion/Linear/Sentry…).
+ *   - `unspecified`   → not declared; callers derive from the schema. */
+export type AuthKind =
+  | 'none'
+  | 'api_key'
+  | 'form'
+  | 'oauth_device'
+  | 'oauth_redirect'
+  | 'mcp_oauth'
+  | 'unspecified'
+
+/** The per-connector auth descriptor carried on every card (server derives it).
+ *  Secret-free: it names the METHOD + where to get a key, never a value. The OAuth
+ *  URL fields are reserved for P2 (supermux-driven OAuth) and are absent in P0/P1. */
+export interface ConnectorAuth {
+  kind: AuthKind
+  /** "Get your key →" deep link (Lane A/B). */
+  help_url?: string | null
+  /** One-line steer under the field / the mcp_oauth note. */
+  help_text?: string | null
+  /** The vault field-map key the token seals under (Lane A/B). */
+  token_field?: string | null
+  scopes?: string[] | null
+  authorize_url?: string | null
+  token_url?: string | null
+  device_url?: string | null
+}
+
 /** The single-chip summary of an account's grants (server `grant_level`). The
  *  broadest tier wins: `all` > a lone `company`/`bot` > same-company > `bots`
  *  ("N agents"). `none` = the account exists but feeds no visible grant. */
@@ -93,6 +128,10 @@ export interface ConnectorCard {
   description: string
   tools: ConnectorTool[]
   credentials: CredentialField[]
+  /** The per-connector auth descriptor — the card's lane. The server sets it on
+   *  every card (catalog + local + the get_one fallback); older payloads may omit
+   *  it, so treat absence as `unspecified` and derive via `connectorAuthKind`. */
+  auth?: ConnectorAuth | null
   /** `local` (created / agent-authored / imported) or `catalog` (mirror). */
   source: 'local' | 'catalog' | string
   /** Catalog preview cards declare no tools[]; the count rides here instead. */
@@ -161,6 +200,9 @@ export interface Manifest {
   description?: string
   tools?: ConnectorTool[]
   credentials?: CredentialField[]
+  /** The per-connector auth descriptor. Carried on install so an installed catalog
+   *  card keeps its lane (the server folds it into provenance). */
+  auth?: ConnectorAuth | null
   /** `mcpServers` entry template with `${VAR}` placeholders. */
   emit?: unknown
 }
@@ -194,11 +236,16 @@ interface MutationResponse {
   session_name?: string
   restartHint?: boolean
 }
-interface CredentialResponse {
+export interface CredentialResponse {
   ok: boolean
   secret_ref: string
   /** Masked echo — every value is the `••••••` sentinel. */
   fields: Record<string, string>
+  /** The connected-account this seal minted/updated (multi-account), or `null` for
+   *  an identity-less seal. Drives the "Test connection" probe + "Connected as …". */
+  account_ref?: string | null
+  /** The connected-account's cleartext, NON-secret label ("sander@acme.com"). */
+  account_label?: string | null
   restartHint: boolean
 }
 
@@ -457,20 +504,37 @@ export function toolCountLabel(card: ConnectorCard): string {
 }
 
 
-/** Services that offer a branded OAuth sign-in (the "Sign in with {service}"
- *  primary). The set is intentionally explicit: an OAuth lead is a trust promise,
- *  so we only make it for connectors that genuinely have a hosted sign-in. Others
- *  lead with the secure key paste. Mirrors the server's `auth` hint until the
- *  catalog carries it per-row. */
-const OAUTH_BRANDS = /github|notion|slack|linear|sentry|google|gmail|drive|calendar|figma|intercom/i
+/** The connector's AUTH LANE — read from the server's per-connector `auth`
+ *  descriptor, NOT guessed from a brand-name regex (that regex is gone: it made
+ *  Slack look like a key-paste and every Google service an OAuth). When a payload
+ *  predates the descriptor (`auth` absent / `unspecified`) the lane is DERIVED from
+ *  the credential schema so the card never falls back to a blind generic dialog. */
+export function connectorAuthKind(card: ConnectorCard): AuthKind {
+  const kind = card.auth?.kind
+  if (kind && kind !== 'unspecified') return kind
+  // Derive from the schema (mirrors the server's `derive_auth` fallback).
+  const secret = secretField(card)
+  if (secret) return plainFields(card).length > 0 ? 'form' : 'api_key'
+  return 'none'
+}
 
-/** Does this connector advertise a branded OAuth sign-in? Drives the detail's
- *  "Sign in with {service}" primary (blocker B4). */
+/** Does this connector lead with a supermux-driven "Sign in with {service}"
+ *  primary (Lane A)? ONLY the real OAuth lanes — NOT `mcp_oauth` (that signs in in
+ *  the bot's terminal, shown as an honest note) and NOT `api_key` (a key paste). */
 export function connectorHasOAuth(card: ConnectorCard): boolean {
-  // An explicit per-row hint wins when the catalog carries one.
-  const auth = (card as { auth?: string | null }).auth
-  if (typeof auth === 'string') return auth.toLowerCase() === 'oauth'
-  return OAUTH_BRANDS.test(`${card.id} ${card.display_name}`)
+  const k = connectorAuthKind(card)
+  return k === 'oauth_device' || k === 'oauth_redirect'
+}
+
+/** Does this connector need a human to hand over a credential / sign-in before it
+ *  works — i.e. is a missing secret an honest "Needs sign-in"? True for the paste
+ *  and supermux-OAuth lanes; FALSE for `none` (no auth) and `mcp_oauth` (the client
+ *  drives sign-in at first use, nothing to paste here). Replaces the old
+ *  `!has_secret && credentials.some(sensitive)` heuristic that showed a hosted-OAuth
+ *  connector as a false green. */
+export function connectorNeedsCredential(card: ConnectorCard): boolean {
+  const k = connectorAuthKind(card)
+  return k === 'api_key' || k === 'form' || k === 'oauth_device' || k === 'oauth_redirect'
 }
 
 /** The single sensitive field (the secure paste), if the schema declares one. */

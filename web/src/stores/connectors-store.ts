@@ -23,6 +23,7 @@ import {
   getConnector,
   listConnectors,
   putCredential as apiPutCredential,
+  type CredentialResponse,
   removeConnector,
   revoke as apiRevoke,
   sessionConnectors,
@@ -129,6 +130,10 @@ export interface ConnectorActions {
   /** Seal a credential (write-only) + optional one-tap grant. Resolves the
    *  secret_ref so a follow-up grant can attach it. */
   putCredential: (id: string, args: PutCredentialArgs) => Promise<string | null>
+  /** Seal a credential and return the FULL response — the `secret_ref` PLUS the
+   *  minted `account_ref` / `account_label` the shared ConnectFlow needs for the
+   *  "Connected as …" line and the "Test connection" probe. Throws on failure. */
+  putCredentialFull: (id: string, args: PutCredentialArgs) => Promise<CredentialResponse>
   /** Remove a connector (grants + vault CASCADE). */
   remove: (id: string) => Promise<void>
 }
@@ -265,6 +270,7 @@ export function useConnectorActions(): ConnectorActions {
       const r = await credM.mutateAsync({ id, args })
       return r.secret_ref ?? null
     },
+    putCredentialFull: (id, args) => credM.mutateAsync({ id, args }),
     remove: (id) => removeM.mutateAsync(id),
   }
 }

@@ -24,7 +24,9 @@ use serde_json::json;
 use crate::db::connectors;
 use crate::state::AppState;
 
-use super::manifest::{CredentialField, Manifest, ToolDecl, KIND_AGENT_AUTHORED};
+use super::manifest::{
+    AuthDescriptor, AuthKind, CredentialField, Manifest, ToolDecl, KIND_AGENT_AUTHORED,
+};
 
 /// The connector id / store slug.
 pub const ICLOUD_ID: &str = "icloud-mail";
@@ -113,6 +115,17 @@ pub fn manifest(server_path: &str) -> Manifest {
             .into(),
         tools: tool_decls(),
         credentials: credential_fields(),
+        // Lane C (form): an identity address + a sealed app-specific password.
+        auth: AuthDescriptor {
+            kind: AuthKind::Form,
+            help_url: Some("https://appleid.apple.com".into()),
+            help_text: Some(
+                "Create an app-specific password at appleid.apple.com — not your Apple ID password."
+                    .into(),
+            ),
+            token_field: Some(ENV_APP_PW.into()),
+            ..Default::default()
+        },
         emit,
     }
 }
@@ -148,6 +161,13 @@ pub async fn seed(state: &AppState) {
 
     let manifest = manifest(&path.to_string_lossy());
     let cols = manifest.to_columns();
+    // Fold the declared Lane C (form) auth descriptor into provenance so the card
+    // layer surfaces it (the "Get your key →" help link) instead of only shape-
+    // deriving a bare `form`. Same fold `api::store_manifest` does for imports.
+    let mut provenance = json!({ "builtin": true, "agent_authored": true });
+    if let Ok(a) = serde_json::to_value(&manifest.auth) {
+        provenance["auth"] = a;
+    }
     if let Err(e) = connectors::upsert(
         &state.pool,
         &manifest.id,
@@ -158,8 +178,7 @@ pub async fn seed(state: &AppState) {
         &cols.tools_json,
         &cols.credentials_json,
         &cols.emit_json,
-        &serde_json::to_string(&json!({ "builtin": true, "agent_authored": true }))
-            .unwrap_or_else(|_| "{}".into()),
+        &serde_json::to_string(&provenance).unwrap_or_else(|_| "{}".into()),
     )
     .await
     {

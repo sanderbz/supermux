@@ -8,7 +8,7 @@ import * as React from 'react'
 import { AlertTriangle, Loader2, Plus, RotateCw } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { companyGrantKey, toolCountLabel, type SessionConnector } from '@/lib/api/connectors'
+import { companyGrantKey, connectorNeedsCredential, toolCountLabel, type SessionConnector } from '@/lib/api/connectors'
 import { useSessionConnectors, useConnectorActions } from '@/stores/connectors-store'
 import { useSession } from '@/hooks/use-sessions'
 import { useRecovery } from '@/hooks/use-recovery'
@@ -220,7 +220,12 @@ function ConnectorRow({
 }) {
   const card = grant.card
   const tools = card ? toolCountLabel(card) : ''
-  const needsSignIn = !grant.has_secret && card?.credentials?.some((c) => c.sensitive)
+  // "Needs sign-in" now derives from the connector's real AUTH LANE, not the old
+  // `!has_secret && credentials.some(sensitive)` heuristic that painted a hosted
+  // mcp_oauth connector (no vaulted secret, signs in in the terminal) a false green
+  // "Active" AND flagged a no-auth `none` connector as needing a sign-in it doesn't.
+  // Only the paste / supermux-OAuth lanes count as "needs a credential from you".
+  const needsSignIn = card ? connectorNeedsCredential(card) && !grant.has_secret : false
   const actions = useConnectorActions()
   const [busy, setBusy] = React.useState(false)
 
