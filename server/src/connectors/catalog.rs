@@ -306,6 +306,8 @@ const FEATURED_IDS: &[&str] = &[
     "pmcp-stripe",
     "pmcp-zapier",
     "pmcp-figma",
+    // The owner's own GSC-analytics product, pinned as a showcase remote.
+    "pmcp-inhouseseo",
 ];
 
 /// Every id in the curated catalog (`featured_cards`). The live PulseMCP mirror
@@ -352,6 +354,12 @@ const CURATED_IDS: &[&str] = &[
     "pmcp-monday",
     "pmcp-clickup",
     "pmcp-brave-search",
+    // ── expansion: marketing / SEO / AI-image cards ──
+    "pmcp-ahrefs",
+    "pmcp-dataforseo",
+    "pmcp-openai-image",
+    "pmcp-cloudflare-builds",
+    "pmcp-inhouseseo",
 ];
 
 /// Is a mirrored card part of the curated featured (marquee) set?
@@ -503,6 +511,42 @@ fn auth_and_creds_for(id: &str) -> (Value, Value) {
             ),
             one_secret("BRAVE_API_KEY", "API key"),
         ),
+        // Ahrefs ships an OFFICIAL npx server (`@ahrefs/mcp`) that reads an
+        // Ahrefs API v3 key from env `API_KEY` (needs a paid API subscription).
+        "pmcp-ahrefs" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://app.ahrefs.com/api/keys"),
+                Some("Paste your Ahrefs API v3 key — needs a paid Ahrefs API subscription (it consumes API units)."),
+                Some("API_KEY"),
+            ),
+            one_secret("API_KEY", "Ahrefs API key"),
+        ),
+        // OpenAI GPT Image — a community npx server that generates/edits images
+        // with gpt-image-1, reading an OpenAI key from env `OPENAI_API_KEY`.
+        "pmcp-openai-image" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://platform.openai.com/api-keys"),
+                Some("Paste an OpenAI API key — generates/edits images with gpt-image-1 (community server)."),
+                Some("OPENAI_API_KEY"),
+            ),
+            one_secret("OPENAI_API_KEY", "OpenAI API key"),
+        ),
+        // DataForSEO uses HTTP basic auth via TWO env vars → a 2-field form: a
+        // NON-secret API login + a SENSITIVE API password (no single token field).
+        "pmcp-dataforseo" => (
+            auth_descriptor(
+                "form",
+                Some("https://app.dataforseo.com/api-access"),
+                Some("SERP/SEO data; your DataForSEO login + API password from the API access page."),
+                None,
+            ),
+            json!([
+                { "key": "DATAFORSEO_USERNAME", "title": "API login", "type": "string", "sensitive": false, "required": true },
+                { "key": "DATAFORSEO_PASSWORD", "title": "API password", "type": "string", "sensitive": true, "required": true }
+            ]),
+        ),
 
         // Lane D — hosted remote MCP, client-driven OAuth (no key here).
         "pmcp-sentry" | "pmcp-linear" | "pmcp-notion" | "pmcp-slack" | "pmcp-asana"
@@ -511,7 +555,11 @@ fn auth_and_creds_for(id: &str) -> (Value, Value) {
         | "pmcp-google-drive"
         // Vercel/Box/monday.com/ClickUp all ship an OFFICIAL hosted remote MCP with
         // OAuth (mcp.vercel.com, mcp.box.com, mcp.monday.com/mcp, mcp.clickup.com/mcp).
-        | "pmcp-vercel" | "pmcp-box" | "pmcp-monday" | "pmcp-clickup" => mcp_oauth(),
+        | "pmcp-vercel" | "pmcp-box" | "pmcp-monday" | "pmcp-clickup"
+        // Cloudflare Workers Builds (the deploy-inspect successor to Pages) and
+        // InhouseSEO (a hosted GSC-analytics remote) both run their OWN OAuth —
+        // verified 401 + `WWW-Authenticate: Bearer resource_metadata=…` challenge.
+        | "pmcp-cloudflare-builds" | "pmcp-inhouseseo" => mcp_oauth(),
 
         // Any other curated id defaults to no-auth rather than a fake key field.
         _ => none(),
@@ -543,8 +591,8 @@ fn pulse_auth_descriptor(method: Option<&str>) -> Value {
 /// The always-present curated catalog — the full store. These render instantly
 /// with zero network (the store is never empty) and are merged/deduped with the
 /// live mirror when it warms — a live PulseMCP row for the same id wins (richer
-/// metadata). 37 cards: the 7 first-party Anthropic/MCP reference servers
-/// (`official: true`) plus 30 widely-used official-directory vendor connectors.
+/// metadata). 42 cards: the 7 first-party Anthropic/MCP reference servers
+/// (`official: true`) plus 35 widely-used official-directory vendor connectors.
 pub fn featured_cards() -> Vec<Value> {
     #[allow(clippy::too_many_arguments)]
     fn card(
@@ -831,6 +879,37 @@ pub fn featured_cards() -> Vec<Value> {
             "Web, news, and local search for the agent via the Brave Search API.",
             "npx -y @brave/brave-search-mcp-server   (env BRAVE_API_KEY)",
             npx(&["-y", "@brave/brave-search-mcp-server"]), "stdio",
+        ),
+        // ── Tier 2 (cont.) — marketing / SEO / AI-image connectors ─────────────
+        card(
+            "pmcp-ahrefs", "Ahrefs", "data", "trending-up", false, false,
+            "Backlinks, keywords, and site metrics from Ahrefs (needs a paid Ahrefs API subscription).",
+            "npx -y @ahrefs/mcp   (env API_KEY)",
+            npx(&["-y", "@ahrefs/mcp"]), "stdio",
+        ),
+        card(
+            "pmcp-dataforseo", "DataForSEO", "data", "bar-chart-3", false, false,
+            "SERP, keyword, and on-page SEO data from DataForSEO.",
+            "npx -y dataforseo-mcp-server   (env DATAFORSEO_USERNAME + DATAFORSEO_PASSWORD)",
+            npx(&["-y", "dataforseo-mcp-server"]), "stdio",
+        ),
+        card(
+            "pmcp-openai-image", "OpenAI GPT Image", "ai", "image", false, false,
+            "Generate and edit images with OpenAI's gpt-image-1 (community server).",
+            "npx -y @cloudwerxlab/gpt-image-1-mcp   (env OPENAI_API_KEY)",
+            npx(&["-y", "@cloudwerxlab/gpt-image-1-mcp"]), "stdio",
+        ),
+        card(
+            "pmcp-cloudflare-builds", "Cloudflare Workers Builds", "developer", "hammer", false, false,
+            "Deploy and inspect Cloudflare Workers/Pages builds — the current successor to Pages.",
+            "claude mcp add --transport http cloudflare-builds https://builds.mcp.cloudflare.com/mcp",
+            remote("https://builds.mcp.cloudflare.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-inhouseseo", "InhouseSEO", "data", "line-chart", false, true,
+            "Google Search Console analytics and SEO insights for Claude.",
+            "claude mcp add --transport http inhouseseo https://app.inhouseseo.ai/api/mcp",
+            remote("https://app.inhouseseo.ai/api/mcp"), "streamable_http",
         ),
     ];
     // Stamp the per-connector auth descriptor + credential schema onto each card
@@ -1300,14 +1379,14 @@ mod tests {
     fn curated_catalog_is_present_without_network() {
         let cards = merge_featured(vec![]);
         // The full curated catalog renders with zero network.
-        assert_eq!(cards.len(), CURATED_IDS.len(), "all 37 curated cards present");
-        // The 12 featured ids sort to the front and are flagged featured.
+        assert_eq!(cards.len(), CURATED_IDS.len(), "all 42 curated cards present");
+        // The 13 featured ids sort to the front and are flagged featured.
         let featured: Vec<&str> = cards
             .iter()
             .filter(|c| c["featured"] == json!(true))
             .filter_map(|c| c["id"].as_str())
             .collect();
-        assert_eq!(featured.len(), FEATURED_IDS.len(), "12 featured cards");
+        assert_eq!(featured.len(), FEATURED_IDS.len(), "13 featured cards");
         assert!(cards.iter().any(|c| c["id"] == json!("pmcp-github")));
         // The 7 first-party Anthropic/MCP reference servers wear the Official badge.
         let official: Vec<&str> = cards
@@ -1426,6 +1505,54 @@ mod tests {
                 "{id} links its real key page"
             );
             assert_eq!(c["credentials"][0]["sensitive"], json!(true), "{id} secret is sealed");
+        }
+    }
+
+    #[test]
+    fn marketing_seo_expansion_cards_carry_honest_lanes() {
+        let cards = merge_featured(vec![]);
+        let get = |id: &str| cards.iter().find(|c| c["id"] == json!(id)).unwrap().clone();
+
+        // api_key cards: real "get your key" link + a sensitive paste field carrying
+        // the intended secret env, and an npx stdio emit (no invented hosted remote).
+        for (id, host, env) in [
+            ("pmcp-ahrefs", "ahrefs.com", "API_KEY"),
+            ("pmcp-openai-image", "openai.com", "OPENAI_API_KEY"),
+        ] {
+            let c = get(id);
+            assert_eq!(c["auth"]["kind"], json!("api_key"), "{id} is api_key");
+            assert!(c["auth"]["help_url"].as_str().unwrap().contains(host), "{id} links its key page");
+            assert_eq!(c["credentials"][0]["key"], json!(env), "{id} carries its secret env");
+            assert_eq!(c["credentials"][0]["sensitive"], json!(true), "{id} secret is sealed");
+            assert_eq!(c["emit"]["command"], json!("npx"), "{id} launches via npx");
+        }
+
+        // DataForSEO — Lane C form: a NON-secret login + a SENSITIVE API password.
+        let dfs = get("pmcp-dataforseo");
+        assert_eq!(dfs["auth"]["kind"], json!("form"), "dataforseo is a form");
+        assert!(dfs["auth"]["help_url"].as_str().unwrap().contains("dataforseo.com"));
+        let creds = dfs["credentials"].as_array().unwrap();
+        assert_eq!(creds.len(), 2, "dataforseo carries two fields");
+        assert_eq!(creds[0]["key"], json!("DATAFORSEO_USERNAME"));
+        assert_eq!(creds[0]["sensitive"], json!(false), "the login is not a secret");
+        assert_eq!(creds[1]["key"], json!("DATAFORSEO_PASSWORD"));
+        assert_eq!(creds[1]["sensitive"], json!(true), "the password is sealed");
+        assert_eq!(dfs["emit"]["command"], json!("npx"), "dataforseo launches via npx");
+
+        // Two hosted remotes are mcp_oauth: a `{ url }` emit, NO fake key field.
+        for (id, url) in [
+            ("pmcp-cloudflare-builds", "https://builds.mcp.cloudflare.com/mcp"),
+            ("pmcp-inhouseseo", "https://app.inhouseseo.ai/api/mcp"),
+        ] {
+            let c = get(id);
+            assert_eq!(c["auth"]["kind"], json!("mcp_oauth"), "{id} is mcp_oauth");
+            assert_eq!(c["emit"]["url"], json!(url), "{id} emits its hosted remote");
+            assert_eq!(
+                c["credentials"].as_array().map(Vec::len).unwrap_or(0),
+                0,
+                "{id} carries no fake key field"
+            );
+            assert!(c["auth"]["help_text"].as_str().unwrap().contains("terminal"));
         }
     }
 
