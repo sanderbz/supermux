@@ -245,7 +245,84 @@ async fn delegate_handler(
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::sessions::runtime::{HistoryWindow, SessionRuntime};
+    use async_trait::async_trait;
     use axum::http::HeaderValue;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// A minimal LIVE `SessionRuntime` double: always `alive` (so
+    /// `send_harness_text` skips the real `wake_for_send`, which on a clean box —
+    /// CI, or a local box without a stray `supermux-<name>` tmux session — would
+    /// try to boot a real `claude` agent that never comes up → `Conflict`) and a
+    /// ready-composer capture (so the agent send-guard admits the delivery). Its
+    /// `send_text`/`send_key` are no-ops: the delegate test asserts the AUTH +
+    /// company-scope gate + the recorded edge, not the pty mechanics (those are
+    /// covered by `sessions::lifecycle`'s own send-guard tests). Registered into
+    /// `state.session_runtimes`, which `AppState::runtime_for` consults first.
+    struct LiveStub;
+
+    #[async_trait]
+    impl SessionRuntime for LiveStub {
+        async fn spawn(&self, _d: &Path, _e: &HashMap<String, String>, _s: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn alive(&self) -> bool {
+            true
+        }
+        async fn kill(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn send_text(&self, _t: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        // A ready Claude composer (`❯` + shortcuts hint, and NOT a resume
+        // picker / trust dialog) so `pty_ready_for_send` admits the send.
+        async fn capture_plain(&self, _lines: usize) -> anyhow::Result<String> {
+            Ok("❯ \n\n? for shortcuts".to_string())
+        }
+        async fn capture_ansi(&self, _lines: usize) -> anyhow::Result<String> {
+            Ok("❯ \n\n? for shortcuts".to_string())
+        }
+        async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
+            Ok("❯ ".to_string())
+        }
+        async fn capture_full(&self) -> anyhow::Result<String> {
+            Ok("❯ ".to_string())
+        }
+        async fn seed(&self) -> anyhow::Result<String> {
+            Ok("❯ ".to_string())
+        }
+        async fn history_window(&self, end_offset: i64, _count: u32) -> anyhow::Result<HistoryWindow> {
+            Ok(HistoryWindow {
+                rows: vec![],
+                history_size: 0,
+                start_offset: end_offset,
+                end_offset,
+                hit_top: true,
+                cols: 80,
+                at_limit: false,
+            })
+        }
+        async fn history_meta(&self) -> (u32, u16) {
+            (0, 80)
+        }
+        async fn pane_pid(&self) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+        async fn dead(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
 
     async fn test_state() -> (AppState, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("supermux-agenthook-{}", uuid::Uuid::new_v4()));
@@ -434,6 +511,14 @@ mod tests {
         let acme = seed_company(&state, "acme").await;
         seed_bot(&state, "acme-a", "tok-a", Some(acme)).await;
         seed_bot(&state, "acme-b", "tok-b", Some(acme)).await;
+        // Deliver in-process: register a live runtime for the target so the
+        // send does NOT try to wake a real `claude` agent (which never boots in
+        // a unit test / on the clean CI runner → `Conflict`). The delegation
+        // still exercises the real handler → `deliver_delegation` → send funnel
+        // → `record_delegation` path.
+        state
+            .session_runtimes
+            .insert("acme-b".to_string(), Arc::new(LiveStub));
 
         let out = delegate_handler(
             State(state.clone()),
