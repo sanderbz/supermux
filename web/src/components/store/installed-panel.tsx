@@ -16,8 +16,6 @@ import {
   ArrowLeft,
   Bot,
   Building2,
-  Eye,
-  EyeOff,
   Loader2,
   Lock,
   Plug,
@@ -38,7 +36,6 @@ import {
   type ConnectorAccount,
   type ConnectorCard,
   type ConnectorConsumer,
-  type CredentialField,
   type GrantLevel,
 } from '@/lib/api/connectors'
 import { useConnectorActions, useConnectorGrants } from '@/stores/connectors-store'
@@ -51,6 +48,7 @@ import { ConnectorIcon } from './connector-icon'
 import { OfficialBadge } from './connector-card'
 import { GrantControl, type GrantScope } from './grant-control'
 import { PlainField, kindLabel } from './connector-detail'
+import { CredentialSecretField, defaultStr } from './credential-fields'
 
 // A flat row = one (connector, account) pair. `account: null` is an installed
 // connector with no connected account yet (a built-in, or an install awaiting its
@@ -731,33 +729,13 @@ function AccountConnectForm({
         />
       ))}
       {secret && (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-[12.5px] font-medium text-foreground">
-            {secret.title || 'API key'}
-            {secret.required && <span className="ml-1 text-muted-foreground">*</span>}
-          </span>
-          <span className="relative flex items-center">
-            <input
-              type={reveal ? 'text' : 'password'}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              value={secretVal}
-              onChange={(e) => setSecretVal(e.target.value)}
-              placeholder="Paste your key"
-              aria-label={secret.title || 'API key'}
-              className="h-11 w-full rounded-xl border border-input bg-background px-3 pr-11 font-mono text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <button
-              type="button"
-              onClick={() => setReveal((r) => !r)}
-              aria-label={reveal ? 'Hide key' : 'Show key'}
-              className="absolute right-1.5 grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              {reveal ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
-            </button>
-          </span>
-        </label>
+        <CredentialSecretField
+          field={secret}
+          value={secretVal}
+          reveal={reveal}
+          onReveal={() => setReveal((r) => !r)}
+          onChange={setSecretVal}
+        />
       )}
       <p className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
         <Lock className="size-3.5 shrink-0" aria-hidden />
@@ -800,11 +778,6 @@ function consumersToScope(consumers: ConnectorConsumer[]): GrantScope {
     if (consumers.every((c) => c.company_id === first)) return 'company'
   }
   return null
-}
-
-function defaultStr(f: CredentialField): string {
-  if (f.default === undefined || f.default === null) return ''
-  return typeof f.default === 'string' ? f.default : String(f.default)
 }
 
 /** "3m ago" / "just now" / null (never) from an epoch-seconds stamp — the shared

@@ -29,6 +29,17 @@ async function mockClient() {
   return m.externalAccessMock
 }
 
+type MockClient = Awaited<ReturnType<typeof mockClient>>
+
+/** Route one endpoint to the DEV mock (`?mock`) or the live API. The single home
+ *  of the `devMockActive() ? mock : real` branch every query/mutation shared — and
+ *  it keeps `mockClient()` (hence the mock module) imported ONLY when the mock is
+ *  actually active, so it stays out of the shipped bundle. */
+function route<T>(real: () => T | Promise<T>, mock: (m: MockClient) => T | Promise<T>): Promise<T> {
+  if (devMockActive()) return mockClient().then(mock)
+  return Promise.resolve(real())
+}
+
 export function externalStatusKey(companyId?: number) {
   return ['external-status', companyId ?? null] as const
 }
@@ -61,10 +72,8 @@ export function useExternalStatus(
   const enabled = opts.enabled ?? true
   const query = useQuery({
     queryKey: externalStatusKey(companyId),
-    queryFn: async (): Promise<ExternalStatus> => {
-      if (devMockActive()) return (await mockClient()).status(companyId)
-      return externalAccessApi.status(companyId)
-    },
+    queryFn: (): Promise<ExternalStatus> =>
+      route(() => externalAccessApi.status(companyId), (m) => m.status(companyId)),
     enabled,
     staleTime: 0,
     refetchInterval: (q) => {
@@ -96,10 +105,8 @@ function useInvalidateStatus(companyId?: number) {
 export function useCfToken(companyId?: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async (token: string) => {
-      if (devMockActive()) return (await mockClient()).cfToken(token)
-      return externalAccessApi.cfToken(token)
-    },
+    mutationFn: (token: string) =>
+      route(() => externalAccessApi.cfToken(token), (m) => m.cfToken(token)),
     onSuccess: invalidate,
   })
 }
@@ -107,10 +114,8 @@ export function useCfToken(companyId?: number) {
 export function useProvisionTunnel(companyId?: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).provisionTunnel()
-      return externalAccessApi.provisionTunnel()
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.provisionTunnel(), (m) => m.provisionTunnel()),
     onSuccess: invalidate,
   })
 }
@@ -124,10 +129,8 @@ export function useProvisionTunnel(companyId?: number) {
 export function useStartQuickTunnel(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).startQuickTunnel(companyId)
-      return externalAccessApi.startQuickTunnel(companyId)
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.startQuickTunnel(companyId), (m) => m.startQuickTunnel(companyId)),
     onSuccess: invalidate,
   })
 }
@@ -136,10 +139,8 @@ export function useStartQuickTunnel(companyId: number) {
 export function useStopQuickTunnel(companyId?: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).stopQuickTunnel()
-      return externalAccessApi.stopQuickTunnel()
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.stopQuickTunnel(), (m) => m.stopQuickTunnel()),
     onSuccess: invalidate,
   })
 }
@@ -160,10 +161,8 @@ export interface UseZonesResult {
 export function useZones(opts: { enabled?: boolean } = {}): UseZonesResult {
   const query = useQuery({
     queryKey: externalZonesKey(),
-    queryFn: async (): Promise<ZonesResult> => {
-      if (devMockActive()) return (await mockClient()).zones()
-      return externalAccessApi.zones()
-    },
+    queryFn: (): Promise<ZonesResult> =>
+      route(() => externalAccessApi.zones(), (m) => m.zones()),
     enabled: opts.enabled ?? false,
     staleTime: 30_000,
   })
@@ -181,10 +180,8 @@ export function useZones(opts: { enabled?: boolean } = {}): UseZonesResult {
 export function useSetBaseDomain(companyId?: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async (baseDomain: string) => {
-      if (devMockActive()) return (await mockClient()).setBaseDomain(baseDomain)
-      return externalAccessApi.setBaseDomain(baseDomain)
-    },
+    mutationFn: (baseDomain: string) =>
+      route(() => externalAccessApi.setBaseDomain(baseDomain), (m) => m.setBaseDomain(baseDomain)),
     onSuccess: invalidate,
   })
 }
@@ -194,10 +191,8 @@ export function useSetBaseDomain(companyId?: number) {
 export function useGoogleConfig(companyId?: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async (v: { client_id: string; client_secret: string }) => {
-      if (devMockActive()) return (await mockClient()).google(v.client_id, v.client_secret)
-      return externalAccessApi.google(v.client_id, v.client_secret)
-    },
+    mutationFn: (v: { client_id: string; client_secret: string }) =>
+      route(() => externalAccessApi.google(v.client_id, v.client_secret), (m) => m.google(v.client_id, v.client_secret)),
     onSuccess: invalidate,
   })
 }
@@ -207,10 +202,8 @@ export function useGoogleConfig(companyId?: number) {
 export function useCompanyHost(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).host(companyId)
-      return externalAccessApi.host(companyId)
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.host(companyId), (m) => m.host(companyId)),
     onSuccess: invalidate,
   })
 }
@@ -224,10 +217,11 @@ export function useCompanyHost(companyId: number) {
 export function useAgentInbox(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async (v: { localPart: string; destinationEmail: string }) => {
-      if (devMockActive()) return (await mockClient()).agentInbox(companyId, v.localPart, v.destinationEmail)
-      return externalAccessApi.agentInbox(companyId, v.localPart, v.destinationEmail)
-    },
+    mutationFn: (v: { localPart: string; destinationEmail: string }) =>
+      route(
+        () => externalAccessApi.agentInbox(companyId, v.localPart, v.destinationEmail),
+        (m) => m.agentInbox(companyId, v.localPart, v.destinationEmail),
+      ),
     onSuccess: invalidate,
   })
 }
@@ -236,10 +230,8 @@ export function useAgentInbox(companyId: number) {
 export function useDeleteAgentInbox(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).deleteAgentInbox(companyId)
-      return externalAccessApi.deleteAgentInbox(companyId)
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.deleteAgentInbox(companyId), (m) => m.deleteAgentInbox(companyId)),
     onSuccess: invalidate,
   })
 }
@@ -247,10 +239,8 @@ export function useDeleteAgentInbox(companyId: number) {
 export function useVerifyLogin(companyId: number) {
   const invalidate = useInvalidateStatus(companyId)
   return useMutation({
-    mutationFn: async () => {
-      if (devMockActive()) return (await mockClient()).verifyLogin(companyId)
-      return externalAccessApi.verifyLogin(companyId)
-    },
+    mutationFn: () =>
+      route(() => externalAccessApi.verifyLogin(companyId), (m) => m.verifyLogin(companyId)),
     onSuccess: invalidate,
   })
 }
@@ -270,10 +260,8 @@ export function useCompanyHumans(
 ): UseCompanyHumansResult {
   const query = useQuery({
     queryKey: companyHumansKey(companyId),
-    queryFn: async (): Promise<HumanInvitee[]> => {
-      if (devMockActive()) return (await mockClient()).listHumans(companyId)
-      return externalAccessApi.listHumans(companyId)
-    },
+    queryFn: (): Promise<HumanInvitee[]> =>
+      route(() => externalAccessApi.listHumans(companyId), (m) => m.listHumans(companyId)),
     enabled: opts.enabled ?? true,
     staleTime: 5_000,
   })
@@ -288,10 +276,8 @@ export function useCompanyHumans(
 export function useInviteHuman(companyId: number) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (input: AddHumanInput) => {
-      if (devMockActive()) return (await mockClient()).addHuman(companyId, input)
-      return externalAccessApi.addHuman(companyId, input)
-    },
+    mutationFn: (input: AddHumanInput) =>
+      route(() => externalAccessApi.addHuman(companyId, input), (m) => m.addHuman(companyId, input)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: companyHumansKey(companyId) })
     },
@@ -301,10 +287,8 @@ export function useInviteHuman(companyId: number) {
 export function useRemoveHuman(companyId: number) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (hid: number) => {
-      if (devMockActive()) return (await mockClient()).removeHuman(companyId, hid)
-      return externalAccessApi.removeHuman(companyId, hid)
-    },
+    mutationFn: (hid: number) =>
+      route(() => externalAccessApi.removeHuman(companyId, hid), (m) => m.removeHuman(companyId, hid)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: companyHumansKey(companyId) })
     },

@@ -139,40 +139,46 @@ export function EnableSigninSheet({
             : 'One-time setup for this box'
       }
       footer={
-        step === 'done' ? (
-          <div className="flex justify-end">
-            <Button type="button" onClick={() => onOpenChange(false)}>
-              Done
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-2">
-            <Button type="button" variant="ghost" onClick={goBack} disabled={idx === 0}>
-              <ArrowLeft className="size-4" /> Back
-            </Button>
-            {step === 'paste' ? (
-              <Button
-                type="button"
-                onClick={doRegister}
-                disabled={!canRegister || register.isPending}
-                style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
-              >
-                {register.isPending ? 'Enabling…' : 'Turn on sign-in'}
+        // `data-grok` so the portalled footer resolves the Grok accent tokens
+        // (defined only under `[data-grok]`, which the body-portal escapes).
+        <div data-grok>
+          {step === 'done' ? (
+            <div className="flex justify-end">
+              <Button type="button" onClick={() => onOpenChange(false)}>
+                Done
               </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={goNext}
-                style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
-              >
-                Continue <ArrowRight className="size-4" />
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <Button type="button" variant="ghost" onClick={goBack} disabled={idx === 0}>
+                <ArrowLeft className="size-4" /> Back
               </Button>
-            )}
-          </div>
-        )
+              {step === 'paste' ? (
+                <Button
+                  type="button"
+                  onClick={doRegister}
+                  disabled={!canRegister || register.isPending}
+                  style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+                >
+                  {register.isPending ? 'Enabling…' : 'Turn on sign-in'}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  onClick={goNext}
+                  style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+                >
+                  Continue <ArrowRight className="size-4" />
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
       }
     >
-      <div className="flex flex-col gap-4 px-5 py-4">
+      {/* `data-grok` so the body-portalled content resolves the Grok accent tokens
+          (defined only under `[data-grok]`) — CTAs/chips render filled. */}
+      <div data-grok className="flex flex-col gap-4 px-5 py-4">
         {step !== 'done' && (
           <div className="cs-card rounded-xl border border-border p-3">
             <WizardStepper steps={steps} current={Math.min(idx, 2)} />

@@ -231,30 +231,37 @@ export function InviteWizardSheet({
       }
       description={step === 'success' ? 'All set.' : `Step ${idx + 1} of ${totalSteps}`}
       footer={
-        step === 'success' ? (
-          <div className="flex justify-end">
-            <Button type="button" onClick={() => onOpenChange(false)}>
-              Done
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-2">
-            <Button type="button" variant="ghost" onClick={goBack} disabled={idx === 0}>
-              <ArrowLeft className="size-4" /> Back
-            </Button>
-            <Button
-              type="button"
-              onClick={goNext}
-              disabled={!canContinue}
-              style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
-            >
-              {isLastInputStep ? 'Finish' : 'Continue'} <ArrowRight className="size-4" />
-            </Button>
-          </div>
-        )
+        // `data-grok` so the portalled footer resolves the Grok accent tokens
+        // (`--sm-accent-fill`/`--gr-onaccent` are defined only under `[data-grok]`,
+        // which the body-portal escapes) — same fix as the sibling sheets.
+        <div data-grok>
+          {step === 'success' ? (
+            <div className="flex justify-end">
+              <Button type="button" onClick={() => onOpenChange(false)}>
+                Done
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <Button type="button" variant="ghost" onClick={goBack} disabled={idx === 0}>
+                <ArrowLeft className="size-4" /> Back
+              </Button>
+              <Button
+                type="button"
+                onClick={goNext}
+                disabled={!canContinue}
+                style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+              >
+                {isLastInputStep ? 'Finish' : 'Continue'} <ArrowRight className="size-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       }
     >
-      <div className="flex flex-col gap-4 px-5 py-4">
+      {/* `data-grok` so the body-portalled content resolves the Grok accent tokens
+          (defined only under `[data-grok]`) — CTAs/chips/copy fields render filled. */}
+      <div data-grok className="flex flex-col gap-4 px-5 py-4">
         {/* The rail — collapses to one line on a phone via responsive class. */}
         {step !== 'success' && (
           <div className="cs-card rounded-xl border border-border p-3">
@@ -964,7 +971,7 @@ function PersonStep({
                   type="button"
                   onClick={() => removeRow(i)}
                   aria-label="Remove row"
-                  className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground"
+                  className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground"
                 >
                   <Trash2 className="size-4" />
                 </button>
@@ -1023,7 +1030,7 @@ function PersonStep({
                       type="button"
                       onClick={() => remove.mutate(h.id)}
                       aria-label={`Remove ${h.email}`}
-                      className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground"
+                      className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground"
                     >
                       <Trash2 className="size-4" />
                     </button>

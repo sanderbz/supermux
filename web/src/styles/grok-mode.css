@@ -96,6 +96,22 @@
   --sm-tone-warning: #8a5200;
   --sm-tone-danger: #c0362c;
 
+  /* --gr-* status/surface aliases — hoisted here (from `.grok-roster`) so they
+     resolve for any `[data-grok]` subtree, INCLUDING the body-portalled wizard
+     sheets (invite/enable-signin) whose StatusChip/CopyField/stepper consume them
+     outside the roster. Straight aliases onto the `--sm-*` layer above (theme-swap
+     for free); `.grok-roster` keeps only its row-anatomy-specific tokens. */
+  --gr-surf: var(--sm-bg-elevated);      /* raised: ring centre, glance card */
+  --gr-surf2: var(--sm-bg-tertiary);     /* hover wash + detail-pane ground  */
+  --gr-sel: var(--sm-bg-active);         /* selection — WARM GREY, not accent */
+  --gr-line: var(--sm-border);           /* the only hairline                */
+  --gr-track: var(--sm-bg-active);       /* context-ring remainder           */
+  --gr-work: var(--sm-tone-warning);
+  --gr-need: var(--sm-tone-danger);
+  --gr-done: var(--sm-tone-success);
+  --gr-block: var(--sm-tone-danger);
+  --gr-idle: var(--sm-text-tertiary);
+
   /* fills & bubbles (§7) */
   --sm-fill-emphasis: #111110;
   --sm-fill-secondary: #1010000a;
@@ -1346,13 +1362,10 @@
    selection, hairline, track), and each is a straight alias — no new palette.
    (spec §3.2, overview.md §6 Row A / §7 detail pane / §11 palette.) */
 [data-grok] .grok-roster {
-  /* surfaces (aliases onto the ground/elevation ladder, tokens.md §1) */
+  /* surfaces — the rail's own ground. The rest of the `--gr-*` surface/state
+     aliases now live on `[data-grok]` (above) so they resolve in portalled sheets
+     too; this block keeps only the tokens specific to the roster rail. */
   --gr-bg: var(--sm-bg-chrome);          /* the rail's own ground            */
-  --gr-surf: var(--sm-bg-elevated);      /* raised: ring centre, glance card */
-  --gr-surf2: var(--sm-bg-tertiary);     /* hover wash + detail-pane ground  */
-  --gr-sel: var(--sm-bg-active);         /* selection — WARM GREY, not accent */
-  --gr-line: var(--sm-border);           /* the only hairline                */
-  --gr-track: var(--sm-bg-active);       /* context-ring remainder           */
   /* MEASURED-GAP FIX (row contrast): the roster used to carry TWO sub-AA grey
      tiers under the name — the right meta (timestamp + token) at tertiary
      (~2.2:1 light / ~2.8:1 dark) and the provider/ctx tag line even fainter
@@ -1366,12 +1379,6 @@
      4.49:1 on the seg track in LIGHT — a hair under AA — so light pins the solid
      meta grey (>=4.5 on the track); dark keeps secondary (already ~6.2:1). */
   --gr-seg-ink: #5f6773;
-  /* state words (the firewall's status half — never the agent hue) */
-  --gr-work: var(--sm-tone-warning);
-  --gr-need: var(--sm-tone-danger);
-  --gr-done: var(--sm-tone-success);
-  --gr-block: var(--sm-tone-danger);
-  --gr-idle: var(--sm-text-tertiary);
 
   display: flex;
   flex-direction: column;

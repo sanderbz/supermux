@@ -292,36 +292,6 @@ pub fn newest_sibling_mtime_ms(project_dir: &Path, conversation_id: &str) -> Opt
     newest
 }
 
-/// Newest mtime (ms) among `<project>/<conv>/subagents/agent-*.jsonl` — the
-/// GROUND TRUTH for "a background subagent is producing output right now". Unlike
-/// the hook count it survives the main `Stop`, needs no hook, and a per-second
-/// idle roster repaint cannot fake it. `None` when there is no subagents dir or
-/// no agent file. The caller compares it against `now` under a freshness window
-/// (`SUBAGENT_LIVE_WINDOW`) to decide `subagents_live`.
-pub fn newest_subagent_append_ms(project_dir: &Path, conversation_id: &str) -> Option<i64> {
-    let dir = project_dir.join(conversation_id).join("subagents");
-    let mut newest: Option<i64> = None;
-    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        // Only `agent-*.jsonl` transcripts (skip the `.meta.json` sidecars, which
-        // are not `.jsonl` anyway, and any stray file).
-        if !path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.starts_with("agent-"))
-        {
-            continue;
-        }
-        if let Some(ms) = entry.metadata().ok().and_then(|m| mtime_ms(&m)) {
-            newest = Some(newest.map_or(ms, |n: i64| n.max(ms)));
-        }
-    }
-    newest
-}
-
 fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
     let d = meta
         .modified()
@@ -2159,31 +2129,6 @@ mod tests {
         assert_eq!(newest_sibling_mtime_ms(&dir, "conv-a"), None);
         std::fs::write(dir.join("conv-b.jsonl"), "").unwrap();
         assert!(newest_sibling_mtime_ms(&dir, "conv-a").is_some());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[tokio::test]
-    async fn newest_subagent_append_ms_derives_the_freshest_agent_write() {
-        let dir = tmp_project("subappend");
-        // No subagents dir → no append instant (the common, non-workflow case).
-        assert_eq!(newest_subagent_append_ms(&dir, "conv-a"), None);
-        // A subagent transcript appears and grows → an append instant surfaces,
-        // fresh relative to now (the ground truth for `subagents_live`).
-        let f = dir.join("conv-a").join("subagents").join("agent-x1.jsonl");
-        append(&f, &[user_line("s1")]);
-        let ms = newest_subagent_append_ms(&dir, "conv-a").expect("an append instant");
-        let now = chrono::Utc::now().timestamp_millis();
-        assert!(
-            (now - ms).abs() < 60_000,
-            "the newest agent append should read as fresh (within a minute of now)"
-        );
-        // The `.meta.json` sidecar is not a transcript append and is ignored.
-        std::fs::write(
-            dir.join("conv-a").join("subagents").join("agent-x1.meta.json"),
-            "{}",
-        )
-        .unwrap();
-        assert!(newest_subagent_append_ms(&dir, "conv-a").is_some());
         let _ = std::fs::remove_dir_all(dir);
     }
 

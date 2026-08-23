@@ -19,7 +19,6 @@ import {
   secretField,
   toolCountLabel,
   type ConnectorCard as Card,
-  type CredentialField,
 } from '@/lib/api/connectors'
 import type { OauthProvider } from '@/lib/api/oauth'
 import { sessionsApi, displayLabel } from '@/lib/api'
@@ -713,32 +712,9 @@ function GrantOption({
   )
 }
 
-export function PlainField({
-  field,
-  value,
-  onChange,
-}: {
-  field: CredentialField
-  value: string
-  onChange: (v: string) => void
-}) {
-  return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-[12.5px] font-medium text-foreground">
-        {field.title || field.key}
-        {field.required && <span className="ml-1 text-muted-foreground">*</span>}
-      </span>
-      <input
-        type="text"
-        value={value}
-        autoComplete="off"
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={field.title || field.key}
-        className="h-11 w-full rounded-xl border border-input bg-background px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      />
-    </label>
-  )
-}
+/** Store plain credential field — the shared `CredentialTextField` (store
+ *  treatment). Kept as a named re-export so existing importers are unaffected. */
+export { CredentialTextField as PlainField } from './credential-fields'
 
 export function kindLabel(kind: string): string {
   if (kind === 'mcp_catalog') return 'Catalog'

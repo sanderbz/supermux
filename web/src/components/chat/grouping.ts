@@ -43,6 +43,7 @@ import { scopeMentionPeers } from '../../lib/mention-scope'
 
 import type { ChatAuthor, ChatEntry, ChatItem, ReceiptLine } from './entries'
 import { harnessNotice, stripEmojiPrefix } from './entries'
+import { SYSTEM_ROW_BADGES } from './wire-entries'
 import type { Receipt } from './ui/receipt-group'
 
 /* ── speakers ────────────────────────────────────────────────────────────── */
@@ -81,27 +82,18 @@ export type Speaker =
 
 /** Wire kinds that are harness events rather than anybody speaking.
  *
- *  The last four are the states audit's allowlisted system rows
- *  (`wire-entries.ts::SYSTEM_ROW_BADGES`). A badge missing from this set is not
- *  merely unstyled — `speakerOf` falls through to `'me'` and the row is drawn
- *  as the USER's own bubble, which is how a retry storm would end up looking
- *  like something the human typed. */
-const SYSTEM_BADGES: ReadonlySet<string> = new Set([
+ *  A badge missing from this set is not merely unstyled — `speakerOf` falls
+ *  through to `'me'` and the row is drawn as the USER's own bubble, which is how
+ *  a retry storm would end up looking like something the human typed. The states
+ *  audit's allowlisted system rows are spread in from their ONE source
+ *  (`wire-entries.ts::SYSTEM_ROW_BADGES`) so a badge added there can never be
+ *  silently missed here; only the grouping-local extras are listed below. */
+const SYSTEM_BADGES: ReadonlySet<string> = new Set<string>([
   'notification',
   'system',
   'tool',
   'image',
-  'compaction',
-  'model-switch',
-  'api-retry',
-  'dialog',
-  // The grace-window notice: a fact about the account, in the system voice —
-  // never the user's bubble, which is exactly where it used to land.
-  'limit',
-  // A retry whose stream never started (still live), and the tombstone a
-  // retraction leaves behind — both `wire-entries.ts::SYSTEM_ROW_BADGES`.
-  'stalled',
-  'retracted',
+  ...SYSTEM_ROW_BADGES,
 ])
 
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {

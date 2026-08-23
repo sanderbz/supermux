@@ -46,15 +46,3 @@ export function useCreateCompany() {
     },
   })
 }
-
-/** `PATCH /api/companies/{id}` `{archived:true}` — soft-hide a company from the
- *  switcher (row + `root_dir` survive). Invalidates `['companies']`. */
-export function useArchiveCompany() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number): Promise<Company> => companiesApi.archive(id),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: COMPANIES_KEY })
-    },
-  })
-}

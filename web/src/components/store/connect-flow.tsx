@@ -31,7 +31,7 @@
  * runtime import stays relative, exactly like `connect-card.tsx` / `live-layer.tsx`.
  */
 import * as React from 'react'
-import { ArrowUpRight, Check, Copy, Eye, EyeOff, Loader2, Lock, Terminal } from 'lucide-react'
+import { ArrowUpRight, Check, Copy, Loader2, Lock, Terminal } from 'lucide-react'
 
 import {
   connectorAuthKind,
@@ -42,11 +42,15 @@ import {
   testConnection,
   toolCountLabel,
   type ConnectorCard,
-  type CredentialField,
   type DeviceStart,
   type DeviceTarget,
 } from '../../lib/api/connectors'
 import { cn } from '../../lib/utils'
+import {
+  CredentialSecretField as SecretInput,
+  CredentialTextField as TextField,
+  defaultStr,
+} from './credential-fields'
 
 /** The outcome of a successful seal — what the surface + the test leg need. */
 export interface ConnectFlowResult {
@@ -692,104 +696,9 @@ function TestRow({ card, accountRef, chat }: { card: ConnectorCard; accountRef: 
   )
 }
 
-// ── field atoms (one set, both surfaces via `chat`) ───────────────────────────
-
-function TextField({
-  field,
-  chat,
-  value,
-  onChange,
-}: {
-  field: CredentialField
-  chat: boolean
-  value: string
-  onChange: (v: string) => void
-}) {
-  const id = `connect-${field.key}`
-  return (
-    <div className={chat ? '' : 'flex flex-col gap-1.5'}>
-      <label
-        htmlFor={id}
-        className={cn('font-medium', chat ? 'block text-[12.6px] leading-[1.3] text-ink-2' : 'text-[12.5px] text-foreground')}
-      >
-        {field.title || field.key}
-        {field.required && <span className={cn('ml-1', chat ? 'text-ink-3' : 'text-muted-foreground')}>*</span>}
-      </label>
-      <input
-        id={id}
-        type="text"
-        autoComplete="off"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={field.title || field.key}
-        className={cn(
-          chat
-            ? 'mt-[4px] h-[34px] w-full rounded-[9px] border-[0.5px] border-hairline bg-fill-soft px-[10px] text-[13px] text-ink outline-none focus-visible:border-[color-mix(in_oklab,var(--sm-accent)_55%,transparent)]'
-            : 'h-11 w-full rounded-xl border border-input bg-background px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring',
-        )}
-      />
-    </div>
-  )
-}
-
-function SecretInput({
-  field,
-  chat,
-  value,
-  reveal,
-  onReveal,
-  onChange,
-}: {
-  field: CredentialField
-  chat: boolean
-  value: string
-  reveal: boolean
-  onReveal: () => void
-  onChange: (v: string) => void
-}) {
-  return (
-    <div className={chat ? '' : 'flex flex-col gap-1.5'}>
-      <label
-        htmlFor="connect-secret"
-        className={cn('font-medium', chat ? 'block text-[12.6px] leading-[1.3] text-ink-2' : 'text-[12.5px] text-foreground')}
-      >
-        {field.title || 'API key'}
-        {field.required && <span className={cn('ml-1', chat ? 'text-ink-3' : 'text-muted-foreground')}>*</span>}
-      </label>
-      <div className={cn('relative flex items-center', chat ? 'mt-[4px]' : '')}>
-        <input
-          id="connect-secret"
-          type={reveal ? 'text' : 'password'}
-          autoComplete="off"
-          autoCorrect="off"
-          spellCheck={false}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="Paste your key"
-          data-testid="chat-connect-secret"
-          aria-label={field.title || 'API key'}
-          className={cn(
-            'w-full font-mono outline-none',
-            chat
-              ? 'h-[34px] rounded-[9px] border-[0.5px] border-hairline bg-fill-soft px-[10px] pr-[36px] text-[13px] text-ink focus-visible:border-[color-mix(in_oklab,var(--sm-accent)_55%,transparent)]'
-              : 'h-11 rounded-xl border border-input bg-background px-3 pr-11 text-[13px] text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring',
-          )}
-        />
-        <button
-          type="button"
-          onClick={onReveal}
-          aria-label={reveal ? 'Hide key' : 'Show key'}
-          className={cn(
-            'absolute grid place-items-center rounded-lg text-muted-foreground hover:text-foreground',
-            chat ? 'right-[5px] size-[26px] rounded-[7px] text-ink-3 hover:bg-fill-soft' : 'right-1.5 size-8 hover:bg-muted',
-          )}
-        >
-          {reveal ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
-        </button>
-      </div>
-    </div>
-  )
-}
+// ── field atoms ───────────────────────────────────────────────────────────────
+// The credential text/secret widgets live in `./credential-fields` (one set,
+// both surfaces via `chat`), reused by connector-detail + installed-panel.
 
 function Divider({ chat, children }: { chat: boolean; children: React.ReactNode }) {
   return (
@@ -813,7 +722,3 @@ function PillButton({ label, onClick }: { label: string; onClick?: () => void })
   )
 }
 
-function defaultStr(f: CredentialField): string {
-  if (f.default === undefined || f.default === null) return ''
-  return typeof f.default === 'string' ? f.default : String(f.default)
-}
