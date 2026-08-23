@@ -34,6 +34,7 @@
 //! [`store`] (`companies_config.toml`), NEVER the checked-in `config.toml`.
 
 pub mod cf;
+pub mod quick;
 pub mod store;
 pub mod systemd;
 
@@ -51,6 +52,7 @@ use crate::scope::OptCtx;
 use crate::state::AppState;
 
 use cf::{CfApi, RealCfApi};
+use quick::{QuickTunnelHandle, QuickTunnelHost, RealQuickTunnelHost};
 use systemd::{ConnectorHost, ConnectorPlan, ConnectorState, RealConnectorHost};
 
 /// The one tunnel name per box.
@@ -69,6 +71,11 @@ pub const TUNNEL_ID_FILE: &str = "cloudflared_tunnel_id";
 pub struct ExternalAccess {
     cf: Mutex<Arc<dyn CfApi>>,
     host: Mutex<Arc<dyn ConnectorHost>>,
+    /// The mockable quick-tunnel child seam.
+    quick: Mutex<Arc<dyn QuickTunnelHost>>,
+    /// The LIVE quick-tunnel child handle (in-memory only — the child is not
+    /// serializable). `None` ⇒ no quick tunnel running in this process.
+    quick_handle: tokio::sync::Mutex<Option<QuickTunnelHandle>>,
 }
 
 impl Default for ExternalAccess {
@@ -82,6 +89,8 @@ impl ExternalAccess {
         Self {
             cf: Mutex::new(Arc::new(RealCfApi::new())),
             host: Mutex::new(Arc::new(RealConnectorHost)),
+            quick: Mutex::new(Arc::new(RealQuickTunnelHost)),
+            quick_handle: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -93,6 +102,23 @@ impl ExternalAccess {
         self.host.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    pub fn quick(&self) -> Arc<dyn QuickTunnelHost> {
+        self.quick.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Lock the live quick-tunnel child handle (provision/teardown/status).
+    pub async fn quick_handle(&self) -> tokio::sync::MutexGuard<'_, Option<QuickTunnelHandle>> {
+        self.quick_handle.lock().await
+    }
+
+    /// Is a quick-tunnel child running AND still alive? Best-effort, for `status`.
+    pub async fn quick_handle_alive(&self) -> bool {
+        match self.quick_handle.lock().await.as_mut() {
+            Some(h) => h.is_alive(),
+            None => false,
+        }
+    }
+
     #[cfg(test)]
     pub fn set_cf(&self, v: Arc<dyn CfApi>) {
         *self.cf.lock().unwrap_or_else(|e| e.into_inner()) = v;
@@ -101,6 +127,11 @@ impl ExternalAccess {
     #[cfg(test)]
     pub fn set_host(&self, v: Arc<dyn ConnectorHost>) {
         *self.host.lock().unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    #[cfg(test)]
+    pub fn set_quick(&self, v: Arc<dyn QuickTunnelHost>) {
+        *self.quick.lock().unwrap_or_else(|e| e.into_inner()) = v;
     }
 }
 
@@ -133,6 +164,10 @@ pub fn router_for(state: AppState) -> Router {
             post(base_domain_handler),
         )
         .route("/api/external-access/google", post(google_handler))
+        .route(
+            "/api/external-access/quick-tunnel",
+            post(quick_tunnel_handler).delete(quick_tunnel_teardown_handler),
+        )
         .route("/api/companies/{id}/host", post(host_handler))
         .route(
             "/api/companies/{id}/verify-login",
@@ -356,6 +391,21 @@ struct BoxStatus {
     /// The wizard keys its "Choose your domain" sub-step off this.
     #[serde(skip_serializing_if = "Option::is_none")]
     base_domain: Option<String>,
+    /// The active zero-config quick tunnel, if any (ephemeral/temporary). Omitted
+    /// when no quick trial is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quick_tunnel: Option<QuickTunnelStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct QuickTunnelStatus {
+    /// The child is running AND still alive (honest — a crashed child ⇒ false).
+    active: bool,
+    url: String,
+    host: String,
+    company_id: i64,
+    /// Always true — the honesty flag the wizard renders.
+    ephemeral: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -411,6 +461,24 @@ async fn status_handler(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty());
 
+    // Quick-tunnel status: ephemeral/temporary, `active` from the live child.
+    let quick_tunnel = match store::read_or_default(&state.config.data_dir)
+        .ok()
+        .and_then(|s| s.quick_tunnel)
+    {
+        Some(q) => {
+            let active = state.external_access.quick_handle_alive().await;
+            Some(QuickTunnelStatus {
+                active,
+                url: format!("https://{}", q.host),
+                host: q.host,
+                company_id: q.company_id,
+                ephemeral: true,
+            })
+        }
+        None => None,
+    };
+
     let box_status = BoxStatus {
         cf_token: if has_cf { "valid" } else { "none" }.to_string(),
         tunnel: tunnel_state.to_string(),
@@ -422,6 +490,7 @@ async fn status_handler(
         }
         .to_string(),
         base_domain: base_domain.clone(),
+        quick_tunnel,
     };
 
     let company = match q.company_id {
@@ -515,6 +584,154 @@ async fn google_handler(
     state.reload_human_auth().map_err(AppError::Internal)?;
 
     Ok(ok(GoogleResult { configured: true }))
+}
+
+// ── 4a. POST/DELETE /api/external-access/quick-tunnel ────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct QuickTunnelInput {
+    company_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct QuickTunnelResult {
+    url: String,
+    host: String,
+    /// Always true — a quick tunnel is inherently ephemeral. The honesty flag the
+    /// wizard renders ("this link changes on restart").
+    ephemeral: bool,
+    company_id: i64,
+}
+
+/// The canonical redirect URI for a quick-tunnel host (parity shape with the
+/// Google path, even though the invite flow does not use it).
+fn quick_redirect_uri(host: &str) -> String {
+    format!("https://{host}/auth/callback")
+}
+
+/// `POST /api/external-access/quick-tunnel` — start a zero-config Cloudflare quick
+/// tunnel for ONE company (design §4.5). Ensures signing keys, spawns the child,
+/// captures the ephemeral `*.trycloudflare.com` URL, registers it as an EPHEMERAL
+/// `CompanyHost` entry + a `quick_tunnel` record, hot-reloads human-auth.
+///
+/// Single active quick tunnel per box: starting one for a DIFFERENT company tears
+/// the prior one down first (stop child + drop its host entry). Idempotent — an
+/// existing, still-alive tunnel for the SAME company is reused unchanged.
+async fn quick_tunnel_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+    Json(input): Json<QuickTunnelInput>,
+) -> Result<Json<Envelope<QuickTunnelResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/quick-tunnel")?;
+    let company_id = input.company_id;
+    // The company must exist (404 parity with the rest of the surface).
+    crate::db::companies::get(&state.pool, company_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("company id={company_id}")))?;
+
+    let mut guard = state.external_access.quick_handle().await;
+    let mut store = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+
+    // Idempotent reuse: a live tunnel already bound to THIS company.
+    if let Some(existing) = &store.quick_tunnel {
+        if existing.company_id == company_id {
+            let alive = match guard.as_mut() {
+                Some(h) => h.is_alive(),
+                None => false,
+            };
+            if alive {
+                let host = existing.host.clone();
+                return Ok(ok(QuickTunnelResult {
+                    url: format!("https://{host}"),
+                    host,
+                    ephemeral: true,
+                    company_id,
+                }));
+            }
+        }
+    }
+
+    // Otherwise (re)bind: tear down any prior child + its ephemeral host entry.
+    if let Some(prev) = guard.take() {
+        state.external_access.quick().stop(prev).await;
+    }
+    if let Some(prev) = store.quick_tunnel.take() {
+        let prev_host = prev.host.trim().to_ascii_lowercase();
+        store
+            .company_hosts
+            .retain(|h| h.host.trim().to_ascii_lowercase() != prev_host);
+    }
+
+    // Signing keys must exist so `invite_enabled()` becomes true even with no
+    // Google (idempotent; read-or-generate the 0600 files).
+    crate::config::ensure_signing_keys(&state.config.data_dir).map_err(AppError::Internal)?;
+
+    // Spawn the child + capture the ephemeral URL (behind the mockable seam).
+    let handle = state
+        .external_access
+        .quick()
+        .start(&cloudflared_bin_path(), &local_service(&state))
+        .await
+        .map_err(|e| AppError::BadRequest(format!("could not start quick tunnel: {e}")))?;
+    let host = handle.host.clone();
+    let url = handle.url.clone();
+    let created_at = handle.started_at;
+
+    // Register the ephemeral CompanyHost entry (drives login / WS-origin / cookie
+    // scoping) + the quick_tunnel record, atomically, then hot-reload.
+    store.company_hosts.retain(|h| h.company_id != company_id);
+    store.company_hosts.push(crate::config::CompanyHost {
+        host: host.clone(),
+        company_id,
+        redirect_uri: quick_redirect_uri(&host),
+        ephemeral: true,
+    });
+    store.quick_tunnel = Some(store::QuickTunnel {
+        company_id,
+        host: host.clone(),
+        created_at,
+    });
+    store::write_atomic(&state.config.data_dir, &store).map_err(AppError::Internal)?;
+    state.reload_human_auth().map_err(AppError::Internal)?;
+
+    // Stash the live child in memory.
+    *guard = Some(handle);
+
+    Ok(ok(QuickTunnelResult {
+        url,
+        host,
+        ephemeral: true,
+        company_id,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct QuickTunnelTeardownResult {
+    torn_down: bool,
+}
+
+/// `DELETE /api/external-access/quick-tunnel` — stop the child, remove the
+/// ephemeral `CompanyHost` entry + the `quick_tunnel` record, hot-reload.
+async fn quick_tunnel_teardown_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+) -> Result<Json<Envelope<QuickTunnelTeardownResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/quick-tunnel")?;
+    let mut guard = state.external_access.quick_handle().await;
+    if let Some(handle) = guard.take() {
+        state.external_access.quick().stop(handle).await;
+    }
+    let mut store = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+    let torn_down = store.quick_tunnel.is_some();
+    if let Some(prev) = store.quick_tunnel.take() {
+        let prev_host = prev.host.trim().to_ascii_lowercase();
+        store
+            .company_hosts
+            .retain(|h| h.host.trim().to_ascii_lowercase() != prev_host);
+        store::write_atomic(&state.config.data_dir, &store).map_err(AppError::Internal)?;
+        state.reload_human_auth().map_err(AppError::Internal)?;
+    }
+    Ok(ok(QuickTunnelTeardownResult { torn_down }))
 }
 
 // ── 4b. GET /api/external-access/zones ───────────────────────────────────────
@@ -634,6 +851,7 @@ async fn host_handler(
         host: host.clone(),
         company_id: id,
         redirect_uri: redirect_uri.clone(),
+        ephemeral: false,
     });
     store::write_atomic(&state.config.data_dir, &cfg).map_err(AppError::Internal)?;
     state.reload_human_auth().map_err(AppError::Internal)?;
@@ -725,11 +943,22 @@ async fn add_human_handler(
     Json(input): Json<AddHumanInput>,
 ) -> Result<Json<Envelope<AddHumanResult>>, AppError> {
     crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}/humans"))?;
-    // FAIL-CLOSED: the login url is only meaningful under a chosen base domain.
-    let base = require_base_domain(&state)?;
     let co = crate::db::companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
+
+    // Two login paths. A quick-tunnel company (the store's `quick_tunnel` record
+    // matches this company) issues a signed magic-link on its ephemeral host and
+    // needs NO base domain. Otherwise the permanent Google path REQUIRES a chosen
+    // base domain (fail-closed: the login url is only meaningful under one).
+    let quick = store::read_or_default(&state.config.data_dir)
+        .map_err(AppError::Internal)?
+        .quick_tunnel
+        .filter(|q| q.company_id == id);
+    let base = match &quick {
+        Some(_) => None,
+        None => Some(require_base_domain(&state)?),
+    };
 
     let email = input.email.trim().to_ascii_lowercase();
     let role = input.role.trim().to_ascii_lowercase();
@@ -765,10 +994,29 @@ async fn add_human_handler(
         .await?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("inserted human vanished")))?;
 
-    Ok(ok(AddHumanResult {
-        user,
-        login_url: format!("https://{}", company_canonical_host(&co.slug, &base)),
-    }))
+    // Build the login url for whichever path this company is on.
+    let login_url = match (&quick, &base) {
+        // Quick-tunnel: a signed, time-boxed magic link on the ephemeral host.
+        (Some(q), _) => {
+            let cfg = state.human_auth_cfg();
+            if cfg.invite_key.is_empty() {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "invite key missing; cannot mint magic link"
+                )));
+            }
+            let exp = chrono::Utc::now().timestamp()
+                + crate::auth_human::invite::DEFAULT_INVITE_TTL_SECS;
+            let token =
+                crate::auth_human::invite::mint_invite_token(&cfg.invite_key, user.id, id, exp);
+            format!("https://{}/auth/invite?token={token}", q.host)
+        }
+        // Permanent Google path: the canonical company host.
+        (None, Some(base)) => format!("https://{}", company_canonical_host(&co.slug, base)),
+        // Unreachable: `base` is `Some` whenever `quick` is `None` (set above).
+        (None, None) => unreachable!("base domain resolved on the non-quick path"),
+    };
+
+    Ok(ok(AddHumanResult { user, login_url }))
 }
 
 async fn list_humans_handler(

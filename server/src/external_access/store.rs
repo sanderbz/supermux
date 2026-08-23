@@ -44,6 +44,12 @@ pub struct CompaniesConfig {
     /// Extra trusted owner-transport hosts.
     #[serde(default)]
     pub owner_hosts: Vec<String>,
+    /// The active zero-config Cloudflare quick tunnel (ephemeral). `None` ⇒ no
+    /// trial configured. There is at most ONE per box (a quick tunnel is a single
+    /// hostname serving a single company); starting one for a different company
+    /// replaces this. Absent key parses to `None` (no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_tunnel: Option<QuickTunnel>,
     /// P2a — per-`(provider, company)` connector OAuth **apps** the box owns
     /// (`client_id` + requested `scopes`, both non-secret). The matching
     /// `client_secret` NEVER lands here — it lives 0600 in its own per-provider/
@@ -52,6 +58,23 @@ pub struct CompaniesConfig {
     /// parses byte-identically with an empty list.
     #[serde(default)]
     pub oauth_apps: Vec<OauthApp>,
+}
+
+/// A persisted record that a zero-config quick tunnel is configured for one
+/// company. The URL is ephemeral (reclaimed by Cloudflare on restart), so this
+/// only records the `(company_id, host)` binding + when it was created; the live
+/// child handle lives in memory on [`super::ExternalAccess`]. The matching
+/// `CompanyHost` entry (marked `ephemeral: true`) is what actually drives login /
+/// WS-origin / cookie scoping.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct QuickTunnel {
+    /// The single company this quick tunnel serves.
+    pub company_id: i64,
+    /// The public hostname (`<random>.trycloudflare.com`) — also the key of the
+    /// ephemeral `CompanyHost` entry.
+    pub host: String,
+    /// Unix seconds when the trial was started.
+    pub created_at: i64,
 }
 
 /// One registered connector-OAuth **app** (the box's own client for a provider).
@@ -220,17 +243,31 @@ pub fn assemble(
         }
     }
 
-    // Signing keys: reuse the baseline's when present, else generate (a wizard
-    // that flips human-auth from inert → configured must not leave empty keys,
-    // which would keep `enabled()` false and the login surface dead).
-    let (cookie_key, csrf_key) = if !baseline.cookie_key.is_empty()
+    // Signing keys (cookie + CSRF + invite): reuse the baseline's when all three
+    // are present, else generate (a wizard that flips human-auth from inert →
+    // configured must not leave empty keys, which would keep the surface dead).
+    // The surface is "wanted" by EITHER path — a Google client id (OIDC) OR at
+    // least one allowlisted host (the zero-config quick-tunnel/invite path, which
+    // has no Google). `ensure_signing_keys` read-or-generates the 0600 files, so
+    // it returns the keys the quick-tunnel provision endpoint already wrote.
+    let surface_wants_keys = google_client_id.is_some() || !hosts.is_empty();
+    let (cookie_key, csrf_key, invite_key) = if !baseline.cookie_key.is_empty()
         && !baseline.csrf_key.is_empty()
+        && !baseline.invite_key.is_empty()
     {
-        (baseline.cookie_key.clone(), baseline.csrf_key.clone())
-    } else if google_client_id.is_some() {
+        (
+            baseline.cookie_key.clone(),
+            baseline.csrf_key.clone(),
+            baseline.invite_key.clone(),
+        )
+    } else if surface_wants_keys {
         config::ensure_signing_keys(data_dir)?
     } else {
-        (baseline.cookie_key.clone(), baseline.csrf_key.clone())
+        (
+            baseline.cookie_key.clone(),
+            baseline.csrf_key.clone(),
+            baseline.invite_key.clone(),
+        )
     };
 
     Ok(HumanAuthConfig {
@@ -241,6 +278,7 @@ pub fn assemble(
         owner_hosts,
         cookie_key,
         csrf_key,
+        invite_key,
         session_ttl_secs: baseline.session_ttl_secs,
         base_domain,
     })
@@ -288,9 +326,11 @@ mod tests {
                 host: company_canonical_host("acme", "example.com"),
                 company_id: 7,
                 redirect_uri: company_redirect_uri("acme", "example.com"),
+                ephemeral: false,
             }],
             owner_hosts: vec![],
             oauth_apps: vec![],
+            quick_tunnel: None,
         };
         write_atomic(&d, &cfg).unwrap();
         // No temp file left behind.
@@ -402,9 +442,11 @@ mod tests {
                 host: company_canonical_host("acme", "example.com"),
                 company_id: 7,
                 redirect_uri: company_redirect_uri("acme", "example.com"),
+                ephemeral: false,
             }],
             owner_hosts: vec![],
             oauth_apps: vec![],
+            quick_tunnel: None,
         };
         std::env::set_var("SUPERMUX_GOOGLE_CLIENT_SECRET", "shh");
         let merged = assemble(&d, &baseline, &store).unwrap();
@@ -444,6 +486,50 @@ mod tests {
         };
         let merged = assemble(&d, &baseline, &store).unwrap();
         assert_eq!(merged.base_domain.as_deref(), Some("store.test"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn store_without_quick_tunnel_or_ephemeral_parses_back_compat() {
+        // An OLDER store (no `quick_tunnel`, a `[[company_hosts]]` with no
+        // `ephemeral` key) parses byte-identically: quick_tunnel None, ephemeral
+        // false. The no-migration back-compat contract.
+        let d = tmp();
+        std::fs::write(
+            path(&d),
+            "google_client_id = \"cid.apps.googleusercontent.com\"\n\
+             [[company_hosts]]\n\
+             host = \"acme.example.com\"\n\
+             company_id = 7\n\
+             redirect_uri = \"https://acme.example.com/auth/callback\"\n",
+        )
+        .unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert!(got.quick_tunnel.is_none(), "absent quick_tunnel ⇒ None");
+        assert_eq!(got.company_hosts.len(), 1);
+        assert!(!got.company_hosts[0].ephemeral, "absent ephemeral ⇒ false");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn quick_tunnel_record_and_ephemeral_host_roundtrip() {
+        let d = tmp();
+        let mut cfg = CompaniesConfig::default();
+        cfg.company_hosts.push(CompanyHost {
+            host: "calm-frog.trycloudflare.com".into(),
+            company_id: 3,
+            redirect_uri: "https://calm-frog.trycloudflare.com/auth/callback".into(),
+            ephemeral: true,
+        });
+        cfg.quick_tunnel = Some(QuickTunnel {
+            company_id: 3,
+            host: "calm-frog.trycloudflare.com".into(),
+            created_at: 1234,
+        });
+        write_atomic(&d, &cfg).unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert_eq!(got.quick_tunnel.unwrap().company_id, 3);
+        assert!(got.company_hosts[0].ephemeral);
         let _ = std::fs::remove_dir_all(d);
     }
 

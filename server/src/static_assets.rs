@@ -148,8 +148,19 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
 /// tailnet/localhost transport always received the token).
 fn should_splice_admin_token(state: &AppState, headers: &HeaderMap) -> bool {
     let cfg = state.human_auth_cfg();
-    // Feature off ⇒ byte-identical to pre-P3a: always splice the token.
-    if !cfg.enabled() {
+    // No human surface at all ⇒ byte-identical to pre-P3a: always splice the
+    // token (the owner's loopback / tailnet transport always received it).
+    //
+    // CRITICAL: the gate is `human_surface_active()`, NOT `enabled()`. The
+    // zero-config quick-tunnel path deliberately leaves Google UNCONFIGURED
+    // (`enabled()` stays false) while exposing a PUBLIC `*.trycloudflare.com`
+    // host. Gating on `enabled()` here would splice the omniscient owner bearer
+    // into the SPA served on that public host — a full compromise. Once ANY human
+    // surface is live (Google OIDC OR the magic-link invite), the splice becomes
+    // host-restricted to trusted owner transports (loopback / `*.ts.net` /
+    // configured `owner_hosts`) — and a quick-tunnel host is none of those, so no
+    // admin token ever reaches the public host.
+    if !cfg.human_surface_active() {
         return true;
     }
     match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
@@ -433,7 +444,7 @@ mod tests {
 
     // ── P3a CRITICAL: withhold the admin bearer on company tunnel hosts ─────────
 
-    use super::{asset_or_index, index};
+    use super::{asset_or_index, index, is_trusted_owner_transport};
     use crate::config::{CompanyHost, Config, HumanAuthConfig};
     use crate::state::AppState;
     use axum::extract::State;
@@ -451,6 +462,8 @@ mod tests {
     const OWNER_HOST_CFG: &str = "my-owner-box.internal";
     /// A company/untrusted tunnel Host under the configured base domain.
     const COMPANY_UNTRUSTED_HOST: &str = "acme.example.com";
+    /// A PUBLIC zero-config quick-tunnel Host — must NEVER receive the bearer.
+    const QUICK_TUNNEL_HOST: &str = "calm-frog-1234.trycloudflare.com";
     /// A random forged/unknown Host — must fail closed.
     const EVIL_HOST: &str = "evil.example.com";
 
@@ -469,16 +482,68 @@ mod tests {
                     host: COMPANY_HOST.into(),
                     company_id: 1,
                     redirect_uri: format!("https://{COMPANY_HOST}/auth/callback"),
+                    ephemeral: false,
                 }],
                 owner_hosts: vec![OWNER_HOST_CFG.into()],
                 cookie_key: b"cookie-key".to_vec(),
                 csrf_key: b"csrf-key".to_vec(),
+                invite_key: b"invite-key".to_vec(),
                 session_ttl_secs: 0,
                 base_domain: Some("example.com".into()),
             }
         } else {
             HumanAuthConfig::default()
         };
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: OWNER_TOKEN.to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    /// Build an `AppState` on the ZERO-CONFIG quick-tunnel / invite path:
+    /// `invite_enabled()` is true (a public `*.trycloudflare.com` host in
+    /// `company_hosts` + the signing keys) but Google is UNCONFIGURED so
+    /// `enabled()` is false. This is exactly the state in which the pre-fix gate
+    /// (`!enabled()`) would have spliced the owner bearer into the public host.
+    async fn invite_only_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir()
+            .join(format!("supermux-static-quick-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let human_auth = HumanAuthConfig {
+            google_client_id: None,
+            google_client_secret: None,
+            owner_email: None,
+            company_hosts: vec![CompanyHost {
+                host: QUICK_TUNNEL_HOST.into(),
+                company_id: 1,
+                redirect_uri: format!("https://{QUICK_TUNNEL_HOST}/auth/callback"),
+                ephemeral: true,
+            }],
+            owner_hosts: vec![],
+            cookie_key: b"cookie-key".to_vec(),
+            csrf_key: b"csrf-key".to_vec(),
+            invite_key: b"invite-key".to_vec(),
+            session_ttl_secs: 0,
+            base_domain: None,
+        };
+        // Sanity: the very condition that makes the fix load-bearing.
+        assert!(!human_auth.enabled(), "Google must be unconfigured on this path");
+        assert!(human_auth.invite_enabled(), "the invite surface is live");
+        assert!(human_auth.human_surface_active());
         let config = Config {
             data_dir: dir.clone(),
             bind: "127.0.0.1:0".parse().unwrap(),
@@ -665,6 +730,72 @@ mod tests {
         );
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── §7.1 CRITICAL: the quick-tunnel splice hole is closed ───────────────────
+    //
+    // The zero-config quick-tunnel path leaves Google unconfigured, so the OLD
+    // gate (`!cfg.enabled()`) would return `true` and splice the owner bearer into
+    // the SPA on the PUBLIC trycloudflare host = full compromise. With the gate on
+    // `human_surface_active()`, the public quick host gets a cookie-only shell
+    // (NO token) while the owner's loopback transport STILL receives it.
+    #[tokio::test]
+    async fn quick_tunnel_public_host_gets_no_admin_token_but_loopback_still_does() {
+        let (state, dir) = invite_only_state().await;
+
+        // The public quick-tunnel host — NO admin token, via BOTH entry points.
+        let resp = index(State(state.clone()), headers_with_host(QUICK_TUNNEL_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "public quick-tunnel host must NOT leak the admin bearer, got: {html:?}"
+        );
+        assert!(html.contains("_SUPERMUX_VERSION"), "runtime config still injected");
+        let resp = asset_or_index(
+            State(state.clone()),
+            headers_with_host(QUICK_TUNNEL_HOST),
+            spa_uri(),
+        )
+        .await;
+        let html = body_of(resp).await;
+        assert!(
+            !html.contains("_SUPERMUX_AUTH_TOKEN"),
+            "quick-tunnel host must fail closed through the fallback too"
+        );
+
+        // The owner's loopback transport STILL carries the token (not broken).
+        let resp = index(State(state.clone()), headers_with_host(LOOPBACK_HOST)).await;
+        let html = body_of(resp).await;
+        assert!(
+            html.contains("_SUPERMUX_AUTH_TOKEN") && html.contains(OWNER_TOKEN),
+            "loopback owner transport must still receive the token on the invite path"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // The owner bearer is never accepted FROM the quick host as an owner transport
+    // (a trycloudflare host is neither loopback, `*.ts.net`, nor an owner_hosts
+    // entry) — the direct `is_trusted_owner_transport` unit assertion.
+    #[test]
+    fn quick_tunnel_host_is_not_a_trusted_owner_transport() {
+        let cfg = HumanAuthConfig {
+            company_hosts: vec![CompanyHost {
+                host: QUICK_TUNNEL_HOST.into(),
+                company_id: 1,
+                redirect_uri: format!("https://{QUICK_TUNNEL_HOST}/auth/callback"),
+                ephemeral: true,
+            }],
+            cookie_key: b"c".to_vec(),
+            csrf_key: b"s".to_vec(),
+            invite_key: b"i".to_vec(),
+            ..Default::default()
+        };
+        assert!(!is_trusted_owner_transport(&cfg, QUICK_TUNNEL_HOST));
+        // Loopback / tailnet remain trusted.
+        assert!(is_trusted_owner_transport(&cfg, "127.0.0.1:8824"));
+        assert!(is_trusted_owner_transport(&cfg, "box.taild681cb.ts.net"));
     }
 
     #[test]

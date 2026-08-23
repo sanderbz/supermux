@@ -20,6 +20,7 @@
 //! byte-identical to before P3a.
 
 pub mod flow;
+pub mod invite;
 pub mod middleware;
 pub mod oidc;
 pub mod router;

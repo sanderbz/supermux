@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 
 use super::cf::MockCfApi;
+use super::quick::MockQuickTunnelHost;
 use super::systemd::MockConnectorHost;
 use super::*;
 use crate::auth_human::AuthContext;
@@ -52,6 +53,22 @@ fn inject_host(state: &AppState) -> Arc<MockConnectorHost> {
     let host = Arc::new(MockConnectorHost::default());
     state.external_access.set_host(host.clone());
     host
+}
+
+/// Inject a quick-tunnel mock returning `url`, so provisioning never starts a real
+/// tunnel or touches the network.
+fn inject_quick(state: &AppState, url: &str) -> Arc<MockQuickTunnelHost> {
+    let q = Arc::new(MockQuickTunnelHost::with_url(url));
+    state.external_access.set_quick(q.clone());
+    q
+}
+
+/// A HeaderMap carrying an `Origin` (for the WS-origin gate assertions).
+fn origin_headers(origin: &str) -> axum::http::HeaderMap {
+    use axum::http::header::{HeaderValue, ORIGIN};
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
+    h
 }
 
 /// Seed the chosen base domain (`example.com`) into the companion store and
@@ -691,6 +708,210 @@ async fn status_without_a_base_domain_is_benign() {
     assert!(!c.company_host_written);
     assert!(!c.reachable);
     assert_eq!(c.redirect_registered, "unknown");
+    cleanup(state, dir).await;
+}
+
+// ── quick tunnel (zero-config, no Google, no Cloudflare) ─────────────────────
+
+/// Provisioning a quick tunnel writes an EPHEMERAL company host + a `quick_tunnel`
+/// record, makes the surface invite-enabled (no Google), and touches Cloudflare
+/// ZERO times. `host_entry` + `origin_allowed` both resolve the ephemeral host.
+#[tokio::test]
+async fn quick_tunnel_provision_registers_ephemeral_host_and_makes_no_cf_calls() {
+    let (state, dir) = test_state().await;
+    let cf = inject_cf(&state);
+    let quick = inject_quick(&state, "https://calm-frog-1234.trycloudflare.com");
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+
+    let res = quick_tunnel_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(QuickTunnelInput { company_id: co.id }),
+    )
+    .await
+    .expect("quick tunnel provisioned");
+    assert_eq!(res.0.data.url, "https://calm-frog-1234.trycloudflare.com");
+    assert_eq!(res.0.data.host, "calm-frog-1234.trycloudflare.com");
+    assert!(res.0.data.ephemeral);
+    assert_eq!(quick.start_count(), 1, "child started once");
+
+    // Ephemeral CompanyHost entry + quick_tunnel record persisted.
+    let stored = store::read(&dir).unwrap().unwrap();
+    let qt = stored.quick_tunnel.expect("quick_tunnel record");
+    assert_eq!(qt.company_id, co.id);
+    assert_eq!(qt.host, "calm-frog-1234.trycloudflare.com");
+    let entry = stored
+        .company_hosts
+        .iter()
+        .find(|h| h.host == "calm-frog-1234.trycloudflare.com")
+        .expect("ephemeral host entry");
+    assert!(entry.ephemeral, "host marked ephemeral");
+    assert_eq!(entry.company_id, co.id);
+
+    // Live config: host_entry resolves it, the surface is invite-enabled (NO
+    // Google), and signing keys were generated.
+    let cfg = state.human_auth_cfg();
+    assert!(cfg.host_entry("calm-frog-1234.trycloudflare.com").is_some());
+    assert!(!cfg.enabled(), "no Google on the quick-tunnel path");
+    assert!(cfg.invite_enabled(), "invite surface live");
+    assert!(!cfg.invite_key.is_empty(), "invite key generated");
+
+    // The WS Origin gate accepts the ephemeral host (it is a company_hosts entry).
+    assert!(crate::ws::origin_allowed(
+        &state,
+        &origin_headers("https://calm-frog-1234.trycloudflare.com")
+    ));
+
+    // ZERO Cloudflare calls on this path.
+    assert_eq!(cf.create_count(), 0, "quick tunnel makes no Cloudflare calls");
+
+    // The live child handle is stashed + reported alive by status.
+    assert!(state.external_access.quick_handle_alive().await);
+    cleanup(state, dir).await;
+}
+
+/// One active quick tunnel per box: provisioning for a DIFFERENT company tears the
+/// first down (stop + replace) — the old host is gone, the new one bound.
+#[tokio::test]
+async fn quick_tunnel_rebind_replaces_the_prior_company() {
+    let (state, dir) = test_state().await;
+    let _cf = inject_cf(&state);
+    let co1 = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+    let co2 = crate::db::companies::create(&state.pool, "beta", "Beta", "/tmp/beta")
+        .await
+        .unwrap();
+
+    let q1 = inject_quick(&state, "https://host-one.trycloudflare.com");
+    quick_tunnel_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(QuickTunnelInput { company_id: co1.id }),
+    )
+    .await
+    .unwrap();
+
+    // Rebind to a second company with a different URL.
+    let q2 = inject_quick(&state, "https://host-two.trycloudflare.com");
+    quick_tunnel_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(QuickTunnelInput { company_id: co2.id }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(q2.start_count(), 1, "second child started");
+    assert_eq!(q2.stop_count(), 1, "prior child torn down on rebind");
+
+    let stored = store::read(&dir).unwrap().unwrap();
+    let qt = stored.quick_tunnel.unwrap();
+    assert_eq!(qt.company_id, co2.id, "now bound to the second company");
+    assert_eq!(qt.host, "host-two.trycloudflare.com");
+    // The FIRST host is gone; only the second resolves.
+    let cfg = state.human_auth_cfg();
+    assert!(cfg.host_entry("host-one.trycloudflare.com").is_none(), "old host removed");
+    assert!(cfg.host_entry("host-two.trycloudflare.com").is_some());
+    let _ = q1;
+    cleanup(state, dir).await;
+}
+
+/// Teardown stops the child, removes the entry + record; the host no longer
+/// resolves and the WS Origin gate rejects it again (fail-closed).
+#[tokio::test]
+async fn quick_tunnel_teardown_removes_entry_and_record() {
+    let (state, dir) = test_state().await;
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+    let quick = inject_quick(&state, "https://gone-soon.trycloudflare.com");
+    quick_tunnel_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(QuickTunnelInput { company_id: co.id }),
+    )
+    .await
+    .unwrap();
+    assert!(state
+        .human_auth_cfg()
+        .host_entry("gone-soon.trycloudflare.com")
+        .is_some());
+
+    let res = quick_tunnel_teardown_handler(State(state.clone()), OptCtx(None))
+        .await
+        .expect("teardown ok");
+    assert!(res.0.data.torn_down);
+    assert_eq!(quick.stop_count(), 1, "child stopped");
+
+    // Record + entry gone; host no longer resolves; origin rejected.
+    let stored = store::read(&dir).unwrap().unwrap();
+    assert!(stored.quick_tunnel.is_none(), "record removed");
+    assert!(!stored
+        .company_hosts
+        .iter()
+        .any(|h| h.host == "gone-soon.trycloudflare.com"));
+    let cfg = state.human_auth_cfg();
+    assert!(cfg.host_entry("gone-soon.trycloudflare.com").is_none());
+    assert!(!crate::ws::origin_allowed(
+        &state,
+        &origin_headers("https://gone-soon.trycloudflare.com")
+    ));
+    assert!(!state.external_access.quick_handle_alive().await);
+    cleanup(state, dir).await;
+}
+
+/// The quick-tunnel company's `add_human` returns a signed `/auth/invite` magic
+/// link on the ephemeral host — NOT a base-domain Google URL — with no base domain
+/// configured at all.
+#[tokio::test]
+async fn add_human_on_quick_company_returns_a_magic_link() {
+    let (state, dir) = test_state().await;
+    let _cf = inject_cf(&state);
+    let _quick = inject_quick(&state, "https://calm-frog-1234.trycloudflare.com");
+    let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+        .await
+        .unwrap();
+    quick_tunnel_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Json(QuickTunnelInput { company_id: co.id }),
+    )
+    .await
+    .unwrap();
+    // No base domain on this path.
+    assert!(state.human_auth_cfg().base_domain.is_none());
+
+    let added = add_human_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Path(co.id),
+        Json(AddHumanInput {
+            email: "bob@acme.test".into(),
+            role: "member".into(),
+            display_name: None,
+        }),
+    )
+    .await
+    .expect("add human ok");
+    let url = &added.0.data.login_url;
+    assert!(
+        url.starts_with("https://calm-frog-1234.trycloudflare.com/auth/invite?token="),
+        "magic link on the ephemeral host: {url}"
+    );
+    // The token verifies + binds to this user/company.
+    let token = url.rsplit_once("token=").unwrap().1;
+    let now = chrono::Utc::now().timestamp();
+    let claims = crate::auth_human::invite::verify_invite_token(
+        &state.human_auth_cfg().invite_key,
+        token,
+        now,
+    )
+    .expect("token verifies");
+    assert_eq!(claims.user_id, added.0.data.user.id);
+    assert_eq!(claims.company_id, co.id);
     cleanup(state, dir).await;
 }
 

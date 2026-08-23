@@ -171,6 +171,11 @@ pub struct HumanAuthConfig {
     /// HMAC key for the double-submit CSRF token hash. Same persistence as
     /// `cookie_key`.
     pub csrf_key: Vec<u8>,
+    /// HMAC key that signs the stateless magic-link **invite** token
+    /// (`/auth/invite?token=…`, the zero-config quick-tunnel path). A 3rd 0600
+    /// key generated alongside `cookie_key`/`csrf_key`; empty ⇒ the invite
+    /// surface cannot mint or verify a token (fail-closed). NEVER logged.
+    pub invite_key: Vec<u8>,
     /// Session lifetime in seconds (cookie + `human_sessions.expires_at`).
     /// Default 12h.
     pub session_ttl_secs: i64,
@@ -194,6 +199,27 @@ impl HumanAuthConfig {
             && !self.company_hosts.is_empty()
             && !self.cookie_key.is_empty()
             && !self.csrf_key.is_empty()
+    }
+
+    /// True when the human surface can run WITHOUT Google — a zero-config
+    /// quick-tunnel / magic-link invite trial: at least one allowlisted host plus
+    /// the cookie + CSRF signing keys. Deliberately does NOT require a Google
+    /// client (that is [`enabled`](Self::enabled)); the `/auth/invite` route
+    /// authorizes via a signed [`invite_key`](Self::invite_key) token instead.
+    pub fn invite_enabled(&self) -> bool {
+        !self.company_hosts.is_empty()
+            && !self.cookie_key.is_empty()
+            && !self.csrf_key.is_empty()
+    }
+
+    /// The human surface is live by EITHER path — Google OIDC ([`enabled`](Self::enabled))
+    /// OR the magic-link invite ([`invite_enabled`](Self::invite_enabled)). This is
+    /// the predicate the admin-token splice keys off: once ANY human surface is
+    /// live the box leaves "pre-P3a, splice everywhere" mode and the bearer is
+    /// restricted to trusted owner transports only (see
+    /// `static_assets::should_splice_admin_token`).
+    pub fn human_surface_active(&self) -> bool {
+        self.enabled() || self.invite_enabled()
     }
 
     /// Effective session TTL (seconds), falling back to 12h when unset/nonpositive.
@@ -278,6 +304,12 @@ pub struct CompanyHost {
     /// The exact redirect URI registered with Google for this Host
     /// (`https://<host>/auth/callback`).
     pub redirect_uri: String,
+    /// EPHEMERAL marker: `true` for a Cloudflare quick-tunnel host
+    /// (`<random>.trycloudflare.com`) whose URL changes on every restart. Absent
+    /// in an older store ⇒ `false` (a permanent domain host), so an existing
+    /// store round-trips byte-identically (no migration). Never an owner transport.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 impl CompanyHost {
@@ -558,16 +590,17 @@ fn resolve_human_auth(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // Generate/persist the cookie + CSRF signing keys only when the surface is
-    // configured (a client id is present). Otherwise leave them empty (inert).
-    let (cookie_key, csrf_key) = if google_client_id.is_some() {
-        (
-            resolve_or_generate_key(&data_dir.join("human_cookie_key"))?,
-            resolve_or_generate_key(&data_dir.join("human_csrf_key"))?,
-        )
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    // Generate/persist the cookie + CSRF + invite signing keys only when the
+    // surface is configured — a Google client id (OIDC path) OR at least one
+    // allowlisted host (the quick-tunnel/invite path can have no Google). Else
+    // leave them empty (inert), so an install that never enables human-auth
+    // writes no new files and stays byte-identical.
+    let (cookie_key, csrf_key, invite_key) =
+        if google_client_id.is_some() || !company_hosts.is_empty() {
+            ensure_signing_keys(data_dir)?
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
 
     Ok(HumanAuthConfig {
         google_client_id,
@@ -577,6 +610,7 @@ fn resolve_human_auth(
         owner_hosts,
         cookie_key,
         csrf_key,
+        invite_key,
         session_ttl_secs: ttl_secs.unwrap_or(0),
         base_domain,
     })
@@ -590,14 +624,20 @@ pub(crate) fn read_secret_file(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Ensure the human-auth cookie + CSRF signing keys exist under `data_dir`,
-/// generating + persisting them mode 0600 on first use. Reused by the onboarding
-/// wizard's hot-reload path when a box that had no `google_client_id` at boot
-/// (so empty keys) gains one via `POST /api/external-access/google`.
-pub(crate) fn ensure_signing_keys(data_dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+/// The 0600 basename of the magic-link invite HMAC key.
+pub const INVITE_KEY_FILE: &str = "human_invite_key";
+
+/// Ensure the human-auth cookie + CSRF + invite signing keys exist under
+/// `data_dir`, generating + persisting them mode 0600 on first use. Reused by the
+/// onboarding wizard's hot-reload path when a box that had no `google_client_id`
+/// at boot (so empty keys) gains one via `POST /api/external-access/google`, and
+/// by the zero-config quick-tunnel provision path (which has no Google at all).
+/// Returns `(cookie_key, csrf_key, invite_key)`.
+pub(crate) fn ensure_signing_keys(data_dir: &Path) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     Ok((
         resolve_or_generate_key(&data_dir.join("human_cookie_key"))?,
         resolve_or_generate_key(&data_dir.join("human_csrf_key"))?,
+        resolve_or_generate_key(&data_dir.join(INVITE_KEY_FILE))?,
     ))
 }
 
@@ -738,6 +778,7 @@ mod tests {
             host: "acme.example.com".to_string(),
             company_id: 7,
             redirect_uri: "https://acme.example.com/auth/callback".to_string(),
+            ephemeral: false,
         };
         assert!(entry.is_canonical_for("acme", 7, "example.com"));
         // Case-insensitive host/redirect match (DNS + scheme fold case).
@@ -745,6 +786,7 @@ mod tests {
             host: "ACME.example.com".to_string(),
             company_id: 7,
             redirect_uri: "https://ACME.example.com/auth/callback".to_string(),
+            ephemeral: false,
         };
         assert!(mixed.is_canonical_for("acme", 7, "example.com"));
 
@@ -760,6 +802,7 @@ mod tests {
             host: "acme.example.com".to_string(),
             company_id: 7,
             redirect_uri: "https://evil.example/auth/callback".to_string(),
+            ephemeral: false,
         };
         assert!(!bad_redirect.is_canonical_for("acme", 7, "example.com"));
     }
@@ -773,6 +816,7 @@ mod tests {
                 host: company_canonical_host("acme", "example.com"),
                 company_id: 42,
                 redirect_uri: company_redirect_uri("acme", "example.com"),
+                ephemeral: false,
             }],
             cookie_key: vec![1; 32],
             csrf_key: vec![1; 32],

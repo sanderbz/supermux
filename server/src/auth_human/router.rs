@@ -24,6 +24,7 @@ pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/auth/login", get(login))
         .route("/auth/callback", get(callback))
+        .route("/auth/invite", get(invite))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .with_state(state)
@@ -33,6 +34,12 @@ pub fn router_for(state: AppState) -> Router {
 struct LoginQuery {
     /// Optional explicit host; otherwise the inbound `Host` header is used.
     host: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InviteQuery {
+    /// The signed magic-link token (`base64url(payload).hmac_hex`).
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,7 +181,21 @@ async fn callback(
         }
     }
 
-    // Mint: rotate (revoke prior sessions), store sha256(token) + hmac(csrf).
+    // Mint the session (rotate, store sha256(token) + hmac(csrf), set cookies).
+    mint_session_response(&state, &cfg, user.id, user.company_id).await
+}
+
+/// The SHARED session-mint tail: rotate prior sessions, store `sha256(token)` +
+/// `hmac(csrf)` in `human_sessions`, set the `supermux_hsess` + `supermux_csrf`
+/// cookies, 302 to `/`. Called IDENTICALLY by the Google callback and the
+/// magic-link `/auth/invite` route — so an invite mints a byte-identical session
+/// to a Google login (same cookies, same CSRF, same DB row shape).
+async fn mint_session_response(
+    state: &AppState,
+    cfg: &crate::config::HumanAuthConfig,
+    user_id: i64,
+    company_id: Option<i64>,
+) -> Response {
     let now = chrono::Utc::now().timestamp();
     let ttl = cfg.ttl_secs();
     let token = mint_opaque_token();
@@ -182,12 +203,12 @@ async fn callback(
     let csrf_token = mint_opaque_token();
     let csrf_stored = csrf_hash(&cfg.csrf_key, &csrf_token);
 
-    let _ = crate::db::human_sessions::revoke_all_for_user(&state.pool, user.id, now).await;
+    let _ = crate::db::human_sessions::revoke_all_for_user(&state.pool, user_id, now).await;
     if let Err(e) = crate::db::human_sessions::insert(
         &state.pool,
-        user.id,
+        user_id,
         &token_hash,
-        user.company_id,
+        company_id,
         &csrf_stored,
         now,
         now + ttl,
@@ -213,6 +234,68 @@ async fn callback(
     resp
 }
 
+/// `GET /auth/invite?token=…` — the PUBLIC magic-link consume (design §3.3), the
+/// zero-config quick-tunnel alternative to Google. Gated on `invite_enabled()`.
+///
+/// Steps (uniform 400/403, fail-closed, no oracle):
+///   1. Verify the token's HMAC (constant-time) + expiry against `invite_key`.
+///   2. Require the inbound Host be an allowlisted `host_entry` whose `company_id`
+///      == the token's — the SAME host↔company binding as the Google callback
+///      (rejects a token replayed on a different/forged host).
+///   3. Load `human_users::get(user_id)`; require `row.company_id == token.company_id`
+///      (a deleted/revoked human ⇒ no row ⇒ 403).
+///   4. Mint the IDENTICAL session as the callback (`mint_session_response`), 302 `/`.
+async fn invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<InviteQuery>,
+) -> Response {
+    let cfg = state.human_auth_cfg();
+    // Gate on the INVITE surface (not Google `enabled()`): inert otherwise.
+    if !cfg.invite_enabled() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let token = match q.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(t) => t,
+        None => return (StatusCode::BAD_REQUEST, "bad request").into_response(),
+    };
+
+    // 1. Verify HMAC (constant-time) + expiry.
+    let now = chrono::Utc::now().timestamp();
+    let claims = match super::invite::verify_invite_token(&cfg.invite_key, token, now) {
+        Some(c) => c,
+        None => return (StatusCode::BAD_REQUEST, "bad request").into_response(),
+    };
+
+    // 2. Host↔company binding: the inbound Host must be an allowlisted company
+    //    host for exactly the token's company (parity with `callback`).
+    let host = match effective_host(&headers, None) {
+        Some(h) => h,
+        None => return (StatusCode::BAD_REQUEST, "bad request").into_response(),
+    };
+    match cfg.host_entry(&host) {
+        Some(entry) if entry.company_id == claims.company_id => {}
+        _ => return (StatusCode::FORBIDDEN, "forbidden").into_response(),
+    }
+
+    // 3. The human_users row must still exist AND still be fenced to the token's
+    //    company (a deleted/revoked human ⇒ no row ⇒ 403; a re-homed row ⇒ 403).
+    let user = match crate::db::human_users::get(&state.pool, claims.user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return (StatusCode::FORBIDDEN, "forbidden").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "human_users lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
+        }
+    };
+    if user.company_id != Some(claims.company_id) {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+
+    // 4. Mint the IDENTICAL session as the Google callback.
+    mint_session_response(&state, &cfg, user.id, user.company_id).await
+}
+
 /// `POST /auth/logout` — revoke the session, clear the cookies. CSRF-protected
 /// (double-submit) since it is a cookie-borne state change.
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -223,7 +306,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .unwrap_or("");
     let raw = cookie_value(cookie_header, SESSION_COOKIE);
 
-    if cfg.enabled() {
+    // `human_surface_active()`: logout must revoke an invite-minted session too.
+    if cfg.human_surface_active() {
         if let Some(raw) = raw {
             if let Some(token) = verify_cookie(&cfg.cookie_key, raw) {
                 let now = chrono::Utc::now().timestamp();
@@ -278,9 +362,10 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
         }
     }
 
-    // Human via cookie.
+    // Human via cookie. `human_surface_active()` (not `enabled()`) so an
+    // invite-minted (non-Google) session resolves for `/auth/me` too.
     let cfg = state.human_auth_cfg();
-    if cfg.enabled() {
+    if cfg.human_surface_active() {
         let cookie_header = headers
             .get(header::COOKIE)
             .and_then(|v| v.to_str().ok())
@@ -346,4 +431,206 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::*;
+    use crate::auth_human::invite::mint_invite_token;
+    use crate::config::{CompanyHost, Config, HumanAuthConfig};
+    use crate::state::AppState;
+    use axum::http::StatusCode;
+
+    const QUICK_HOST: &str = "calm-frog-1234.trycloudflare.com";
+    const INVITE_KEY: &[u8] = b"invite-key-invite-key-invite-key";
+    const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01
+
+    /// Build an AppState on the invite (quick-tunnel) path: the quick host is a
+    /// `company_hosts` entry for company 1, the invite/cookie/csrf keys are set,
+    /// and Google is UNCONFIGURED (so `enabled()` is false, `invite_enabled()` true).
+    async fn invite_state(with_surface: bool) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-invite-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let human_auth = if with_surface {
+            HumanAuthConfig {
+                company_hosts: vec![CompanyHost {
+                    host: QUICK_HOST.into(),
+                    company_id: 1,
+                    redirect_uri: format!("https://{QUICK_HOST}/auth/callback"),
+                    ephemeral: true,
+                }],
+                cookie_key: b"cookie-key-cookie-key-cookie-key".to_vec(),
+                csrf_key: b"csrf-key-csrf-key-csrf-key-csrf!!".to_vec(),
+                invite_key: INVITE_KEY.to_vec(),
+                ..Default::default()
+            }
+        } else {
+            HumanAuthConfig::default()
+        };
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "owner-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    /// Create company id 1 + a member fenced to it (fresh db ⇒ ids start at 1).
+    async fn seed_member(state: &AppState) -> i64 {
+        let co = crate::db::companies::create(&state.pool, "acme", "Acme", "/tmp/acme")
+            .await
+            .unwrap();
+        assert_eq!(co.id, 1, "fresh db company id");
+        crate::db::human_users::insert(&state.pool, "bob@acme.test", "Bob", Some(1), "member")
+            .await
+            .unwrap()
+    }
+
+    fn host_headers(host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        h
+    }
+
+    async fn call_invite(state: &AppState, host: &str, token: &str) -> Response {
+        invite(
+            State(state.clone()),
+            host_headers(host),
+            Query(InviteQuery {
+                token: Some(token.to_string()),
+            }),
+        )
+        .await
+    }
+
+    async fn cleanup(state: AppState, dir: std::path::PathBuf) {
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Set-Cookie names present on the response (for the happy-path assertion).
+    fn set_cookie_names(resp: &Response) -> Vec<String> {
+        resp.headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|s| s.split('=').next().map(str::to_string))
+            .collect()
+    }
+
+    // ── happy path: mints the IDENTICAL session as the Google callback ──────────
+    #[tokio::test]
+    async fn invite_happy_path_mints_a_session_and_302s() {
+        let (state, dir) = invite_state(true).await;
+        let uid = seed_member(&state).await;
+        let token = mint_invite_token(INVITE_KEY, uid, 1, FAR_FUTURE);
+
+        let resp = call_invite(&state, QUICK_HOST, &token).await;
+        assert_eq!(resp.status(), StatusCode::FOUND, "302 to /");
+        let names = set_cookie_names(&resp);
+        assert!(names.iter().any(|n| n == SESSION_COOKIE), "session cookie set: {names:?}");
+        assert!(names.iter().any(|n| n == CSRF_COOKIE), "csrf cookie set: {names:?}");
+
+        // A live human_sessions row exists for the user, scoped to company 1.
+        let now = chrono::Utc::now().timestamp();
+        // The cookie carries the token whose sha256 keys the row; instead assert a
+        // live session exists for the user by re-minting semantics: list via the
+        // roster status (active) is simplest.
+        let rows = crate::db::human_users::list_by_company(&state.pool, 1, now)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "active", "session is live after invite");
+        cleanup(state, dir).await;
+    }
+
+    // ── rejection: the token replayed on a DIFFERENT / forged host ──────────────
+    #[tokio::test]
+    async fn invite_rejects_wrong_host() {
+        let (state, dir) = invite_state(true).await;
+        let uid = seed_member(&state).await;
+        let token = mint_invite_token(INVITE_KEY, uid, 1, FAR_FUTURE);
+        // A host that is not the allowlisted company host ⇒ 403.
+        let resp = call_invite(&state, "evil.example.com", &token).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        cleanup(state, dir).await;
+    }
+
+    // ── rejection: token's company_id ≠ the host's company ──────────────────────
+    #[tokio::test]
+    async fn invite_rejects_wrong_company_token() {
+        let (state, dir) = invite_state(true).await;
+        let uid = seed_member(&state).await;
+        // Token claims company 2, but QUICK_HOST is allowlisted for company 1.
+        let token = mint_invite_token(INVITE_KEY, uid, 2, FAR_FUTURE);
+        let resp = call_invite(&state, QUICK_HOST, &token).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "host↔company mismatch");
+        cleanup(state, dir).await;
+    }
+
+    // ── rejection: a deleted / never-existent human ⇒ 403 (revocation) ──────────
+    #[tokio::test]
+    async fn invite_rejects_deleted_human() {
+        let (state, dir) = invite_state(true).await;
+        let _uid = seed_member(&state).await;
+        // A valid, correctly-signed token for a user id that has no row.
+        let token = mint_invite_token(INVITE_KEY, 999, 1, FAR_FUTURE);
+        let resp = call_invite(&state, QUICK_HOST, &token).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "no human row ⇒ 403");
+        cleanup(state, dir).await;
+    }
+
+    // ── rejection: an expired / tampered token ⇒ 400 (uniform, no oracle) ───────
+    #[tokio::test]
+    async fn invite_rejects_expired_and_tampered_token() {
+        let (state, dir) = invite_state(true).await;
+        let uid = seed_member(&state).await;
+        // Expired (exp in the past).
+        let expired = mint_invite_token(INVITE_KEY, uid, 1, 1_000);
+        assert_eq!(
+            call_invite(&state, QUICK_HOST, &expired).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        // Tampered signature.
+        let good = mint_invite_token(INVITE_KEY, uid, 1, FAR_FUTURE);
+        let (payload, sig) = good.rsplit_once('.').unwrap();
+        let last = sig.chars().last().unwrap();
+        let bad = format!("{payload}.{}{}", &sig[..sig.len() - 1], if last == 'a' { 'b' } else { 'a' });
+        assert_eq!(
+            call_invite(&state, QUICK_HOST, &bad).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        // Missing token param.
+        let resp = invite(
+            State(state.clone()),
+            host_headers(QUICK_HOST),
+            Query(InviteQuery { token: None }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        cleanup(state, dir).await;
+    }
+
+    // ── gating: the invite surface is inert without `invite_enabled()` ──────────
+    #[tokio::test]
+    async fn invite_is_404_when_surface_inactive() {
+        let (state, dir) = invite_state(false).await;
+        assert!(!state.human_auth_cfg().invite_enabled());
+        let token = mint_invite_token(INVITE_KEY, 1, 1, FAR_FUTURE);
+        let resp = call_invite(&state, QUICK_HOST, &token).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        cleanup(state, dir).await;
+    }
 }

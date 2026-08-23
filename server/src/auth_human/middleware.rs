@@ -99,7 +99,9 @@ pub async fn auth_context_middleware(
     //    as an OWNED, Send type BEFORE the DB await — holding `&Request` (whose
     //    `Body` is not `Sync`) across the await would make the middleware future
     //    !Send.
-    if state.human_auth_cfg().enabled() {
+    // `human_surface_active()`, NOT `enabled()`: a session minted by the
+    // magic-link invite path (no Google) must still authenticate its cookie.
+    if state.human_auth_cfg().human_surface_active() {
         let cookie_header = req
             .headers()
             .get(header::COOKIE)
@@ -194,7 +196,9 @@ pub async fn resolve_cookie_identity(
     state: &AppState,
     cookie_header: Option<&str>,
 ) -> Option<AuthContext> {
-    if !state.human_auth_cfg().enabled() {
+    // `human_surface_active()`: an invite-minted (non-Google) session cookie must
+    // resolve on the WS-upgrade / iCal surfaces too.
+    if !state.human_auth_cfg().human_surface_active() {
         return None;
     }
     let cfg = state.human_auth_cfg();
