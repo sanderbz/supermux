@@ -87,8 +87,12 @@ export interface ConnectFlowProps {
   submitLabel?: string
   /** Block the CTA (e.g. the store library's "choose who gets it" gate). */
   submitDisabled?: boolean
-  /** Alternate CTA copy while blocked (e.g. "Install — choose who gets it"). */
+  /** Alternate CTA copy while blocked (e.g. "Choose who gets it first"). */
   blockedLabel?: string
+  /** Store: suppress the collect-state submit CTA entirely (an `mcp_oauth` card
+   *  finishes in the bot's chat via the handoff, so its grant-only button is
+   *  meaningless — only the honest Lane D note shows here). Chat never sets it. */
+  suppressCta?: boolean
   /** Store: a slot above the CTA (the GrantPicker). */
   children?: React.ReactNode
   /** Store: extra content in the added panel (e.g. the per-bot restart buttons). */
@@ -113,6 +117,7 @@ export function ConnectFlow({
   submitLabel,
   submitDisabled,
   blockedLabel,
+  suppressCta,
   children,
   renderAddedExtra,
   initialAdded,
@@ -281,7 +286,7 @@ export function ConnectFlow({
   }
 
   const chat = variant === 'chat'
-  const showCta = keyLaneOpen // during the OAuth lead the "Sign in" button is the primary
+  const showCta = keyLaneOpen && !suppressCta // during the OAuth lead the "Sign in" button is the primary; mcp_oauth suppresses it entirely (store)
   const ctaBase = submitLabel ?? (needsSecret ? 'Connect' : 'Add')
   const ctaLabel =
     phase === 'saving' ? 'Connecting…' : submitDisabled && blockedLabel ? blockedLabel : ctaBase

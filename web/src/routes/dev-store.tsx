@@ -5,11 +5,13 @@
 // the [data-grok] skin on one page so the offline Playwright rig can screenshot
 // the whole surface. Not a product route.
 import * as React from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ToastProvider } from '@/components/ui/toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { StoreView } from '@/components/store/store-view'
+import { ConnectorDetail } from '@/components/store/connector-detail'
 import { CURATED_FALLBACK } from '@/components/store/catalog'
 import { ConnectCard } from '@/components/chat/ui/connect-card'
 import { TakeoverCard } from '@/components/chat/ui/takeover-card'
@@ -48,8 +50,21 @@ const BENCH_CARDS: ConnectorCard[] = CURATED_FALLBACK.map((c) => {
       auth: { kind: 'mcp_oauth', help_text: 'Notion signs in the first time your bot uses it — approve it in the bot’s terminal.' },
     }
   }
+  if (c.id === 'pmcp-linear') {
+    // Plain API-key lane (Linear PAT) — the "Connect" one-CTA reference case.
+    return {
+      ...c,
+      auth: { kind: 'api_key', help_url: 'https://linear.app/settings/api', help_text: 'Create a personal API key in Linear settings.' },
+    }
+  }
   return c
 })
+
+// The three lanes the "One-CTA detail" bench renders (mcp_oauth / oauth_device /
+// api_key) so the offline rig screenshots the consolidated single-primary detail.
+const ONECTA_MCP: ConnectorCard = BENCH_CARDS.find((c) => c.id === 'pmcp-notion')!
+const ONECTA_DEVICE: ConnectorCard = BENCH_CARDS.find((c) => c.id === 'pmcp-github')!
+const ONECTA_KEY: ConnectorCard = BENCH_CARDS.find((c) => c.id === 'pmcp-linear')!
 
 // Lane A device card (GitHub, app enabled) for the inline connect-card + a plain
 // key card (iCloud) for the paste lane.
@@ -161,6 +176,55 @@ function RegistrationPreview() {
   )
 }
 
+// One-CTA detail bench — the consolidated connector detail mounted OPEN for the
+// three lanes at 390px, so the rig can screenshot the single-primary CTA:
+// mcp_oauth (one blue "Connect in a bot"), oauth_device (Lane A "Sign in with"),
+// api_key (one blue "Connect"). ConnectorDetail calls useNavigate() for the
+// handoff, so the whole section is wrapped in a bench-only MemoryRouter — without
+// it useNavigate throws (no Router around /dev/store). Library scope
+// (grantTarget=null) exercises the GrantPicker + handoff text-link paths.
+function OneCtaBench({ theme }: { theme: 'light' | 'dark' }) {
+  const cols: { id: string; vr: string; card: ConnectorCard }[] = [
+    { id: 'onecta-mcp', vr: 'onecta-mcp', card: ONECTA_MCP },
+    { id: 'onecta-device', vr: 'onecta-device', card: ONECTA_DEVICE },
+    { id: 'onecta-key', vr: 'onecta-key', card: ONECTA_KEY },
+  ]
+  return (
+    <div
+      data-theme={theme}
+      className={theme === 'dark' ? 'dark bg-background text-foreground' : 'bg-background text-foreground'}
+    >
+      <div className="flex flex-col gap-6 px-4 py-10">
+        <header className="mx-auto w-full max-w-[1220px]">
+          <h1 className="text-lg font-semibold tracking-tight text-foreground">
+            One-CTA detail (390px) — {theme}
+          </h1>
+        </header>
+        <MemoryRouter>
+          <div className="mx-auto flex w-full max-w-[1220px] flex-wrap items-start justify-center gap-6">
+            {cols.map((col) => (
+              <div
+                key={col.id}
+                data-vr={col.vr}
+                className="w-full max-w-[390px] overflow-hidden rounded-3xl border border-border bg-background"
+              >
+                <ConnectorDetail
+                  card={col.card}
+                  installed={false}
+                  granted={null}
+                  grantTarget={null}
+                  botsOverride={MOCK_BOTS}
+                  onDone={() => {}}
+                />
+              </div>
+            ))}
+          </div>
+        </MemoryRouter>
+      </div>
+    </div>
+  )
+}
+
 export default function DevStore() {
   return (
     <QueryClientProvider client={BENCH_QC}>
@@ -171,6 +235,8 @@ export default function DevStore() {
             <Slab theme="light" grok />
             <Slab theme="dark" />
             <Slab theme="dark" grok />
+            <OneCtaBench theme="light" />
+            <OneCtaBench theme="dark" />
             <RegistrationPreview />
           </div>
         </ToastProvider>

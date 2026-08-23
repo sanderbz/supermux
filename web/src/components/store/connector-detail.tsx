@@ -302,9 +302,6 @@ export function ConnectorDetail({
 
       <p className="text-[14px] leading-relaxed text-foreground/90">{card.description}</p>
 
-      {/* Install / connect command — the exact one-liner to wire this connector. */}
-      {card.install && <InstallBlock command={card.install} />}
-
       {/* connect / credential flow — the ONE shared <ConnectFlow> (same lane,
           fields, seal and test leg the in-chat ConnectCard mounts). The store's
           bespoke duplicate render is gone; only the "Grant to" picker and the CTA
@@ -332,14 +329,17 @@ export function ConnectorDetail({
         onSubmit={onSubmit}
         onDone={(r) => setAdded(r)}
         initialAdded={!!added}
-        submitLabel={needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Install'}
-        blockedLabel={`${needsSecret ? 'Connect' : 'Install'} — choose who gets it`}
+        submitLabel={needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Add to a bot'}
+        blockedLabel="Choose who gets it first"
         submitDisabled={needChoice}
+        suppressCta={isMcpOauth}
         renderAddedExtra={() => <RestartTargets targets={addedTargets} bots={bots} />}
       >
         {/* GRANT TO — the choose-who-gets-it step, library scope only. In a bot
-            scope the sheet already carries the one target, so this is skipped. */}
-        {isLibrary && (
+            scope the sheet already carries the one target, so this is skipped.
+            An mcp_oauth card can't be granted without a bot signing in, so its
+            grant-only picker is meaningless — hidden (the handoff is its path). */}
+        {isLibrary && !isMcpOauth && (
           <GrantPicker
             bots={bots}
             selectedBots={selectedBots}
@@ -379,37 +379,50 @@ export function ConnectorDetail({
         />
       )}
 
-      {/* Connect in a bot — push the connect card into a running bot's chat and
-          finish sign-in there. The PRIMARY path for mcp_oauth (Lane D has no key
-          to paste); a secondary "or do it in a bot" for keyed lanes. */}
-      <div className="flex flex-col gap-1.5">
-        <button
-          type="button"
-          onClick={onConnectInBot}
-          disabled={eligibleBots.length === 0 || handoffBusy !== null}
-          aria-label="Connect in a bot"
-          className={cn(
-            'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-[14px] font-semibold transition-colors disabled:opacity-60',
-            isMcpOauth
-              ? 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90'
-              : 'border border-border bg-card text-foreground hover:bg-muted',
+      {/* Connect in a bot — the store→chat handoff. For mcp_oauth this IS the
+          single primary CTA (Lane D has no key to paste, so signing in inside a
+          bot's terminal is the only path). For every other lane it demotes to a
+          subtle text-link escape hatch — never a competing second big button. */}
+      {isMcpOauth ? (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={onConnectInBot}
+            disabled={eligibleBots.length === 0 || handoffBusy !== null}
+            aria-label="Connect in a bot"
+            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60"
+          >
+            {handoffBusy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+            {eligibleBots.length === 0
+              ? 'Create a bot first'
+              : handoffBusy
+                ? 'Opening bot…'
+                : 'Connect in a bot'}
+          </button>
+          {handoffError && (
+            <span className="text-[12px] text-destructive">
+              Couldn't open the connect card — try again.
+            </span>
           )}
-        >
-          {handoffBusy && <Loader2 className="size-4 animate-spin" aria-hidden />}
-          {eligibleBots.length === 0
-            ? 'No bots yet'
-            : handoffBusy
-              ? 'Opening bot…'
-              : isMcpOauth
-                ? 'Connect in a bot →'
-                : 'Or connect in a bot →'}
-        </button>
-        {handoffError && (
-          <span className="text-[12px] text-destructive">
-            Couldn't open the connect card — try again.
-          </span>
-        )}
-      </div>
+        </div>
+      ) : eligibleBots.length > 0 ? (
+        <div className="flex flex-col gap-0.5">
+          <button
+            type="button"
+            onClick={onConnectInBot}
+            disabled={handoffBusy !== null}
+            className="inline-flex min-h-11 w-fit items-center gap-1.5 self-start text-[12.5px] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:opacity-60"
+          >
+            {handoffBusy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+            {handoffBusy ? 'Opening bot…' : 'Prefer to finish in a bot’s chat?'}
+          </button>
+          {handoffError && (
+            <span className="text-[12px] text-destructive">
+              Couldn't open the connect card — try again.
+            </span>
+          )}
+        </div>
+      ) : null}
       <ConnectInBotPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
@@ -449,6 +462,23 @@ export function ConnectorDetail({
         </div>
       )}
 
+      {/* Advanced — the raw CLI one-liner, tucked away. It's for wiring the
+          connector by hand; never the user-facing primary (non-technical users
+          connect, they don't "install"), so it lives behind a collapsed
+          disclosure at the bottom rather than above the connect flow. */}
+      {card.install && (
+        <details className="rounded-xl border border-border bg-card">
+          <summary className="cursor-pointer select-none list-none px-3.5 py-2.5 text-[12.5px] font-medium text-muted-foreground [&::-webkit-details-marker]:hidden">
+            Advanced · install command
+          </summary>
+          <div className="px-3.5 pb-3">
+            <code className="block w-full select-all overflow-x-auto whitespace-pre rounded-lg border border-border bg-muted/50 px-3 py-2.5 font-mono text-[12px] leading-relaxed text-foreground">
+              {card.install}
+            </code>
+          </div>
+        </details>
+      )}
+
       {/* remove (local rows only) */}
       {installed && (
         <button
@@ -471,18 +501,6 @@ export function ConnectorDetail({
 /** The connector's primary chip-rail category (skips the `featured` meta tag). */
 function primaryCategory(card: Card): string | null {
   return (card.categories ?? []).find((c) => c !== 'featured') ?? null
-}
-
-/** The install/connect command — monospace, selectable, horizontally scrollable. */
-function InstallBlock({ command }: { command: string }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-[12px] font-medium text-muted-foreground">Install</span>
-      <code className="block w-full select-all overflow-x-auto whitespace-pre rounded-xl border border-border bg-muted/50 px-3 py-2.5 font-mono text-[12px] leading-relaxed text-foreground">
-        {command}
-      </code>
-    </div>
-  )
 }
 
 /** The per-bot restart buttons, shown inside <ConnectFlow>'s added panel (via

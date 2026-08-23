@@ -107,7 +107,7 @@ export function ConnectorCard({
               onMenu()
             }}
             aria-label="Connector options"
-            className="pointer-events-auto relative z-20 -mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className='pointer-events-auto relative z-20 -mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors before:absolute before:-inset-2.5 before:content-[""] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
           >
             <MoreHorizontal className="size-4" aria-hidden />
           </button>
