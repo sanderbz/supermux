@@ -241,19 +241,23 @@ pub async fn write_snapshot(
             return None;
         }
     };
-    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+    // Create the file 0600 FROM THE START (no umask-default 0644 window before a
+    // later chmod) — same disk-permission posture as the vault's secret files.
+    #[cfg(unix)]
+    let write_res = {
+        use tokio::io::AsyncWriteExt;
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        match opts.open(&path).await {
+            Ok(mut f) => f.write_all(&bytes).await,
+            Err(e) => Err(e),
+        }
+    };
+    #[cfg(not(unix))]
+    let write_res = tokio::fs::write(&path, &bytes).await;
+    if let Err(e) = write_res {
         tracing::warn!(error = %e, "connect: could not write snapshot; omitting catalog");
         return None;
-    }
-    // 0600, explicit — same disk-permission posture as the vault's secret files.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) =
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await
-        {
-            tracing::warn!(error = %e, "connect: could not chmod snapshot 0600");
-        }
     }
     Some(path)
 }
