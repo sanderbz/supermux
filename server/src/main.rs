@@ -173,6 +173,10 @@ async fn main() -> anyhow::Result<()> {
     // embedded stdio MCP server to the data dir and upsert its manifest so the
     // store lists it as a grantable card. Idempotent + best-effort.
     connectors::icloud::seed(&state).await;
+    // Seed the generic IMAP/SMTP mail family (Gmail-IMAP / Outlook / Fastmail):
+    // write the shared embedded stdio MCP server once and upsert one Form card per
+    // provider. iCloud keeps its own card above. Idempotent + best-effort.
+    connectors::imap_connector::seed(&state).await;
     // The built-in Shared Browser connector card (kind `builtin_browser`).
     // Seeding the row starts NO browser: chrome is spawned lazily, and only by a
     // granted session's first tool call.

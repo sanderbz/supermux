@@ -26,6 +26,9 @@ pub mod connect_server;
 /// Per-account "Test connection" probes + the honest health mapping (Slice 3).
 pub mod health;
 pub mod icloud;
+/// The generic, table-driven IMAP/SMTP mail family (Gmail/Outlook/Fastmail) —
+/// the DRY generalization of the iCloud connector.
+pub mod imap_connector;
 pub mod manifest;
 /// P2a — connector-OAuth device-code sign-in + guided per-company app registration.
 pub mod oauth;

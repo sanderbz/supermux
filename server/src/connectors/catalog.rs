@@ -345,6 +345,13 @@ const CURATED_IDS: &[&str] = &[
     "pmcp-airtable",
     "pmcp-playwright",
     "pmcp-puppeteer",
+    // ── expansion: hosted-remote (mcp_oauth) + key-based (api_key) vendor cards ──
+    "pmcp-discord",
+    "pmcp-vercel",
+    "pmcp-box",
+    "pmcp-monday",
+    "pmcp-clickup",
+    "pmcp-brave-search",
 ];
 
 /// Is a mirrored card part of the curated featured (marquee) set?
@@ -475,11 +482,36 @@ fn auth_and_creds_for(id: &str) -> (Value, Value) {
             one_secret("POSTGRES_DSN", "Connection string (DSN)"),
         ),
 
+        // Discord has no official hosted remote MCP; the honest lane is a pasted
+        // bot token that a community npx server (env DISCORD_TOKEN) reads.
+        "pmcp-discord" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://discord.com/developers/applications"),
+                Some("Create a bot in the Discord Developer Portal, invite it to your server, and paste its bot token."),
+                Some("DISCORD_TOKEN"),
+            ),
+            one_secret("DISCORD_TOKEN", "Bot token"),
+        ),
+        // Brave Search — a pasted API key the npx server reads (free tier available).
+        "pmcp-brave-search" => (
+            auth_descriptor(
+                "api_key",
+                Some("https://api-dashboard.search.brave.com/app/keys"),
+                Some("Create a Brave Search API key (a free tier is available) and paste it here."),
+                Some("BRAVE_API_KEY"),
+            ),
+            one_secret("BRAVE_API_KEY", "API key"),
+        ),
+
         // Lane D — hosted remote MCP, client-driven OAuth (no key here).
         "pmcp-sentry" | "pmcp-linear" | "pmcp-notion" | "pmcp-slack" | "pmcp-asana"
         | "pmcp-atlassian" | "pmcp-paypal" | "pmcp-plaid" | "pmcp-square" | "pmcp-intercom"
         | "pmcp-cloudflare" | "pmcp-hubspot" | "pmcp-webflow" | "pmcp-canva"
-        | "pmcp-google-drive" => mcp_oauth(),
+        | "pmcp-google-drive"
+        // Vercel/Box/monday.com/ClickUp all ship an OFFICIAL hosted remote MCP with
+        // OAuth (mcp.vercel.com, mcp.box.com, mcp.monday.com/mcp, mcp.clickup.com/mcp).
+        | "pmcp-vercel" | "pmcp-box" | "pmcp-monday" | "pmcp-clickup" => mcp_oauth(),
 
         // Any other curated id defaults to no-auth rather than a fake key field.
         _ => none(),
@@ -511,8 +543,8 @@ fn pulse_auth_descriptor(method: Option<&str>) -> Value {
 /// The always-present curated catalog — the full store. These render instantly
 /// with zero network (the store is never empty) and are merged/deduped with the
 /// live mirror when it warms — a live PulseMCP row for the same id wins (richer
-/// metadata). 31 cards: the 7 first-party Anthropic/MCP reference servers
-/// (`official: true`) plus 24 widely-used official-directory vendor connectors.
+/// metadata). 37 cards: the 7 first-party Anthropic/MCP reference servers
+/// (`official: true`) plus 30 widely-used official-directory vendor connectors.
 pub fn featured_cards() -> Vec<Value> {
     #[allow(clippy::too_many_arguments)]
     fn card(
@@ -762,6 +794,43 @@ pub fn featured_cards() -> Vec<Value> {
             "Headless-Chrome browser automation and screenshots.",
             "npx -y @modelcontextprotocol/server-puppeteer",
             npx(&["-y", "@modelcontextprotocol/server-puppeteer"]), "stdio",
+        ),
+        // ── Tier 2 (cont.) — expansion vendor connectors ──────────────────────
+        card(
+            "pmcp-discord", "Discord", "communication", "message-circle", false, false,
+            "Read channels and post messages in a Discord server via a bot token.",
+            "npx -y discord-mcp   (env DISCORD_TOKEN — create a bot at discord.com/developers)",
+            npx(&["-y", "discord-mcp"]), "stdio",
+        ),
+        card(
+            "pmcp-vercel", "Vercel", "developer", "triangle", false, false,
+            "Manage Vercel projects, deployments, and logs, and search the docs.",
+            "claude mcp add --transport http vercel https://mcp.vercel.com",
+            remote("https://mcp.vercel.com"), "streamable_http",
+        ),
+        card(
+            "pmcp-box", "Box", "data", "box", false, false,
+            "Search, read, and manage files in Box with your existing permissions.",
+            "claude mcp add --transport http box https://mcp.box.com",
+            remote("https://mcp.box.com"), "streamable_http",
+        ),
+        card(
+            "pmcp-monday", "monday.com", "productivity", "layout-grid", false, false,
+            "Manage monday.com boards, items, and updates.",
+            "claude mcp add --transport http monday https://mcp.monday.com/mcp",
+            remote("https://mcp.monday.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-clickup", "ClickUp", "productivity", "list-checks", false, false,
+            "Manage ClickUp tasks, lists, and docs.",
+            "claude mcp add --transport http clickup https://mcp.clickup.com/mcp",
+            remote("https://mcp.clickup.com/mcp"), "streamable_http",
+        ),
+        card(
+            "pmcp-brave-search", "Brave Search", "developer", "search", false, false,
+            "Web, news, and local search for the agent via the Brave Search API.",
+            "npx -y @brave/brave-search-mcp-server   (env BRAVE_API_KEY)",
+            npx(&["-y", "@brave/brave-search-mcp-server"]), "stdio",
         ),
     ];
     // Stamp the per-connector auth descriptor + credential schema onto each card
@@ -1231,7 +1300,7 @@ mod tests {
     fn curated_catalog_is_present_without_network() {
         let cards = merge_featured(vec![]);
         // The full curated catalog renders with zero network.
-        assert_eq!(cards.len(), CURATED_IDS.len(), "all 31 curated cards present");
+        assert_eq!(cards.len(), CURATED_IDS.len(), "all 37 curated cards present");
         // The 12 featured ids sort to the front and are flagged featured.
         let featured: Vec<&str> = cards
             .iter()
@@ -1318,6 +1387,46 @@ mod tests {
         assert!(slack["auth"]["help_text"].as_str().unwrap().contains("terminal"));
         // Every curated id resolves an auth descriptor (no card left guessing).
         assert!(cards.iter().all(|c| c["auth"]["kind"].is_string()));
+    }
+
+    #[test]
+    fn expansion_cards_carry_honest_lanes() {
+        let cards = merge_featured(vec![]);
+        let get = |id: &str| cards.iter().find(|c| c["id"] == json!(id)).unwrap().clone();
+
+        // The four OFFICIAL hosted remotes are mcp_oauth: a `{ url }` emit, NO paste
+        // field, and the honest "signs in in the terminal" note.
+        for (id, url) in [
+            ("pmcp-vercel", "https://mcp.vercel.com"),
+            ("pmcp-box", "https://mcp.box.com"),
+            ("pmcp-monday", "https://mcp.monday.com/mcp"),
+            ("pmcp-clickup", "https://mcp.clickup.com/mcp"),
+        ] {
+            let c = get(id);
+            assert_eq!(c["auth"]["kind"], json!("mcp_oauth"), "{id} is mcp_oauth");
+            assert_eq!(c["emit"]["url"], json!(url), "{id} emits its hosted remote");
+            assert_eq!(
+                c["credentials"].as_array().map(Vec::len).unwrap_or(0),
+                0,
+                "{id} carries no fake key field"
+            );
+            assert!(c["auth"]["help_text"].as_str().unwrap().contains("terminal"));
+        }
+
+        // Discord + Brave are api_key: a real "get your key" link + a sensitive paste
+        // field (no invented hosted-remote URL).
+        for (id, host) in [
+            ("pmcp-discord", "discord.com"),
+            ("pmcp-brave-search", "brave.com"),
+        ] {
+            let c = get(id);
+            assert_eq!(c["auth"]["kind"], json!("api_key"), "{id} is api_key");
+            assert!(
+                c["auth"]["help_url"].as_str().unwrap().contains(host),
+                "{id} links its real key page"
+            );
+            assert_eq!(c["credentials"][0]["sensitive"], json!(true), "{id} secret is sealed");
+        }
     }
 
     #[test]
