@@ -225,7 +225,26 @@ async fn session_status(app: &axum::Router, name: &str) -> Option<String> {
 /// stack (auth, event mapping, record_hook, classify, set_last_status, GET).
 /// Before the fix (`turn_end = max(Stop, SubagentStop)`) the SubagentStop ends
 /// the turn and the GET reads `idle`; with the fix it reads `active`.
+///
+/// `#[ignore]` — intrinsically racy on a loaded runner (fails on CI, and even
+/// locally when run in isolation), and NOT fixable without defeating its own
+/// purpose. It drives a real `shell` tmux pane, which never draws Claude's `esc
+/// to interrupt` spinner. So once the pane is captured (non-empty) and its pty
+/// has gone quiet past `CANCEL_SETTLE` (3s — a shell emits no periodic bytes, so
+/// `last_pty` sits at the cold-start sentinel), the detector's step-1b
+/// spinner-absence reconcile CORRECTLY settles the turn-machine `Active` to
+/// `Idle` (exactly the behavior asserted by the deterministic unit test
+/// `status::tests::swarm_lead_subagent_bumped_active_settles_via_watching_clock`).
+/// The assertion below only holds in the sub-3s window before the pane is
+/// captured — a race the full suite happens to win and an isolated/CI run loses.
+/// Adding a spinner to the pane to force `Active` would make step-2's
+/// `if spinner { return Active }` pass even WITH the bug restored, so it cannot
+/// be made both deterministic AND discriminating here. The actual regression
+/// (`turn_end()` must exclude `SubagentStop`) is covered deterministically by
+/// `status::tests::subagent_stop_with_spinner_stays_active_under_new_settle`,
+/// which fails the instant the bug returns (`turn.classify()` → `Idle`).
 #[tokio::test]
+#[ignore = "racy real-tmux e2e: a spinner-less shell's active turn is correctly settled to Idle by the step-1b reconcile; the turn_end/SubagentStop property is unit-tested deterministically (see status::tests::subagent_stop_with_spinner_stays_active_under_new_settle)"]
 async fn subagent_stop_does_not_finish_a_live_session_e2e() {
     if !tmux_available() {
         eprintln!("skipping: tmux not on PATH");
