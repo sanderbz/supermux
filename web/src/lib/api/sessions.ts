@@ -844,6 +844,19 @@ export const sessionsApi = {
   }> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}/restart`, { method: 'POST' }),
 
+  /** `POST .../connect_request {connector_id}` — the store→chat CONNECT handoff.
+   *  Pushes the SAME per-session live-state a bot's own `connect(service)` tool
+   *  sets, so the bot's Focus chat raises the existing `ConnectCard` for this
+   *  connector. No secret rides this call — the credential still flows only
+   *  through the vault write the card performs later. Scoped server-side: a
+   *  member reaching a foreign-company bot (or an unknown connector/session)
+   *  gets a uniform 404. */
+  connectInBot: (name: string, connectorId: string): Promise<{ connector_id: string }> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/connect_request`, {
+      method: 'POST',
+      body: JSON.stringify({ connector_id: connectorId }),
+    }),
+
   /** `POST .../recover` — rung 1: the manual holder heal, bypassing the
    *  automatic layer's cooldown (B5/T8).
    *

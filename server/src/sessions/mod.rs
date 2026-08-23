@@ -195,6 +195,14 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         // ── switch the Claude permission mode from the ⋯ menu ──
         .route("/api/sessions/{name}/mode", post(mode_handler))
+        // ── store→chat CONNECT handoff ──
+        // Push the SAME per-session live-state a bot's own `connect()` tool sets,
+        // so the existing `ConnectCard` renders it untouched. No secret on this
+        // route — only the connector id + the `{name}` target.
+        .route(
+            "/api/sessions/{name}/connect_request",
+            post(connect_request_handler),
+        )
         // ── reopen a past Claude conversation for the dir ──
         .route(
             "/api/sessions/{name}/resumable",
@@ -2359,6 +2367,84 @@ async fn mode_handler(
     })?;
     let result = lifecycle::set_mode(&state, &name, target).await?;
     Ok(Json(json!({ "ok": true, "data": result })))
+}
+
+// ── store→chat CONNECT handoff ────────────────────────────────────────────────
+
+/// Body of `POST /api/sessions/{name}/connect_request`: just the connector id to
+/// raise the inline Connect card for. No secret ever rides this route — the
+/// credential still flows ONLY through the vault write
+/// (`POST /api/connectors/{id}/credential`) the card performs later.
+#[derive(Debug, Deserialize)]
+struct ConnectRequestBody {
+    connector_id: String,
+}
+
+/// `POST /api/sessions/{name}/connect_request {connector_id}` — the store→chat
+/// handoff. A human tap in the store PUSHES the same per-session live-state a
+/// bot's own `connect(service)` tool sets ([`connect_ask::ConnectAsk`]), so the
+/// existing web `ConnectCard` renders the pushed card with ZERO new render code.
+///
+/// **Two fences, both reused, no new scoping logic.**
+///   1. The sessions sub-router's [`scope_session_middleware`] already ran
+///      [`crate::scope::authorize_session_for_human`] for this `{name}` route
+///      BEFORE the handler — a member targeting a foreign-company bot got the
+///      uniform `NotFound("session '{name}'")` and never reaches here.
+///   2. In-handler [`crate::scope::authorize_connector_target`] (mirrors `grant`)
+///      re-confirms the target session is a member's own-company connector target
+///      (`*`/foreign → uniform 404); owner/admin → no-op.
+///
+/// The OWNER path skips BOTH scope loads, so the explicit `db::sessions::get`
+/// existence check is what stops a typo'd/nonexistent name from leaking a phantom
+/// `session_activity` entry via [`AppState::set_connect_request`].
+async fn connect_request_handler(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(name): Path<String>,
+    Json(body): Json<ConnectRequestBody>,
+) -> Result<Json<Envelope<serde_json::Value>>, AppError> {
+    let id = body.connector_id.trim().to_string();
+    // Same caps/charset guard `grant` uses — the id becomes the card's key.
+    if !crate::connectors::manifest::valid_connector_id(&id) {
+        return Err(AppError::BadRequest("invalid connector id".into()));
+    }
+    // Fence 2: a member's connect target must be an own-company session (a real
+    // session slug here — never `*`/`@company:` given the name charset), so this
+    // reduces to `authorize_session_for_human`. Owner/admin: no-op.
+    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &name).await?;
+    // Unknown session → 404. Needed because the OWNER path skipped fence 1, and
+    // `set_connect_request` would otherwise create a phantom activity entry for a
+    // name that has no row.
+    db::sessions::get(&state.pool, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
+    // Unknown connector → 404. Resolve like `connectors::api::get_one`: an
+    // installed DB row, else the catalog mirror (a bot can `connect()` an
+    // un-installed catalog id, and the card renders from the mirror), else 404.
+    let known = crate::db::connectors::get(&state.pool, &id)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .is_some()
+        || crate::connectors::catalog::mirror()
+            .cached_cards()
+            .await
+            .iter()
+            .any(|c| c.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str()));
+    if !known {
+        return Err(AppError::NotFound(format!("connector '{id}'")));
+    }
+    // The ONLY write — the same live-state the hook producer sets, built the same
+    // way (`id: None` → the web keys the card on `connector_id`).
+    let changed = state.set_connect_request(
+        &name,
+        connect_ask::ConnectAsk { id: None, connector_id: id.clone() },
+    );
+    if changed {
+        // The exact `sessions` SSE delta the hook producer fires (carries
+        // `connect_request`), so the roster/chat update live with no refetch.
+        crate::hooks::broadcast_activity_delta(&state, &name);
+    }
+    Ok(ok(json!({ "connector_id": id })))
 }
 
 // ── resume picker ────────────────────────────────────────────────────────────

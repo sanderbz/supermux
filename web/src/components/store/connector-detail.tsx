@@ -6,6 +6,7 @@
 // scope is active, granted to that bot in the same call. The secret is never
 // echoed back — the field flips to a masked "Added" state.
 import * as React from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Check, Loader2, Trash2 } from 'lucide-react'
 
@@ -29,12 +30,17 @@ import { ConnectorIcon } from './connector-icon'
 import { OfficialBadge } from './connector-card'
 import { GrantControl, type GrantScope } from './grant-control'
 import { ConnectFlow, type ConnectFlowResult } from './connect-flow'
+import { ConnectInBotPicker } from './connect-in-bot-picker'
 
 /** A pickable grant target in the library "Grant to" step. */
 export interface BotChoice {
   name: string
   display_name?: string
   status?: string
+  /** The bot's company (migration 0032), or `null`/absent for an HQ/main bot.
+   *  Carried by `sessionsApi.list` rows; used to scope the "Connect in a bot"
+   *  eligible list to `activeCompany`. */
+  company_id?: number | null
 }
 
 export function ConnectorDetail({
@@ -96,6 +102,45 @@ export function ConnectorDetail({
   const company =
     activeCompany !== null ? companies.find((c) => c.id === activeCompany) ?? null : null
   const companyKey = company ? companyGrantKey(company.id) : null
+
+  // ── store→chat CONNECT handoff ──
+  // Push the connect card into a running bot's chat (the SAME live-state the
+  // bot's own `connect()` tool raises), then land in that bot's Focus chat where
+  // the existing ConnectCard finishes the flow. Eligible bots are scoped to the
+  // active space: HQ (no company) can reach every bot; a company reaches only its
+  // own. `mcp_oauth` (Lane D) has no key to paste, so this is its PRIMARY path.
+  const navigate = useNavigate()
+  const eligibleBots: BotChoice[] = React.useMemo(
+    () =>
+      activeCompany === null
+        ? bots
+        : bots.filter((b) => b.company_id === activeCompany),
+    [bots, activeCompany],
+  )
+  const [pickerOpen, setPickerOpen] = React.useState(false)
+  // The bot the handoff POST is in flight for (locks the button + picker rows).
+  const [handoffBusy, setHandoffBusy] = React.useState<string | null>(null)
+  const [handoffError, setHandoffError] = React.useState(false)
+  const runHandoff = async (name: string) => {
+    setHandoffBusy(name)
+    setHandoffError(false)
+    try {
+      await sessionsApi.connectInBot(name, card.id)
+      // Close the store sheet and open the bot's chat — the pushed ConnectCard
+      // shows there, live via the SSE delta or the next session poll.
+      onDone()
+      navigate(`/focus/${encodeURIComponent(name)}`)
+    } catch {
+      setHandoffError(true)
+      setHandoffBusy(null)
+    }
+  }
+  const onConnectInBot = () => {
+    if (handoffBusy) return
+    if (eligibleBots.length === 1) void runHandoff(eligibleBots[0].name)
+    else if (eligibleBots.length > 1) setPickerOpen(true)
+  }
+  const isMcpOauth = card.auth?.kind === 'mcp_oauth'
   // With a company active in the library view, the company is the DEFAULT install
   // target — so one tap on "Install" grants the connector to `@company:<id>` and
   // it lands in the company store, no picker step required. HQ (no company) keeps
@@ -246,6 +291,46 @@ export function ConnectorDetail({
           />
         )}
       </ConnectFlow>
+
+      {/* Connect in a bot — push the connect card into a running bot's chat and
+          finish sign-in there. The PRIMARY path for mcp_oauth (Lane D has no key
+          to paste); a secondary "or do it in a bot" for keyed lanes. */}
+      <div className="flex flex-col gap-1.5">
+        <button
+          type="button"
+          onClick={onConnectInBot}
+          disabled={eligibleBots.length === 0 || handoffBusy !== null}
+          aria-label="Connect in a bot"
+          className={cn(
+            'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-[14px] font-semibold transition-colors disabled:opacity-60',
+            isMcpOauth
+              ? 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90'
+              : 'border border-border bg-card text-foreground hover:bg-muted',
+          )}
+        >
+          {handoffBusy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+          {eligibleBots.length === 0
+            ? 'No bots yet'
+            : handoffBusy
+              ? 'Opening bot…'
+              : isMcpOauth
+                ? 'Connect in a bot →'
+                : 'Or connect in a bot →'}
+        </button>
+        {handoffError && (
+          <span className="text-[12px] text-destructive">
+            Couldn't open the connect card — try again.
+          </span>
+        )}
+      </div>
+      <ConnectInBotPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        bots={eligibleBots}
+        companies={companies}
+        busyName={handoffBusy}
+        onPick={(name) => void runHandoff(name)}
+      />
 
       {/* grant control (once installed) */}
       {(installed || added) && (

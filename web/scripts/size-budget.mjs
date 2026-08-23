@@ -941,7 +941,24 @@ const BUDGET_ENTRY_JS = 161 * KB
 //             `granted-connectors` (the false-green `needsSignIn`) and `installed-panel`.
 // A genuine additive feature (the connect-flow correctness layer), not a regression
 // to trim: ceil(measured)=328, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 328 * KB
+// 328 → 329 at the store→chat CONNECT handoff (feat/companies-grok, slice 5): the
+// store can now PUSH the connect card into a specific bot's chat by setting the
+// SAME per-session live-state a bot's own `connect()` tool raises, so the existing
+// ConnectCard renders the pushed card untouched (no new renderer). Web add is a
+// "Connect in a bot →" affordance on ConnectorDetail (primary CTA for mcp_oauth,
+// which has no key to paste; secondary for keyed lanes), a one-bot fast path, a
+// `ResponsiveSheet` bot picker (`connect-in-bot-picker`, reusing HqMark/CompanyMark
+// + the roster row grammar) for the many-bots case, and one `sessionsApi.connectInBot`
+// method. Measured 328.44 against 327.84 for slice 4 — +0.60 KB, ALL of it OFF the
+// hero path: it lands in the already-lazy `store-view` chunk, so the ENTRY gate — the
+// hard one guarding cold load — is UNMOVED and green at 157.06/161 (98%).
+//   +~0.5 KB  `store/connect-in-bot-picker` + the ConnectorDetail affordance/fast-path/
+//             picker wiring (eligible-bot scoping by `activeCompany`, the handoff POST
+//             + navigate into `/focus/:name`) — store-route-only code.
+//   +~0.1 KB  the `sessionsApi.connectInBot` client method.
+// A genuine additive feature (the store→chat handoff), not a regression to trim:
+// ceil(measured)=329, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 329 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

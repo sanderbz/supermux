@@ -441,6 +441,9 @@ mod tests {
         assert!(member_may_reach(&post, "/api/sessions"));
         assert!(member_may_reach(&post, "/api/sessions/bot/send"));
         assert!(member_may_reach(&get, "/api/sessions/bot/connectors"));
+        // The store→chat connect handoff — under `/api/sessions`, scoped by the
+        // sessions layer + `authorize_connector_target` in-handler.
+        assert!(member_may_reach(&post, "/api/sessions/bot/connect_request"));
         assert!(member_may_reach(&post, "/api/connectors/mail/grant"));
         assert!(member_may_reach(&get, "/api/file/raw"));
         assert!(member_may_reach(&get, "/api/fs/delete"));
