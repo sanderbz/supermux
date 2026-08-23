@@ -366,8 +366,10 @@ export function ConnectFlow({
         </div>
       )}
 
-      {/* Lane B / C — the key + form fields. */}
-      {keyLaneOpen && (needsSecret || plains.length > 0) && (
+      {/* Lane B / C — the key + form fields. NEVER for mcp_oauth (Lane D is
+          note-only: the bot signs in in its terminal, there is no key to paste
+          here even if the manifest happens to declare a credential). */}
+      {keyLaneOpen && !isMcpOauth && (needsSecret || plains.length > 0) && (
         <div className={cn('flex flex-col', chat ? 'mt-[11px] gap-[9px]' : 'gap-3')}>
           {plains.map((f) => (
             <TextField

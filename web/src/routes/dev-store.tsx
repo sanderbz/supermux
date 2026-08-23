@@ -5,7 +5,6 @@
 // the [data-grok] skin on one page so the offline Playwright rig can screenshot
 // the whole surface. Not a product route.
 import * as React from 'react'
-import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ToastProvider } from '@/components/ui/toast'
@@ -180,7 +179,7 @@ function RegistrationPreview() {
 // three lanes at 390px, so the rig can screenshot the single-primary CTA:
 // mcp_oauth (one blue "Connect in a bot"), oauth_device (Lane A "Sign in with"),
 // api_key (one blue "Connect"). ConnectorDetail calls useNavigate() for the
-// handoff, so the whole section is wrapped in a bench-only MemoryRouter — without
+// handoff; /dev/store already provides the app Router, so no wrapper is needed —
 // it useNavigate throws (no Router around /dev/store). Library scope
 // (grantTarget=null) exercises the GrantPicker + handoff text-link paths.
 function OneCtaBench({ theme }: { theme: 'light' | 'dark' }) {
@@ -200,26 +199,26 @@ function OneCtaBench({ theme }: { theme: 'light' | 'dark' }) {
             One-CTA detail (390px) — {theme}
           </h1>
         </header>
-        <MemoryRouter>
-          <div className="mx-auto flex w-full max-w-[1220px] flex-wrap items-start justify-center gap-6">
-            {cols.map((col) => (
-              <div
-                key={col.id}
-                data-vr={col.vr}
-                className="w-full max-w-[390px] overflow-hidden rounded-3xl border border-border bg-background"
-              >
-                <ConnectorDetail
-                  card={col.card}
-                  installed={false}
-                  granted={null}
-                  grantTarget={null}
-                  botsOverride={MOCK_BOTS}
-                  onDone={() => {}}
-                />
-              </div>
-            ))}
-          </div>
-        </MemoryRouter>
+        {/* /dev/store already renders inside the app's Router, so ConnectorDetail's
+            useNavigate() resolves — no (and never a NESTED) Router here. */}
+        <div className="mx-auto flex w-full max-w-[1220px] flex-wrap items-start justify-center gap-6">
+          {cols.map((col) => (
+            <div
+              key={col.id}
+              data-vr={col.vr}
+              className="w-full max-w-[390px] overflow-hidden rounded-3xl border border-border bg-background"
+            >
+              <ConnectorDetail
+                card={col.card}
+                installed={false}
+                granted={null}
+                grantTarget={null}
+                botsOverride={MOCK_BOTS}
+                onDone={() => {}}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
