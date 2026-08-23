@@ -397,8 +397,8 @@ mod tests {
     const LOOPBACK_HOST: &str = "127.0.0.1:8824";
     /// An explicit `owner_hosts` allowlist entry (neither loopback nor ts.net).
     const OWNER_HOST_CFG: &str = "my-owner-box.internal";
-    /// A company/untrusted tunnel Host under the shared suffix.
-    const COMPANY_UNTRUSTED_HOST: &str = "acme.s.iwd.nl";
+    /// A company/untrusted tunnel Host under the configured base domain.
+    const COMPANY_UNTRUSTED_HOST: &str = "acme.example.com";
     /// A random forged/unknown Host — must fail closed.
     const EVIL_HOST: &str = "evil.example.com";
 
@@ -422,6 +422,7 @@ mod tests {
                 cookie_key: b"cookie-key".to_vec(),
                 csrf_key: b"csrf-key".to_vec(),
                 session_ttl_secs: 0,
+                base_domain: Some("example.com".into()),
             }
         } else {
             HumanAuthConfig::default()

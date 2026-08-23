@@ -1502,7 +1502,7 @@ pub(crate) fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         || is_private_lan(&host)
         || matches_bind_host(state, &host)
         || state.config.extra_origins.iter().any(|o| o == &host)
-        // P3d: a configured per-company tunnel host (`<slug>.s.iwd.nl`, in
+        // P3d: a configured per-company tunnel host (`<slug>.<base_domain>`, in
         // `company_hosts`) is auto-considered an allowed WS Origin, so an operator
         // never has to duplicate it into `extra_origins` — the same map that binds
         // Host→company for login is the single source of truth for the Origin gate.

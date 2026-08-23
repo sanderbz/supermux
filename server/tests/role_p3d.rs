@@ -59,6 +59,7 @@ fn human_auth_cfg() -> HumanAuthConfig {
         cookie_key: b"cookie-key-cookie-key-cookie-key0".to_vec(),
         csrf_key: b"csrf-key0-csrf-key0-csrf-key0-csr".to_vec(),
         session_ttl_secs: 3600,
+        base_domain: None,
     }
 }
 

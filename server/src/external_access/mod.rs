@@ -8,6 +8,8 @@
 //! | `POST /api/external-access/cf-token`       | Validate + store the Cloudflare API token (0600, never returned). |
 //! | `POST /api/external-access/provision-tunnel` | One-time idempotent wildcard tunnel + DNS + connector unit. |
 //! | `GET  /api/external-access/status`         | Live-verify source the wizard polls. |
+//! | `GET  /api/external-access/zones`          | List the saved CF token's zones (the base-domain choices). |
+//! | `POST /api/external-access/base-domain`    | Set the operator's base domain (must be a controlled zone), hot-reload. |
 //! | `POST /api/external-access/google`         | Save the Google client id + secret (0600), hot-reload. |
 //! | `POST /api/companies/{id}/host`            | Derive + write this company's `company_hosts` entry, hot-reload. |
 //! | `POST /api/companies/{id}/verify-login`    | Surface the exact redirect URI to register (redirect_uri_mismatch). |
@@ -17,7 +19,7 @@
 //!
 //! # Architecture (design §0)
 //!
-//! ONE wildcard tunnel per box (`*.s.iwd.nl → http://localhost:<port>`), so
+//! ONE wildcard tunnel per box (`*.<base_domain> → http://localhost:<port>`), so
 //! adding a company after box setup is just a `company_hosts` entry + a
 //! `human_users` row — ZERO further Cloudflare calls. Cloudflare sits behind
 //! [`cf::CfApi`] and the connector unit behind [`systemd::ConnectorHost`] so the
@@ -43,7 +45,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{company_canonical_host, company_redirect_uri, COMPANY_HOST_SUFFIX};
+use crate::config::{company_canonical_host, company_redirect_uri};
 use crate::error::AppError;
 use crate::scope::OptCtx;
 use crate::state::AppState;
@@ -125,6 +127,11 @@ pub fn router_for(state: AppState) -> Router {
             post(provision_tunnel_handler),
         )
         .route("/api/external-access/status", get(status_handler))
+        .route("/api/external-access/zones", get(zones_handler))
+        .route(
+            "/api/external-access/base-domain",
+            post(base_domain_handler),
+        )
         .route("/api/external-access/google", post(google_handler))
         .route("/api/companies/{id}/host", post(host_handler))
         .route(
@@ -150,9 +157,30 @@ fn cf_err(e: cf::CfError) -> AppError {
     AppError::BadRequest(e.to_string())
 }
 
-/// The wildcard ingress host for this box.
-fn wildcard_host() -> String {
-    format!("*.{COMPANY_HOST_SUFFIX}")
+/// The configured base domain, or a clean 400 telling the operator to choose one.
+///
+/// This is the ONLY gate that turns "unset" into an error — every host-deriving
+/// handler goes through it, so an unconfigured box can NEVER emit an external
+/// host, write a `company_hosts` entry, or provision an uncontrolled domain. This
+/// is the fail-closed invariant: with no base domain there is nothing for the WS
+/// Origin gate to match, so cross-site origins are rejected.
+fn require_base_domain(state: &AppState) -> Result<String, AppError> {
+    state
+        .human_auth_cfg()
+        .base_domain
+        .clone()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "choose your domain first (the wizard's Domain step)".into(),
+            )
+        })
+}
+
+/// The wildcard ingress host under a resolved base domain: `*.<base_domain>`.
+fn wildcard_host(base_domain: &str) -> String {
+    format!("*.{base_domain}")
 }
 
 /// `http://localhost:<bind-port>` — where the wildcard ingress points.
@@ -175,7 +203,6 @@ struct CfTokenInput {
 struct CfTokenResult {
     valid: bool,
     account_id: String,
-    zone_id: String,
 }
 
 async fn cf_token_handler(
@@ -189,8 +216,10 @@ async fn cf_token_handler(
         return Err(AppError::BadRequest("token is required".into()));
     }
     let api = state.external_access.cf();
-    // Verify active + discover account + zone (proves the scopes by construction).
-    let tc = cf::discover(api.as_ref(), &token, COMPANY_HOST_SUFFIX)
+    // Verify active + reach an account. The zone is UNKNOWN at this point — the
+    // operator picks their base domain from `list_zones` in the next wizard step —
+    // so this proves Tunnel:Edit reach only; Zone:Read is proven by `list_zones`.
+    let account_id = cf::discover_account(api.as_ref(), &token)
         .await
         .map_err(cf_err)?;
     // Store 0600 — NEVER returned to the client after this point.
@@ -198,8 +227,7 @@ async fn cf_token_handler(
         .map_err(AppError::Internal)?;
     Ok(ok(CfTokenResult {
         valid: true,
-        account_id: tc.account_id,
-        zone_id: tc.zone_id,
+        account_id,
     }))
 }
 
@@ -220,43 +248,49 @@ async fn provision_tunnel_handler(
     ctx: OptCtx,
 ) -> Result<Json<Envelope<ProvisionResult>>, AppError> {
     crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/provision-tunnel")?;
+    // FAIL-CLOSED: no base domain ⇒ no tunnel, no DNS, no allowlist entry.
+    let base = require_base_domain(&state)?;
     let token = read_cf_token(&state)
         .ok_or_else(|| AppError::BadRequest("save a Cloudflare API token first".into()))?;
     let api = state.external_access.cf();
 
-    let tc = cf::discover(api.as_ref(), &token, COMPANY_HOST_SUFFIX)
+    // Account (Tunnel:Edit) is zone-free; the DNS zone id is resolved separately
+    // for the CHOSEN base domain (proves Zone:Read for exactly that zone).
+    let account_id = cf::discover_account(api.as_ref(), &token)
         .await
         .map_err(cf_err)?;
+    let zone_id = api.zone_id(&token, &base).await.map_err(cf_err)?;
+    let wildcard = wildcard_host(&base);
 
     // Idempotent: reuse an existing tunnel of this name, else create ONE.
     let tunnel = match api
-        .find_tunnel(&token, &tc.account_id, TUNNEL_NAME)
+        .find_tunnel(&token, &account_id, TUNNEL_NAME)
         .await
         .map_err(cf_err)?
     {
         Some(t) => t,
         None => api
-            .create_tunnel(&token, &tc.account_id, TUNNEL_NAME)
+            .create_tunnel(&token, &account_id, TUNNEL_NAME)
             .await
             .map_err(cf_err)?,
     };
 
-    // Wildcard ingress `*.s.iwd.nl → http://localhost:<port>` + 404 catch-all.
+    // Wildcard ingress `*.<base_domain> → http://localhost:<port>` + 404 catch-all.
     api.put_tunnel_config(
         &token,
-        &tc.account_id,
+        &account_id,
         &tunnel.id,
-        &wildcard_host(),
+        &wildcard,
         &local_service(&state),
     )
     .await
     .map_err(cf_err)?;
 
-    // Wildcard proxied CNAME `*.s.iwd.nl → {id}.cfargotunnel.com`.
+    // Wildcard proxied CNAME `*.<base_domain> → {id}.cfargotunnel.com`.
     api.upsert_dns_cname(
         &token,
-        &tc.zone_id,
-        &wildcard_host(),
+        &zone_id,
+        &wildcard,
         &format!("{}.cfargotunnel.com", tunnel.id),
     )
     .await
@@ -286,7 +320,7 @@ async fn provision_tunnel_handler(
         tunnel_id: tunnel.id,
         connector,
         connector_detail,
-        reachable_host: wildcard_host(),
+        reachable_host: wildcard,
     }))
 }
 
@@ -318,6 +352,10 @@ struct BoxStatus {
     dns_ok: bool,
     /// `unset` | `configured`.
     google: String,
+    /// The configured base domain, or `None` when the Domain step hasn't run.
+    /// The wizard keys its "Choose your domain" sub-step off this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_domain: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -354,8 +392,9 @@ async fn status_handler(
     let tunnel_state = match (read_cf_token(&state), &tunnel_id) {
         (Some(token), Some(tid)) => {
             let api = state.external_access.cf();
-            match cf::discover(api.as_ref(), &token, COMPANY_HOST_SUFFIX).await {
-                Ok(tc) => match api.tunnel_status(&token, &tc.account_id, tid).await {
+            // `tunnel_status` needs only the account (zone-free).
+            match cf::discover_account(api.as_ref(), &token).await {
+                Ok(account_id) => match api.tunnel_status(&token, &account_id, tid).await {
                     Ok(s) if s == "healthy" => "healthy",
                     Ok(_) => "connecting",
                     Err(_) => "connecting",
@@ -365,6 +404,12 @@ async fn status_handler(
         }
         _ => "none",
     };
+
+    let base_domain = cfg
+        .base_domain
+        .clone()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
 
     let box_status = BoxStatus {
         cf_token: if has_cf { "valid" } else { "none" }.to_string(),
@@ -376,6 +421,7 @@ async fn status_handler(
             "unset"
         }
         .to_string(),
+        base_domain: base_domain.clone(),
     };
 
     let company = match q.company_id {
@@ -383,23 +429,37 @@ async fn status_handler(
             let co = crate::db::companies::get(&state.pool, id)
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
-            let host = company_canonical_host(&co.slug);
-            let redirect_uri = company_redirect_uri(&co.slug);
-            let entry = cfg.host_entry(&host);
-            let written = entry.is_some();
-            let redirect_registered = match entry {
-                Some(e) if e.is_canonical_for(&co.slug, id) => "ok",
-                Some(_) => "mismatch",
-                None => "unknown",
-            };
-            Some(CompanyStatus {
-                company_id: id,
-                company_host_written: written,
-                redirect_registered: redirect_registered.to_string(),
-                reachable: written && tunnel_state == "healthy",
-                host,
-                redirect_uri,
-            })
+            // Without a chosen base domain external access is not configured — a
+            // benign "not configured" block (never a fake host). Fail-closed.
+            match &base_domain {
+                Some(base) => {
+                    let host = company_canonical_host(&co.slug, base);
+                    let redirect_uri = company_redirect_uri(&co.slug, base);
+                    let entry = cfg.host_entry(&host);
+                    let written = entry.is_some();
+                    let redirect_registered = match entry {
+                        Some(e) if e.is_canonical_for(&co.slug, id, base) => "ok",
+                        Some(_) => "mismatch",
+                        None => "unknown",
+                    };
+                    Some(CompanyStatus {
+                        company_id: id,
+                        company_host_written: written,
+                        redirect_registered: redirect_registered.to_string(),
+                        reachable: written && tunnel_state == "healthy",
+                        host,
+                        redirect_uri,
+                    })
+                }
+                None => Some(CompanyStatus {
+                    company_id: id,
+                    company_host_written: false,
+                    redirect_registered: "unknown".to_string(),
+                    reachable: false,
+                    host: String::new(),
+                    redirect_uri: String::new(),
+                }),
+            }
         }
         None => None,
     };
@@ -457,6 +517,94 @@ async fn google_handler(
     Ok(ok(GoogleResult { configured: true }))
 }
 
+// ── 4b. GET /api/external-access/zones ───────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct ZonesResult {
+    /// The zone apex names the saved CF token can read (never the ids/token).
+    zones: Vec<String>,
+}
+
+/// List the DNS zones the saved Cloudflare token controls, so the wizard's
+/// "Choose your domain" step can offer them. Returns zone NAMES only — the DNS
+/// `zone_id` is re-derived at provision via [`cf::CfApi::zone_id`], keeping the
+/// non-secret store minimal and never echoing the token.
+async fn zones_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+) -> Result<Json<Envelope<ZonesResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/zones")?;
+    let token = read_cf_token(&state)
+        .ok_or_else(|| AppError::BadRequest("save a Cloudflare API token first".into()))?;
+    let api = state.external_access.cf();
+    let zones = api.list_zones(&token).await.map_err(cf_err)?;
+    Ok(ok(ZonesResult {
+        zones: zones.into_iter().map(|z| z.zone_name).collect(),
+    }))
+}
+
+// ── 4c. POST /api/external-access/base-domain ────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct BaseDomainInput {
+    base_domain: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BaseDomainResult {
+    base_domain: String,
+}
+
+/// Set the operator's chosen base domain. FAIL-CLOSED: the domain must be a
+/// syntactically-sane apex AND an exact member of a fresh `list_zones(token)` —
+/// a typo or an uncontrolled domain is rejected with a 400, so it can never open
+/// the WS Origin allowlist or provision a zone the token does not own. On success
+/// it upserts `CompaniesConfig.base_domain`, writes the companion store
+/// atomically, and hot-reloads the live [`HumanAuthConfig`] (no restart).
+async fn base_domain_handler(
+    State(state): State<AppState>,
+    ctx: OptCtx,
+    Json(input): Json<BaseDomainInput>,
+) -> Result<Json<Envelope<BaseDomainResult>>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), "/api/external-access/base-domain")?;
+    let base = input.base_domain.trim().to_ascii_lowercase();
+    // Syntactic sanity: non-empty, has a dot, no whitespace, no wildcard/scheme/path.
+    let sane = !base.is_empty()
+        && base.contains('.')
+        && !base.contains(char::is_whitespace)
+        && !base.contains('*')
+        && !base.contains('/')
+        && !base.contains(':');
+    if !sane {
+        return Err(AppError::BadRequest(
+            "base_domain must be a bare domain like example.com".into(),
+        ));
+    }
+
+    // Fail-closed membership check: the chosen domain must be an exact zone the
+    // token controls (re-listed fresh — never trust client input for the gate).
+    let token = read_cf_token(&state)
+        .ok_or_else(|| AppError::BadRequest("save a Cloudflare API token first".into()))?;
+    let api = state.external_access.cf();
+    let zones = api.list_zones(&token).await.map_err(cf_err)?;
+    if !zones
+        .iter()
+        .any(|z| z.zone_name.trim().eq_ignore_ascii_case(&base))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{base} is not one of the zones this Cloudflare token controls"
+        )));
+    }
+
+    // Persist to the companion store (atomic) + hot-reload the live config.
+    let mut cfg = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
+    cfg.base_domain = Some(base.clone());
+    store::write_atomic(&state.config.data_dir, &cfg).map_err(AppError::Internal)?;
+    state.reload_human_auth().map_err(AppError::Internal)?;
+
+    Ok(ok(BaseDomainResult { base_domain: base }))
+}
+
 // ── 5. POST /api/companies/{id}/host ─────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -471,11 +619,13 @@ async fn host_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Envelope<HostResult>>, AppError> {
     crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}/host"))?;
+    // FAIL-CLOSED: never write a company_hosts entry without a chosen base domain.
+    let base = require_base_domain(&state)?;
     let co = crate::db::companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
-    let host = company_canonical_host(&co.slug);
-    let redirect_uri = company_redirect_uri(&co.slug);
+    let host = company_canonical_host(&co.slug, &base);
+    let redirect_uri = company_redirect_uri(&co.slug, &base);
 
     // Upsert this company's company_hosts entry into the companion store.
     let mut cfg = store::read_or_default(&state.config.data_dir).map_err(AppError::Internal)?;
@@ -506,11 +656,13 @@ async fn verify_login_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Envelope<VerifyLoginResult>>, AppError> {
     crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}/verify-login"))?;
+    // FAIL-CLOSED: the Domain step gates this, so a missing base is a clean 400.
+    let base = require_base_domain(&state)?;
     let co = crate::db::companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
-    let redirect_uri = company_redirect_uri(&co.slug);
-    let host = company_canonical_host(&co.slug);
+    let redirect_uri = company_redirect_uri(&co.slug, &base);
+    let host = company_canonical_host(&co.slug, &base);
 
     let cfg = state.human_auth_cfg();
     if cfg.google_client_id.is_none() {
@@ -526,7 +678,7 @@ async fn verify_login_handler(
     // the actionable failure is a redirect_uri_mismatch: hand back the exact URI to
     // register in the Google console.
     match cfg.host_entry(&host) {
-        Some(e) if e.is_canonical_for(&co.slug, id) => Ok(ok(VerifyLoginResult {
+        Some(e) if e.is_canonical_for(&co.slug, id, &base) => Ok(ok(VerifyLoginResult {
             ok: true,
             detail: format!("Ready — colleagues can sign in at https://{host}."),
             redirect_uri,
@@ -573,6 +725,8 @@ async fn add_human_handler(
     Json(input): Json<AddHumanInput>,
 ) -> Result<Json<Envelope<AddHumanResult>>, AppError> {
     crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/companies/{id}/humans"))?;
+    // FAIL-CLOSED: the login url is only meaningful under a chosen base domain.
+    let base = require_base_domain(&state)?;
     let co = crate::db::companies::get(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("company id={id}")))?;
@@ -613,7 +767,7 @@ async fn add_human_handler(
 
     Ok(ok(AddHumanResult {
         user,
-        login_url: format!("https://{}", company_canonical_host(&co.slug)),
+        login_url: format!("https://{}", company_canonical_host(&co.slug, &base)),
     }))
 }
 

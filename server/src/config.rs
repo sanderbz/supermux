@@ -174,6 +174,15 @@ pub struct HumanAuthConfig {
     /// Session lifetime in seconds (cookie + `human_sessions.expires_at`).
     /// Default 12h.
     pub session_ttl_secs: i64,
+    /// The operator's chosen base domain for company hosts — a Cloudflare zone
+    /// their own token controls (e.g. `example.com`). Companies are reached at
+    /// `<slug>.<base_domain>`. `None` ⇒ external access is not configured and
+    /// everything **fails closed**: no external host is ever derived, no
+    /// `company_hosts` entry is written, and the WS Origin gate rejects
+    /// cross-site origins. `Default` (via `#[derive(Default)]`) is `None`, so
+    /// every existing inert literal stays inert. Set by the wizard's Domain step
+    /// (or pinned in `config.toml`); non-secret.
+    pub base_domain: Option<String>,
 }
 
 impl HumanAuthConfig {
@@ -225,26 +234,35 @@ impl HumanAuthConfig {
     }
 }
 
-/// The canonical per-company tunnel domain suffix. A company `slug` is fronted by
-/// `<slug>.s.iwd.nl` (P3d), which is what [`company_canonical_host`] derives and
-/// what the `scripts/companies-tunnel.sh` provisioner creates a Cloudflare public
-/// hostname for.
-pub const COMPANY_HOST_SUFFIX: &str = "s.iwd.nl";
-
-/// Derive the canonical tunnel host for a company slug: `<slug>.s.iwd.nl`.
+/// Derive the canonical tunnel host for a company slug under a chosen
+/// `base_domain`: `<slug>.<base_domain>`.
 ///
-/// The slug is lower-cased for host legibility (DNS is case-insensitive; the
-/// `companies.slug` charset — letters/digits/`_`/`.`/`-` — already excludes any
-/// character illegal in a host label except `_`, which the operator avoids in a
-/// slug meant to be tunneled).
-pub fn company_canonical_host(slug: &str) -> String {
-    format!("{}.{COMPANY_HOST_SUFFIX}", slug.trim().to_ascii_lowercase())
+/// The base domain is the operator's own Cloudflare zone (e.g. `example.com`),
+/// picked in the wizard and stored on the companion config — there is NO
+/// hardcoded suffix. This is a total pure formatter: it takes the (already
+/// resolved + validated) base, so the "is external access configured?" decision
+/// lives entirely at the handler boundary ([`crate::external_access`]'s
+/// `require_base_domain`), never here.
+///
+/// Both slug and base are lower-cased for host legibility (DNS is
+/// case-insensitive; the `companies.slug` charset — letters/digits/`_`/`.`/`-` —
+/// already excludes any character illegal in a host label except `_`, which the
+/// operator avoids in a slug meant to be tunneled).
+pub fn company_canonical_host(slug: &str, base_domain: &str) -> String {
+    format!(
+        "{}.{}",
+        slug.trim().to_ascii_lowercase(),
+        base_domain.trim().to_ascii_lowercase()
+    )
 }
 
-/// The exact Google redirect URI for a company's canonical host:
-/// `https://<slug>.s.iwd.nl/auth/callback`.
-pub fn company_redirect_uri(slug: &str) -> String {
-    format!("https://{}/auth/callback", company_canonical_host(slug))
+/// The exact Google redirect URI for a company's canonical host under
+/// `base_domain`: `https://<slug>.<base_domain>/auth/callback`.
+pub fn company_redirect_uri(slug: &str, base_domain: &str) -> String {
+    format!(
+        "https://{}/auth/callback",
+        company_canonical_host(slug, base_domain)
+    )
 }
 
 /// One `host → company_id → redirect_uri` allowlist entry (`[[company_hosts]]`
@@ -252,7 +270,7 @@ pub fn company_redirect_uri(slug: &str) -> String {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CompanyHost {
     /// Public tunnel hostname a company's colleagues reach (canonical form
-    /// `<slug>.s.iwd.nl`, P3d). Also feeds the WS Origin allowlist.
+    /// `<slug>.<base_domain>`, P3d). Also feeds the WS Origin allowlist.
     pub host: String,
     /// The company this Host serves. A cookie minted for a different company is
     /// rejected on this Host.
@@ -263,15 +281,17 @@ pub struct CompanyHost {
 }
 
 impl CompanyHost {
-    /// Does this entry map the CANONICAL layout for `(slug, company_id)`? A valid
-    /// P3d tunnel entry has `host == <slug>.s.iwd.nl`,
-    /// `redirect_uri == https://<slug>.s.iwd.nl/auth/callback`, and
+    /// Does this entry map the CANONICAL layout for `(slug, company_id)` under the
+    /// configured `base_domain`? A valid P3d tunnel entry has
+    /// `host == <slug>.<base_domain>`,
+    /// `redirect_uri == https://<slug>.<base_domain>/auth/callback`, and
     /// `company_id == expected_company_id`. Host/redirect are compared
-    /// case-insensitively (DNS + scheme are case-folding). Used by the provisioner
-    /// doc/test to validate a hand-edited `config.toml` block before deploy.
-    pub fn is_canonical_for(&self, slug: &str, expected_company_id: i64) -> bool {
-        let want_host = company_canonical_host(slug);
-        let want_redirect = company_redirect_uri(slug);
+    /// case-insensitively (DNS + scheme are case-folding). A wrong `base_domain`
+    /// therefore de-canonicalises the entry (correctly signalling a re-derive is
+    /// needed). Used by the provisioner doc/test and the status handler.
+    pub fn is_canonical_for(&self, slug: &str, expected_company_id: i64, base_domain: &str) -> bool {
+        let want_host = company_canonical_host(slug, base_domain);
+        let want_redirect = company_redirect_uri(slug, base_domain);
         self.company_id == expected_company_id
             && self.host.trim().eq_ignore_ascii_case(&want_host)
             && self.redirect_uri.trim().eq_ignore_ascii_case(&want_redirect)
@@ -374,6 +394,10 @@ struct RawConfig {
     owner_hosts: Vec<String>,
     #[serde(default)]
     human_session_ttl_secs: Option<i64>,
+    /// See [`HumanAuthConfig::base_domain`]. Absent ⇒ `None` (external access
+    /// unconfigured; the wizard sets it on the companion store instead).
+    #[serde(default)]
+    base_domain: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -463,6 +487,7 @@ pub fn load() -> Result<Config> {
         raw.company_hosts,
         raw.owner_hosts,
         raw.human_session_ttl_secs,
+        raw.base_domain,
     )?;
 
     Ok(Config {
@@ -505,9 +530,16 @@ fn resolve_human_auth(
     company_hosts: Vec<CompanyHost>,
     owner_hosts: Vec<String>,
     ttl_secs: Option<i64>,
+    base_domain: Option<String>,
 ) -> Result<HumanAuthConfig> {
     let google_client_id = google_client_id
         .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Trim + drop empties so a blank `base_domain = ""` in config.toml stays
+    // "unset" (fail-closed) rather than deriving `<slug>.` hosts.
+    let base_domain = base_domain
+        .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty());
 
     // Secret: env → <data_dir>/google_client_secret (0600) → config.toml.
@@ -546,6 +578,7 @@ fn resolve_human_auth(
         cookie_key,
         csrf_key,
         session_ttl_secs: ttl_secs.unwrap_or(0),
+        base_domain,
     })
 }
 
@@ -673,49 +706,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_host_is_slug_dot_s_iwd_nl() {
-        assert_eq!(company_canonical_host("acme"), "acme.s.iwd.nl");
-        // Lower-cased for host legibility.
-        assert_eq!(company_canonical_host("Acme"), "acme.s.iwd.nl");
-        assert_eq!(company_canonical_host("  beta  "), "beta.s.iwd.nl");
+    fn canonical_host_is_slug_dot_example_com() {
+        assert_eq!(
+            company_canonical_host("acme", "example.com"),
+            "acme.example.com"
+        );
+        // Slug + base both lower-cased for host legibility.
+        assert_eq!(
+            company_canonical_host("Acme", "Example.com"),
+            "acme.example.com"
+        );
+        assert_eq!(
+            company_canonical_host("  beta  ", "example.com"),
+            "beta.example.com"
+        );
     }
 
     #[test]
     fn canonical_redirect_uri_is_https_callback() {
         assert_eq!(
-            company_redirect_uri("acme"),
-            "https://acme.s.iwd.nl/auth/callback"
+            company_redirect_uri("acme", "example.com"),
+            "https://acme.example.com/auth/callback"
         );
     }
 
     #[test]
     fn company_host_maps_slug_to_company_and_redirect() {
-        // A correctly hand-edited `[[company_hosts]]` block for (slug=acme, id=7).
+        // A correctly hand-edited `[[company_hosts]]` block for (slug=acme, id=7)
+        // under the configured base domain `example.com`.
         let entry = CompanyHost {
-            host: "acme.s.iwd.nl".to_string(),
+            host: "acme.example.com".to_string(),
             company_id: 7,
-            redirect_uri: "https://acme.s.iwd.nl/auth/callback".to_string(),
+            redirect_uri: "https://acme.example.com/auth/callback".to_string(),
         };
-        assert!(entry.is_canonical_for("acme", 7));
+        assert!(entry.is_canonical_for("acme", 7, "example.com"));
         // Case-insensitive host/redirect match (DNS + scheme fold case).
         let mixed = CompanyHost {
-            host: "ACME.s.iwd.nl".to_string(),
+            host: "ACME.example.com".to_string(),
             company_id: 7,
-            redirect_uri: "https://ACME.s.iwd.nl/auth/callback".to_string(),
+            redirect_uri: "https://ACME.example.com/auth/callback".to_string(),
         };
-        assert!(mixed.is_canonical_for("acme", 7));
+        assert!(mixed.is_canonical_for("acme", 7, "example.com"));
 
         // Wrong company id → not canonical (host↔company binding must be exact).
-        assert!(!entry.is_canonical_for("acme", 8));
+        assert!(!entry.is_canonical_for("acme", 8, "example.com"));
         // Wrong slug (host serves a different company's domain) → not canonical.
-        assert!(!entry.is_canonical_for("beta", 7));
+        assert!(!entry.is_canonical_for("beta", 7, "example.com"));
+        // Wrong BASE domain → not canonical (a base change de-canonicalises the
+        // entry, which is the correct re-derive signal). Fail-closed.
+        assert!(!entry.is_canonical_for("acme", 7, "other.test"));
         // A stray redirect host → not canonical (open-redirect / mis-registration).
         let bad_redirect = CompanyHost {
-            host: "acme.s.iwd.nl".to_string(),
+            host: "acme.example.com".to_string(),
             company_id: 7,
             redirect_uri: "https://evil.example/auth/callback".to_string(),
         };
-        assert!(!bad_redirect.is_canonical_for("acme", 7));
+        assert!(!bad_redirect.is_canonical_for("acme", 7, "example.com"));
     }
 
     #[test]
@@ -724,18 +770,21 @@ mod tests {
             google_client_id: Some("cid".to_string()),
             google_client_secret: Some("sec".to_string()),
             company_hosts: vec![CompanyHost {
-                host: company_canonical_host("acme"),
+                host: company_canonical_host("acme", "example.com"),
                 company_id: 42,
-                redirect_uri: company_redirect_uri("acme"),
+                redirect_uri: company_redirect_uri("acme", "example.com"),
             }],
             cookie_key: vec![1; 32],
             csrf_key: vec![1; 32],
+            base_domain: Some("example.com".to_string()),
             ..Default::default()
         };
         // The canonical host resolves to its company; a stray host does not.
-        let e = cfg.host_entry("acme.s.iwd.nl").expect("canonical host resolves");
+        let e = cfg
+            .host_entry("acme.example.com")
+            .expect("canonical host resolves");
         assert_eq!(e.company_id, 42);
-        assert!(cfg.host_entry("beta.s.iwd.nl").is_none());
+        assert!(cfg.host_entry("beta.example.com").is_none());
     }
 
     #[cfg(unix)]

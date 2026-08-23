@@ -6,11 +6,14 @@
 //! missing-scope / idempotent-reuse cases deterministically. [`RealCfApi`] is the
 //! `reqwest` implementation hitting `api.cloudflare.com`.
 //!
-//! The zone `s.iwd.nl` is fronted by ONE wildcard tunnel per box: a single
-//! remote-managed `cfd_tunnel` (`config_src:"cloudflare"`), one wildcard ingress
-//! rule `*.s.iwd.nl → http://localhost:<port>`, one wildcard proxied CNAME. Every
+//! The operator's chosen zone (their `base_domain`, e.g. `example.com`) is
+//! fronted by ONE wildcard tunnel per box: a single remote-managed `cfd_tunnel`
+//! (`config_src:"cloudflare"`), one wildcard ingress rule
+//! `*.<base_domain> → http://localhost:<port>`, one wildcard proxied CNAME. Every
 //! subsequent company slug is then reachable with ZERO further Cloudflare calls —
-//! only a new `company_hosts` allowlist entry.
+//! only a new `company_hosts` allowlist entry. The zone is discovered from the
+//! token via [`CfApi::list_zones`] and picked in the wizard — nothing is
+//! hardcoded.
 
 use async_trait::async_trait;
 
@@ -25,10 +28,10 @@ pub enum CfError {
     #[error("cloudflare token is not active")]
     TokenInactive,
     /// The token is active but lacks a scope the wizard needs (e.g. the box
-    /// could not read the `s.iwd.nl` zone → Zone:Read/DNS:Edit missing).
+    /// could not read the operator's zone → Zone:Read/DNS:Edit missing).
     #[error("cloudflare token missing scope: {0}")]
     MissingScope(String),
-    /// No `s.iwd.nl` zone was visible to this token.
+    /// The chosen base-domain zone was not visible to this token.
     #[error("zone '{0}' not found for this token")]
     ZoneNotFound(String),
     /// Any transport / decode / non-2xx failure.
@@ -45,12 +48,14 @@ pub struct Tunnel {
     pub token: String,
 }
 
-/// The result of validating a token: which account + zone it can see. Proves the
-/// scopes are present by construction (we could reach both).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenContext {
-    pub account_id: String,
+/// One DNS zone the token can read: its Cloudflare id + apex name. `zone_name`
+/// (e.g. `example.com`) is what the operator picks as their `base_domain`;
+/// `zone_id` is re-derived at provision time via [`CfApi::zone_id`] for the DNS
+/// write (so the non-secret store never has to carry it).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ZoneInfo {
     pub zone_id: String,
+    pub zone_name: String,
 }
 
 /// The mockable Cloudflare surface.
@@ -62,6 +67,11 @@ pub trait CfApi: Send + Sync {
     /// `GET /accounts` — the first account id the token can see (proves the
     /// account-scoped Tunnel:Edit reach).
     async fn account_id(&self, token: &str) -> Result<String, CfError>;
+    /// `GET /zones` (paginated) — every zone this token can read. Proves Zone:Read
+    /// by construction; `FORBIDDEN ⇒ MissingScope("Zone:Read")`. An empty vec ⇒
+    /// the token controls no zones (surfaced to the wizard as "no domains found").
+    /// The wizard maps `zone_name`s to the operator's base-domain choice.
+    async fn list_zones(&self, token: &str) -> Result<Vec<ZoneInfo>, CfError>;
     /// `GET /zones?name=<zone>` — the zone id for `zone` (proves Zone:Read reach).
     async fn zone_id(&self, token: &str, zone: &str) -> Result<String, CfError>;
     /// `GET /accounts/{a}/cfd_tunnel?name=<name>&is_deleted=false` — an existing
@@ -99,7 +109,7 @@ pub trait CfApi: Send + Sync {
         service: &str,
     ) -> Result<(), CfError>;
     /// `POST /zones/{z}/dns_records` (idempotent upsert) — the wildcard proxied
-    /// CNAME `*.s.iwd.nl → {tunnel_id}.cfargotunnel.com`.
+    /// CNAME `*.<base_domain> → {tunnel_id}.cfargotunnel.com`.
     async fn upsert_dns_cname(
         &self,
         token: &str,
@@ -117,13 +127,14 @@ pub trait CfApi: Send + Sync {
     ) -> Result<String, CfError>;
 }
 
-/// Discover the account + zone a token can reach, verifying the token is active
-/// first. Reused by `cf-token` (save) and `status` (live re-verify).
-pub async fn discover(api: &dyn CfApi, token: &str, zone: &str) -> Result<TokenContext, CfError> {
+/// Verify the token is active and reach an account (proves account-scoped
+/// Tunnel:Edit). Zone-FREE: the zone is no longer known at token-verify time —
+/// the operator picks their `base_domain` from [`CfApi::list_zones`] afterwards,
+/// and provision re-derives the DNS `zone_id` via [`CfApi::zone_id`]. Reused by
+/// `cf-token` (save) and `status` (live re-verify).
+pub async fn discover_account(api: &dyn CfApi, token: &str) -> Result<String, CfError> {
     api.verify_token(token).await?;
-    let account_id = api.account_id(token).await?;
-    let zone_id = api.zone_id(token, zone).await?;
-    Ok(TokenContext { account_id, zone_id })
+    api.account_id(token).await
 }
 
 // ── real reqwest implementation ──────────────────────────────────────────────
@@ -234,6 +245,45 @@ impl CfApi for RealCfApi {
             .next()
             .map(|a| a.id)
             .ok_or_else(|| CfError::MissingScope("Account (no account visible to token)".into()))
+    }
+
+    async fn list_zones(&self, token: &str) -> Result<Vec<ZoneInfo>, CfError> {
+        #[derive(serde::Deserialize)]
+        struct Zone {
+            id: String,
+            name: String,
+        }
+        const PER_PAGE: usize = 50;
+        let mut out: Vec<ZoneInfo> = Vec::new();
+        let mut page = 1usize;
+        loop {
+            let resp = self
+                .req(
+                    reqwest::Method::GET,
+                    token,
+                    &format!("/zones?per_page={PER_PAGE}&page={page}"),
+                )
+                .send()
+                .await
+                .map_err(|e| CfError::Api(e.to_string()))?;
+            if resp.status() == reqwest::StatusCode::FORBIDDEN {
+                return Err(CfError::MissingScope("Zone:Read".into()));
+            }
+            let env: CfEnvelope<Vec<Zone>> =
+                resp.json().await.map_err(|e| CfError::Api(e.to_string()))?;
+            let zones = env.into_result("list_zones")?;
+            let n = zones.len();
+            out.extend(zones.into_iter().map(|z| ZoneInfo {
+                zone_id: z.id,
+                zone_name: z.name,
+            }));
+            // Stop when the last page returned fewer than a full page (or none).
+            if n < PER_PAGE {
+                break;
+            }
+            page += 1;
+        }
+        Ok(out)
     }
 
     async fn zone_id(&self, token: &str, zone: &str) -> Result<String, CfError> {
@@ -461,6 +511,10 @@ pub struct MockCfApi {
     pub zone_present: bool,
     pub account_id: String,
     pub zone_id: String,
+    /// The zones the token "controls". Default is a single `example.com` so the
+    /// wizard's single-zone auto-select+confirm path is exercised; a multi-zone
+    /// test sets two. `list_zones` returns `MissingScope` when `scopes_ok=false`.
+    pub zones: Vec<ZoneInfo>,
     /// The tunnel state, shared so `provision-tunnel` re-runs observe the prior
     /// create (idempotency).
     pub existing_tunnel: std::sync::Mutex<Option<Tunnel>>,
@@ -478,6 +532,10 @@ impl Default for MockCfApi {
             zone_present: true,
             account_id: "acct-123".to_string(),
             zone_id: "zone-abc".to_string(),
+            zones: vec![ZoneInfo {
+                zone_id: "zone-abc".to_string(),
+                zone_name: "example.com".to_string(),
+            }],
             existing_tunnel: std::sync::Mutex::new(None),
             create_calls: std::sync::atomic::AtomicUsize::new(0),
             status: std::sync::Mutex::new("healthy".to_string()),
@@ -508,6 +566,13 @@ impl CfApi for MockCfApi {
             return Err(CfError::MissingScope("Cloudflare Tunnel:Edit".into()));
         }
         Ok(self.account_id.clone())
+    }
+
+    async fn list_zones(&self, _token: &str) -> Result<Vec<ZoneInfo>, CfError> {
+        if !self.scopes_ok {
+            return Err(CfError::MissingScope("Zone:Read".into()));
+        }
+        Ok(self.zones.clone())
     }
 
     async fn zone_id(&self, _token: &str, zone: &str) -> Result<String, CfError> {

@@ -31,6 +31,13 @@ pub struct CompaniesConfig {
     /// The single per-box Google OAuth Web-client id (non-secret).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google_client_id: Option<String>,
+    /// The operator's chosen base domain (a Cloudflare zone their token controls),
+    /// e.g. `"example.com"`. Companies are reached at `<slug>.<base_domain>`.
+    /// `None` ⇒ external access not configured (fail closed). Non-secret; the
+    /// wizard's Domain step sets it. Absent key parses byte-identically to `None`
+    /// (no migration), so an older store round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_domain: Option<String>,
     /// Per-company `host → company_id → redirect_uri` allowlist entries.
     #[serde(default)]
     pub company_hosts: Vec<CompanyHost>,
@@ -175,6 +182,16 @@ pub fn assemble(
         .filter(|s| !s.trim().is_empty())
         .or_else(|| baseline.google_client_id.clone());
 
+    // base_domain: store wins when present (the wizard's choice), else the
+    // config.toml baseline. Trimmed + lower-cased so a blank never derives a
+    // bogus `<slug>.` host; empty ⇒ None (fail-closed unset).
+    let base_domain = store
+        .base_domain
+        .clone()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .or_else(|| baseline.base_domain.clone());
+
     let google_client_secret = std::env::var("SUPERMUX_GOOGLE_CLIENT_SECRET")
         .ok()
         .map(|s| s.trim().to_string())
@@ -225,6 +242,7 @@ pub fn assemble(
         cookie_key,
         csrf_key,
         session_ttl_secs: baseline.session_ttl_secs,
+        base_domain,
     })
 }
 
@@ -265,10 +283,11 @@ mod tests {
         let d = tmp();
         let cfg = CompaniesConfig {
             google_client_id: Some("cid.apps.googleusercontent.com".into()),
+            base_domain: Some("example.com".into()),
             company_hosts: vec![CompanyHost {
-                host: company_canonical_host("acme"),
+                host: company_canonical_host("acme", "example.com"),
                 company_id: 7,
-                redirect_uri: company_redirect_uri("acme"),
+                redirect_uri: company_redirect_uri("acme", "example.com"),
             }],
             owner_hosts: vec![],
             oauth_apps: vec![],
@@ -283,8 +302,10 @@ mod tests {
         assert!(leftovers.is_empty(), "atomic rename left a temp file");
         let got = read(&d).unwrap().unwrap();
         assert_eq!(got.google_client_id.as_deref(), Some("cid.apps.googleusercontent.com"));
+        assert_eq!(got.base_domain.as_deref(), Some("example.com"));
         assert_eq!(got.company_hosts.len(), 1);
         assert_eq!(got.company_hosts[0].company_id, 7);
+        assert_eq!(got.company_hosts[0].host, "acme.example.com");
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -376,10 +397,11 @@ mod tests {
         let baseline = HumanAuthConfig::default();
         let store = CompaniesConfig {
             google_client_id: Some("cid.apps.googleusercontent.com".into()),
+            base_domain: Some("example.com".into()),
             company_hosts: vec![CompanyHost {
-                host: company_canonical_host("acme"),
+                host: company_canonical_host("acme", "example.com"),
                 company_id: 7,
-                redirect_uri: company_redirect_uri("acme"),
+                redirect_uri: company_redirect_uri("acme", "example.com"),
             }],
             owner_hosts: vec![],
             oauth_apps: vec![],
@@ -391,6 +413,52 @@ mod tests {
         assert!(!merged.csrf_key.is_empty());
         assert_eq!(merged.google_client_id.as_deref(), Some("cid.apps.googleusercontent.com"));
         assert!(merged.enabled(), "surface is live after assemble");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn assemble_carries_base_domain_store_wins() {
+        let d = tmp();
+        // Baseline has no base domain; the store (wizard's choice) provides one.
+        let baseline = HumanAuthConfig::default();
+        let store = CompaniesConfig {
+            base_domain: Some("example.com".into()),
+            ..Default::default()
+        };
+        let merged = assemble(&d, &baseline, &store).unwrap();
+        assert_eq!(merged.base_domain.as_deref(), Some("example.com"));
+
+        // Store unset falls back to the baseline (config.toml pin).
+        let baseline = HumanAuthConfig {
+            base_domain: Some("baseline.test".into()),
+            ..Default::default()
+        };
+        let store = CompaniesConfig::default();
+        let merged = assemble(&d, &baseline, &store).unwrap();
+        assert_eq!(merged.base_domain.as_deref(), Some("baseline.test"));
+
+        // Store wins over the baseline when both are set.
+        let store = CompaniesConfig {
+            base_domain: Some("store.test".into()),
+            ..Default::default()
+        };
+        let merged = assemble(&d, &baseline, &store).unwrap();
+        assert_eq!(merged.base_domain.as_deref(), Some("store.test"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn config_without_base_domain_parses_to_none() {
+        // A store written by an OLDER build (no `base_domain` key) parses fine
+        // with `None` — the no-migration back-compat contract.
+        let d = tmp();
+        std::fs::write(
+            path(&d),
+            "google_client_id = \"cid.apps.googleusercontent.com\"\n",
+        )
+        .unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert!(got.base_domain.is_none(), "absent key ⇒ None (fail-closed)");
         let _ = std::fs::remove_dir_all(d);
     }
 }
