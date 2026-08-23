@@ -593,6 +593,21 @@ pub struct AppState {
     /// The onboarding wizard's Cloudflare + connector-runtime seams (swappable for
     /// tests, like [`human_auth`](Self::human_auth)'s verifier).
     pub external_access: Arc<crate::external_access::ExternalAccess>,
+    /// P2a — the LIVE, hot-swappable set of registered connector-OAuth **apps**
+    /// (non-secret `client_id` + `scopes` per `(provider, company)`). Seeded at
+    /// boot from the companion `companies_config.toml`
+    /// ([`crate::external_access::store::read_or_default`]) and swapped by
+    /// [`reload_oauth_apps`](Self::reload_oauth_apps) after each registration write
+    /// — no restart. Read (cheaply, per-card) by
+    /// [`crate::connectors::api::derive_auth`] to decide the auth lane. Client
+    /// SECRETS are NOT here — they are read from their 0600 file only at
+    /// device-poll time.
+    pub oauth_apps: Arc<arc_swap::ArcSwap<Vec<crate::external_access::store::OauthApp>>>,
+    /// P2a — ephemeral RFC-8628 device-flow state, keyed by an opaque v4-UUID
+    /// handle. Holds the `device_code` + `client_secret` server-side ONLY (never
+    /// returned, never logged); the client holds only the handle. Entries drop on
+    /// terminal status and self-prune on a poll past expiry. In-memory only.
+    pub oauth_device_handles: Arc<DashMap<String, crate::connectors::oauth::DeviceHandle>>,
 }
 
 impl AppState {
@@ -624,6 +639,11 @@ impl AppState {
             crate::external_access::store::boot_overlay(&config.data_dir, config.human_auth.clone());
         let human_auth = Arc::new(crate::auth_human::HumanAuth::new(&live_human_auth));
         let human_auth_config = Arc::new(arc_swap::ArcSwap::from_pointee(live_human_auth));
+        // P2a — seed the registered connector-OAuth apps from the companion store
+        // (absent file ⇒ empty Vec ⇒ byte-identical to every current install/test).
+        let oauth_apps_seed = crate::external_access::store::read_or_default(&config.data_dir)
+            .map(|c| c.oauth_apps)
+            .unwrap_or_default();
         Self {
             pool,
             config: Arc::new(config),
@@ -672,6 +692,8 @@ impl AppState {
             human_auth,
             human_auth_config,
             external_access: Arc::new(crate::external_access::ExternalAccess::new()),
+            oauth_apps: Arc::new(arc_swap::ArcSwap::from_pointee(oauth_apps_seed)),
+            oauth_device_handles: Arc::new(DashMap::new()),
         }
     }
 
@@ -700,6 +722,17 @@ impl AppState {
                 merged.google_client_secret.clone(),
             )));
         self.human_auth_config.store(Arc::new(merged));
+        Ok(())
+    }
+
+    /// P2a — re-read the registered connector-OAuth apps from the companion store
+    /// and hot-swap the in-memory snapshot. Called by `POST`/`DELETE
+    /// /api/oauth/apps` after the atomic companion write, so `derive_auth` sees a
+    /// freshly-registered app WITHOUT a restart. Client secrets are never cached —
+    /// only the non-secret `client_id`/`scopes` ride this snapshot.
+    pub fn reload_oauth_apps(&self) -> anyhow::Result<()> {
+        let store = crate::external_access::store::read_or_default(&self.config.data_dir)?;
+        self.oauth_apps.store(Arc::new(store.oauth_apps));
         Ok(())
     }
 

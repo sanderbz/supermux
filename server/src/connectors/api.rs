@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use crate::claude_tools::MASKED;
 use crate::db::connectors::{self, Account, Grant, ALL_AGENTS, COMPANY_PREFIX};
 use crate::error::AppError;
+use crate::external_access::store::OauthApp;
 use crate::scope::Scope;
 use crate::state::AppState;
 use crate::vault::Vault;
@@ -24,7 +25,11 @@ use super::manifest::{valid_connector_id, CredentialField, Manifest};
 
 /// Shape one connector row into a secret-free store card (the credential SCHEMA
 /// is safe — field names/types/flags, never values).
-fn card(c: &connectors::Connector) -> Value {
+///
+/// `oauth_apps` + `scope` are threaded through so the P2a context-aware
+/// [`derive_auth`] can flip a provider-backed connector to `oauth_device` when an
+/// OAuth app is registered for the caller's scope (else it keeps its current lane).
+fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
     json!({
         "id": c.id,
         "kind": c.kind,
@@ -37,7 +42,7 @@ fn card(c: &connectors::Connector) -> Value {
         // stops guessing its lane from a brand regex and starts reading the real
         // auth method. Derived (installed catalog card keeps its Lane; a local
         // connector derives from its own schema). Was dropped here entirely.
-        "auth": derive_auth(c),
+        "auth": derive_auth(oauth_apps, scope, c),
         // Provenance tag so the merged grid (local rows + catalog mirror) can be
         // filtered by `?source=`. Catalog cards carry `"catalog"`.
         "source": "local",
@@ -54,7 +59,21 @@ fn card(c: &connectors::Connector) -> Value {
 /// installed catalog card keeps its Lane even though the install didn't carry it)
 /// → a shape-derivation from the credential schema (identity+secret ⇒ `form`, a
 /// lone secret ⇒ `api_key`, nothing to seal ⇒ `none` — no fake sign-in).
-fn derive_auth(c: &connectors::Connector) -> Value {
+fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
+    // 0) P2a — a provider-backed, non-`mcp_oauth` connector upgrades to a
+    //    supermux-driven device sign-in WHEN an OAuth app is registered for the
+    //    caller's scope (their active company, else the HQ/global app). If none is
+    //    registered, fall through to the current api_key paste — never a dead end.
+    //    `mcp_oauth` connectors are excluded (the provider map returns `None`).
+    if let Some(provider) = super::oauth::connector_provider(&c.id) {
+        let want_company = match scope {
+            Scope::Company(cid) => Some(cid),
+            Scope::All => None,
+        };
+        if let Some(app) = super::oauth::resolve_app(oauth_apps, provider, want_company) {
+            return super::oauth::oauth_device_descriptor(provider, &app.scopes);
+        }
+    }
     // 1) An explicit, non-`unspecified` descriptor persisted with the manifest.
     if let Some(auth) = serde_json::from_str::<Value>(&c.source_json)
         .ok()
@@ -127,11 +146,16 @@ pub async fn list(
     let want_catalog = filter.source.as_deref().map(|s| s != "local").unwrap_or(true);
 
     let rows = connectors::list(&state.pool).await.map_err(db_err)?;
+    // P2a — the registered OAuth apps + caller scope decide whether a
+    // provider-backed card shows `oauth_device` (read once from the in-RAM
+    // ArcSwap, never per-row from disk).
+    let oauth_apps = state.oauth_apps.load();
+    let scope = Scope::of(ctx.0.as_ref());
     // Enrich each local (installed) card with its connected ACCOUNTS + per-account
     // grant-level — the Installed tab's data — filtered to what the caller may see.
     let mut local: Vec<Value> = Vec::with_capacity(rows.len());
     for c in &rows {
-        let mut v = card(c);
+        let mut v = card(&oauth_apps, scope, c);
         let accts = accounts_json(&state, ctx.0.as_ref(), &c.id).await?;
         if let Value::Object(ref mut o) = v {
             o.insert("accounts".into(), Value::Array(accts));
@@ -229,10 +253,13 @@ fn sniff_image_type(b: &[u8]) -> &'static str {
 /// field. Secret-free either way.
 pub async fn get_one(
     State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     if let Some(c) = connectors::get(&state.pool, &id).await.map_err(db_err)? {
-        return Ok(Json(card(&c)));
+        let oauth_apps = state.oauth_apps.load();
+        let scope = Scope::of(ctx.0.as_ref());
+        return Ok(Json(card(&oauth_apps, scope, &c)));
     }
     // Catalog-mirror fallback (curated ∪ last-good live), which already carries the
     // per-connector auth descriptor + Lane B/C paste schema.
@@ -600,6 +627,8 @@ pub async fn session_connectors(
     let grants = connectors::grants_for_session(&state.pool, &name)
         .await
         .map_err(db_err)?;
+    let oauth_apps = state.oauth_apps.load();
+    let scope = Scope::of(ctx.0.as_ref());
     let mut out = Vec::new();
     for g in &grants {
         let c = connectors::get(&state.pool, &g.connector_id).await.map_err(db_err)?;
@@ -607,7 +636,7 @@ pub async fn session_connectors(
             "connector_id": g.connector_id,
             "has_secret": g.secret_ref.is_some(),
             "enabled": g.enabled != 0,
-            "card": c.as_ref().map(card),
+            "card": c.as_ref().map(|c| card(&oauth_apps, scope, c)),
         }));
     }
     Ok(Json(json!({ "session_name": name, "connectors": out })))
@@ -1061,13 +1090,16 @@ mod tests {
 
     #[test]
     fn derive_auth_prefers_explicit_then_curated_then_shape() {
+        // No OAuth apps registered ⇒ the P2a step-0 never fires; behaviour is the
+        // historical explicit→curated→shape chain.
+        let no_apps: &[OauthApp] = &[];
         // 1) An explicit descriptor folded into source_json wins outright.
         let explicit = connector_row(
             "anything",
             "[]",
             &json!({ "imported": true, "auth": { "kind": "oauth_device" } }).to_string(),
         );
-        assert_eq!(derive_auth(&explicit)["kind"], json!("oauth_device"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &explicit)["kind"], json!("oauth_device"));
 
         // …but an `unspecified` explicit descriptor is ignored (fall through).
         let unspec = connector_row(
@@ -1080,19 +1112,58 @@ mod tests {
             &json!({ "auth": { "kind": "unspecified" } }).to_string(),
         );
         // 3) Shape-derive: identity(non-secret) + secret ⇒ form.
-        assert_eq!(derive_auth(&unspec)["kind"], json!("form"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &unspec)["kind"], json!("form"));
 
         // 2) An installed CATALOG id keeps its curated Lane even with empty schema.
         let installed_gh = connector_row("pmcp-github", "[]", &json!({ "imported": true }).to_string());
-        assert_eq!(derive_auth(&installed_gh)["kind"], json!("api_key"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &installed_gh)["kind"], json!("api_key"));
         let installed_slack = connector_row("pmcp-slack", "[]", "{}");
-        assert_eq!(derive_auth(&installed_slack)["kind"], json!("mcp_oauth"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &installed_slack)["kind"], json!("mcp_oauth"));
 
         // 3) A lone secret ⇒ api_key; no credentials ⇒ none (no fake sign-in).
         let key_only = connector_row("x-key", &json!([{ "key": "TOKEN", "sensitive": true }]).to_string(), "{}");
-        assert_eq!(derive_auth(&key_only)["kind"], json!("api_key"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &key_only)["kind"], json!("api_key"));
         let no_creds = connector_row("x-none", "[]", "{}");
-        assert_eq!(derive_auth(&no_creds)["kind"], json!("none"));
+        assert_eq!(derive_auth(no_apps, Scope::All, &no_creds)["kind"], json!("none"));
+    }
+
+    #[test]
+    fn derive_auth_flips_to_oauth_device_only_when_app_registered() {
+        let gh = connector_row("pmcp-github", "[]", &json!({ "imported": true }).to_string());
+        // No app registered → keeps the curated api_key paste (never a dead end).
+        assert_eq!(derive_auth(&[], Scope::All, &gh)["kind"], json!("api_key"));
+
+        // A GLOBAL github app registered → the card flips to device sign-in with the
+        // reserved descriptor fields populated.
+        let apps = vec![OauthApp {
+            provider: "github".into(),
+            company_id: None,
+            client_id: "gh-global".into(),
+            scopes: vec!["repo".into(), "read:org".into()],
+        }];
+        let d = derive_auth(&apps, Scope::All, &gh);
+        assert_eq!(d["kind"], json!("oauth_device"));
+        assert_eq!(d["token_field"], json!("GITHUB_TOKEN"));
+        assert_eq!(d["device_url"], json!("https://github.com/login/device/code"));
+        assert_eq!(d["scopes"], json!(["repo", "read:org"]));
+        // A member of ANY company still gets device sign-in via the global app.
+        assert_eq!(derive_auth(&apps, Scope::Company(7), &gh)["kind"], json!("oauth_device"));
+
+        // An `mcp_oauth` connector is NEVER remapped, even with apps present.
+        let slack = connector_row("pmcp-slack", "[]", "{}");
+        assert_eq!(derive_auth(&apps, Scope::All, &slack)["kind"], json!("mcp_oauth"));
+
+        // A COMPANY-scoped app is fenced: only that company flips; the owner
+        // (no global app) and other companies keep api_key.
+        let company_only = vec![OauthApp {
+            provider: "github".into(),
+            company_id: Some(7),
+            client_id: "gh-c7".into(),
+            scopes: vec!["repo".into()],
+        }];
+        assert_eq!(derive_auth(&company_only, Scope::Company(7), &gh)["kind"], json!("oauth_device"));
+        assert_eq!(derive_auth(&company_only, Scope::Company(8), &gh)["kind"], json!("api_key"));
+        assert_eq!(derive_auth(&company_only, Scope::All, &gh)["kind"], json!("api_key"));
     }
 
     #[test]

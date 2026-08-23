@@ -37,6 +37,13 @@ const SECRET_QUERY_KEYS: &[&str] = &[
     "client_secret",
     "secret",
     "connector_token",
+    // P2a connector-OAuth device flow: the device grant's request/response fields
+    // whose values are secrets (the device code binds a poll, the tokens are the
+    // grant) — scrubbed by shape so a diagnostic string built from a provider
+    // error body never lands them in the journal.
+    "device_code",
+    "access_token",
+    "refresh_token",
 ];
 
 /// Redact any secret-bearing substring from `input`.

@@ -37,6 +37,56 @@ pub struct CompaniesConfig {
     /// Extra trusted owner-transport hosts.
     #[serde(default)]
     pub owner_hosts: Vec<String>,
+    /// P2a — per-`(provider, company)` connector OAuth **apps** the box owns
+    /// (`client_id` + requested `scopes`, both non-secret). The matching
+    /// `client_secret` NEVER lands here — it lives 0600 in its own per-provider/
+    /// company file (see `crate::connectors::oauth::client_secret_path`). Every
+    /// field is defaulted, so an existing store (or one written by an older build)
+    /// parses byte-identically with an empty list.
+    #[serde(default)]
+    pub oauth_apps: Vec<OauthApp>,
+}
+
+/// One registered connector-OAuth **app** (the box's own client for a provider).
+/// NON-secret: the `client_secret` is stored separately 0600 and is never present
+/// here or in any response. Keyed by `(provider, company_id)` — a `None`
+/// `company_id` is the HQ/global app used when a company has no app of its own.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OauthApp {
+    /// `"github"` | `"google"` (validated to this set BEFORE any file path is
+    /// built from it, so it can never traverse).
+    pub provider: String,
+    /// `None` = the HQ/global app; `Some(id)` = a per-company app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_id: Option<i64>,
+    /// The OAuth client id (non-secret).
+    pub client_id: String,
+    /// Least-privilege scopes to request in the device grant.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Replace-or-push an [`OauthApp`] keyed by `(provider, company_id)` — the
+/// idempotent upsert behind `POST /api/oauth/apps`.
+pub fn upsert_oauth_app(cfg: &mut CompaniesConfig, app: OauthApp) {
+    if let Some(existing) = cfg
+        .oauth_apps
+        .iter_mut()
+        .find(|a| a.provider == app.provider && a.company_id == app.company_id)
+    {
+        *existing = app;
+    } else {
+        cfg.oauth_apps.push(app);
+    }
+}
+
+/// Remove the [`OauthApp`] for `(provider, company_id)`. Returns whether one was
+/// removed.
+pub fn remove_oauth_app(cfg: &mut CompaniesConfig, provider: &str, company_id: Option<i64>) -> bool {
+    let before = cfg.oauth_apps.len();
+    cfg.oauth_apps
+        .retain(|a| !(a.provider == provider && a.company_id == company_id));
+    cfg.oauth_apps.len() != before
 }
 
 /// The store path for a data dir.
@@ -221,6 +271,7 @@ mod tests {
                 redirect_uri: company_redirect_uri("acme"),
             }],
             owner_hosts: vec![],
+            oauth_apps: vec![],
         };
         write_atomic(&d, &cfg).unwrap();
         // No temp file left behind.
@@ -234,6 +285,77 @@ mod tests {
         assert_eq!(got.google_client_id.as_deref(), Some("cid.apps.googleusercontent.com"));
         assert_eq!(got.company_hosts.len(), 1);
         assert_eq!(got.company_hosts[0].company_id, 7);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn oauth_apps_upsert_remove_and_roundtrip() {
+        let d = tmp();
+        let mut cfg = CompaniesConfig::default();
+        // Upsert two apps for the same provider, different scope.
+        upsert_oauth_app(
+            &mut cfg,
+            OauthApp {
+                provider: "github".into(),
+                company_id: None,
+                client_id: "gh-global".into(),
+                scopes: vec!["repo".into()],
+            },
+        );
+        upsert_oauth_app(
+            &mut cfg,
+            OauthApp {
+                provider: "github".into(),
+                company_id: Some(7),
+                client_id: "gh-c7".into(),
+                scopes: vec!["repo".into(), "read:org".into()],
+            },
+        );
+        assert_eq!(cfg.oauth_apps.len(), 2);
+        // Upsert same (provider, company_id) REPLACES, does not duplicate.
+        upsert_oauth_app(
+            &mut cfg,
+            OauthApp {
+                provider: "github".into(),
+                company_id: Some(7),
+                client_id: "gh-c7-rotated".into(),
+                scopes: vec!["repo".into()],
+            },
+        );
+        assert_eq!(cfg.oauth_apps.len(), 2);
+        assert_eq!(
+            cfg.oauth_apps
+                .iter()
+                .find(|a| a.company_id == Some(7))
+                .unwrap()
+                .client_id,
+            "gh-c7-rotated"
+        );
+        // Persist + re-read: the array round-trips through the companion TOML.
+        write_atomic(&d, &cfg).unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert_eq!(got.oauth_apps.len(), 2);
+        // Remove the global app; the company one survives.
+        let mut got = got;
+        assert!(remove_oauth_app(&mut got, "github", None));
+        assert!(!remove_oauth_app(&mut got, "github", None)); // idempotent
+        assert_eq!(got.oauth_apps.len(), 1);
+        assert_eq!(got.oauth_apps[0].company_id, Some(7));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn config_without_oauth_apps_parses_to_empty() {
+        // A store written by an OLDER build (no `oauth_apps` key) parses fine.
+        let d = tmp();
+        std::fs::write(
+            path(&d),
+            "google_client_id = \"cid.apps.googleusercontent.com\"\n",
+        )
+        .unwrap();
+        let got = read(&d).unwrap().unwrap();
+        assert!(got.oauth_apps.is_empty());
+        assert_eq!(got.google_client_id.as_deref(), Some("cid.apps.googleusercontent.com"));
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -260,6 +382,7 @@ mod tests {
                 redirect_uri: company_redirect_uri("acme"),
             }],
             owner_hosts: vec![],
+            oauth_apps: vec![],
         };
         std::env::set_var("SUPERMUX_GOOGLE_CLIENT_SECRET", "shh");
         let merged = assemble(&d, &baseline, &store).unwrap();

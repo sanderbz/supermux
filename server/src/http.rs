@@ -190,6 +190,15 @@ fn protected_router(state: AppState) -> Router {
         // (a member may grant `@company:<their id>` / an own-company session, but
         // not `*` / another company / a global connector definition).
         .merge(crate::connectors::router_for(state.clone()))
+        // P2a connector-OAuth: guided per-company OAuth-app REGISTRATION
+        // (`/api/oauth/apps`, owner/admin-only via `require_admin` INSIDE each
+        // handler — a NEW prefix, deliberately absent from `member_may_reach`, so
+        // the deny-by-default backstop also 404s members) + the device-code grant
+        // (`/api/connectors/{id}/oauth/device/{start,poll}`, member-reachable via
+        // the existing `/api/connectors` blanket and fenced in-handler by
+        // `authorize_session_for_human` + `authorize_connector_target` to the
+        // member's own company). Secrets 0600 / vault, never returned/logged.
+        .merge(crate::connectors::oauth::router_for(state.clone()))
         // Companies — P3d: GET returns only a member's own company; POST/PATCH/
         // DELETE are owner/admin-only. Gated INSIDE the handlers so the member GET
         // can still return their one company (a blanket route-layer would 404 it).

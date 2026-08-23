@@ -27,6 +27,8 @@ pub mod connect_server;
 pub mod health;
 pub mod icloud;
 pub mod manifest;
+/// P2a — connector-OAuth device-code sign-in + guided per-company app registration.
+pub mod oauth;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
