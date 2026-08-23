@@ -449,13 +449,25 @@ pub async fn put_credential(
     {
         // REPLACE / reconnect-with-new-key an existing account in place (keep grants).
         let existing = connectors::account_get(&state.pool, aref).await.map_err(db_err)?;
-        if existing.as_ref().map(|a| a.connector_id.as_str()) != Some(id.as_str()) {
-            return Err(AppError::NotFound(format!("account '{aref}'")));
+        // Must belong to this connector — uniform 404 otherwise (hide existence).
+        let existing = match existing {
+            Some(a) if a.connector_id == id => a,
+            _ => return Err(AppError::NotFound(format!("account '{aref}'"))),
+        };
+        // P2b parity fence: a scoped MEMBER may rotate ONLY an account in their own
+        // company. account_replace re-points the row's SHARED secret_ref, so a
+        // foreign account_ref would otherwise let a member swap another company's
+        // token (the same cross-company class the label branch scopes). Owner
+        // (Scope::All) is unrestricted — owner-neutral, like every other guard; the
+        // mismatch collapses to the same uniform 404 as a nonexistent ref.
+        if let Scope::Company(hc) = Scope::of(ctx.0.as_ref()) {
+            if existing.company_id != Some(hc) {
+                return Err(AppError::NotFound(format!("account '{aref}'")));
+            }
         }
         let label = identity_label
             .clone()
-            .or_else(|| existing.map(|a| a.account_label))
-            .unwrap_or_default();
+            .unwrap_or(existing.account_label);
         connectors::account_replace(&state.pool, aref, &label, Some(&secret_ref))
             .await
             .map_err(db_err)?;
@@ -1306,6 +1318,129 @@ mod tests {
             connectors::accounts_for_connector(&state.pool, "gh").await.unwrap().len(),
             2
         );
+
+        state.pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn member(company_id: i64) -> crate::scope::OptCtx {
+        crate::scope::OptCtx(Some(crate::auth_human::AuthContext::Human {
+            user_id: 1,
+            company_id: Some(company_id),
+            role: "member".into(),
+        }))
+    }
+
+    /// Seal `label` for `target` while REPLACING an existing account by
+    /// `account_ref`, as `ctx` — returns the raw handler result (so a fence can be
+    /// asserted as an `Err`).
+    async fn seal_replace(
+        state: &AppState,
+        ctx: crate::scope::OptCtx,
+        connector: &str,
+        label: &str,
+        target: Option<&str>,
+        account_ref: &str,
+    ) -> Result<Json<Value>, AppError> {
+        let mut fields = BTreeMap::new();
+        fields.insert("TOKEN".to_string(), format!("rotated-{label}"));
+        put_credential(
+            State(state.clone()),
+            ctx,
+            Path(connector.to_string()),
+            Json(CredentialBody {
+                fields,
+                session_name: target.map(str::to_string),
+                secret_ref: None,
+                account_label: Some(label.to_string()),
+                account_ref: Some(account_ref.to_string()),
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn member_cannot_rotate_another_companys_account_ref() {
+        // P2b parity fence: a company-1 member passes the P3d target fence with an
+        // own-company bot, but supplies a FOREIGN (company-2) account_ref. The
+        // explicit-REPLACE branch must refuse it (uniform 404) so account_replace
+        // never re-points company 2's shared secret_ref to the member's secret.
+        let (state, dir) = paste_state().await;
+        connectors::upsert(&state.pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        seed_session(&state, "bot1", Some(1)).await;
+        seed_session(&state, "bot2", Some(2)).await;
+
+        // Company 2 owns an account for "alice" (owner seals it for bot2).
+        let (b_ref, b_secret) = owner_seal(&state, "gh", "alice", Some("bot2")).await;
+        let b_before = connectors::account_get(&state.pool, &b_ref).await.unwrap().unwrap();
+
+        // Company-1 member tries to rotate company 2's account_ref (own-company target).
+        let res = seal_replace(&state, member(1), "gh", "alice", Some("bot1"), &b_ref).await;
+        assert!(
+            matches!(res, Err(AppError::NotFound(_))),
+            "member must not rotate a foreign company's account_ref"
+        );
+
+        // Company 2's account row is untouched — same secret_ref, no swap.
+        let b_after = connectors::account_get(&state.pool, &b_ref).await.unwrap().unwrap();
+        assert_eq!(b_after.secret_ref.as_deref(), Some(b_secret.as_str()));
+        assert_eq!(b_after.secret_ref, b_before.secret_ref, "company 2's secret_ref unchanged");
+        assert_eq!(b_after.company_id, Some(2));
+
+        state.pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn member_can_rotate_own_company_account_ref() {
+        // No regression: a member rotating THEIR OWN company's account by account_ref
+        // succeeds and rotates in place (same row/id, new secret_ref).
+        let (state, dir) = paste_state().await;
+        connectors::upsert(&state.pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        seed_session(&state, "bot1", Some(1)).await;
+
+        let (a_ref, a_secret) = owner_seal(&state, "gh", "alice", Some("bot1")).await;
+        let res = seal_replace(&state, member(1), "gh", "alice", Some("bot1"), &a_ref)
+            .await
+            .expect("own-company rotation accepted");
+        assert_eq!(res.0["account_ref"].as_str(), Some(a_ref.as_str()), "same row rotated");
+        let a = connectors::account_get(&state.pool, &a_ref).await.unwrap().unwrap();
+        assert_ne!(a.secret_ref.as_deref(), Some(a_secret.as_str()), "secret rotated in place");
+        assert_eq!(a.company_id, Some(1), "scope preserved");
+        assert_eq!(
+            connectors::accounts_for_connector(&state.pool, "gh").await.unwrap().len(),
+            1,
+            "one row (no dup minted)"
+        );
+
+        state.pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn owner_may_rotate_any_account_ref_unfenced() {
+        // Owner-neutral: Scope::All rotates any account regardless of its company,
+        // byte-identical to before the parity fence.
+        let (state, dir) = paste_state().await;
+        connectors::upsert(&state.pool, "gh", "mcp_catalog", "gh", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        seed_session(&state, "bot2", Some(2)).await;
+
+        let (b_ref, b_secret) = owner_seal(&state, "gh", "alice", Some("bot2")).await;
+        // Owner (OptCtx(None) → Scope::All) rotates the company-2 account with a bare
+        // (HQ) target — accepted, in place, scope preserved.
+        let res = seal_replace(&state, crate::scope::OptCtx(None), "gh", "alice", None, &b_ref)
+            .await
+            .expect("owner rotation accepted");
+        assert_eq!(res.0["account_ref"].as_str(), Some(b_ref.as_str()));
+        let b = connectors::account_get(&state.pool, &b_ref).await.unwrap().unwrap();
+        assert_ne!(b.secret_ref.as_deref(), Some(b_secret.as_str()), "secret rotated");
+        assert_eq!(b.company_id, Some(2), "rotation preserves the account's own company");
 
         state.pool.close().await;
         std::fs::remove_dir_all(dir).ok();
