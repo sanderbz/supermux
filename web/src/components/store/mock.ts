@@ -30,7 +30,8 @@ export const MOCK_INSTALLED_CONNECTORS: ConnectorCard[] = [
         status: 'active',
         has_secret: true,
         last_used_at: NOW - 3 * MINUTES,
-        health: null,
+        health: 'ok',
+        last_checked_at: NOW - 2 * MINUTES,
         grant_level: { scope: 'all', label: 'All agents', count: 1 },
       },
       {
@@ -52,7 +53,10 @@ export const MOCK_INSTALLED_CONNECTORS: ConnectorCard[] = [
         status: 'active',
         has_secret: true,
         last_used_at: NOW - 10 * MINUTES,
-        health: null,
+        // A tested-broken account reads Error (red) — never Active.
+        health: 'error',
+        last_checked_at: NOW - 1 * HOURS,
+        last_error: "Couldn't reach the endpoint — check the URL and the network.",
         grant_level: { scope: 'bot', label: 'Web App', count: 1 },
       },
       {
@@ -80,7 +84,10 @@ export const MOCK_INSTALLED_CONNECTORS: ConnectorCard[] = [
         status: 'active',
         has_secret: true,
         last_used_at: NOW - 40,
-        health: null,
+        // An expired app-specific password reads Expired (amber) — never Active.
+        health: 'expired',
+        last_checked_at: NOW - 15 * MINUTES,
+        last_error: 'iCloud rejected the app-specific password — regenerate it at appleid.apple.com and reconnect.',
         grant_level: { scope: 'bots', label: '3 agents', count: 3 },
       },
     ],

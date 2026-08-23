@@ -376,6 +376,19 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
     // ── connector tier ─────────────────────────────────────────────────────────
     let grants = connectors::grants_for_session(&state.pool, session_name).await?;
     if !grants.is_empty() {
+        // Passive freshness (Slice 3): this launch is RESOLVING these grants, so
+        // stamp `last_used_at = now` on every account they feed. Best-effort — a
+        // stamp failure (or a legacy account-less grant) must never disturb a
+        // launch; the "last used Nd ago" line is advisory, not load-bearing.
+        let now = chrono::Utc::now().timestamp();
+        for g in &grants {
+            if let Some(aref) = g.account_ref.as_deref() {
+                if let Err(e) = connectors::account_mark_used(&state.pool, aref, now).await {
+                    tracing::debug!(connector = %g.connector_id, error = %e, "last_used_at stamp failed");
+                }
+            }
+        }
+
         // Open the vault once (only if some grant carries a secret_ref).
         let needs_vault = grants.iter().any(|g| g.secret_ref.is_some());
         let vault = if needs_vault {
@@ -683,6 +696,48 @@ mod tests {
             cfg["mcpServers"].get("browser").is_none(),
             "no browser server without the shared-browser grant"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Passive freshness: assembling a launch that resolves an account-bearing
+    /// grant stamps that account's `last_used_at` (Slice 3, task a). A legacy
+    /// account-less grant is untouched (nothing to stamp) and never errors.
+    #[tokio::test]
+    async fn launch_stamps_last_used_on_the_resolved_account() {
+        let (state, dir) = browser_state().await;
+        connectors::upsert(
+            &state.pool,
+            "gmail",
+            "mcp_catalog",
+            "Gmail",
+            "",
+            "",
+            "[]",
+            "[]",
+            &json!({ "command": "npx", "args": ["gmail"] }).to_string(),
+            "{}",
+        )
+        .await
+        .unwrap();
+        crate::db::sessions::insert_minimal(&state.pool, "crm-bot", "/tmp", "claude")
+            .await
+            .unwrap();
+        let acct = connectors::account_add(&state.pool, "gmail", "sander@acme.com", None)
+            .await
+            .unwrap();
+        // Fresh account: never used.
+        assert_eq!(
+            connectors::account_get(&state.pool, &acct).await.unwrap().unwrap().last_used_at,
+            0
+        );
+        connectors::grant_with_account(&state.pool, "crm-bot", "gmail", None, true, Some(&acct))
+            .await
+            .unwrap();
+
+        let _ = assemble(&state, "crm-bot").await.unwrap().expect("active launch");
+
+        let a = connectors::account_get(&state.pool, &acct).await.unwrap().unwrap();
+        assert!(a.last_used_at > 0, "launch stamps last_used_at on the resolved account");
         std::fs::remove_dir_all(&dir).ok();
     }
 

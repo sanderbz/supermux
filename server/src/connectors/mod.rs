@@ -23,6 +23,8 @@ pub mod api;
 pub mod browser;
 pub mod catalog;
 pub mod connect_server;
+/// Per-account "Test connection" probes + the honest health mapping (Slice 3).
+pub mod health;
 pub mod icloud;
 pub mod manifest;
 
@@ -82,6 +84,8 @@ pub fn router_for(state: AppState) -> Router {
         // Account lifecycle: disconnect (revoke grants, KEEP the secret) / reconnect.
         .route("/api/connectors/{id}/disconnect", post(api::disconnect_account))
         .route("/api/connectors/{id}/reconnect", post(api::reconnect_account))
+        // Per-account "Test connection": a per-kind liveness probe writing health.
+        .route("/api/connectors/{id}/test", post(api::test_account))
         // Grant / revoke to a session (or the '*' all-agents sentinel).
         .route("/api/connectors/{id}/grant", post(api::grant))
         .route("/api/connectors/{id}/grant", delete(api::revoke))

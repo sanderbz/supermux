@@ -661,6 +661,93 @@ pub async fn reconnect_account(
     })))
 }
 
+/// `POST /api/connectors/{id}/test` — run a per-kind liveness probe for one account
+/// and record the honest verdict (`ok` / `expired` / `error`, or leave health
+/// untouched when the connector is untestable). Owner/admin-only (it decrypts the
+/// sealed credential to probe, and an account spans scopes — same guard as
+/// disconnect/reconnect).
+///
+/// The response carries the verdict + a human message; the persisted `health` also
+/// rides the store grid so the Installed row/detail repaint. NEVER returns a secret
+/// value — the decrypted fields are read only to feed the probe.
+pub async fn test_account(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(id): Path<String>,
+    Json(body): Json<AccountBody>,
+) -> Result<Json<Value>, AppError> {
+    crate::scope::require_admin(ctx.0.as_ref(), &format!("/api/connectors/{id}/test"))?;
+    let account = account_of(&state, &id, &body.account_ref).await?;
+    let connector = connectors::get(&state.pool, &id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+
+    // Decrypt this account's sealed fields ONLY to feed the probe (never returned,
+    // never logged). A missing/undecryptable secret yields an empty map — the probe
+    // then reports an honest error, never a fake green.
+    let secrets = decrypt_account_secret(&state, &account).await;
+
+    let outcome = super::health::run_probe(&connector, &secrets).await;
+    let now = chrono::Utc::now().timestamp();
+    // Persist ONLY a real verdict; an untestable connector keeps its prior health.
+    if outcome.testable {
+        connectors::account_set_health(
+            &state.pool,
+            &account.id,
+            outcome.health,
+            outcome.last_error.as_deref(),
+            now,
+        )
+        .await
+        .map_err(db_err)?;
+    }
+    audit(
+        &state,
+        "connector.test",
+        &id,
+        json!({ "account_ref": account.id, "health": outcome.health, "testable": outcome.testable }),
+    )
+    .await;
+
+    // Report the freshly-stored verdict, or (untestable) the prior stored state.
+    let reported_health: Option<String> = if outcome.testable {
+        outcome.health.map(str::to_string)
+    } else {
+        account.health.clone()
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "id": id,
+        "account_ref": account.id,
+        "testable": outcome.testable,
+        "health": reported_health,
+        "last_error": outcome.last_error,
+        "last_checked_at": if outcome.testable { now } else { account.last_checked_at },
+        "message": outcome.message,
+    })))
+}
+
+/// Open this account's sealed field-map (env-var name → value) from the vault, or an
+/// empty map on any miss/failure (logged, never fatal, never logs the secret). Used
+/// only to feed a health probe.
+async fn decrypt_account_secret(state: &AppState, account: &Account) -> BTreeMap<String, String> {
+    let Some(secret_ref) = account.secret_ref.as_deref() else {
+        return BTreeMap::new();
+    };
+    let vault = match Vault::open(&state.config.data_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "connector test: vault unavailable");
+            return BTreeMap::new();
+        }
+    };
+    match connectors::vault_get(&state.pool, secret_ref).await {
+        Ok(Some(row)) => vault.open_fields(&row.fields_enc, &row.nonce).unwrap_or_default(),
+        _ => BTreeMap::new(),
+    }
+}
+
 /// Fetch an account and assert it belongs to `connector_id` (else a uniform 404).
 async fn account_of(state: &AppState, connector_id: &str, account_ref: &str) -> Result<Account, AppError> {
     let account = connectors::account_get(&state.pool, account_ref)
@@ -705,7 +792,11 @@ async fn accounts_json(
             "status": a.status,
             "has_secret": a.secret_ref.is_some(),
             "last_used_at": a.last_used_at,
+            // Active health (0036) — the "Test connection" verdict. `last_checked_at`
+            // is 0 until first probed; `last_error` is masked/human. All secret-free.
             "health": a.health,
+            "last_checked_at": a.last_checked_at,
+            "last_error": a.last_error,
             "grant_level": grant_level(&resolved),
         }));
     }

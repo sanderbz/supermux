@@ -68,9 +68,16 @@ export interface ConnectorAccount {
   /** `active` | `disconnected` (secret kept for one-tap reconnect). */
   status: 'active' | 'disconnected' | string
   has_secret: boolean
+  /** Epoch seconds an agent last resolved this account at launch (0 = never). */
   last_used_at: number
-  /** `null` | `ok` | `expired` | `error` (passive freshness, migration 0036). */
+  /** `null` | `ok` | `expired` | `error` — the last "Test connection" verdict
+   *  (migration 0036). `null` = never tested. An `expired`/`error` account must
+   *  NEVER render as Active (the dead-connections-look-dead rule). */
   health: string | null
+  /** Epoch seconds the account was last probed (0 = never tested). */
+  last_checked_at?: number
+  /** A masked, human-readable reason for the last non-ok verdict; `null` on ok. */
+  last_error?: string | null
   grant_level: GrantLevel
 }
 
@@ -392,6 +399,37 @@ export async function reconnectAccount(
   return settingsRequest<AccountMutationResponse>(`/api/connectors/${enc(id)}/reconnect`, {
     method: 'POST',
     body: JSON.stringify({ account_ref: accountRef, session_name: sessionName }),
+  })
+}
+
+/** The verdict of a `POST /api/connectors/{id}/test` probe. Secret-free. */
+export interface TestConnectionResult {
+  ok: boolean
+  account_ref: string
+  /** False when the connector kind can't be probed (health left untouched). */
+  testable: boolean
+  /** The freshly-stored verdict (`ok`/`expired`/`error`), or the prior stored
+   *  health when untestable. `null` = never verified. */
+  health: string | null
+  /** A masked, human-readable reason when not ok. */
+  last_error?: string | null
+  /** Epoch seconds of this check (unchanged when untestable). */
+  last_checked_at?: number
+  /** A short line to show the operator (always present). */
+  message: string
+}
+
+/** `POST /api/connectors/{id}/test` — run a per-kind liveness probe for one account
+ *  (IMAP login for iCloud, a reachability GET for a URL MCP, else "can't test") and
+ *  record the honest health verdict. Owner/admin-only. Secret-free: the sealed
+ *  credential is read server-side only to feed the probe, never returned. */
+export async function testConnection(
+  id: string,
+  accountRef: string,
+): Promise<TestConnectionResult> {
+  return settingsRequest<TestConnectionResult>(`/api/connectors/${enc(id)}/test`, {
+    method: 'POST',
+    body: JSON.stringify({ account_ref: accountRef }),
   })
 }
 

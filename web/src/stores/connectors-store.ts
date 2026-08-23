@@ -36,6 +36,8 @@ import {
   connectorGrants as apiConnectorGrants,
   disconnectAccount as apiDisconnect,
   reconnectAccount as apiReconnect,
+  testConnection as apiTestConnection,
+  type TestConnectionResult,
 } from '@/lib/api/connectors'
 import { ApiError } from '@/lib/api/client'
 import { useToast } from '@/components/ui/use-toast'
@@ -116,6 +118,10 @@ export interface ConnectorActions {
    *  secret_ref, so this is the account-aware grant path). Flips it back to active
    *  and, with a session, re-grants that scope. Resolves `restartHint`. */
   reconnect: (id: string, accountRef: string, sessionName?: string) => Promise<boolean>
+  /** Run a per-kind liveness probe for one account and record the honest health
+   *  verdict (ok / expired / error / can't-test). Returns the full result so the
+   *  caller can show a note; the stored health rides the grid invalidation. */
+  testConnection: (id: string, accountRef: string) => Promise<TestConnectionResult>
   /** Flip a grant's `enabled` flag WITHOUT dropping the grant row — an at-a-glance
    *  enable/disable that survives a re-enable (revoke would forget it). Re-grants
    *  to the same session with the new flag. Resolves `restartHint`. */
@@ -186,6 +192,16 @@ export function useConnectorActions(): ConnectorActions {
       toast({ message: `Revoke failed — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
   })
 
+  // Test connection: the probe WRITES the stored health, so invalidate the grid to
+  // repaint the row/detail dot. The verdict is also returned to the caller for an
+  // immediate note.
+  const testM = useMutation({
+    mutationFn: (v: { id: string; accountRef: string }) => apiTestConnection(v.id, v.accountRef),
+    onSuccess: () => invalidateAll(),
+    onError: (e: unknown) =>
+      toast({ message: `Couldn't test — ${(e as Error).message}`, tone: 'error', duration: 4000 }),
+  })
+
   // Enable/disable rides the SAME grant endpoint (it already takes an `enabled`
   // flag), so no new route: a disabled grant stays a row, ready to flip back on.
   const enableM = useMutation({
@@ -218,7 +234,8 @@ export function useConnectorActions(): ConnectorActions {
     credM.isPending ||
     removeM.isPending ||
     disconnectM.isPending ||
-    reconnectM.isPending
+    reconnectM.isPending ||
+    testM.isPending
 
   return {
     pending,
@@ -239,6 +256,7 @@ export function useConnectorActions(): ConnectorActions {
       const r = await reconnectM.mutateAsync({ id, accountRef, sessionName })
       return !!r.restartHint
     },
+    testConnection: (id, accountRef) => testM.mutateAsync({ id, accountRef }),
     setEnabled: async (id, sessionName, enabled) => {
       const r = await enableM.mutateAsync({ id, sessionName, enabled })
       return !!r.restartHint

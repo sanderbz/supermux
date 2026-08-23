@@ -12,6 +12,7 @@
 // PlainField + kindLabel (from connector-detail) — DRY, no forked primitives.
 import * as React from 'react'
 import {
+  Activity,
   ArrowLeft,
   Bot,
   Building2,
@@ -182,7 +183,12 @@ function InstalledRow({
           </span>
           <span className="mt-0.5 truncate text-[12.5px] text-muted-foreground">
             {account ? (
-              <>Connected as <span className="text-foreground/80">{account.account_label}</span></>
+              <>
+                Connected as <span className="text-foreground/80">{account.account_label}</span>
+                {sinceLabel(account.last_used_at) && (
+                  <span className="text-muted-foreground/80"> · used {sinceLabel(account.last_used_at)}</span>
+                )}
+              </>
             ) : (
               <>{kindLabel(card.kind)} · not connected</>
             )}
@@ -207,9 +213,12 @@ function InstalledRow({
 
 type StatusTone = 'active' | 'warn' | 'error' | 'muted'
 
+// The honest health mapping (Slice 3). A tested-bad account NEVER reads Active:
+// `error` → Error (red), `expired` → Expired (amber). Only a present secret with
+// no known problem is Active; a never-connected account is "Needs sign-in".
 function statusMeta(a: ConnectorAccount): { label: string; tone: StatusTone } {
   if (a.health === 'error') return { label: 'Error', tone: 'error' }
-  if (a.health === 'expired') return { label: 'Needs sign-in', tone: 'warn' }
+  if (a.health === 'expired') return { label: 'Expired', tone: 'warn' }
   if (a.status === 'disconnected') return { label: 'Disconnected', tone: 'muted' }
   if (!a.has_secret) return { label: 'Needs sign-in', tone: 'warn' }
   return { label: 'Active', tone: 'active' }
@@ -294,6 +303,8 @@ function InstalledDetail({
   const [view, setView] = React.useState<DetailView>('detail')
   const [note, setNote] = React.useState<string | null>(null)
   const [reconnecting, setReconnecting] = React.useState(false)
+  const [testing, setTesting] = React.useState(false)
+  const [testNote, setTestNote] = React.useState<{ message: string; tone: 'ok' | 'bad' | 'muted' } | null>(null)
 
   const scope: GrantScope = account
     ? levelToScope(account.grant_level)
@@ -321,6 +332,21 @@ function InstalledDetail({
       setNote(restart ? 'Bots reload this account at their next restart.' : null)
     } finally {
       setReconnecting(false)
+    }
+  }
+
+  const runTest = async () => {
+    if (!account || testing) return
+    setTesting(true)
+    setTestNote(null)
+    try {
+      const r = await actions.testConnection(card.id, account.id)
+      const tone = !r.testable ? 'muted' : r.health === 'ok' ? 'ok' : 'bad'
+      setTestNote({ message: r.message, tone })
+    } catch {
+      /* toast surfaced by the mutation */
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -391,19 +417,27 @@ function InstalledDetail({
         <p className="text-[14px] leading-relaxed text-foreground/90">{card.description}</p>
       )}
 
-      {/* account block — identity, freshness, the lifecycle verbs */}
+      {/* account block — identity, freshness, health, the lifecycle verbs */}
       {account && (
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 flex-col">
               <span className="text-[13px] font-semibold text-foreground">Account</span>
               <span className="truncate text-[12.5px] text-muted-foreground">
                 {account.account_label} · {usedAgo(account.last_used_at)}
               </span>
+              <span className="truncate text-[11.5px] text-muted-foreground/80">{checkedLabel(account)}</span>
             </div>
             <StatusChip account={account} />
           </div>
+          {/* the honest health error (persists across renders until re-tested) */}
+          {account.last_error && (account.health === 'error' || account.health === 'expired') && (
+            <p className="text-[12px] leading-relaxed text-destructive">{account.last_error}</p>
+          )}
           <div className="flex flex-wrap gap-2">
+            <VerbButton onClick={runTest} busy={testing} icon={<Activity className="size-3.5" aria-hidden />}>
+              {testing ? 'Testing…' : 'Test connection'}
+            </VerbButton>
             {(account.status === 'disconnected' || !account.has_secret) && (
               <VerbButton onClick={reconnect} busy={reconnecting} icon={<RotateCw className="size-3.5" aria-hidden />}>
                 Reconnect
@@ -423,6 +457,20 @@ function InstalledDetail({
           {disconnect.armed && (
             <p className="text-[12px] text-muted-foreground">
               Revokes every grant this account feeds. The sealed key is kept for a one-tap reconnect.
+            </p>
+          )}
+          {testNote && (
+            <p
+              className={cn(
+                'text-[12px] leading-relaxed',
+                testNote.tone === 'ok'
+                  ? 'text-status-ready-ink'
+                  : testNote.tone === 'bad'
+                    ? 'text-destructive'
+                    : 'text-muted-foreground',
+              )}
+            >
+              {testNote.message}
             </p>
           )}
           {note && <p className="text-[12px] text-status-active-ink">{note}</p>}
@@ -748,18 +796,41 @@ function defaultStr(f: CredentialField): string {
   return typeof f.default === 'string' ? f.default : String(f.default)
 }
 
-/** "Used 3m ago" / "Used just now" / "Never used" from an epoch-seconds stamp. */
-function usedAgo(ts: number): string {
-  if (!ts || ts <= 0) return 'Never used'
+/** "3m ago" / "just now" / null (never) from an epoch-seconds stamp — the shared
+ *  relative-time atom behind the used/checked labels. */
+function sinceLabel(ts: number): string | null {
+  if (!ts || ts <= 0) return null
   const secs = Math.max(0, Math.floor(Date.now() / 1000 - ts))
-  if (secs < 45) return 'Used just now'
+  if (secs < 45) return 'just now'
   const mins = Math.floor(secs / 60)
-  if (mins < 60) return `Used ${mins}m ago`
+  if (mins < 60) return `${mins}m ago`
   const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `Used ${hrs}h ago`
+  if (hrs < 24) return `${hrs}h ago`
   const days = Math.floor(hrs / 24)
-  if (days < 30) return `Used ${days}d ago`
+  if (days < 30) return `${days}d ago`
   const months = Math.floor(days / 30)
-  if (months < 12) return `Used ${months}mo ago`
-  return `Used ${Math.floor(months / 12)}y ago`
+  if (months < 12) return `${months}mo ago`
+  return `${Math.floor(months / 12)}y ago`
+}
+
+/** "Used 3m ago" / "Never used" from an epoch-seconds stamp. */
+function usedAgo(ts: number): string {
+  const s = sinceLabel(ts)
+  return s ? `Used ${s}` : 'Never used'
+}
+
+/** The health-check freshness line: "Checked 3m ago — verified/expired/failed" once
+ *  probed, else an honest "Not tested yet" (never implies a green it didn't earn). */
+function checkedLabel(a: ConnectorAccount): string {
+  const s = sinceLabel(a.last_checked_at ?? 0)
+  if (!s) return 'Not tested yet'
+  const verdict =
+    a.health === 'ok'
+      ? 'verified'
+      : a.health === 'expired'
+        ? 'expired'
+        : a.health === 'error'
+          ? 'failed'
+          : 'checked'
+  return `Checked ${s} — ${verdict}`
 }

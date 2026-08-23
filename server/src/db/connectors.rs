@@ -428,6 +428,31 @@ pub async fn account_mark_used(pool: &SqlitePool, id: &str, at: i64) -> sqlx::Re
     Ok(res.rows_affected() > 0)
 }
 
+/// Record the outcome of a "Test connection" probe (0036): the active `health`
+/// (`"ok"|"expired"|"error"`, or `None` to clear), a masked human-readable
+/// `last_error` (`None` on success), and the `last_checked_at` stamp. Best-effort;
+/// returns true if the row existed.
+pub async fn account_set_health(
+    pool: &SqlitePool,
+    id: &str,
+    health: Option<&str>,
+    last_error: Option<&str>,
+    at: i64,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query(
+        "UPDATE connector_accounts
+            SET health = ?, last_error = ?, last_checked_at = ?
+          WHERE id = ?",
+    )
+    .bind(health)
+    .bind(last_error)
+    .bind(at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 // ── vault ─────────────────────────────────────────────────────────────────────
 
 /// Insert (or replace) a vault row with an already-sealed blob. Returns nothing;
@@ -760,6 +785,44 @@ mod tests {
         let consumers = grants_for_connector(&pool, "gmail").await.unwrap();
         assert_eq!(consumers.len(), 1, "reconnect re-grants using the kept secret");
         assert_eq!(consumers[0].secret_ref.as_deref(), Some("sref-a"));
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn account_health_and_last_used_round_trip() {
+        // The freshness + health columns (0035/0036) persist honestly: a fresh
+        // account is health=NULL / last_used=0; a launch stamps last_used; a probe
+        // writes health + last_error + last_checked_at; clearing sets health=NULL.
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gmail").await;
+        let acct = account_add(&pool, "gmail", "sander@acme.com", Some("sref")).await.unwrap();
+
+        let a = account_get(&pool, &acct).await.unwrap().unwrap();
+        assert_eq!(a.health, None, "never-probed account has no health");
+        assert_eq!(a.last_used_at, 0);
+        assert_eq!(a.last_checked_at, 0);
+
+        // Passive freshness at launch.
+        assert!(account_mark_used(&pool, &acct, 1_700).await.unwrap());
+        assert_eq!(account_get(&pool, &acct).await.unwrap().unwrap().last_used_at, 1_700);
+
+        // A failing probe records error + a masked reason + the check time.
+        assert!(account_set_health(&pool, &acct, Some("error"), Some("Couldn't reach the endpoint."), 2_000)
+            .await
+            .unwrap());
+        let a = account_get(&pool, &acct).await.unwrap().unwrap();
+        assert_eq!(a.health.as_deref(), Some("error"));
+        assert_eq!(a.last_error.as_deref(), Some("Couldn't reach the endpoint."));
+        assert_eq!(a.last_checked_at, 2_000);
+        assert_eq!(a.last_used_at, 1_700, "a probe never touches last_used");
+
+        // A passing probe clears the error.
+        assert!(account_set_health(&pool, &acct, Some("ok"), None, 2_500).await.unwrap());
+        let a = account_get(&pool, &acct).await.unwrap().unwrap();
+        assert_eq!(a.health.as_deref(), Some("ok"));
+        assert_eq!(a.last_error, None, "a green check clears the prior error");
 
         pool.close().await;
         std::fs::remove_dir_all(dir).ok();

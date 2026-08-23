@@ -897,7 +897,23 @@ const BUDGET_ENTRY_JS = 161 * KB
 // A genuine additive feature — the owner's flagship multi-account surface, not a
 // regression to trim: ceil(measured)=324, the same rule every fase since B3 used.
 // The `/?mock` seed is DEV-gated + dynamic-imported (tree-shaken from prod).
-const BUDGET_APP_JS = 324 * KB
+// 324 → 326 at the connection-health / Test-connection layer (feat/companies-grok,
+// slice 3): per-account "Test connection" (a per-kind probe — IMAP login for iCloud,
+// a reachability GET for a URL MCP, else honestly "can't test"), the honest health
+// dot (Active/Expired/Error — an expired/errored account NEVER reads Active),
+// "last used Nd ago" freshness (stamped at launch), and the "Checked Nm ago —
+// verified/expired/failed" line. Measured 325.50 against 323.95 for slice 2 —
+// +1.55 KB, ALL of it OFF the hero path (the ENTRY gate stays green at 157.82/161,
+// 98%, unmoved — installed-panel is in the already-lazy `store-view` chunk):
+//   +~1.3 KB  `store/installed-panel` — the Test-connection verb + its busy/note
+//             state, the last_error surfacing, the row/detail freshness + checked
+//             labels, and the Expired relabel. In the lazy `store-view` chunk.
+//   +~0.25 KB the `connectors` client + `connectors-store` additions (the
+//             `testConnection` endpoint + its cache-invalidating mutation) — on the
+//             store chunk, reached only under the store route.
+// A genuine additive feature (Slice 3's freshness+validity layer), not a
+// regression to trim: ceil(measured)=326, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 326 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
