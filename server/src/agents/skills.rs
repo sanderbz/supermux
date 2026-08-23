@@ -147,6 +147,16 @@ pub const SUPERMUX_NOTIFY_SKILL: &str = include_str!("supermux-notify.md");
 pub const SUPERMUX_MESSAGE_NAME: &str = "supermux-message";
 pub const SUPERMUX_MESSAGE_SKILL: &str = include_str!("supermux-message.md");
 
+/// The `/supermux-connector` command — the agent's authoring guide for building a
+/// connector into supermux's store (the "Create your own connector" handoff points
+/// the bot here). It teaches the manifest shape, the MCP-server contract, secret
+/// handling via the vault, and the HONEST registration path: the bot authors +
+/// stages, then asks the OWNER to one-tap Register (the admin import), because a
+/// connector definition is GLOBAL and `POST /api/connectors` is `require_admin`.
+/// The SessionStart briefing names it; this file is the full how-to it loads.
+pub const SUPERMUX_CONNECTOR_NAME: &str = "supermux-connector";
+pub const SUPERMUX_CONNECTOR_SKILL: &str = include_str!("supermux-connector.md");
+
 /// The set of commands supermux manages + auto-installs. `(name, content)`.
 /// Adding a row here means it's seeded to `~/.claude/commands/<name>.md` on the
 /// next boot.
@@ -155,6 +165,7 @@ pub const MANAGED_COMMANDS: &[(&str, &str)] = &[
     (SUPERMUX_SCHEDULE_NAME, SUPERMUX_SCHEDULE_SKILL),
     (SUPERMUX_NOTIFY_NAME, SUPERMUX_NOTIFY_SKILL),
     (SUPERMUX_MESSAGE_NAME, SUPERMUX_MESSAGE_SKILL),
+    (SUPERMUX_CONNECTOR_NAME, SUPERMUX_CONNECTOR_SKILL),
 ];
 
 /// Skill-name slug rule — no path separators, so a name can never escape the
@@ -767,6 +778,50 @@ mod tests {
             md.contains("does no natural-language interpretation"),
             "must say the agent parses and the server validates"
         );
+    }
+
+    #[test]
+    fn supermux_connector_template_teaches_authoring_and_the_admin_gate() {
+        // The file IS the bot's only documentation for authoring a connector into
+        // the store. It must carry the marker + frontmatter, name the real manifest
+        // fields + endpoints, and state the load-bearing security truth: a bot
+        // canNOT self-register a GLOBAL connector — the owner one-taps Register.
+        let md = SUPERMUX_CONNECTOR_SKILL;
+        assert!(md.contains(MANAGED_MARKER), "must carry the managed marker");
+
+        let fm = parse_frontmatter(md);
+        assert!(!fm.description.is_empty(), "needs a frontmatter description");
+        assert!(!fm.hint.is_empty(), "needs an argument-hint");
+
+        // The real endpoints this codebase exposes (cited accurately).
+        for ep in [
+            "/api/connectors",
+            "/api/connectors/import",
+            "/api/connectors/{id}/credential",
+            "/api/connectors/{id}/grant",
+        ] {
+            assert!(md.contains(ep), "guide must cite {ep}");
+        }
+        // The manifest vocabulary + the emit/${VAR} placeholder discipline.
+        for token in ["\"id\"", "credentials", "\"emit\"", "${", "agent_authored"] {
+            assert!(md.contains(token), "guide must teach {token}");
+        }
+        // The security invariants — stated in the bot's own terms.
+        assert!(md.contains("require_admin"), "must name the admin gate");
+        assert!(
+            md.to_lowercase().contains("global"),
+            "must say a connector definition is global"
+        );
+        assert!(
+            md.contains("@company:"),
+            "must show the company grant target"
+        );
+        assert!(
+            md.to_lowercase().contains("never inline") || md.to_lowercase().contains("never put a value"),
+            "must forbid inlining secrets"
+        );
+        // It hands off to the owner via the notify command (no self-register).
+        assert!(md.contains("/supermux-notify"), "must ping the owner to register");
     }
 
     #[test]

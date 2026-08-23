@@ -11,6 +11,8 @@ import { ToastProvider } from '@/components/ui/toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { StoreView } from '@/components/store/store-view'
 import { ConnectorDetail } from '@/components/store/connector-detail'
+import { CreateYourOwnSheet } from '@/components/store/create-your-own-sheet'
+import { RegisterConnectorSheet } from '@/components/store/register-connector-sheet'
 import { CURATED_FALLBACK } from '@/components/store/catalog'
 import { ConnectCard } from '@/components/chat/ui/connect-card'
 import { TakeoverCard } from '@/components/chat/ui/takeover-card'
@@ -224,6 +226,77 @@ function OneCtaBench({ theme }: { theme: 'light' | 'dark' }) {
   )
 }
 
+// A seed manifest for the "Register connector" review card — the shape a bot
+// authors + hands to the owner (secret-free: `${VAR}` placeholder + schema only).
+const SEED_MANIFEST = JSON.stringify(
+  {
+    id: 'linear',
+    kind: 'agent_authored',
+    display_name: 'Linear',
+    icon: '',
+    description: 'Create and list Linear issues from your bots.',
+    tools: [
+      { name: 'create_issue', description: 'Create an issue' },
+      { name: 'list_issues', description: 'List issues' },
+    ],
+    credentials: [
+      { key: 'LINEAR_API_KEY', title: 'API key', type: 'string', sensitive: true, required: true },
+    ],
+    auth: { kind: 'api_key', help_url: 'https://linear.app/settings/api' },
+    emit: { command: 'node', args: ['/opt/linear-mcp/server.js'], env: { LINEAR_API_KEY: '${LINEAR_API_KEY}' } },
+  },
+  null,
+  2,
+)
+
+// The two new "Create your own connector" sheets, mounted so the offline rig can
+// screenshot them. They open on the trigger tap (or the URL hash), mirroring the
+// RegistrationPreview pattern — the sheets body-portal, so a closed default keeps
+// the slab screenshots clean.
+function CreateConnectorBench() {
+  const [createOpen, setCreateOpen] = React.useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#create',
+  )
+  const [registerOpen, setRegisterOpen] = React.useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#register',
+  )
+  return (
+    <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-3 px-4 py-8">
+      <h2 className="text-sm font-medium text-foreground">Create your own connector</h2>
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          data-vr="open-create-your-own"
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-[14px] font-semibold text-foreground hover:bg-muted"
+        >
+          Preview: Create-your-own sheet
+        </button>
+        <button
+          type="button"
+          onClick={() => setRegisterOpen(true)}
+          data-vr="open-register-connector"
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-[14px] font-semibold text-foreground hover:bg-muted"
+        >
+          Preview: Register-connector sheet
+        </button>
+      </div>
+      <CreateYourOwnSheet
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        initialQuery="Linear"
+        cards={BENCH_CARDS}
+        botsOverride={MOCK_BOTS}
+        onRegister={() => {
+          setCreateOpen(false)
+          setRegisterOpen(true)
+        }}
+      />
+      <RegisterConnectorSheet open={registerOpen} onOpenChange={setRegisterOpen} initialManifest={SEED_MANIFEST} />
+    </div>
+  )
+}
+
 export default function DevStore() {
   return (
     <QueryClientProvider client={BENCH_QC}>
@@ -236,6 +309,7 @@ export default function DevStore() {
             <Slab theme="dark" grok />
             <OneCtaBench theme="light" />
             <OneCtaBench theme="dark" />
+            <CreateConnectorBench />
             <RegistrationPreview />
           </div>
         </ToastProvider>

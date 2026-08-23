@@ -102,7 +102,10 @@ pub fn render(name: &str, company: Option<&str>, peers: &[String]) -> String {
     );
     s.push_str("- Schedule a follow-up/recurring check for yourself: /supermux-schedule.\n");
     s.push_str("- Report progress on your board issue: /supermux-task.\n");
-    s.push_str("- Reach an external service: call list_connectors, then connect(<id>).\n");
+    s.push_str(
+        "- Reach an external service: call list_connectors, then connect(<id>); \
+         build a NEW connector into the store with /supermux-connector.\n",
+    );
     s.push_str("- Ping the human when you need them or finish while away: /supermux-notify.\n");
     if company.is_some() && !peers.is_empty() {
         s.push_str(&format!(
@@ -132,6 +135,7 @@ mod tests {
         assert!(out.contains("/supermux-schedule"));
         assert!(out.contains("/supermux-task"));
         assert!(out.contains("list_connectors"));
+        assert!(out.contains("/supermux-connector"));
         assert!(out.contains("/supermux-notify"));
         // The peer roster + the message affordance (there ARE addressees).
         assert!(out.contains("Same-company teammates: billing-bot, support-bot."));

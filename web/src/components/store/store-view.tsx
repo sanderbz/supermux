@@ -8,7 +8,7 @@
 // both themes; `[data-grok]` layers the frosted-glass treatment via `store.css`
 // (scoped, so removing the attribute is a byte-exact revert).
 import * as React from 'react'
-import { Search, X } from 'lucide-react'
+import { Plus, Search, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import {
@@ -29,6 +29,8 @@ import { brandMark } from './brand-marks'
 import { ConnectorCard, OfficialBadge, StateChip, chipFor } from './connector-card'
 import { ConnectorDetail } from './connector-detail'
 import { ConnectorIcon } from './connector-icon'
+import { CreateYourOwnSheet } from './create-your-own-sheet'
+import { RegisterConnectorSheet } from './register-connector-sheet'
 import type { GrantScope } from './grant-control'
 // The Installed tab's body — one row per connected account, plus the per-account
 // detail (grants + consumers + reconnect/replace/disconnect/uninstall). Imported
@@ -82,6 +84,26 @@ export function StoreView({
   const [q, setQ] = React.useState('')
   const [cat, setCat] = React.useState('all')
   const [openId, setOpenId] = React.useState<string | null>(initialOpenId ?? null)
+  // "Create your own connector" — the permanent grid tile + the zero-results CTA
+  // both open ONE sheet; `createQuery` pre-fills it (Entry B pre-types the search).
+  const [createOpen, setCreateOpen] = React.useState(false)
+  const [createQuery, setCreateQuery] = React.useState('')
+  // The owner's review + admin-install surface for a manifest a bot authored.
+  const [registerOpen, setRegisterOpen] = React.useState(false)
+  // Nonces bumped on each open so the sheet REMOUNTS fresh (state re-seeded from
+  // props) — the lint-clean alternative to a reset-on-open effect.
+  const [createNonce, setCreateNonce] = React.useState(0)
+  const [registerNonce, setRegisterNonce] = React.useState(0)
+  const openCreate = React.useCallback((query: string) => {
+    setCreateQuery(query)
+    setCreateNonce((n) => n + 1)
+    setCreateOpen(true)
+  }, [])
+  const openRegister = React.useCallback(() => {
+    setCreateOpen(false)
+    setRegisterNonce((n) => n + 1)
+    setRegisterOpen(true)
+  }, [])
   // Browse | Installed — a tab on the SAME `/store` route (DRY, one nav slot).
   // Only offered on the page variant (the library `/store`); the bot-scoped sheet
   // is already a working "installed for this bot" list and keeps its single view.
@@ -256,9 +278,25 @@ export function StoreView({
             isRow={isRow}
             q={q}
             setOpenId={setOpenId}
+            onCreate={openCreate}
           />
         )}
       </div>
+
+      {/* Create your own connector — the sheet both entry points (grid tile +
+          zero-results CTA) open. `cards` feeds the catalog digest; `mockBots`
+          seeds the bot picker offline. */}
+      <CreateYourOwnSheet
+        key={createNonce}
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        initialQuery={createQuery}
+        cards={cards}
+        botsOverride={mockBots}
+        onRegister={openRegister}
+      />
+      {/* Register a connector a bot authored — owner-driven admin install. */}
+      <RegisterConnectorSheet key={registerNonce} open={registerOpen} onOpenChange={setRegisterOpen} />
 
       {/* detail sheet (Browse) */}
       {openCard && (
@@ -302,6 +340,7 @@ function BrowseBody({
   isRow,
   q,
   setOpenId,
+  onCreate,
 }: {
   railVisible: boolean
   featured: Card[]
@@ -313,6 +352,7 @@ function BrowseBody({
   isRow: boolean
   q: string
   setOpenId: (id: string) => void
+  onCreate: (query: string) => void
 }) {
   return (
     <>
@@ -341,7 +381,7 @@ function BrowseBody({
         {live.isLoading && !mock ? (
           <GridSkeleton />
         ) : filtered.length === 0 ? (
-          <EmptyState q={q} />
+          <EmptyState q={q} onCreate={onCreate} />
         ) : (
           <div
             className={cn(
@@ -361,6 +401,11 @@ function BrowseBody({
                 onOpen={() => setOpenId(c.id)}
               />
             ))}
+            {/* Permanent dashed "Create your own connector" tile — the LAST cell of
+                the browse grid (Entry A). Matches the connector-card footprint so
+                the grid rhythm is unbroken. Grid layout only (the bot-scoped row
+                sheet is a working connect list, not a catalog to extend). */}
+            {!isRow && <CreateYourOwnTile onClick={() => onCreate('')} />}
           </div>
         )}
     </>
@@ -556,19 +601,57 @@ function GridSkeleton() {
   )
 }
 
-function EmptyState({ q }: { q: string }) {
+function EmptyState({ q, onCreate }: { q: string; onCreate: (query: string) => void }) {
   // The grid is the FULL catalog in every scope (a company is the install target,
   // not a filter), so this only fires when the catalog itself is empty or a search
   // matched nothing — never for a fresh company that simply has no grants yet.
+  //
+  // The search-miss is the killer moment (Entry B): you looked for "Linear", we
+  // don't have it, so we offer to BUILD it — pre-typed with the query.
   return (
     <div className="grid place-items-center rounded-2xl border border-dashed border-border py-16 text-center">
       <p className="text-[14px] font-medium text-foreground">
         {q ? `No connectors match "${q}"` : 'No connectors yet'}
       </p>
       <p className="mt-1 text-[13px] text-muted-foreground">
-        {q ? 'Try a different search or category.' : 'Import a .mcpb bundle or wait for the catalog to warm up.'}
+        {q ? 'Nothing here yet — a bot can build it into your store.' : 'Import a .mcpb bundle, or have a bot build one.'}
       </p>
+      <button
+        type="button"
+        onClick={() => onCreate(q)}
+        data-vr="store-zero-results-create"
+        className="cs-chip-primary mt-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[13px] font-semibold text-primary-foreground shadow-sm transition-transform duration-100 active:scale-95"
+      >
+        <Plus className="size-3.5" aria-hidden />
+        {q ? `Create a "${q}" connector` : 'Create your own connector'}
+        <span aria-hidden>→</span>
+      </button>
     </div>
+  )
+}
+
+// The permanent dashed "Create your own connector" tile — the browse grid's last
+// cell (Entry A). Same footprint + radius as the grid ConnectorCard so the grid
+// rhythm is unbroken; dashed border + a Plus glyph mark it as the additive action.
+// Grok tokens throughout (it reads as a first-class store action, never a "dev
+// tool" escape hatch).
+function CreateYourOwnTile({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-vr="create-your-own-tile"
+      aria-label="Create your own connector"
+      className="cs-card group flex min-h-[168px] flex-col items-center justify-center gap-2 rounded-[20px] border border-dashed border-border bg-card/40 p-4 text-center transition-[transform,background-color,border-color] duration-150 hover:-translate-y-0.5 hover:border-primary/60 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:translate-y-0"
+    >
+      <span className="grid size-11 place-items-center rounded-full bg-primary/10 text-primary transition-colors group-hover:bg-primary/15">
+        <Plus className="size-5" aria-hidden />
+      </span>
+      <span className="text-[14px] font-semibold text-foreground">Create your own connector</span>
+      <span className="max-w-[80%] text-[12px] leading-snug text-muted-foreground">
+        Tell a bot what to connect — it builds it into your store.
+      </span>
+    </button>
   )
 }
 

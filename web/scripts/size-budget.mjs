@@ -1072,7 +1072,21 @@ const BUDGET_ENTRY_JS = 161 * KB
 // A genuine additive feature (the desktop pane now has the terminal in place), not a
 // regression to trim, and the guarded hero gate improved: ceil(measured)=342, the
 // same rule every fase since B3 used.
-const BUDGET_APP_JS = 342 * KB
+//
+// 342 → 345 at "CREATE YOUR OWN CONNECTOR" (feat/companies-grok): the store gains a
+// first-class "build a connector" flow — a permanent dashed grid tile + a
+// zero-results CTA both open the `CreateYourOwnSheet` (request + notes + a
+// company-scoped bot picker with a "＋ Launch a new bot" row), which composes a
+// `<supermux-connector-task>` message (request + a client-built catalog digest + a
+// pointer to the new `/supermux-connector` guide) and hands it to the chosen bot via
+// `POST /api/sessions/{name}/send`; plus a `RegisterConnectorSheet` for the owner's
+// one-tap admin install (`POST /api/connectors`) + `@company` grant. Measured 344.68
+// against 342.00 — +3.29 KB, and EVERY byte lands in the LAZY `store-view` chunk (the
+// `/store` route + the bot sheet both `React.lazy` it) plus the tiny pure
+// `connector-task` helper: the ENTRY/hero gate is UNCHANGED at 154.25 / 161 KB (the
+// feature's hero-path cost is ZERO). A genuine additive store surface, not a
+// regression to trim; ceil(measured)=345, the same rule every fase since B3 used.
+const BUDGET_APP_JS = 345 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating
