@@ -28,6 +28,7 @@ import {
   restoredScrollTop,
   seamOpen,
   shouldLoadOlder,
+  shouldRescueEmptySeed,
   followsFooterGrowth,
   FOLLOW_THRESHOLD_PX,
   JUMP_AWAY_PX,
@@ -304,6 +305,45 @@ describe('when the top of the track asks for more', () => {
     expect(shouldLoadOlder({ scrollTop: NEAR_TOP_PX + 1, hasOlder: true, loading: false })).toBe(
       false,
     )
+  })
+})
+
+describe('the empty-seed rescue (never blank a real transcript)', () => {
+  // A seed can land empty even though a transcript exists on disk: after a
+  // server restart the ring is cold and its re-seed degenerates on an
+  // over-budget final line, or the window is all non-renderable rows. Such a
+  // seed carries no cursor, so the ordinary scroll-back can never self-heal —
+  // the client must fetch `/chat/history` (newest page) before drawing
+  // "No conversation yet." over a working conversation.
+  const base = {
+    seeded: true,
+    fresh: false,
+    renderedCount: 0,
+    alreadyLoaded: false,
+    exhausted: false,
+  }
+
+  test('seeded, empty, and a transcript exists → fetch instead of blanking', () => {
+    expect(shouldRescueEmptySeed(base)).toBe(true)
+  })
+
+  test('never before the seed is in — an empty pre-seed view is just "loading"', () => {
+    expect(shouldRescueEmptySeed({ ...base, seeded: false })).toBe(false)
+  })
+
+  test('never for a genuinely fresh session (the server says no transcript)', () => {
+    // `fresh` is `ChatWireView.fresh` — seeded + empty + the server’s own
+    // NO_TRANSCRIPT_REASON. A fetch cannot conjure a transcript that isn’t there.
+    expect(shouldRescueEmptySeed({ ...base, fresh: true })).toBe(false)
+  })
+
+  test('never when the window already rendered something', () => {
+    expect(shouldRescueEmptySeed({ ...base, renderedCount: 3 })).toBe(false)
+  })
+
+  test('only once — not after a rescue already loaded a page or exhausted the tail', () => {
+    expect(shouldRescueEmptySeed({ ...base, alreadyLoaded: true })).toBe(false)
+    expect(shouldRescueEmptySeed({ ...base, exhausted: true })).toBe(false)
   })
 })
 

@@ -261,6 +261,39 @@ export function shouldLoadOlder(s: {
   return s.hasOlder && !s.loading && s.scrollTop < NEAR_TOP_PX
 }
 
+/**
+ * Should the client rescue an EMPTY seed with a direct history fetch, before
+ * the surface can render "No conversation yet."?
+ *
+ * A seed can arrive empty even though a transcript exists on disk: after a
+ * server restart the in-memory ring is cold and its re-seed can degenerate (a
+ * final physical line larger than the seed budget snaps the tail cursor to
+ * EOF), or the whole seed window can be non-renderable (all subagent/meta rows).
+ * Such a seed also carries NO cursor, so the ordinary scroll-back never reaches
+ * the working `/chat/history` route to self-heal. So when the seed is in, the
+ * RENDERED list is empty, and this is NOT a genuinely fresh session
+ * (`fresh` = the server's own "no transcript for this conversation"), fetch the
+ * newest history page instead of blanking.
+ *
+ * `alreadyLoaded`/`exhausted` keep it to one attempt: a rescue that returned
+ * entries is not empty any more, and one that found nothing marks `exhausted`.
+ */
+export function shouldRescueEmptySeed(s: {
+  seeded: boolean
+  fresh: boolean
+  renderedCount: number
+  alreadyLoaded: boolean
+  exhausted: boolean
+}): boolean {
+  return (
+    s.seeded &&
+    !s.fresh &&
+    s.renderedCount === 0 &&
+    !s.alreadyLoaded &&
+    !s.exhausted
+  )
+}
+
 /** Is the newest message far enough off screen to offer a way back to it? */
 export function jumpVisible(distanceFromBottom: number): boolean {
   return distanceFromBottom > JUMP_AWAY_PX

@@ -131,11 +131,18 @@ async fn eligible_row(state: &AppState, name: &str) -> Result<db::sessions::Sess
     Ok(row)
 }
 
-/// The session's transcript file, per the DB conversation pointer. A session
-/// with no pointer yet resolves to a path that cannot exist, which every reader
-/// below treats as "empty", never as an error.
+/// The session's transcript file for an explicit `dir` + conversation id. A
+/// session with no pointer yet resolves to a path that cannot exist, which every
+/// reader below treats as "empty", never as an error. Split out from
+/// [`transcript_path`] because the seed path follows the CURRENT conversation
+/// (which can move under an open socket) rather than the row snapshot.
+fn transcript_path_of(dir: &str, conv: &str) -> PathBuf {
+    resumable::project_dir_for(dir).join(format!("{conv}.jsonl"))
+}
+
+/// The session's transcript file, per the DB conversation pointer.
 fn transcript_path(row: &db::sessions::Session) -> PathBuf {
-    resumable::project_dir_for(&row.dir).join(format!("{}.jsonl", row.cc_conversation_id))
+    transcript_path_of(&row.dir, &row.cc_conversation_id)
 }
 
 // ── the history cursor ──────────────────────────────────────────────────────
@@ -300,6 +307,38 @@ pub(crate) fn seed_page(ring: Vec<WireEntry>, oldest_main_offset: Option<u64>, c
         next_before: has_more.then(|| HistoryCursor::format(conv, oldest_main)),
         has_more,
         entries,
+    }
+}
+
+/// The seed page for an attached ring, falling back to a windowed disk read of
+/// the transcript tail when the ring produced NOTHING.
+///
+/// A server restart clears the in-memory ring, and the tailer's cold seed can
+/// then degenerate to an empty ring (an over-budget final line snapping the
+/// cursor to EOF — see [`super::tailer`]), or the whole seed window can be
+/// non-renderable. A ring-only seed would show a session that HAS a transcript
+/// as "No conversation yet." for the life of the socket — and, carrying no
+/// cursor, the client never reaches the history route to self-rescue. So when
+/// the ring seed is empty, fall back to the SAME windowed read the history route
+/// serves ([`history_page`], DRY — the windowed-read logic is not duplicated):
+/// it restores `entries` + `has_more` + `next_before`, so the client renders the
+/// tail AND can page `/chat/history`. Defence in depth: this hides an empty ring
+/// from ANY cause, not only the `seed_offset` degeneration.
+pub(crate) fn seed_page_or_disk(
+    ring: Vec<WireEntry>,
+    oldest_main_offset: Option<u64>,
+    path: &FsPath,
+    conv: &str,
+) -> Page {
+    let page = seed_page(ring, oldest_main_offset, conv);
+    if !page.entries.is_empty() {
+        return page;
+    }
+    let disk = history_page(path, conv, u64::MAX, HISTORY_DEFAULT_LIMIT);
+    if disk.entries.is_empty() {
+        page
+    } else {
+        disk
     }
 }
 
@@ -652,6 +691,7 @@ fn status_frame(kind: &str, status: TailStatus, extra: &[(&str, Value)]) -> Valu
 async fn push_seed(
     socket: &mut WebSocket,
     store: &ChatStore,
+    dir: &str,
     conv: &str,
     status: TailStatus,
     resync_reason: Option<&str>,
@@ -666,7 +706,18 @@ async fn push_seed(
     let att = store.attach();
     let high_water = att.high_water;
     let rx = att.rx;
-    let page = seed_page(att.ring, att.oldest_main_offset, conv);
+    // The seed compose runs on the blocking pool: it is the same disk-backed
+    // read the history route already spawn_blocking's, and even the ring-only
+    // path serializes every ring entry to measure the byte budget.
+    let path = transcript_path_of(dir, conv);
+    let conv_owned = conv.to_string();
+    let ring = att.ring;
+    let oldest = att.oldest_main_offset;
+    let page = tokio::task::spawn_blocking(move || {
+        seed_page_or_disk(ring, oldest, &path, &conv_owned)
+    })
+    .await
+    .unwrap_or_else(|_| Page::empty());
     let mut frame = page.json();
     if let Some(obj) = frame.as_object_mut() {
         obj.insert("type".to_string(), json!("seed"));
@@ -829,7 +880,7 @@ async fn chat_socket(
         return;
     }
     let Some((mut high_water, mut rx)) =
-        push_seed(&mut socket, &store, &conv, status, None).await
+        push_seed(&mut socket, &store, &row.dir, &conv, status, None).await
     else {
         return;
     };
@@ -862,7 +913,7 @@ async fn chat_socket(
                     Forward::Skip => {}
                     Forward::Resync => {
                         refresh_conv(&state, &name, &mut conv).await;
-                        match push_seed(&mut socket, &store, &conv, lease.status(), Some("lagged")).await {
+                        match push_seed(&mut socket, &store, &row.dir, &conv, lease.status(), Some("lagged")).await {
                             Some((hw, fresh)) => { high_water = hw; rx = fresh; }
                             None => break,
                         }
@@ -889,7 +940,7 @@ async fn chat_socket(
                             // NEW id or the history route will 409 it.
                             epoch = status.resync_epoch;
                             refresh_conv(&state, &name, &mut conv).await;
-                            match push_seed(&mut socket, &store, &conv, status, Some("conversation changed")).await {
+                            match push_seed(&mut socket, &store, &row.dir, &conv, status, Some("conversation changed")).await {
                                 Some((hw, fresh)) => { high_water = hw; rx = fresh; }
                                 None => break,
                             }
@@ -1288,6 +1339,60 @@ mod tests {
             ["u0", "u1"],
             "sidechain lines are the subagent files' content, not the main thread's"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the seed's disk fallback: an empty ring never blanks a real transcript ─
+
+    #[test]
+    fn an_empty_ring_seeds_the_tail_from_disk_when_a_transcript_exists() {
+        // The exact restart-cleared / degenerate-cold-seed state: the ring is
+        // empty but a transcript is on disk. A ring-only seed would show
+        // "No conversation yet." for the socket's whole life, with no cursor for
+        // the client to page /chat/history. The fallback must reuse `history_page`
+        // to restore entries + has_more + next_before.
+        let dir = tmp_dir("seeddiskfallback");
+        let path = dir.join("conv-a.jsonl");
+        // More than HISTORY_DEFAULT_LIMIT lines, so the newest page leaves older
+        // ones below it (has_more) and hands out a cursor (next_before).
+        let lines: Vec<String> =
+            (0..300).map(|i| user_line(&format!("u{i}"), "a modest line")).collect();
+        write_lines(&path, &lines);
+
+        let page = seed_page_or_disk(Vec::new(), None, &path, "conv-a");
+        assert!(!page.entries.is_empty(), "an existing transcript must never seed blank");
+        assert!(page.has_more, "older entries remain below the tail page");
+        assert!(page.next_before.is_some(), "…and the client is handed a paging cursor");
+        assert_eq!(page.entries.last().unwrap().uuid(), "u299", "the tail ends at EOF");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_disk_fallback_only_fires_for_an_empty_ring() {
+        // A populated ring is served verbatim; the disk is not even consulted.
+        let dir = tmp_dir("seedringwins");
+        let path = dir.join("conv-a.jsonl");
+        write_lines(&path, &[user_line("d0", "on disk")]);
+        let ring = vec![wire(1, "r0", 0, "from the ring")];
+        let page = seed_page_or_disk(ring, Some(0), &path, "conv-a");
+        assert_eq!(
+            page.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            ["r0"],
+            "a non-empty ring is authoritative — no disk read"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_ring_and_no_transcript_stays_empty() {
+        // No file on disk (a session never spoken to): the fallback finds nothing
+        // and the seed is a well-formed empty page — never an error.
+        let dir = tmp_dir("seednodisk");
+        let path = dir.join("conv-a.jsonl"); // deliberately never created
+        let page = seed_page_or_disk(Vec::new(), None, &path, "conv-a");
+        assert!(page.entries.is_empty());
+        assert!(!page.has_more);
+        assert!(page.next_before.is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

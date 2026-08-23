@@ -414,13 +414,51 @@ fn seed_offset(path: &Path, budget: u64) -> u64 {
     let read = std::io::BufReader::new(f)
         .take(crate::sessions::chat::model::MAX_LINE_BYTES as u64 + 1)
         .read_until(b'\n', &mut buf);
-    match read {
+    let snapped = match read {
         Ok(n) if buf.last() == Some(&b'\n') => back + n as u64,
         // No line terminator within the parser's own line ceiling: the tail is
         // one pathological line. Start at EOF rather than mid-line — and never
         // fall back to byte 0, which is the unbounded read this bound exists
         // to prevent.
         _ => len,
+    };
+    if snapped < len {
+        return snapped;
+    }
+    // The forward snap consumed the WHOLE budget window: the tail from `back`
+    // is a single physical line >= `budget`, so snapping past its terminator
+    // lands at EOF and `drain` would read nothing — the ring stays empty for an
+    // idle session (the "No conversation yet." bug). Rewind to that final
+    // line's OWN start and read it whole instead: it seals to one (possibly
+    // oversize/truncated) but VISIBLE entry, mirroring the seed pager's "ship
+    // the whole over-budget line rather than an empty page" rule
+    // (`ws::line_aligned_start`). Bounded like the parser's line ceiling so a
+    // pathological single-line file never triggers an unbounded backward read;
+    // the WS seed's disk fallback is the backstop when even this cannot find a
+    // boundary.
+    last_line_start(path, back).unwrap_or(snapped)
+}
+
+/// Start of the physical line that byte `anchor` falls in: one past the last
+/// `\n` at or before `anchor - 1`, found by a BOUNDED backward scan. `None`
+/// when no line boundary lies within [`MAX_LINE_BYTES`](super::model::MAX_LINE_BYTES)
+/// below `anchor` and the scan did not reach byte 0 — i.e. the line is too large
+/// to seed cheaply, in which case [`seed_offset`] keeps its EOF offset and the
+/// WS seed's disk fallback (`ws::seed_page`) takes over.
+fn last_line_start(path: &Path, anchor: u64) -> Option<u64> {
+    if anchor == 0 {
+        return Some(0);
+    }
+    let bound = crate::sessions::chat::model::MAX_LINE_BYTES as u64;
+    let from = anchor.saturating_sub(bound);
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![0u8; (anchor - from) as usize];
+    f.read_exact(&mut buf).ok()?;
+    match buf.iter().rposition(|&b| b == b'\n') {
+        Some(i) => Some(from + i as u64 + 1),
+        None if from == 0 => Some(0),
+        None => None,
     }
 }
 
@@ -1695,6 +1733,39 @@ mod tests {
         // …and tailing continues normally from there.
         append(&f, &[user_line("u8000")]);
         assert_eq!(uuids(&t.poll().entries), ["u8000"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn seed_offset_ships_an_over_budget_final_line_instead_of_emptying_the_ring() {
+        // The "No conversation yet." bug at its source: after a restart the ring
+        // is cold, and the cold seed's `back` (budget bytes before EOF) lands
+        // INSIDE a final physical line that alone exceeds the budget — a routine
+        // giant tool result. The forward snap then jumps past that line's own
+        // terminator to EOF, and an idle session drains nothing forever. The
+        // fallback must rewind to the final line's START so it seeds as one
+        // visible entry.
+        let dir = tmp_project("giantfinal");
+        let f = dir.join("conv-a.jsonl");
+        // Final body well over COLD_SEED_BYTES but under MAX_LINE_BYTES, so it
+        // parses as one (truncated-but-visible) entry, not an oversize placeholder.
+        let pad = "z".repeat(COLD_SEED_BYTES as usize + 200 * 1024);
+        append(&f, &[user_line("u0"), padded_user_line("uBIG", &pad)]);
+        let len = std::fs::metadata(&f).unwrap().len();
+        assert!(len > COLD_SEED_BYTES, "the fixture's final line must exceed the budget");
+
+        let off = seed_offset(&f, COLD_SEED_BYTES);
+        assert!(off < len, "must NOT snap to EOF on an over-budget final line (was {off}, len {len})");
+        // It is a real line boundary: the byte before it is the previous line's
+        // terminator (or it is byte 0).
+        let raw = std::fs::read(&f).unwrap();
+        assert!(off == 0 || raw[off as usize - 1] == b'\n', "the fallback offset must be a line start");
+
+        // Draining from that offset yields the giant final line as a visible entry.
+        let (mut cursor, _spent) = FileCursor::seeded(f.clone(), COLD_SEED_BYTES);
+        let (entries, _restarted) = cursor.drain();
+        assert!(!entries.is_empty(), "the over-budget final line must seed a visible entry");
+        assert_eq!(entries.last().unwrap().uuid, "uBIG", "…and it is that final line");
         let _ = std::fs::remove_dir_all(dir);
     }
 

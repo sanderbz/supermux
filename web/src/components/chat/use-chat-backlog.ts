@@ -36,6 +36,7 @@ import {
   mergeOlder,
   oldestCursor,
   seamOpen,
+  shouldRescueEmptySeed,
   BRIDGE_MAX_PAGES,
   OLDER_PAGE_LIMIT,
 } from './backlog'
@@ -75,10 +76,13 @@ interface HistoryPage {
 
 async function fetchHistory(
   name: string,
-  before: string,
+  before: string | undefined,
   limit: number,
 ): Promise<HistoryPage> {
-  const qs = new URLSearchParams({ before, limit: String(limit) })
+  // No `before` ⇒ the route maps `before=None` to the NEWEST tail page. That is
+  // the empty-seed rescue's request; every scroll-back call passes a cursor.
+  const qs = new URLSearchParams({ limit: String(limit) })
+  if (before) qs.set('before', before)
   return sessionRequest<HistoryPage>(
     `/api/sessions/${encodeURIComponent(name)}/chat/history?${qs.toString()}`,
   )
@@ -115,6 +119,11 @@ interface Backlog {
   error: boolean
   /** A page has come back with `has_more: false` — the transcript is fully in. */
   exhausted: boolean
+  /** The `next_before` an empty-seed RESCUE recovered, when the seed itself
+   *  carried none. It re-supplies the conversation id (and the "there is more
+   *  below" signal) the empty seed could not, so scroll-back keeps working after
+   *  a rescue. `null` when no rescue was needed or the rescue reached the start. */
+  rescueBefore: string | null
   pages: number
 }
 
@@ -129,6 +138,7 @@ const emptyFor = (name: string, epoch: number): Backlog => ({
   loading: false,
   error: false,
   exhausted: false,
+  rescueBefore: null,
   pages: 0,
 })
 
@@ -165,12 +175,18 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // true, and when `has_more` is false there is no backlog to address. It
   // survives every live frame (only a seed rewrites it), so it is still there
   // for the fifth page and for the seam repair.
-  const conversation = cursorConversation(tail.nextBefore)
+  //
+  // …or, when the seed was EMPTY (no cursor at all), from the cursor a rescue
+  // recovered — so scroll-back keeps working through history the seed itself
+  // could not address.
+  const conversation = cursorConversation(tail.nextBefore ?? state.rescueBefore)
 
   // `has_more` on the seed answers "is there anything below this window"; once a
   // page comes back with `has_more: false` the conversation is fully loaded, and
-  // the seed's own (still true) flag must not undo that.
-  const hasOlder = tail.hasMore && !state.exhausted
+  // the seed's own (still true) flag must not undo that. A rescue that recovered
+  // a cursor (`next_before` non-null ⇔ the server's `has_more`) is the same
+  // "there is more below" signal for a seed that carried none.
+  const hasOlder = (tail.hasMore || state.rescueBefore !== null) && !state.exhausted
 
   // Read from the list as it is NOW, every render — never a remembered cursor
   // (`backlog.ts`: paging from the oldest entry on screen is what makes a hole
@@ -245,6 +261,77 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
         inFlight.current = false
       })
   }, [before, epoch, hasOlder, name, windowAnchor])
+
+  // ── the empty-seed rescue (defence in depth) ────────────────────────────────
+  // A seed can land with NOTHING even though a transcript exists on disk: after
+  // a server restart the in-memory ring is cold, and its re-seed can degenerate
+  // (a final physical line larger than the seed budget snaps the cursor to EOF),
+  // or the whole seed window can be non-renderable (all subagent/meta rows). The
+  // server now falls back to a disk read on its own, but the client must not sit
+  // on "No conversation yet." over a REAL transcript if a seed still arrives
+  // empty — it holds the working history route and an empty seed carries no
+  // cursor for the normal scroll-back to reach it. So: once the seed is in, the
+  // RENDERED list is empty, and this is not a genuinely fresh session (the
+  // server told us a transcript exists), fetch the newest history page (no
+  // `before` → the route's newest tail page) and hang it under the window.
+  const rescueKey = `${name}:${epoch}`
+  const rescuing = React.useRef(false)
+  const rescuedKey = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (rescuing.current || inFlight.current) return
+    // One attempt per seed generation: it retries on the next re-seed, never in
+    // a loop against a genuinely empty tail.
+    if (rescuedKey.current === rescueKey) return
+    // `tail.fresh` is the server's own "no transcript for this conversation" —
+    // the one empty state that is NOT a bug and a fetch cannot fix.
+    if (
+      !shouldRescueEmptySeed({
+        seeded: tail.seeded,
+        fresh: tail.fresh,
+        renderedCount: entries.length,
+        alreadyLoaded: state.older.length > 0,
+        exhausted: state.exhausted,
+      })
+    )
+      return
+    rescuing.current = true
+    rescuedKey.current = rescueKey
+    fetchHistory(name, undefined, OLDER_PAGE_LIMIT)
+      .then((page) => {
+        const got = (page.entries ?? []).slice().reverse()
+        setStored((prev) => {
+          if (prev.name !== name || prev.epoch !== epoch) return prev
+          if (got.length === 0) {
+            // The route agrees there is nothing to show — stop, do not loop.
+            return { ...prev, exhausted: true }
+          }
+          return {
+            ...prev,
+            older: got,
+            // `next_before` is non-null exactly when the server says `has_more`,
+            // so it doubles as the "there is a backlog below" flag `hasOlder`
+            // reads for a seed that carried neither.
+            rescueBefore: page.has_more === true ? page.next_before ?? null : null,
+            exhausted: page.has_more !== true,
+          }
+        })
+      })
+      // Retryable on the next seed generation; never poison the empty state with
+      // a hard error the reader cannot act on.
+      .catch(() => {})
+      .finally(() => {
+        rescuing.current = false
+      })
+  }, [
+    entries.length,
+    epoch,
+    name,
+    rescueKey,
+    state.exhausted,
+    state.older.length,
+    tail.fresh,
+    tail.seeded,
+  ])
 
   // ── the seam repair ────────────────────────────────────────────────────────
   // The window's oldest edge moves on a RE-SEED. Live `entry` frames only ever
