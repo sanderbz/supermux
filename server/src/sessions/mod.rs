@@ -405,6 +405,17 @@ pub struct SessionView {
     /// asking, so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_takeover: Option<takeover_ask::TakeoverAsk>,
+    /// **The live question ask**, from the `AskUserQuestion` `PreToolUse` hook: the
+    /// agent asked a multiple-choice question and is blocked on a human. Carries
+    /// the question, its option LABELS (in dialog order) and `multiSelect`, built
+    /// from the STRUCTURED payload so chat can draw the real choices as clickable
+    /// buttons rather than the generic tool-permission prompt. In-memory only;
+    /// cleared by the same events as [`permission_request`](Self::permission_request).
+    /// The generic permission dialog for AskUserQuestion is suppressed while this
+    /// is live. Omitted when nothing is asking, so a resting session's wire shape
+    /// is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question_request: Option<activity::QuestionAsk>,
     /// The Notification `message` for the needs-you family (permission_prompt /
     /// idle_prompt / agent_needs_input) while the session sits Waiting. In-memory,
     /// display-only; rendered read-only in the attention region on Waiting.
@@ -653,6 +664,7 @@ fn view(
         elicitation: act.as_ref().and_then(|a| a.elicitation.clone()),
         connect_request: act.as_ref().and_then(|a| a.connect_request.clone()),
         browser_takeover: act.as_ref().and_then(|a| a.browser_takeover.clone()),
+        question_request: act.as_ref().and_then(|a| a.question_request.clone()),
         waiting_message: act.as_ref().and_then(|a| a.waiting_message.clone()),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,

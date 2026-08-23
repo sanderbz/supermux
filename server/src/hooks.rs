@@ -463,10 +463,25 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // inventing content — and it is the ONLY push for this tool call,
             // because the `PermissionRequest` Claude raises ~20 ms later
             // deliberately does not push (see that arm).
-            if payload.tool_name.as_deref() == Some("AskUserQuestion") {
+            //
+            // AND raise the ANSWERABLE question card via `session.question_request`
+            // (T1.5 follow-up): the STRUCTURED payload carries the question's
+            // options, so chat can draw the real choices as clickable buttons
+            // instead of the generic tool-permission prompt. Structured rather than
+            // pty-scraped so it is robust across Claude Code versions (the scrape
+            // does not reliably sight this dialog on the current CC). The generic
+            // `permission_request` for AskUserQuestion is deliberately suppressed in
+            // the `PermissionRequest` arm below so the two cards do not fight.
+            let question = if payload.tool_name.as_deref() == Some("AskUserQuestion") {
                 let q = activity::first_question(payload).unwrap_or_default();
                 notify::notify_event(state, session, NotifEvent::Question(q));
-            }
+                match activity::question_ask(payload) {
+                    Some(ask) => state.set_question_request(session, ask),
+                    None => false,
+                }
+            } else {
+                false
+            };
             // The store's `connect(service)` affordance (spec §8): its descriptor
             // carries `requiresUserInteraction`, so Claude routes it to the human
             // prompt and the turn stops. Recognise it here and raise the inline
@@ -496,7 +511,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // no allocation) when no subagent is outstanding — a plain turn is
             // unaffected.
             state.touch_subagent_tool_hook(session);
-            connect || takeover || label
+            connect || takeover || question || label
         }
         // A tool FAILED → transient `✗ {tool} failed`. Claude DOES have a
         // dedicated `PostToolUseFailure` event (live-verified on 2.1.227 +
@@ -508,7 +523,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -519,7 +534,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             // …and any pending ELICITATION: the form is raised mid-tool-call, so
             // the tool having finished proves the form is gone even if the
             // `ElicitationResult` leg never arrived.
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -536,6 +551,14 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // nothing to show → no-op.
         "permission_request" | "PermissionRequest" => {
             match activity::permission_ask(payload) {
+                // The AskUserQuestion permission dialog is SUPPRESSED as chat's
+                // permission card: the pre-tool arm already raised the answerable
+                // `question_request` (the question + its real options), and the
+                // generic ``Run `AskUserQuestion`?`` card would fight it for the one
+                // card slot. The push was already suppressed for this tool
+                // (`permission_raises_push`), so nothing else is lost by not
+                // recording the permission state at all.
+                Some(ask) if ask.tool.trim() == "AskUserQuestion" => false,
                 Some(ask) => {
                     // Whether this dialog is one the pre-tool arm already
                     // announced with the agent's own words. Decided BEFORE the
@@ -605,7 +628,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         // so a lost `SubagentStop` still cannot permanently suppress a finish.
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -627,7 +650,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
             let err = state.clear_error(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             err || sub || perm
         }
         // Session lifecycle ───────────────────────────────────────────────────
@@ -642,7 +665,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             state.reset_turn_state(session);
             state.clear_forced_status(session);
             let err = state.clear_error(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             err || perm
         }
         // End: clear activity AND force Stopped now (the capture classifier can't
@@ -670,7 +693,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
             let perm_changed =
-                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_waiting_message(session);
+                state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             // The turn is definitively over when the session ends — drop it so a
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
@@ -815,6 +838,10 @@ pub(crate) fn broadcast_activity_delta(state: &AppState, session: &str) {
             // wheel back or the call moved on — the client must drop the card,
             // so this is always present).
             "browser_takeover": act.browser_takeover,
+            // The live question ask (`null` once the AskUserQuestion call moved on
+            // — the client must drop the card, so this is always present). Carries
+            // the question + its real options; the chat card answers by clicking.
+            "question_request": act.question_request,
             // The needs-you Notification waiting line (`null` clears — always
             // present). Rendered read-only in the attention region on Waiting.
             "waiting_message": act.waiting_message,
@@ -1439,6 +1466,87 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A live `AskUserQuestion` PreToolUse, verbatim off Claude Code 2.1.2xx: the
+    /// structured `questions` array with object-options.
+    const LIVE_ASK_QUESTION: &str = r#"{"session_id":"c0ffee","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which fruit do you want?","header":"Fruit choice","multiSelect":false,"options":[{"label":"Apple","description":"A crisp and refreshing fruit"},{"label":"Banana","description":"A soft and sweet tropical fruit"},{"label":"Cherry","description":"A small and tart stone fruit"}]}]}}"#;
+
+    /// The `PermissionRequest` Claude raises ~20 ms after the pre-tool leg for the
+    /// SAME AskUserQuestion call — the one this app must NOT record as a permission
+    /// card (it would fight the answerable question card).
+    const LIVE_ASK_QUESTION_PERMISSION: &str = r#"{"session_id":"c0ffee","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which fruit do you want?"}]}}"#;
+
+    #[tokio::test]
+    async fn ask_user_question_raises_an_answerable_question_request_not_a_permission_card() {
+        // THE BUG: chat showed a generic ``Run `AskUserQuestion`?`` permission card
+        // with dead buttons instead of the real question + its options. The fix
+        // surfaces the STRUCTURED question as `question_request` (answerable) and
+        // SUPPRESSES the generic permission card for AskUserQuestion so the two do
+        // not fight over the one card slot.
+        let (state, dir) = test_state().await;
+        let s = "worker-question";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(&state, s, "pre_tool", &p(LIVE_ASK_QUESTION));
+        let ask = state
+            .session_activity(s)
+            .and_then(|a| a.question_request)
+            .expect("the AskUserQuestion pre-tool raised the question_request");
+        assert_eq!(ask.question, "Which fruit do you want?");
+        assert_eq!(ask.header.as_deref(), Some("Fruit choice"));
+        assert_eq!(ask.options, vec!["Apple", "Banana", "Cherry"]);
+        assert!(!ask.multi_select);
+
+        let d = last_delta(&mut rx, s).expect("a question ask broadcasts a delta");
+        assert_eq!(d["question_request"]["question"], json!("Which fruit do you want?"));
+        assert_eq!(d["question_request"]["options"], json!(["Apple", "Banana", "Cherry"]));
+
+        // The permission dialog that follows must NOT record a permission card.
+        apply_payload(&state, s, "permission_request", &p(LIVE_ASK_QUESTION_PERMISSION));
+        assert!(
+            state.session_activity(s).and_then(|a| a.permission).is_none(),
+            "the AskUserQuestion permission card is suppressed in favour of the question card",
+        );
+        assert!(
+            state.session_activity(s).and_then(|a| a.question_request).is_some(),
+            "the answerable question card survives the permission leg",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_question_request_clears_when_the_call_moves_on() {
+        for (event, payload) in [
+            ("post_tool", r#"{"tool_name":"AskUserQuestion"}"#),
+            ("post_tool_failure", LIVE_POST_TOOL_FAILURE),
+            ("stop", "{}"),
+            ("session_end", "{}"),
+            ("user_prompt", "{}"),
+            ("session_start", "{}"),
+        ] {
+            let (state, dir) = test_state().await;
+            let s = "worker-question";
+            apply_payload(&state, s, "pre_tool", &p(LIVE_ASK_QUESTION));
+            assert!(
+                state.session_activity(s).and_then(|a| a.question_request).is_some(),
+                "{event}: precondition — a question ask is live"
+            );
+
+            let mut rx = state.sse_tx.subscribe();
+            apply_payload(&state, s, event, &p(payload));
+            assert!(
+                state.session_activity(s).and_then(|a| a.question_request).is_none(),
+                "{event} must clear the live question request"
+            );
+            let d = last_delta(&mut rx, s).unwrap_or_else(|| panic!("{event}: clear broadcasts"));
+            assert_eq!(d["question_request"], Value::Null, "{event}: cleared as null");
+
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     /// A live `request_human_takeover(reason)` call — the Shared Browser

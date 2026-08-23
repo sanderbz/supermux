@@ -5,6 +5,7 @@ import type {
   ChatTail,
   ConnectRequestInfo,
   PermissionRequestInfo,
+  QuestionRequestInfo,
 } from '@/lib/api/sessions'
 import type { RateLimits } from '@/lib/rate-limits'
 
@@ -62,6 +63,10 @@ export interface TileSession extends SessionSummary {
   /** A bot's `connect(service)` tool is parked waiting for a human — supermux
    *  renders the inline Connect card. Same delta, same `null`-clears rule. */
   connect_request?: ConnectRequestInfo | null
+  /** An `AskUserQuestion` tool call is blocked on a human — supermux renders the
+   *  answerable question card (the real question + its options as clickable
+   *  buttons). Same delta, same `null`-clears rule. */
+  question_request?: QuestionRequestInfo | null
   /** The live shared-browser takeover ask — a bot needs a human on its page. */
   browser_takeover?: BrowserTakeoverInfo | null
   /** The Notification `message` for the needs-you family (permission_prompt /

@@ -99,6 +99,28 @@ export interface ConnectRequestInfo {
   has_oauth?: boolean
 }
 
+/** **The live question ask** — an `AskUserQuestion` tool call is blocked on a
+ *  human, surfaced as an ANSWERABLE card in chat (the real question + its options
+ *  as clickable buttons) rather than the generic tool-permission prompt. Built
+ *  server-side from the STRUCTURED `tool_input` payload, so it is robust across
+ *  Claude Code versions (it does not depend on scraping the pty). While it is set
+ *  the generic `permission_request` for AskUserQuestion is suppressed server-side,
+ *  so the two cards never fight. */
+export interface QuestionRequestInfo {
+  /** The model's own two-word name for the decision (`Fruit choice`) — the card's
+   *  eyebrow. Absent when the model sent none. */
+  header?: string
+  /** The agent's own sentence — the whole content of the ask. */
+  question: string
+  /** The option labels, in dialog order: the row index IS the TUI caret index the
+   *  answer sequence navigates to. */
+  options: string[]
+  /** Whether more than one option may be chosen. `false` is the common case (a
+   *  single click answers it); a multi-select question is drawn but answered in
+   *  the terminal for now — see `components/chat/question-answer.ts`. */
+  multi_select: boolean
+}
+
 /** **The live browser takeover ask** — a granted bot called the Shared Browser
  *  connector's `request_human_takeover(reason)` and is parked until a human
  *  finishes a login / 2FA / CAPTCHA on its page. Carries the agent's own
@@ -357,6 +379,12 @@ export interface ApiSession {
    *  connect-ask plumbing (a later Build-phase addition); the card is buildable
    *  and testable against this typed shape via the `/dev/chat-live` fixture. */
   connect_request?: ConnectRequestInfo | null
+  /** **An `AskUserQuestion` tool call is blocked on a human** — the agent asked a
+   *  multiple-choice question. supermux renders an ANSWERABLE question card from
+   *  this (the real question + its options as clickable buttons), NOT the generic
+   *  tool-permission prompt. Rides the same `sessions` SSE delta (`null` clears).
+   *  See `components/chat/live-layer.tsx` `QuestionCard`. */
+  question_request?: QuestionRequestInfo | null
   /** The live shared-browser takeover ask (see `BrowserTakeoverInfo`). */
   browser_takeover?: BrowserTakeoverInfo | null
   /** The Notification `message` for the needs-you family (permission_prompt /

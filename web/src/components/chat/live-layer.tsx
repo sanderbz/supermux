@@ -42,7 +42,7 @@ import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
 
 import type { HarnessEvent } from '../../lib/api/harness'
-import type { PermissionRequestInfo, SessionMode } from '../../lib/api/sessions'
+import type { PermissionRequestInfo, QuestionRequestInfo, SessionMode } from '../../lib/api/sessions'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
@@ -192,6 +192,14 @@ export interface LiveLayerProps {
   dialogBusy?: number | 'escape' | null
   /** Index, or `'escape'` for the feedback affordance. */
   onChooseDialog?: (target: number | 'escape') => void
+  /**
+   * Answer the live AskUserQuestion (`session.question_request`) by choosing the
+   * option at this 0-based index. Wired to the `/keys` transport via
+   * `question-answer.ts` (`Down` × index, then `Enter`). Absent → the card draws
+   * its options but does not offer to press keys. Not called for a multi-select
+   * question, which the card draws inert (see `QuestionCard`).
+   */
+  onAnswerQuestion?: (optionIndex: number) => void
   /** What the card became once an answer landed. Dialog outcomes write nothing
    *  to the transcript (a0 §3), so this line is the only record. */
   dialogResolved?: string | null
@@ -235,6 +243,7 @@ export function LiveLayer({
   dialog,
   dialogBusy = null,
   onChooseDialog,
+  onAnswerQuestion,
   dialogResolved,
   stalled = null,
   compacting = null,
@@ -282,7 +291,13 @@ export function LiveLayer({
 
   const phase = computeLivePhase({
     working,
-    asking: !!(dialog || session?.permission_request || session?.elicitation || signIn),
+    asking: !!(
+      dialog ||
+      session?.question_request ||
+      session?.permission_request ||
+      session?.elicitation ||
+      signIn
+    ),
     handoff: !!target,
   })
   // WHAT KIND of ask, for the one sentence that is spoken aloud. Same ordering
@@ -290,6 +305,7 @@ export function LiveLayer({
   const ask = askKind({
     form: !!session?.elicitation,
     dialog: dialog?.family,
+    question: !!session?.question_request,
     permission: !!session?.permission_request,
     signIn,
   })
@@ -382,6 +398,16 @@ export function LiveLayer({
           busy={dialogBusy}
           onChoose={onChooseDialog}
         />
+      ) : session?.question_request ? (
+        // A STRUCTURED QUESTION OUTRANKS THE GENERIC PERMISSION CARD. An
+        // AskUserQuestion reaches chat as `question_request` (the model's own
+        // sentence + its real options), parsed server-side from the tool call —
+        // NOT scraped off the pty like the permission `DialogCard`, because that
+        // scrape does not reliably sight this dialog on the current CC, which is
+        // exactly why it used to fall through to ``Run `AskUserQuestion`?`` with
+        // dead buttons. Drawn above `permission_request` (which the server also
+        // suppresses for this tool) so the answerable card always wins.
+        <QuestionCard ask={session.question_request} onAnswer={onAnswerQuestion} />
       ) : session?.permission_request ? (
         <PermissionCard
           request={session.permission_request}
@@ -534,11 +560,17 @@ export const ASK_SAY: Record<AskKind, string> = {
 export function askKind(s: {
   form: boolean
   dialog?: DialogCardView['family']
+  /** The STRUCTURED AskUserQuestion ask (`session.question_request`). Ranked with
+   *  the dialog's `question` family — it IS a question — and ABOVE `permission`,
+   *  because announcing "Claude is asking for permission" over a content question
+   *  is the one word that would make somebody answer differently. */
+  question?: boolean
   permission: boolean
   signIn: boolean
 }): AskKind {
   if (s.form) return 'form'
   if (s.dialog) return s.dialog
+  if (s.question) return 'question'
   if (s.permission) return 'permission'
   if (s.signIn) return 'sign-in'
   return 'unknown'
@@ -778,6 +810,70 @@ export function commandChip(command: string): string {
 }
 
 /* ── the ask ─────────────────────────────────────────────────────────────── */
+
+/**
+ * The ANSWERABLE question card — an AskUserQuestion, as the real question with
+ * its real options as clickable buttons.
+ *
+ * This is the fix for verify-matrix finding 4 as it appeared in PRODUCTION: the
+ * card used to depend on a pty sighting (`dialog`, the `question` family) that
+ * the current Claude Code does not reliably produce, so a live AskUserQuestion
+ * fell through to the generic ``Run `AskUserQuestion`?`` permission card with
+ * three inert buttons and "chat can't answer this one yet". `question_request` is
+ * the STRUCTURED payload the server parses straight off the tool call, so the
+ * question and its options are on the card regardless of what the terminal draws.
+ *
+ * It reuses `ChoiceCard` — the same visual family as the permission / connect /
+ * form cards — so a question reads as one of them: the header is the eyebrow, the
+ * question is the ask, each option is a pill. Clicking option `i` answers it in
+ * the pty via `onAnswer(i)` (`Down` × i, then `Enter`; see `question-answer.ts`).
+ *
+ * MULTISELECT is drawn but not pressed (yet): its options carry the terminal
+ * hint and the card offers no `onChoose`, because a multi-select question is
+ * toggled with Space and confirmed with Enter — `Down×i + Enter` would submit a
+ * single choice and answer the WRONG thing. A wrong answer here is worse than the
+ * old dead-end, so the single-select case ships correct and multi-select is a
+ * clearly-marked follow-up rather than a guess.
+ */
+export function QuestionCard({
+  ask,
+  onAnswer,
+}: {
+  ask: QuestionRequestInfo
+  onAnswer?: (optionIndex: number) => void
+}) {
+  const multi = ask.multi_select
+  const options: ChoiceOption[] = ask.options.map((label, i) => ({
+    label,
+    // The first option is the model's own default on a single-select question;
+    // a multi-select card highlights nothing, because nothing is chosen for you.
+    primary: i === 0 && !multi,
+    // A hint, never sent — the digit CC prints beside the row, so the card and
+    // the terminal read the same 1-2-3.
+    kbd: String(i + 1),
+    disabled: multi,
+    hint: multi ? MULTISELECT_HINT : undefined,
+  }))
+  return (
+    <div data-testid="chat-question-card" data-vr="qq-card" data-multi={multi ? 'true' : undefined}>
+      <ChoiceCard
+        eyebrow={ask.header}
+        question={ask.question || 'Claude is asking you to choose.'}
+        options={options}
+        onChoose={onAnswer && !multi ? onAnswer : undefined}
+      />
+      {multi && (
+        <p className="ml-11 mt-[7px] text-[12.6px] tracking-[-0.05px] text-ink-2">
+          {MULTISELECT_HINT}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** The single line a multi-select question wears until chat can toggle-and-confirm
+ *  it — see `QuestionCard`. Same terminal-first voice the other refusals use. */
+const MULTISELECT_HINT = 'Pick more than one in the terminal — chat answers a single choice for now.'
 
 /**
  * A pending permission dialog, as the one thing on screen that is asking.

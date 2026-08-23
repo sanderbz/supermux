@@ -282,6 +282,10 @@ export function Surface({
       dialog={state.dialog ?? null}
       dialogBusy={state.dialogBusy ?? null}
       onChooseDialog={() => {}}
+      // The bench has no pty behind it — the question card's answers are live
+      // (clickable), but the keys they would send go nowhere here (like
+      // `onChooseDialog`). The affordance under review is the card itself.
+      onAnswerQuestion={() => {}}
       dialogResolved={state.dialogResolved}
       // The stall's own sentence takes the working row's label (catalog
       // `err.stream_stalled`): `session.activity` still names the last tool

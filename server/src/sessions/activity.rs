@@ -17,7 +17,7 @@
 //! and we truncate to [`MAX_LABEL`] so a long secret-bearing command can never be
 //! surfaced (or logged) in full. Nothing here is persisted to disk/DB.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Hard cap on any derived label (a long command / pattern is truncated with an
 /// ellipsis so the tile stays calm and a secret-bearing argument is never shown
@@ -163,13 +163,153 @@ pub struct ToolInput {
     pub questions: Option<Vec<QuestionEntry>>,
 }
 
-/// One entry of `AskUserQuestion`'s `questions` array. Only the question text is
-/// modelled; the options/header live alongside it in Claude's payload and are
-/// not something a lock-screen banner can usefully show.
+/// One entry of `AskUserQuestion`'s `questions` array.
+///
+/// The live shape on Claude Code 2.1.2xx (captured verbatim in
+/// `tests/fixtures/chat/claude-states.jsonl`):
+///
+/// ```json
+/// { "question": "Which fruit do you want?", "header": "Fruit choice",
+///   "multiSelect": false,
+///   "options": [{ "label": "Apple", "description": "…" }, …] }
+/// ```
+///
+/// The `question` text alone was all a lock-screen banner needed; the CHAT card
+/// (T1.5 follow-up) needs the OPTIONS too, so it can draw the real choices as
+/// clickable buttons instead of the generic tool-permission prompt. `header` and
+/// `multiSelect` ride along for the same card.
 #[derive(Debug, Default, Deserialize)]
 pub struct QuestionEntry {
     #[serde(default)]
     pub question: Option<String>,
+    /// The model's own two-word name for the decision (`Fruit choice`), drawn on
+    /// the dialog's reverse-video line and reused as the card's eyebrow.
+    #[serde(default)]
+    pub header: Option<String>,
+    /// The option LABELS, in the order the dialog lists them (so the row index is
+    /// the TUI caret index the answer sequence navigates to). Parsed defensively:
+    /// each element is either an object carrying a `label` (the live shape) or a
+    /// bare string (a shape a future Claude might send), and anything without a
+    /// non-empty label is dropped.
+    #[serde(default, deserialize_with = "de_option_labels")]
+    pub options: Vec<String>,
+    /// Whether the dialog lets the user pick more than one option. Read straight
+    /// off `multiSelect`; defaults to single-select when absent.
+    #[serde(default, rename = "multiSelect")]
+    pub multi_select: bool,
+}
+
+/// Deserialize `options` from EITHER `[{ "label": "…", … }, …]` (the live shape)
+/// or `["…", …]` (a bare-string shape), yielding the trimmed, non-empty labels.
+/// Anything else in the array is skipped rather than failing the whole parse — an
+/// unfamiliar option shape must not blank the question card.
+fn de_option_labels<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawOption {
+        Str(String),
+        Obj {
+            #[serde(default)]
+            label: Option<String>,
+        },
+        Other(serde::de::IgnoredAny),
+    }
+    let raw = Option::<Vec<RawOption>>::deserialize(d)?.unwrap_or_default();
+    Ok(raw
+        .into_iter()
+        .filter_map(|o| match o {
+            RawOption::Str(s) => Some(s),
+            RawOption::Obj { label } => label,
+            RawOption::Other(_) => None,
+        })
+        .map(|s| clip_label(s.trim()))
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// Trim + cap ONE option label at [`MAX_QUESTION_LABEL`] chars (Unicode scalar
+/// values, never bytes), appending `…` when cut. The labels are the model's own
+/// words, admitted to a surface, so they are bounded like every other wire string
+/// here — generous enough not to clip `Type something.`, tight enough that a
+/// runaway label cannot bloat the card.
+fn clip_label(s: &str) -> String {
+    truncate_to(s, MAX_QUESTION_LABEL)
+}
+
+/// Per-option label ceiling for the question card (see [`clip_label`]). Wider than
+/// [`MAX_LABEL`]: an AskUserQuestion option can be a short sentence, not just a
+/// filename.
+const MAX_QUESTION_LABEL: usize = 80;
+
+/// How many options the card carries at most — a defensive cap on the model's own
+/// list so a pathological payload cannot draw an unbounded button grid.
+const MAX_QUESTION_OPTIONS: usize = 12;
+
+/// **The live question ask** — an `AskUserQuestion` tool call is blocked on a
+/// human, surfaced as an ANSWERABLE card in chat (the real question + its options
+/// as clickable buttons) rather than the generic tool-permission prompt. Built
+/// from the STRUCTURED `tool_input` (version-robust) rather than from a pty scrape.
+/// In-memory only, never persisted; the same posture as [`ConnectAsk`] and
+/// [`ElicitationAsk`]. Serializes to the web `QuestionRequestInfo` shape.
+///
+/// [`ConnectAsk`]: super::connect_ask::ConnectAsk
+/// [`ElicitationAsk`]: super::elicitation::ElicitationAsk
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuestionAsk {
+    /// The model's two-word name for the decision (`Fruit choice`), when it sent
+    /// one — the card's eyebrow. Omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The agent's own sentence — the whole content of the ask.
+    pub question: String,
+    /// The option labels, in dialog order (row index = TUI caret index).
+    pub options: Vec<String>,
+    /// Whether more than one option may be chosen. `false` is the common case; the
+    /// web card answers the single-select case by navigating to one option and
+    /// committing.
+    pub multi_select: bool,
+}
+
+/// Parse an `AskUserQuestion` `PreToolUse` payload into the live [`QuestionAsk`].
+///
+/// Uses the FIRST entry that carries a non-empty question (mirroring
+/// [`first_question`]); `None` when no entry does, so a shape this app cannot read
+/// falls back rather than drawing an empty card. Pure — no clock, no I/O, no state.
+pub fn question_ask(p: &HookPayload) -> Option<QuestionAsk> {
+    let entry = p
+        .tool_input
+        .as_ref()?
+        .questions
+        .as_ref()?
+        .iter()
+        .find(|q| {
+            q.question
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| !s.is_empty())
+        })?;
+    let question = entry.question.as_deref().unwrap_or_default().trim().to_string();
+    let header = entry
+        .header
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let options = entry
+        .options
+        .iter()
+        .take(MAX_QUESTION_OPTIONS)
+        .cloned()
+        .collect();
+    Some(QuestionAsk {
+        header,
+        question,
+        options,
+        multi_select: entry.multi_select,
+    })
 }
 
 /// The agent's FIRST question from an `AskUserQuestion` payload, verbatim
@@ -688,5 +828,96 @@ mod tests {
         let (etype, msg) = error_info(&p);
         assert_eq!(etype, "server_error");
         assert_eq!(msg, "529 Overloaded");
+    }
+
+    /* ── AskUserQuestion → the answerable question ask ─────────────────────── */
+
+    /// The real `tool_input.questions` shape, verbatim off Claude Code 2.1.2xx
+    /// (`tests/fixtures/chat/claude-states.jsonl`): object-options each carrying a
+    /// `label` + `description`, a two-word `header`, and `multiSelect`.
+    const LIVE_ASK_USER_QUESTION: &str = r#"{
+        "tool_name": "AskUserQuestion",
+        "tool_input": { "questions": [{
+            "question": "Which fruit do you want?",
+            "header": "Fruit choice",
+            "multiSelect": false,
+            "options": [
+                { "label": "Apple", "description": "A crisp and refreshing fruit" },
+                { "label": "Banana", "description": "A soft and sweet tropical fruit" },
+                { "label": "Cherry", "description": "A small and tart stone fruit" }
+            ]
+        }] }
+    }"#;
+
+    #[test]
+    fn ask_user_question_parses_header_question_and_option_labels() {
+        // THE BUG (verify matrix finding 4): chat showed a generic tool-permission
+        // card because only the question TEXT was surfaced — the OPTIONS never
+        // reached a surface a human could click. This is the fix: the structured
+        // payload yields the header, the question, and the option labels in order.
+        let ask = question_ask(&parse(LIVE_ASK_USER_QUESTION))
+            .expect("a well-formed AskUserQuestion raises the ask");
+        assert_eq!(ask.header.as_deref(), Some("Fruit choice"));
+        assert_eq!(ask.question, "Which fruit do you want?");
+        assert_eq!(ask.options, vec!["Apple", "Banana", "Cherry"]);
+        assert!(!ask.multi_select);
+    }
+
+    #[test]
+    fn ask_user_question_serialises_to_the_web_question_request_shape() {
+        let ask = question_ask(&parse(LIVE_ASK_USER_QUESTION)).unwrap();
+        let v = serde_json::to_value(&ask).unwrap();
+        assert_eq!(v["header"], serde_json::json!("Fruit choice"));
+        assert_eq!(v["question"], serde_json::json!("Which fruit do you want?"));
+        assert_eq!(
+            v["options"],
+            serde_json::json!(["Apple", "Banana", "Cherry"])
+        );
+        assert_eq!(v["multi_select"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn ask_user_question_accepts_bare_string_options_and_multiselect() {
+        // Defensive: a future/alternate shape sends options as bare strings and a
+        // true `multiSelect`. Both parse rather than blanking the card.
+        let ask = question_ask(&parse(
+            r#"{"tool_name":"AskUserQuestion","tool_input":{"questions":[{
+                "question":"Pick colours","multiSelect":true,
+                "options":["Red","  ","Green"]
+            }]}}"#,
+        ))
+        .expect("bare-string options still raise the ask");
+        assert_eq!(ask.question, "Pick colours");
+        // The blank option is dropped, not carried as an empty button.
+        assert_eq!(ask.options, vec!["Red", "Green"]);
+        assert!(ask.multi_select);
+        // No header sent → omitted.
+        assert!(ask.header.is_none());
+    }
+
+    #[test]
+    fn ask_user_question_with_no_question_text_raises_nothing() {
+        // Mirrors `first_question`: a payload this app cannot read falls back
+        // rather than drawing an empty card.
+        assert!(question_ask(&parse(
+            r#"{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"options":["A"]}]}}"#
+        ))
+        .is_none());
+        assert!(question_ask(&parse(r#"{"tool_name":"AskUserQuestion","tool_input":{}}"#)).is_none());
+        assert!(question_ask(&parse(r#"{"tool_name":"AskUserQuestion"}"#)).is_none());
+    }
+
+    #[test]
+    fn ask_user_question_option_labels_are_bounded() {
+        let long = "z".repeat(200);
+        let ask = question_ask(&parse(&format!(
+            r#"{{"tool_name":"AskUserQuestion","tool_input":{{"questions":[{{
+                "question":"q","options":[{{"label":"{long}"}}]
+            }}]}}}}"#
+        )))
+        .unwrap();
+        let label = &ask.options[0];
+        assert_eq!(label.chars().filter(|c| *c == 'z').count(), MAX_QUESTION_LABEL);
+        assert!(label.ends_with('…'));
     }
 }

@@ -248,6 +248,9 @@ export interface ChatConversationProps {
   dialog?: DialogCardView | null
   dialogBusy?: number | 'escape' | null
   onChooseDialog?: (target: number | 'escape') => void
+  /** Answer the live AskUserQuestion (`session.question_request`) by option index
+   *  — straight through to the live band's `QuestionCard` (`live-layer.tsx`). */
+  onAnswerQuestion?: (optionIndex: number) => void
   /** The line the card became once an answer landed. */
   dialogResolved?: string | null
   /** The pty's stall line, straight through to the live band's working row
@@ -351,6 +354,7 @@ export function ChatConversation({
   dialog,
   dialogBusy,
   onChooseDialog,
+  onAnswerQuestion,
   dialogResolved,
   stalled,
   compacting,
@@ -669,6 +673,7 @@ export function ChatConversation({
             dialog={dialog}
             dialogBusy={dialogBusy}
             onChooseDialog={onChooseDialog}
+            onAnswerQuestion={onAnswerQuestion}
             dialogResolved={dialogResolved}
             stalled={stalled}
             compacting={compacting}

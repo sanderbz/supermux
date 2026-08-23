@@ -1034,7 +1034,26 @@ const BUDGET_ENTRY_JS = 161 * KB
 //              eagerly-reachable bytes; the new wire types erase).
 // A genuine additive feature (the agent-inbox), not a regression to trim:
 // ceil(measured)=338, the same rule every fase since B3 used.
-const BUDGET_APP_JS = 338 * KB
+// 338 → 339 at the ANSWERABLE ASKUSERQUESTION CARD (feat/companies-grok): a bot's
+// AskUserQuestion reached chat as a generic ``Run `AskUserQuestion`?`` permission
+// card with three inert buttons and "chat can't answer this one yet" — because the
+// answerable path depended on a pty SIGHTING the current Claude Code does not
+// reliably produce. The fix drives the card from the STRUCTURED
+// `session.question_request` the server parses off the tool call, so the real
+// question + its real options are on the card regardless of what the terminal
+// draws, and clicking an option answers it in the pty (`Down` × index, then Enter).
+// Measured 338.19 against 338.00 — +0.19 KB, ALL of it on the LAZY chat chunk (the
+// live layer is chat-only; the ENTRY hero-path gate is unmoved). Where the bytes
+// went:
+//   +~0.15 KB  `QuestionCard` in `live-layer.tsx` (the card, its multi-select
+//              deferral chrome, the chain branch + `askKind` question rank) and the
+//              tiny `question-answer.ts` transport (`Down`×i + Enter via `keyPlan`).
+//   +~0.04 KB  the `onAnswerQuestion` prop threaded through `conversation.tsx`. The
+//              new wire types (`QuestionRequestInfo`, the two session fields) erase.
+// A genuine additive feature (the question is now clickable from chat instead of a
+// dead prompt), not a regression to trim: ceil(measured)=339, the same rule every
+// fase since B3 used.
+const BUDGET_APP_JS = 339 * KB
 // RATCHETED 30 → 31 by the Grok-2026 mobile nav (bot mode). The bot-mode phone
 // tab bar was a Material `BottomNavigationView` — a full-bleed slab welded to the
 // screen edge with a `h-1 w-8` top-underline active mark. It is now a floating

@@ -14,7 +14,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
-use crate::sessions::activity::PermissionAsk;
+use crate::sessions::activity::{PermissionAsk, QuestionAsk};
 use crate::sessions::connect_ask::ConnectAsk;
 use crate::sessions::elicitation::ElicitationAsk;
 use crate::sessions::host_pool::HostPool;
@@ -124,6 +124,16 @@ pub struct SessionActivity {
     /// [`connect_request`](Self::connect_request), plus explicitly by the
     /// endpoint the moment the human hands the wheel back. In-memory only.
     pub browser_takeover: Option<crate::sessions::takeover_ask::TakeoverAsk>,
+    /// **The live question ask** (`AskUserQuestion`): the agent called
+    /// `AskUserQuestion` and is blocked on a human. Set by the `PreToolUse` hook
+    /// from the STRUCTURED payload ([`crate::sessions::activity::question_ask`]) so
+    /// chat can draw the real question + its options as clickable buttons rather
+    /// than the generic tool-permission prompt — version-robust, since it does not
+    /// depend on scraping the pty. Cleared by the same "something after it
+    /// happened" events as [`permission`](Self::permission). While it is set the
+    /// generic `permission` dialog for AskUserQuestion is deliberately NOT raised
+    /// (the two would fight over the chat card). In-memory only.
+    pub question_request: Option<QuestionAsk>,
     /// The Notification `message` for the needs-you family (permission_prompt /
     /// idle_prompt / agent_needs_input) while the session sits Waiting. In-memory,
     /// display-only; SAME clear-set as `permission` (the needs-you resolution set).
@@ -143,6 +153,7 @@ impl SessionActivity {
             && self.elicitation.is_none()
             && self.connect_request.is_none()
             && self.browser_takeover.is_none()
+            && self.question_request.is_none()
             && self.waiting_message.is_none()
     }
 }
@@ -1208,6 +1219,7 @@ impl AppState {
             || entry.elicitation != before.elicitation
             || entry.connect_request != before.connect_request
             || entry.browser_takeover != before.browser_takeover
+            || entry.question_request != before.question_request
             || entry.waiting_message != before.waiting_message;
         let empty = entry.is_empty();
         drop(entry);
@@ -1428,6 +1440,25 @@ impl AppState {
     pub fn clear_connect_request(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.connect_request = None;
+        })
+    }
+
+    /// Set `name`'s live question ask (from an `AskUserQuestion` `PreToolUse`
+    /// payload). Returns whether it changed — a re-fired identical ask broadcasts
+    /// nothing.
+    pub fn set_question_request(&self, name: &str, ask: QuestionAsk) -> bool {
+        self.mutate_activity(name, |a| {
+            a.question_request = Some(ask);
+        })
+    }
+
+    /// Clear `name`'s live question ask — on any event that proves the
+    /// `AskUserQuestion` call moved on (the answer itself is never reported by a
+    /// hook, so "something after it happened" IS the resolution signal, exactly
+    /// like the permission dialog and the connect ask). Returns whether it changed.
+    pub fn clear_question_request(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.question_request = None;
         })
     }
 

@@ -1321,6 +1321,32 @@ export function liveStates(nowMs: number): LiveState[] {
       },
     },
     {
+      // THE PRODUCTION FIX (this branch): an AskUserQuestion surfaced from the
+      // STRUCTURED `question_request`, not the pty scrape. The old `question`
+      // state above depends on a `dialog` sighting the current Claude Code does
+      // not reliably produce, so in production the question fell through to the
+      // generic ``Run `AskUserQuestion`?`` card with dead buttons. This state has
+      // NO `dialog` — only `question_request` — and must draw the real question
+      // with its options as live, clickable answers. `data-vr="qq-card"`.
+      id: 'question-ask',
+      title: 'AskUserQuestion — the answerable card from the structured payload',
+      board: 'verify matrix finding 4 (structured question_request)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ AskUserQuestion',
+        question_request: {
+          header: 'Fruit choice',
+          question: 'Which fruit do you want?',
+          options: ['Apple', 'Banana', 'Cherry'],
+          multi_select: false,
+        },
+      }),
+      entries: release,
+      turnAgo: 8,
+    },
+    {
       id: 'trust-gate',
       title: 'The startup wedge — answerable, with no boot banner to pin against',
       board: 'the states audit, catalog perm.trust_folder',
@@ -1560,6 +1586,7 @@ export const STATE_IDS = [
   'dialog-aborted',
   'question',
   'question-refused',
+  'question-ask',
   'trust-gate',
   'limit-blocked',
   // PTY-07 — the dialog/pty families.
