@@ -43,6 +43,11 @@ pub(crate) fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connec
         // auth method. Derived (installed catalog card keeps its Lane; a local
         // connector derives from its own schema). Was dropped here entirely.
         "auth": derive_auth(oauth_apps, scope, c),
+        // Store-taxonomy tags for the category chip rail. A local row carries none on
+        // the wire; recover them from the folded provenance (seeded) or the curated
+        // card (installed catalog card) — else it vanishes from EVERY category tab
+        // (the "Mail tab is empty" bug).
+        "categories": card_categories(c),
         // Provenance tag so the merged grid (local rows + catalog mirror) can be
         // filtered by `?source=`. Catalog cards carry `"catalog"`.
         "source": "local",
@@ -51,6 +56,23 @@ pub(crate) fn card(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connec
         "provenance": serde_json::from_str::<Value>(&c.source_json).unwrap_or_else(|_| json!({})),
         "created_at": c.created_at,
     })
+}
+
+/// The store-category tags for a LOCAL (installed) row. Authoritative order:
+/// explicit tags folded into `source_json` (a seeded manifest declared its
+/// `categories`) → the curated catalog's tags for this id (so an installed catalog
+/// card keeps its chip) → empty (uncategorized, still under "All").
+pub(crate) fn card_categories(c: &connectors::Connector) -> Vec<String> {
+    if let Some(cats) = serde_json::from_str::<Value>(&c.source_json)
+        .ok()
+        .and_then(|v| v.get("categories").cloned())
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+    {
+        if !cats.is_empty() {
+            return cats;
+        }
+    }
+    catalog::curated_categories(&c.id).unwrap_or_default()
 }
 
 /// The per-connector auth descriptor for a LOCAL (installed) row. Authoritative
@@ -313,6 +335,10 @@ async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Val
         if let Ok(a) = serde_json::to_value(&manifest.auth) {
             provenance["auth"] = a;
         }
+    }
+    // Fold declared store-taxonomy tags so the card surfaces under the right chip.
+    if !manifest.categories.is_empty() {
+        provenance["categories"] = json!(manifest.categories);
     }
     connectors::upsert(
         &state.pool,
@@ -1112,6 +1138,18 @@ mod tests {
             source_json: source_json.to_string(),
             created_at: 0,
         }
+    }
+
+    #[test]
+    fn card_categories_from_provenance_then_curated_then_empty() {
+        // 1) A seeded/local connector folds its tags into source_json → used.
+        let mail = connector_row("icloud-mail", "[]", &json!({ "categories": ["mail"] }).to_string());
+        assert_eq!(card_categories(&mail), vec!["mail".to_string()]);
+        // 2) An installed CATALOG card carries none on the row → inherits curated tags.
+        let pw = connector_row("pmcp-playwright", "[]", &json!({ "imported": true }).to_string());
+        assert!(card_categories(&pw).iter().any(|c| c == "browser"));
+        // 3) An unknown local connector with no tags → empty (still under "All").
+        assert!(card_categories(&connector_row("random-local", "[]", "{}")).is_empty());
     }
 
     #[test]

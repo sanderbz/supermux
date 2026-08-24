@@ -129,6 +129,7 @@ pub fn manifest(server_path: &str) -> Manifest {
             ..Default::default()
         },
         emit,
+        categories: vec!["mail".into()],
     }
 }
 
@@ -170,6 +171,7 @@ pub async fn seed(state: &AppState) {
     if let Ok(a) = serde_json::to_value(&manifest.auth) {
         provenance["auth"] = a;
     }
+    provenance["categories"] = json!(manifest.categories);
     if let Err(e) = connectors::upsert(
         &state.pool,
         &manifest.id,
@@ -200,6 +202,7 @@ mod tests {
         assert_eq!(m.id, ICLOUD_ID);
         assert_eq!(m.kind, KIND_AGENT_AUTHORED);
         assert_eq!(m.display_name, "iCloud Mail");
+        assert_eq!(m.categories, vec!["mail".to_string()], "shows under the Mail chip");
         // Three tools declared on the card.
         assert_eq!(m.tools.len(), 3);
         let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();

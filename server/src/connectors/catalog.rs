@@ -601,6 +601,21 @@ pub fn curated_auth(id: &str) -> Option<Value> {
     Some(auth_and_creds_for(id).0)
 }
 
+/// The store-taxonomy tags for a curated catalog id, or `None` when the id is not
+/// curated. Used by [`super::api::card`] so an INSTALLED catalog card keeps the
+/// same category chip as its store card (the installed local row itself carries no
+/// tags). Reads the curated card's own `categories` — single source of truth.
+pub fn curated_categories(id: &str) -> Option<Vec<String>> {
+    if !is_curated(id) {
+        return None;
+    }
+    featured_cards()
+        .into_iter()
+        .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|c| c.get("categories").cloned())
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+}
+
 /// Map a PulseMCP `authentication_method` string onto a card auth descriptor. A
 /// mirrored row's method is a coarse hint; a curated id's descriptor still wins in
 /// [`merge_featured`]. Unknown/absent → `none` rather than a fake key field.
@@ -1637,6 +1652,14 @@ mod tests {
         // — the card layer then derives its lane from its own credential schema.
         assert!(curated_auth("icloud-mail").is_none());
         assert_eq!(curated_auth("pmcp-slack").unwrap()["kind"], json!("mcp_oauth"));
+    }
+
+    #[test]
+    fn curated_categories_come_from_the_curated_card() {
+        // An installed catalog card inherits its store category (Playwright → the
+        // Browser tab). A non-curated local id has none (it declares its own).
+        assert!(curated_categories("pmcp-playwright").unwrap().iter().any(|c| c == "browser"));
+        assert!(curated_categories("icloud-mail").is_none());
     }
 
     #[test]

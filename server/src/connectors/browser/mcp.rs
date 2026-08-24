@@ -152,6 +152,7 @@ pub fn manifest(server_path: &str) -> Manifest {
         // Lane E: nothing to sign in to (the takeover handles per-site logins live).
         auth: AuthDescriptor { kind: AuthKind::None, ..Default::default() },
         emit: emit(std::path::Path::new(server_path)),
+        categories: vec!["browser".into()],
     }
 }
 
@@ -178,7 +179,7 @@ pub async fn seed(state: &AppState) {
         &cols.tools_json,
         &cols.credentials_json,
         &cols.emit_json,
-        &serde_json::to_string(&json!({ "builtin": true, "browser": true }))
+        &serde_json::to_string(&json!({ "builtin": true, "browser": true, "categories": manifest.categories }))
             .unwrap_or_else(|_| "{}".into()),
     )
     .await
@@ -199,6 +200,7 @@ mod tests {
         assert_eq!(m.id, BROWSER_ID);
         assert_eq!(m.kind, KIND_BUILTIN_BROWSER);
         assert_eq!(m.display_name, "Shared Browser");
+        assert_eq!(m.categories, vec!["browser".to_string()], "shows under the Browser chip");
         assert_eq!(m.tools.len(), 5, "five tools on the card");
         let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
         for want in [

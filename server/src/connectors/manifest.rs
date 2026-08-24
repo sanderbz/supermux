@@ -161,6 +161,12 @@ pub struct Manifest {
     /// accepts.
     #[serde(default)]
     pub emit: Value,
+    /// Coarse store-taxonomy tags (e.g. `["mail"]`, `["browser"]`) matched against
+    /// the store's category chip rail. A local/seeded connector declares its own; an
+    /// installed CATALOG card inherits the curated card's tags in the card layer.
+    /// Empty ⇒ uncategorized (still listed under "All").
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 fn default_kind() -> String {
@@ -308,6 +314,7 @@ impl Manifest {
             credentials,
             auth,
             emit,
+            categories: Vec::new(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -463,6 +470,7 @@ mod tests {
             credentials: vec![],
             auth: AuthDescriptor::default(),
             emit: json!({ "command": "npx" }),
+            categories: vec![],
         };
         let cols = m.to_columns();
         let tools: Vec<ToolDecl> = serde_json::from_str(&cols.tools_json).unwrap();

@@ -192,6 +192,7 @@ pub fn manifest(p: &Provider, server_path: &str) -> Manifest {
             ..Default::default()
         },
         emit,
+        categories: vec!["mail".into()],
     }
 }
 
@@ -236,6 +237,7 @@ pub async fn seed(state: &AppState) {
         if let Ok(a) = serde_json::to_value(&manifest.auth) {
             provenance["auth"] = a;
         }
+        provenance["categories"] = json!(manifest.categories);
         if let Err(e) = connectors::upsert(
             &state.pool,
             &manifest.id,
@@ -280,6 +282,7 @@ mod tests {
         let m = manifest(provider("gmail-imap"), "/data/connectors/imap-mail/server.py");
         assert_eq!(m.id, "gmail-imap");
         assert_eq!(m.kind, KIND_AGENT_AUTHORED);
+        assert_eq!(m.categories, vec!["mail".to_string()], "shows under the Mail chip");
 
         // Lane C (form): an identity address + a sensitive app password.
         assert_eq!(m.auth.kind, AuthKind::Form);
