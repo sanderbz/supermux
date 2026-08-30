@@ -203,6 +203,12 @@ async fn main() -> anyhow::Result<()> {
     // live session row pointing at them. Cheap no-op while no remote hosts
     // are registered.
     sessions::spawn_reaper(state.host_pool.clone());
+    // Start the agent-team swarm reaper. Sweeps every 30min for the private
+    // `claude-swarm-<leadpid>` tmux servers Claude Code's agent teams leave
+    // detached when their lead exits — each one full of idle teammate processes
+    // that once ate the host until the OOM killer took live sessions with it.
+    // The first tick fires immediately, so it also cleans up after a crash.
+    sessions::swarm::spawn_reaper();
 
     let app = http::router(state);
 

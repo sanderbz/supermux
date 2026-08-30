@@ -34,6 +34,8 @@ pub mod recall;
 pub mod resumable;
 pub mod send_dedup;
 pub mod status;
+/// Reaper for the private tmux servers Claude Code's agent teams leave behind.
+pub mod swarm;
 /// The Shared Browser connector's `request_human_takeover(reason)` detector —
 /// the `PreToolUse` payload that raises the in-chat "take the wheel" card.
 pub mod takeover_ask;
