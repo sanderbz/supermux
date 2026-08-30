@@ -2,7 +2,9 @@
 """A fake OAuth provider on a real pty — the regression harness for the whole flow.
 
 It prints the captured Claude Code `/login` dialog verbatim (the same strings the
-corpus beside this file holds), waits on a MASKED field the way the real one
+corpus beside this file holds) UNDER the agent's own chrome (see `BANNER` — the
+banner and the `❯ /login` composer line the live capture carries above the
+panel), waits on a MASKED field the way the real one
 does, rejects a code with no `#` exactly once with the CLI's own rejection line,
 and on a good code prints `Logged in as …` / `Login successful. Press Enter to
 continue…` and then waits for the Enter that — in the real CLI — is what writes
@@ -56,6 +58,52 @@ BURST_END = b"\x1b[201~"
 # releasing while an OAuth code was live. So the fake draws the footer too, and
 # puts the cursor back on the field the way the real TUI's repaint does.
 FOOTER = "\r\n\r\n  Esc to cancel"
+
+# THE AGENT CHROME ABOVE THE PANEL, which is why `start` used to give up on this
+# session.
+#
+# A real Claude Code at `/login` is an AGENT that happens to be showing a login
+# panel: its banner is on the screen and the slash command that opened the panel
+# is still on the composer line above it — see `cc233-paste-prompt.txt` beside
+# this file, the live capture this fixture is built from, whose first lines are
+# the banner and `❯ /login`. The fake drew the panel and nothing else.
+#
+# That omission is not cosmetic, because `lifecycle::wait_for_agent_ready`'s
+# proof that the launch worked is `agent_at_the_wheel` — literally "is one of
+# `❯` / `❱` / `? for shortcuts` on the screen". With no chrome there is no
+# glyph, so the boot gate polled the full ten seconds, `start` returned
+# `ready: false`, and `start_locked`'s failed-launch arm persisted
+# `last_status = "stopped"` on a session whose provider was alive and waiting at
+# its prompt. Only the status detector's next tick (2s cadence) corrected it to
+# `waiting`.
+#
+# MEASURED on this fixture before the fix: `POST /start` took 10702 ms and
+# answered `{"ready": false}`, and the `GET /api/sessions` immediately after it
+# — and again after `page.goto` — still read `status: "stopped"` while the pane
+# capture in the very same row showed the live login prompt. So
+# `web/tests/e2e/smoke/login-flow.spec.ts` did not *occasionally* navigate into
+# that window; it navigated into it on EVERY run, and passed only when the
+# correcting `sessions` delta reached the browser inside the 10 s `expect`
+# budget. On a loaded CI runner that delta lands after the socket is up, or too
+# late, and the focus route sits on `<StoppedSession>` (`chatPaneActive` is
+# false for `status === 'stopped'`) — no `chat-panel`, no login card, a red
+# shard on a green commit. That is the whole flake.
+#
+# Drawing the chrome makes the fake faithful to the corpus AND clears the boot
+# gate on the first poll: measured after the fix, `start` takes 2055 ms and
+# answers `{"ready": true}`, with a non-`stopped` status persisted before its
+# response — there is no window left to race. The composer
+# glyph is ABOVE the panel, exactly as in the live capture, so the lens still
+# reads `paste_prompt` here and still refuses the
+# `negative-login-in-scrollback` shape (where `❯` sits BELOW a finished login).
+BANNER = (
+    " ▐▛███▜▌   Claude Code v2.1.233\r\n"
+    "▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max\r\n"
+    "  ▘▘ ▝▝    /opt/projects/supermux\r\n"
+    "\r\n"
+    "❯ /login\r\n"
+    "\r\n"
+)
 
 
 def out(s):
@@ -111,6 +159,9 @@ def read_masked():
 
 
 def main():
+    # The agent's own chrome first — see BANNER. Without it the launch's boot
+    # gate has nothing to recognise and `start` reports the session stopped.
+    out(BANNER)
     out("Opening browser to sign in…\r\n")
     out("\r\n")
     out("Browser didn't open? Use the url below to sign in  (c to copy)\r\n")
