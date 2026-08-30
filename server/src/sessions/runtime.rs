@@ -615,6 +615,136 @@ pub fn native_runtime_for(name: &str, data_dir: &Path) -> Result<Arc<dyn Session
     ))))
 }
 
+/// TEST-ONLY runtime fixture: "the target session is up, with its agent sitting
+/// at an empty composer".
+///
+/// WHY THIS EXISTS. Every writer that delivers text to a session
+/// (`agents::delegate`, `connectors::groupchat::tools::tag_bot`, the schedule
+/// runner, the board dispatcher) funnels through
+/// `sessions::lifecycle::send_harness_text`, and that funnel talks to a REAL
+/// pty: it asks the runtime whether the session is alive, auto-wakes it through
+/// `start()` when it is not, and reads the current screen back before it types.
+/// A unit test that seeds a `sessions` row and then calls one of those writers
+/// therefore reaches out to the HOST — it shells out to `tmux`, spawns a real
+/// `supermux-<name>` session, and types `claude …` into it.
+///
+/// That made three delivery tests (`agents::delegate` and
+/// `connectors::groupchat::tools`) pass or fail on a property of the MACHINE
+/// rather than of the code. On a developer box they passed by accident: an
+/// earlier run had left a live `supermux-acme-*` tmux session behind with a real
+/// `claude` at its composer, so the next run found the session already alive and
+/// the send guard admitted. On a clean host with no `claude` on `PATH` — every
+/// GitHub runner — the same tests spawned a fresh pane, the launch line came
+/// back `claude: command not found`, the agent never took the wheel, and
+/// `wake_for_send` correctly answered
+/// `"… was woken but its agent never came up"`. The product code was right in
+/// both cases; the FIXTURE was implicit.
+///
+/// So state the fixture instead of inheriting it from the host. Installing this
+/// handle in `AppState::session_runtimes` (the cache `runtime_for` consults
+/// first) means the send funnel is exercised end to end — the company gate, the
+/// Router guard, the tag cap, the wrapper, the recorded row — with the pty
+/// itself stubbed at "awake, agent at the composer". Nothing shells out, no
+/// tmux session leaks onto the developer's default socket, and the outcome no
+/// longer depends on what is installed where the test runs.
+///
+/// It deliberately does NOT model refusals: the screens a send is refused on
+/// (resume picker, folder-trust, a selection menu, a bare shell) are covered by
+/// `lifecycle`'s own `StubRuntime`, which counts keystrokes and asserts nothing
+/// is typed. This one only says "delivery is possible", which is the
+/// precondition the delegation/groupchat tests are actually about.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// The capture this fixture serves: Claude's empty composer plus its
+    /// shortcut hint — the exact shape `lifecycle::send_block` admits (a caret
+    /// row that is not a numbered menu row, and `? for shortcuts`).
+    const COMPOSER_SCREEN: &str = "❯ Try \"fix tests\"\n  ? for shortcuts";
+
+    /// A runtime that is always alive, always shows an agent composer, and
+    /// swallows every write. See the module doc.
+    #[derive(Debug, Default)]
+    pub(crate) struct AgentAtComposer;
+
+    #[async_trait]
+    impl SessionRuntime for AgentAtComposer {
+        async fn spawn(&self, _d: &Path, _e: &HashMap<String, String>, _s: &str) -> Result<()> {
+            Ok(())
+        }
+        // TRUE on purpose: `send_harness_text` then takes the already-awake
+        // path, so the test never enters `start()` (which is what spawns a real
+        // terminal). A test that wants the WAKE path must stub it explicitly.
+        async fn alive(&self) -> bool {
+            true
+        }
+        async fn kill(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn send_text(&self, _t: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn send_key(&self, _k: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn paste(&self, _t: &str, _b: bool) -> Result<()> {
+            Ok(())
+        }
+        async fn resize(&self, _c: u16, _r: u16) -> Result<()> {
+            Ok(())
+        }
+        async fn capture_plain(&self, _lines: usize) -> Result<String> {
+            Ok(COMPOSER_SCREEN.to_string())
+        }
+        async fn capture_ansi(&self, _lines: usize) -> Result<String> {
+            Ok(COMPOSER_SCREEN.to_string())
+        }
+        async fn capture_screen_ansi(&self) -> Result<String> {
+            Ok(COMPOSER_SCREEN.to_string())
+        }
+        async fn capture_full(&self) -> Result<String> {
+            Ok(COMPOSER_SCREEN.to_string())
+        }
+        async fn seed(&self) -> Result<String> {
+            Ok(COMPOSER_SCREEN.to_string())
+        }
+        async fn history_window(&self, end_offset: i64, _count: u32) -> Result<HistoryWindow> {
+            Ok(HistoryWindow {
+                rows: vec![],
+                history_size: 0,
+                start_offset: end_offset,
+                end_offset,
+                hit_top: true,
+                cols: 80,
+                at_limit: false,
+            })
+        }
+        async fn history_meta(&self) -> (u32, u16) {
+            (0, 80)
+        }
+        async fn pane_pid(&self) -> Result<Option<u32>> {
+            Ok(None)
+        }
+        async fn dead(&self) -> Result<bool> {
+            Ok(false)
+        }
+        // `None` = "this backend cannot tell", which is what tmux reports and
+        // what keeps the send guard on its capture-scoped text path.
+        async fn shell_is_foreground(&self) -> Option<bool> {
+            None
+        }
+    }
+
+    /// Pin `name`'s runtime to [`AgentAtComposer`] in the state's runtime cache,
+    /// so every later `runtime_for(name)` hands back this handle instead of
+    /// building a tmux/native one against the host.
+    pub(crate) fn agent_at_composer(state: &crate::state::AppState, name: &str) {
+        state
+            .session_runtimes
+            .insert(name.to_string(), Arc::new(AgentAtComposer) as Arc<dyn SessionRuntime>);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

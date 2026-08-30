@@ -348,6 +348,17 @@ mod tests {
                 .execute(&state.pool)
                 .await
                 .unwrap();
+            // PIN THE PTY. A successful `tag_bot` delivers through
+            // `agents::delegate::deliver_delegation` →
+            // `lifecycle::send_harness_text`, which probes the real runtime,
+            // auto-wakes a stopped session via `start()` and reads its screen
+            // before typing. Unpinned, these tests spawn real `supermux-<name>`
+            // tmux sessions on the host and type `claude …` into them: green
+            // only on a box where an earlier run left one behind with a live
+            // agent, red on every clean host with no `claude` on PATH. What is
+            // under test is the routing turn (the tag cap, the recorded row),
+            // so the delivery precondition is stated, not inherited.
+            crate::sessions::runtime::testing::agent_at_composer(state, b);
         }
         c
     }

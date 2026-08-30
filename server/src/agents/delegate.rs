@@ -489,7 +489,20 @@ mod tests {
         (AppState::new(pool, config), dir)
     }
 
-    /// Insert a session and stamp its `company_id` (NULL when `company` is None).
+    /// Insert a session, stamp its `company_id` (NULL when `company` is None),
+    /// and PIN ITS RUNTIME to the "awake, agent at the composer" fixture.
+    ///
+    /// The pin is not decoration. `deliver_delegation` ends in
+    /// `lifecycle::send_harness_text`, which talks to a real pty: it probes the
+    /// runtime for liveness, auto-wakes a stopped session through `start()`, and
+    /// reads the screen back before typing. Without a stubbed runtime these
+    /// tests shell out to `tmux`, spawn a real `supermux-<name>` session on the
+    /// host's default socket and type `claude …` into it — so they passed only
+    /// where a previous run had left such a session behind with a live agent in
+    /// it, and failed on any clean host with no `claude` on PATH (every CI
+    /// runner) with "was woken but its agent never came up". The gate under test
+    /// here is the COMPANY/ROUTER decision, not the pty; state the delivery
+    /// precondition instead of inheriting it from the machine.
     async fn seed_session(state: &AppState, name: &str, company: Option<i64>) {
         db::sessions::insert_minimal(&state.pool, name, "/tmp", "claude")
             .await
@@ -500,6 +513,7 @@ mod tests {
             .execute(&state.pool)
             .await
             .unwrap();
+        crate::sessions::runtime::testing::agent_at_composer(state, name);
     }
 
     async fn seed_company(state: &AppState, slug: &str) -> i64 {
