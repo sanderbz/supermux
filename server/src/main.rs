@@ -175,7 +175,13 @@ async fn main() -> anyhow::Result<()> {
     // else ever started it — so a restart used to silently take external access
     // down until someone ran `cloudflared` by hand. No-op on an unprovisioned box,
     // and it adopts (never doubles) a connector that is already running.
-    external_access::resume_connector_on_boot(&state).await;
+    //
+    // Detached: serving must never wait on a `cloudflared` spawn. The supervisor
+    // it starts keeps retrying on its own, and `status` reports whatever it finds.
+    {
+        let state = state.clone();
+        tokio::spawn(async move { external_access::resume_connector_on_boot(&state).await });
+    }
 
     // Background tasks. The workflows tick (and its crash reaper) run here.
     workflows::spawn(state.clone());
