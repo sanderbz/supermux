@@ -24,7 +24,7 @@ import { useUI } from '@/stores/ui-store'
 import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
 import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import {
-  attentionCount,
+  notificationsSyncMessage,
   sessionFromPath,
   tagForSession,
   toastForPush,
@@ -32,7 +32,7 @@ import {
 } from '@/lib/push-bridge'
 
 /** Post a message to the controlling service worker, if there is one. */
-function tellServiceWorker(msg: Record<string, unknown>): void {
+function tellServiceWorker(msg: object): void {
   try {
     navigator.serviceWorker?.controller?.postMessage(msg)
   } catch {
@@ -98,7 +98,14 @@ export function PushBridge(): null {
 
   // ── 2. the badge, recomputed from what the app can see ────────────────────
   // Crew term only under Bot mode (see `botOn` above) — off it, base parity.
-  const count = attentionCount(sessions, botOn ? teams : undefined)
+  // ONE derivation for both surfaces: the message carries the count AND the
+  // slots that earned it, so the number on the icon and the cards on the lock
+  // screen can never disagree about which bots are actionable.
+  const sync = React.useMemo(
+    () => notificationsSyncMessage(sessions, botOn ? teams : undefined),
+    [sessions, teams, botOn],
+  )
+  const count = sync.badge
   React.useEffect(() => {
     setBadge(count)
     tellServiceWorker({ type: 'badge', badge: count })
@@ -106,17 +113,31 @@ export function PushBridge(): null {
 
   // Foregrounding is the moment to self-heal: while the app was away a dialog
   // may have been answered in a pane, leaving the server's last stamped count
-  // stale on the home screen.
+  // stale on the home screen — AND leaving delivered cards on the lock screen
+  // for bots that have since died or been answered. So the foreground post
+  // carries the tag set too and the worker closes what is no longer actionable
+  // (`notificationsSyncMessage` → `push-sw.js::staleSessionTags`). The
+  // count-change effect above deliberately still posts the plain `badge`
+  // message: it also fires while the app is in the BACKGROUND, where the
+  // sessions snapshot can be stale enough to race a just-arrived push.
+  // The listener is mounted ONCE (a visibility handler that re-subscribed on
+  // every sessions delta would be pure churn), so the freshest snapshot reaches
+  // it through a ref written in a commit — never during render.
+  const syncRef = React.useRef(sync)
+  React.useEffect(() => {
+    syncRef.current = sync
+  }, [sync])
   React.useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        setBadge(count)
-        tellServiceWorker({ type: 'badge', badge: count })
+        const sync = syncRef.current
+        setBadge(sync.badge)
+        tellServiceWorker(sync)
       }
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [count])
+  }, [])
 
   // ── 3. viewing a bot answers its banner ───────────────────────────────────
   const viewing = sessionFromPath(location.pathname)

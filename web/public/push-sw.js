@@ -29,6 +29,14 @@
 // tier-aware `renotify`, `closeTag`, and a `message` listener so the page can
 // tell the SW what the user has just seen. The page owns that truth: without it
 // the lock screen kept a "needs you" card for a dialog already answered in-app.
+//
+// NEWER (the sticky-badge fix): a second message, `notifications-sync`, posted
+// when the app comes to the FRONT. It carries the set of session slots that
+// still need the human, and every DELIVERED session card outside that set is
+// closed. A bot whose terminal died used to keep both a home-screen count and a
+// lock-screen card forever; the count is gone by construction now (the badge
+// counts actionable attention only — see `push-bridge.ts::needsAttention` and
+// `notify::attention_badge`), and this closes the card that outlived it.
 
 /* global self, clients */
 
@@ -133,7 +141,7 @@ function applyBadge(count) {
 
 // Exposed for the unit tests (and harmless in production — the SW global is
 // not reachable from a page).
-self.__pushSw = { decideDisplay, notificationOptions, applyBadge, pathOf }
+self.__pushSw = { decideDisplay, notificationOptions, applyBadge, pathOf, staleSessionTags }
 
 // ── push ─────────────────────────────────────────────────────────────────────
 self.addEventListener('push', (event) => {
@@ -223,6 +231,55 @@ self.addEventListener('notificationclick', (event) => {
   )
 })
 
+/** The coalescing-slot prefix every SESSION notification carries — must match
+ *  `notify::tag_for` and `push-bridge.ts::tagForSession`. Anything without it
+ *  (the schedule lane keeps its own tag) is NOT ours to close in bulk. */
+const SESSION_TAG_PREFIX = 'session:'
+
+/**
+ * Which DELIVERED notifications are no longer actionable?
+ *
+ * `live` is what `getNotifications()` returned; `keep` is the set of slots the
+ * PAGE says still needs the human (it recomputed the badge rule from the
+ * sessions snapshot it holds — see `push-bridge.ts::notificationsSyncMessage`).
+ *
+ * Only session-tagged cards are eligible: a notification with any other tag
+ * belongs to a lane this rule knows nothing about (the scheduler's, say), and
+ * closing it because it "wasn't in the list" would be closing it blindly.
+ *
+ * Pure, so the rule is unit-testable without a service-worker scope.
+ *
+ * @param {Array<{tag?: string}>} live
+ * @param {string[]} keep
+ * @returns {Array<{tag?: string}>} the entries to close
+ */
+function staleSessionTags(live, keep) {
+  const wanted = new Set(Array.isArray(keep) ? keep : [])
+  return (live || []).filter(
+    (n) =>
+      n &&
+      typeof n.tag === 'string' &&
+      n.tag.startsWith(SESSION_TAG_PREFIX) &&
+      !wanted.has(n.tag),
+  )
+}
+
+/** Close every delivered SESSION card whose bot no longer needs the human.
+ *
+ *  This is the "clean on open" half of the sticky-badge fix: a bot whose
+ *  terminal died left both a count on the icon AND a card on the lock screen,
+ *  and neither had anything the human could act on. The count is now gone by
+ *  construction (the badge rule); this closes the card that used to outlive it.
+ *  Best-effort throughout — `getNotifications` is unavailable in some scopes. */
+async function closeStaleSessions(keep) {
+  try {
+    const live = await self.registration.getNotifications()
+    for (const n of staleSessionTags(live, keep)) n.close()
+  } catch {
+    /* getNotifications is unavailable in some scopes — best-effort */
+  }
+}
+
 /** Close every live notification in one coalescing slot. */
 async function closeTag(tag) {
   if (!tag) return
@@ -256,7 +313,17 @@ self.addEventListener('message', (event) => {
   const msg = event.data
   if (!msg || typeof msg !== 'object') return
   if (msg.type === 'notification-seen') {
-    event.waitUntil(closeTag(msg.tag || (msg.session ? `session:${msg.session}` : null)))
+    event.waitUntil(closeTag(msg.tag || (msg.session ? `${SESSION_TAG_PREFIX}${msg.session}` : null)))
+    return
+  }
+  // The app came to the FRONT and told us everything it can now see: the
+  // recomputed badge, plus every session slot that still needs the human. Cards
+  // outside that set are stale — the bot died, or its dialog was answered in a
+  // pane — so they are closed. The badge itself is still not applied here (see
+  // the note above): the page has already written it from the window context.
+  if (msg.type === 'notifications-sync') {
+    event.waitUntil(closeStaleSessions(msg.tags))
+    return
   }
   // A `{type:'badge'}` message is now a no-op — the open page owns the badge.
   // Tolerated (not rejected) so an older/newer page build posting one is

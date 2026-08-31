@@ -810,7 +810,38 @@ async fn recently_seen(state: &AppState, session: &str) -> bool {
 /// How many sessions currently NEED the human — the home-screen / dock badge.
 ///
 /// In-memory only (the same snapshot the roster renders from): a live
-/// permission dialog, or an un-cleared error.
+/// permission dialog, or an un-cleared error — and, since the sticky-badge
+/// fix, only while that signal is still ACTIONABLE.
+///
+/// # The actionable rule (the one place it lives, server side)
+///
+/// A session contributes 1 iff
+///
+/// ```text
+/// (permission.is_some() || error.is_some())  &&  last_known_status != Stopped
+/// ```
+///
+/// `web/src/lib/push-bridge.ts::attentionCount` encodes the SAME sentence on
+/// the client, so the count the server stamps on a push and the count the open
+/// page recomputes cannot disagree.
+///
+/// **Why the status term** (live evidence). The owner's home screen carried a
+/// permanent badge "1" from `persoonlijk-assistant`: status `stopped`, error
+/// `holder_died`. Nothing ever clears an in-memory error except a `SessionStart`
+/// on that same name, so a bot whose terminal died kept the phone's icon lit
+/// forever — for a thing the human cannot act on from the home screen. The
+/// error still renders in-app (the stopped-session card owns the Resume
+/// affordance) and it still produced its banner at death time
+/// ([`NotifEvent::SessionCrashed`]); it simply stops keeping a count lit.
+///
+/// **Why `permission` is gated too, not "always counted".** Verified in
+/// `hooks::apply_payload`: the clean death path (`SessionEnd`) calls
+/// `clear_permission_request` BEFORE `force_stopped`, so `permission + stopped`
+/// is unreachable there. The only way to observe the pair is an UNCLEAN death
+/// (`auto_actions::force_stopped_on_death`, the `holder_died` badge), which
+/// records the stop without clearing the dialog — and that dialog died with the
+/// pty, so it is exactly as un-answerable as the error beside it. One uniform
+/// rule, no special case.
 ///
 /// **Why no "agent notice" term** (B5/T1.3, §0.3b delta #4). This predicate was
 /// written on the integration branch as
@@ -828,19 +859,55 @@ async fn recently_seen(state: &AppState, session: &str) -> bool {
 /// `NotifEvent::AgentNotice` still PUSHES — the agent's sentence is worth a
 /// banner. It just does not keep a persistent count lit afterwards.
 ///
+/// ARCHIVED needs no term of its own: `lifecycle::archive` ends with
+/// `AppState::forget_session`, which drops the `session_activity` entry
+/// outright, so an archived bot is already absent from this scan.
+///
 /// Known limit, stated: a dialog resolved WITHOUT any subsequent push leaves
 /// the badge stale until the app is next opened, which is exactly when the
 /// window context recomputes it. The seen-cursor upgrades this later.
 pub fn attention_badge(state: &AppState) -> u32 {
+    let stopped = stopped_sessions(state);
     state
         .session_activity
         .iter()
         .filter(|e| {
             let a = e.value();
-            a.permission.is_some() || a.error.is_some()
+            (a.permission.is_some() || a.error.is_some()) && !stopped.contains(e.key())
         })
         .count()
         .min(u32::MAX as usize) as u32
+}
+
+/// The names whose LAST-KNOWN status is `Stopped`, from the detector's own
+/// in-memory classification cache (`cadence_recency`).
+///
+/// Why this source: it is the same one `chat::tailer::session_liveness` already
+/// trusts for "is this session's pane alive", it is an O(1) map read under a
+/// short mutex — no DB round-trip per push, which is the constraint this
+/// function was written against — and `force_stopped_on_death` writes it
+/// (`record_recency(name, Status::Stopped)`) on exactly the death that produced
+/// the sticky badge.
+///
+/// Collected into an owned set (rather than holding the mutex across the
+/// `session_activity` scan) so the two locks are never held at once; the set is
+/// tiny, since only stopped sessions land in it.
+///
+/// Cold cache (a fresh process, before the first detector tick) yields an empty
+/// set, so every signal counts — the pre-fix behaviour. That is the right way to
+/// fail: an in-memory error can only exist in this process's `session_activity`
+/// if a hook or the detector put it there, by which point the detector has
+/// classified the session anyway, and the open page recomputes the same rule
+/// from the wire `status` on every foreground.
+fn stopped_sessions(state: &AppState) -> std::collections::HashSet<String> {
+    let map = state
+        .cadence_recency
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.iter()
+        .filter(|(_, rec)| rec.status == crate::sessions::status::Status::Stopped)
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// The agent's closing line for a finished turn, from the two sources that can
@@ -1543,6 +1610,77 @@ mod tests {
             "the newest MAIN assistant line wins; subagent chatter is skipped",
         );
         assert_eq!(last_assistant_line(&dir.join("missing.jsonl")), None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A real `AppState` (temp DB) so the badge scan runs against the same two
+    /// in-memory maps production reads: `session_activity` and the detector's
+    /// `cadence_recency` classification cache.
+    async fn badge_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-badge-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            swarm_reaper: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    #[tokio::test]
+    async fn a_stopped_session_stops_counting_toward_the_badge() {
+        use crate::sessions::status::Status;
+
+        let (state, dir) = badge_state().await;
+
+        // The live evidence this fix was written from: `persoonlijk-assistant`,
+        // status `stopped`, error `holder_died` — a badge "1" that never cleared.
+        state.set_error(
+            "persoonlijk-assistant",
+            crate::sessions::auto_actions::HOLDER_DIED.to_string(),
+            "terminal died: holder exited".to_string(),
+        );
+        state.record_recency("persoonlijk-assistant", Status::Stopped);
+        assert_eq!(
+            attention_badge(&state),
+            0,
+            "a dead bot's error is not something the human can act on from the home screen",
+        );
+
+        // The same error on a LIVE bot is still a real ask.
+        state.set_error("deploy-fix", "rate_limit".to_string(), "slow down".to_string());
+        state.record_recency("deploy-fix", Status::Idle);
+        assert_eq!(attention_badge(&state), 1);
+
+        // A dialog on a live bot counts…
+        state.set_permission_request("reviewer", ask("Bash", "⚡ cargo check", None));
+        state.record_recency("reviewer", Status::Waiting);
+        assert_eq!(attention_badge(&state), 2);
+
+        // …and the SAME dialog, once its terminal has died under it, does not:
+        // the unclean death path records the stop WITHOUT clearing the dialog,
+        // and that dialog went with the pty.
+        state.record_recency("reviewer", Status::Stopped);
+        assert_eq!(attention_badge(&state), 1);
+
+        // A session the detector has never classified (cold cache) still counts —
+        // the fix never silences an ask it has no evidence against.
+        state.set_error("unclassified", "billing_error".to_string(), "card".to_string());
+        assert_eq!(attention_badge(&state), 2);
 
         let _ = std::fs::remove_dir_all(dir);
     }
