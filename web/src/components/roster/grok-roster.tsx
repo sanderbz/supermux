@@ -85,6 +85,17 @@ import {
   companyFirstOrder,
 } from '@/lib/companies'
 import {
+  claimConversationRestore,
+  conversationRestoreClaimed,
+  isColdStartMount,
+} from '@/lib/cold-start'
+import {
+  readConversation,
+  restorableConversation,
+  scopeKey,
+  type LastConversation,
+} from '@/lib/last-conversation'
+import {
   CompanyChannelRow,
   GroupChatEntry,
   groupChatSurface,
@@ -648,7 +659,8 @@ export default function GrokRoster() {
   // hidden under grok.
   const { state: updateBadge } = useUpdateBadge()
   const isMember = useIsMember()
-  const { sessions: allSessions } = useSessions()
+  const { sessions: allSessions, isLoading: sessionsLoading, isError: sessionsError } =
+    useSessions()
   const { teams } = useTeams()
   const attention = useAttentionContext()
   const openArchived = useArchivedSheet((s) => s.openSheet)
@@ -731,6 +743,30 @@ export default function GrokRoster() {
   const [density, setDensity] = React.useState<Density>(readDensity)
   const [selected, setSelected] = React.useState<Sel>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
+
+  // ── "OPEN WHERE I LEFT OFF" — the REMEMBER half ─────────────────────────────
+  // Two halves live in this file: REMEMBER (here) and RESTORE (below, once per
+  // page load). The rule deciding whether a remembered conversation may be
+  // REOPENED is `restorableConversation` — pure and unit-tested, so the
+  // exists / scope / member-lock / deep-link questions are answered in exactly
+  // one place and never re-litigated in a component.
+  const setLastConversation = useUI((s) => s.setLastConversation)
+  const memberCompany = useUI((s) => s.memberCompany)
+  // The PHONE never sets `selected` (a tap navigates to /focus), so the two
+  // navigation paths remember explicitly. Desktop double-writes harmlessly —
+  // the store setter returns the same map when nothing changed.
+  const rememberBot = React.useCallback(
+    (row: ApiSession) => {
+      // A search LIFTS scope: opening an out-of-scope result is a detour, not a
+      // new "where I left off", so it neither overwrites nor is remembered.
+      if (!inCompanyScope(row.company_id, activeCompany)) return
+      setLastConversation(scopeKey(activeCompany), { kind: 'bot', name: row.name })
+    },
+    [activeCompany, setLastConversation],
+  )
+  const rememberChannel = React.useCallback(() => {
+    setLastConversation(scopeKey(activeCompany), { kind: 'channel' })
+  }, [activeCompany, setLastConversation])
   // Which face the right pane wears for the OPEN bot: the live conversation
   // ('thread', the default) or the per-bot settings page ('settings'). It resets
   // to 'thread' whenever the selection changes (the render-phase guard below) so
@@ -1011,6 +1047,9 @@ export default function GrokRoster() {
   const openSession = React.useCallback(
     (s: ApiSession) => {
       attention.markRead(s)
+      // Remember BEFORE the fork: on a phone the tap leaves this component
+      // entirely, so this is the only chance to record what was opened.
+      rememberBot(s)
       // Desktop shows the detail pane; phone has none, so tap → thread.
       if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
         navigate(`/focus/${encodeURIComponent(s.name)}`)
@@ -1022,7 +1061,7 @@ export default function GrokRoster() {
       // click always returns to the conversation.
       setPaneView('thread')
     },
-    [attention, navigate],
+    [attention, navigate, rememberBot],
   )
   // A TEAM STAYS IN THE ROSTER on desktop (build spec §2b): selecting it swaps the
   // right pane in place — the lead's live thread, with the crew one toggle away —
@@ -1063,9 +1102,10 @@ export default function GrokRoster() {
   // the same reason opening a bot or a team makes none: on desktop the PANE is
   // the surface, and the roster keeps its scroll, selection and entry animations.
   const openChannel = React.useCallback(() => {
+    rememberChannel()
     setSelected({ kind: 'channel' })
     setPaneView('thread')
-  }, [])
+  }, [rememberChannel])
 
   // …but the channel still has a SHAREABLE url. `/company/:id/chat` stays the
   // link; on desktop that route redirects to the overview carrying this marker
@@ -1076,8 +1116,15 @@ export default function GrokRoster() {
   const deepLinkChannel = (
     location.state as { openCompanyChannel?: number } | null
   )?.openCompanyChannel
+  // Latched, because the marker is CONSUMED (state wiped) in the same effect: by
+  // the time the restore below can judge anything — it waits for the queries to
+  // resolve — `deepLinkChannel` is already undefined again. Without the latch a
+  // slow cold load would let the persisted conversation overwrite the very link
+  // the user just followed.
+  const deepLinkSeen = React.useRef(false)
   React.useEffect(() => {
     if (typeof deepLinkChannel !== 'number') return
+    deepLinkSeen.current = true
     setSelected({ kind: 'channel' })
     setPaneView('thread')
     navigate(location.pathname, { replace: true, state: null })
@@ -1124,6 +1171,96 @@ export default function GrokRoster() {
   const channelExists = !!(
     activeCompanyRow && companySessions.some((s) => s.name === routerName(activeCompanyRow.slug))
   )
+
+  // ── "OPEN WHERE I LEFT OFF" — the REMEMBER half (desktop selection) ─────────
+  // The callbacks above cover the two navigations the phone makes; this covers
+  // every DESKTOP path the pane has — a row click, ESC/close, a team (not a
+  // conversation ⇒ forget), and the company switch that re-homes the pane. It
+  // runs AFTER the render that made the selection true, never during it.
+  const persistGate = React.useRef(false)
+  React.useEffect(() => {
+    // The mount's empty selection must not erase what the last visit stored, so
+    // the gate opens on the first REAL selection — which includes the restore.
+    if (!persistGate.current) {
+      if (selected === null) return
+      persistGate.current = true
+    }
+    let next: LastConversation | null = null
+    if (selected?.kind === 'bot') {
+      const row = sessions.find((s) => s.name === selected.name)
+      // Same rule as `rememberBot`: an out-of-scope search result is a detour.
+      if (!row || !inCompanyScope(row.company_id, activeCompany)) return
+      next = { kind: 'bot', name: selected.name }
+    } else if (selected?.kind === 'channel') {
+      next = { kind: 'channel' }
+    }
+    // A team / member selection is a roster view, not a conversation ⇒ forget.
+    setLastConversation(scopeKey(activeCompany), next)
+  }, [selected, sessions, activeCompany, setLastConversation])
+
+  // ── "OPEN WHERE I LEFT OFF" — the RESTORE half ─────────────────────────────
+  // ONE shot, on the surface the browser BOOTED onto (`lib/cold-start.ts`).
+  // Walking back to the roster later must NOT reopen a pane the user closed on
+  // purpose, and a page that booted somewhere else was never a launch of this
+  // surface at all.
+  const [isColdStart] = React.useState(() => isColdStartMount(location.pathname))
+  React.useEffect(() => {
+    if (!isColdStart || conversationRestoreClaimed()) return
+    // Judge "that bot is gone" only against RESOLVED data. An empty list that
+    // has not landed yet is not an empty roster — deciding against it is how a
+    // perfectly live thread gets silently dropped (the same mistake the company
+    // scope reconcile made, see `useCompanyScope`).
+    if (sessionsLoading || companiesLoading || sessionsError || companiesError) return
+    if (!claimConversationRestore()) return
+
+    const target = restorableConversation({
+      saved: readConversation(
+        useUI.getState().lastConversations,
+        scopeKey(activeCompany),
+      ),
+      activeCompany,
+      memberCompany,
+      sessions,
+      channelAvailable: channelExists,
+      // An explicit deep link OWNS the surface; the memory stays untouched.
+      deepLinkActive: deepLinkSeen.current || typeof deepLinkChannel === 'number',
+    })
+    // Gone, moved, out of scope, or outranked ⇒ restore NOTHING, silently.
+    if (!target) return
+
+    if (target.kind === 'channel') {
+      // PHONE has no pane: the channel's doorway is the full-bleed page, which
+      // is exactly where a tap on the dock lands.
+      if (isPhone) {
+        if (activeCompany !== null) navigate(`/company/${activeCompany}/chat`)
+        return
+      }
+      setSelected({ kind: 'channel' })
+      setPaneView('thread')
+      return
+    }
+    if (isPhone) {
+      // Do what a TAP does — push `/focus/<name>`. A push, not a replace, so
+      // Back lands on the roster and navigation afterwards behaves normally.
+      navigate(`/focus/${encodeURIComponent(target.name)}`)
+      return
+    }
+    setSelected({ kind: 'bot', name: target.name })
+    setPaneView('thread')
+  }, [
+    activeCompany,
+    channelExists,
+    companiesError,
+    companiesLoading,
+    deepLinkChannel,
+    isColdStart,
+    isPhone,
+    memberCompany,
+    navigate,
+    sessions,
+    sessionsError,
+    sessionsLoading,
+  ])
   // Which doorway this viewport gets — the ONE pure rule (`group-chat/surface.ts`,
   // unit-tested): 'dock' on a phone (today's compact card → full-bleed page),
   // 'row' on desktop (a pinned roster row → the right pane), 'none' for HQ, an
@@ -1302,7 +1439,10 @@ export default function GrokRoster() {
           <GroupChatEntry
             company={activeCompanyRow}
             sessions={companySessions}
-            onOpen={() => navigate(`/company/${activeCompanyRow.id}/chat`)}
+            onOpen={() => {
+              rememberChannel()
+              navigate(`/company/${activeCompanyRow.id}/chat`)
+            }}
           />
         </div>
       )}

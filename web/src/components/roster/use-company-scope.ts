@@ -26,21 +26,33 @@ export interface CompanyScope {
 }
 
 export function useCompanyScope(): CompanyScope {
-  const { companies } = useCompanies()
+  const { companies, isLoading, isError } = useCompanies()
   const activeCompany = useUI((s) => s.activeCompany)
   const setActiveCompany = useUI((s) => s.setActiveCompany)
 
   // Reconcile a stale persisted id against the live set (see file header) — the
   // roster's effect verbatim, so the fail-open-to-HQ rule fires on whichever
   // scoped surface is mounted.
+  //
+  // ONLY once the list actually resolved — the guard `grok-roster.tsx` already
+  // carries, and the reason this hook needed it too. While the query is in
+  // flight (or has failed) `companies` is `[]`, which is "we don't know yet",
+  // not "there are no companies". Reconciling against that empty set WROTE
+  // `activeCompany: null` into the persisted store, so a cold load onto any
+  // surface that mounts this hook — `/browser`, `/workflows`, the workflow
+  // composer — silently and PERMANENTLY threw the user back to HQ. A PWA
+  // reopening on its last route is exactly that cold load, which is why the
+  // roster's own fix was not enough. Measured and reproduced on the headless
+  // rig before this line existed.
   React.useEffect(() => {
+    if (isLoading || isError) return
     if (activeCompany === null) return
     const resolved = resolveActiveCompany(
       activeCompany,
       companies.map((c) => c.id),
     )
     if (resolved !== activeCompany) setActiveCompany(resolved)
-  }, [activeCompany, companies, setActiveCompany])
+  }, [activeCompany, companies, isError, isLoading, setActiveCompany])
 
   const inScope = React.useCallback(
     (companyId: number | null | undefined) => inCompanyScope(companyId, activeCompany),
