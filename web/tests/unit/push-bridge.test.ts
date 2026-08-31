@@ -9,6 +9,8 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   attentionCount,
+  needsAttention,
+  notificationsSyncMessage,
   sessionFromPath,
   tagForSession,
   toastForPush,
@@ -63,25 +65,99 @@ describe('toastForPush', () => {
 
 describe('attentionCount', () => {
   test('counts the bots that need the human, once each', () => {
-    // The SAME predicate the server stamps on the payload: a live dialog, an
-    // unanswered notice, or an uncleared error.
+    // The SAME predicate the server stamps on the payload: a live dialog or an
+    // uncleared error, on a session that is not stopped.
     expect(
       attentionCount([
-        { permission_request: { tool: 'Bash' } },
-        { notice: 'Claude is waiting for your input' },
-        { error: { type: 'rate_limit', message: 'x' } },
+        { status: 'waiting', permission_request: { tool: 'Bash' } },
+        { status: 'error', error: { type: 'rate_limit', message: 'x' } },
         // Two reasons is still one bot.
-        { permission_request: { tool: 'Read' }, error: { type: 'e', message: 'm' } },
+        {
+          status: 'idle',
+          permission_request: { tool: 'Read' },
+          error: { type: 'e', message: 'm' },
+        },
+        // A status the app has not learnt yet still counts — the rule only ever
+        // subtracts on positive evidence of death.
+        { error: { type: 'billing_error', message: 'card' } },
         // Working away, nothing wanted.
-        {},
-        { permission_request: null, notice: null },
+        { status: 'active' },
+        { status: 'idle', permission_request: null },
       ]),
     ).toBe(4)
+  })
+
+  test('a STOPPED bot never lights the home screen — the live sticky-badge bug', () => {
+    // Live evidence: the owner's iOS icon carried a permanent "1" from
+    // `persoonlijk-assistant` — status `stopped`, error `holder_died`. An
+    // in-memory error is only cleared by a SessionStart on that same name, so
+    // the count never came down for something no tap could act on.
+    const fleet = [
+      { name: 'persoonlijk-assistant', status: 'stopped', error: { type: 'holder_died', message: 'terminal died: holder exited' } },
+    ]
+    expect(attentionCount(fleet)).toBe(0)
+
+    // The SAME error on a live bot is still a real ask.
+    expect(attentionCount([{ ...fleet[0], status: 'idle' }])).toBe(1)
+  })
+
+  test('a dialog on a stopped bot is gated too — it died with the pty', () => {
+    // A clean SessionEnd clears the dialog BEFORE forcing `stopped`, so this
+    // pair only exists after an UNCLEAN death (`holder_died`), where the dialog
+    // is as un-answerable as the error beside it. One uniform rule.
+    expect(
+      attentionCount([{ status: 'stopped', permission_request: { tool: 'Bash' } }]),
+    ).toBe(0)
+    expect(
+      attentionCount([{ status: 'waiting', permission_request: { tool: 'Bash' } }]),
+    ).toBe(1)
+  })
+
+  test('the per-session rule is the one the count is built from', () => {
+    expect(needsAttention({ status: 'stopped', error: { type: 'holder_died', message: 'x' } })).toBe(false)
+    expect(needsAttention({ status: 'idle', error: { type: 'holder_died', message: 'x' } })).toBe(true)
+    expect(needsAttention({ status: 'stopped' })).toBe(false)
+    expect(needsAttention({ status: 'active' })).toBe(false)
+    expect(needsAttention(undefined)).toBe(false)
+    expect(needsAttention(null)).toBe(false)
   })
 
   test('an empty or missing fleet is zero, not a crash', () => {
     expect(attentionCount([])).toBe(0)
     expect(attentionCount(undefined)).toBe(0)
+  })
+})
+
+describe('notificationsSyncMessage', () => {
+  test('names exactly the slots that still need the human', () => {
+    const msg = notificationsSyncMessage([
+      { name: 'deploy-fix', status: 'waiting', permission_request: { tool: 'Bash' } },
+      { name: 'persoonlijk-assistant', status: 'stopped', error: { type: 'holder_died', message: 'x' } },
+      { name: 'quiet-bot', status: 'active' },
+    ])
+    expect(msg.type).toBe('notifications-sync')
+    // The dead bot is in neither half: no count, and no card kept alive.
+    expect(msg.badge).toBe(1)
+    expect(msg.tags).toEqual(['session:deploy-fix'])
+  })
+
+  test('the tags it emits are the tags the server coalesces on', () => {
+    const msg = notificationsSyncMessage([
+      { name: 'with space', status: 'waiting', error: { type: 'e', message: 'm' } },
+    ])
+    expect(msg.tags).toEqual([tagForSession('with space')])
+  })
+
+  test('a nameless or empty fleet yields an empty, harmless sync', () => {
+    expect(notificationsSyncMessage(undefined)).toEqual({
+      type: 'notifications-sync',
+      badge: 0,
+      tags: [],
+    })
+    // A row with no `name` cannot address a slot — counted, never tagged.
+    const msg = notificationsSyncMessage([{ status: 'idle', error: { type: 'e', message: 'm' } }])
+    expect(msg.badge).toBe(1)
+    expect(msg.tags).toEqual([])
   })
 })
 

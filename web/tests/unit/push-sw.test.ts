@@ -15,6 +15,8 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { notificationsSyncMessage } from '../../src/lib/push-bridge'
+
 interface WindowClient {
   url?: string
   focused?: boolean
@@ -35,6 +37,16 @@ interface PushSwInternals {
   }
   applyBadge: (count: unknown) => unknown
   pathOf: (url: string | undefined) => string
+  staleSessionTags: (
+    live: { tag?: string }[],
+    keep: string[],
+  ) => { tag?: string }[]
+}
+
+/** A delivered notification, as `getNotifications()` hands it back. */
+interface FakeNotification {
+  tag?: string
+  closed?: boolean
 }
 
 /** Evaluate push-sw.js in a fake SW scope and hand back its internals. */
@@ -44,6 +56,8 @@ function loadServiceWorker(
     setAppBadge: (n: number) => unknown
     clearAppBadge: () => unknown
   }>,
+  /** What `getNotifications()` should hand back (the cleanup tests). */
+  delivered: FakeNotification[] = [],
 ): {
   sw: PushSwInternals
   badgeCalls: number[]
@@ -53,6 +67,8 @@ function loadServiceWorker(
   listeners: Record<string, (event: { data: unknown }) => void>
   /** Tags passed to `getNotifications` — proves `closeTag` ran. */
   closedTags: (string | undefined)[]
+  /** The fake delivered set, so a test can read back which entries closed. */
+  delivered: FakeNotification[]
 } {
   const src = readFileSync(
     join(import.meta.dir, '../../public/push-sw.js'),
@@ -79,7 +95,17 @@ function loadServiceWorker(
       showNotification: () => Promise.resolve(),
       getNotifications: (q?: { tag?: string }) => {
         closedTags.push(q?.tag)
-        return Promise.resolve([])
+        const match = q?.tag
+          ? delivered.filter((n) => n.tag === q.tag)
+          : delivered.slice()
+        return Promise.resolve(
+          match.map((n) => ({
+            tag: n.tag,
+            close: () => {
+              n.closed = true
+            },
+          })),
+        )
       },
     },
     addEventListener: (name: string, fn: (event: { data: unknown }) => void) => {
@@ -89,7 +115,14 @@ function loadServiceWorker(
   // The SW body only registers listeners and assigns `self.__pushSw`, so
   // evaluating it has no side effects beyond that.
   new Function('self', 'clients', src)(self, { matchAll: () => Promise.resolve([]) })
-  return { sw: self.__pushSw as PushSwInternals, badgeCalls, clears, listeners, closedTags }
+  return {
+    sw: self.__pushSw as PushSwInternals,
+    badgeCalls,
+    clears,
+    listeners,
+    closedTags,
+    delivered,
+  }
 }
 
 const ORIGIN = 'https://supermux.example'
@@ -310,5 +343,106 @@ describe('the message handler', () => {
     listeners.push(e)
     await e.waited
     expect(badgeCalls).toEqual([2])
+  })
+})
+
+describe('cleaning delivered notifications on open', () => {
+  test('closes the session cards the page no longer counts', async () => {
+    // The live bug: `persoonlijk-assistant` died (`holder_died`) and kept BOTH a
+    // home-screen count and a lock-screen card forever. The count is gone by
+    // construction (the badge rule); this is the card.
+    const delivered = [
+      { tag: 'session:persoonlijk-assistant' },
+      { tag: 'session:deploy-fix' },
+    ]
+    const { listeners, delivered: live } = loadServiceWorker(undefined, delivered)
+    const waits: unknown[] = []
+    listeners.message({
+      data: { type: 'notifications-sync', badge: 1, tags: ['session:deploy-fix'] },
+      waitUntil: (p: unknown) => waits.push(p),
+    } as never)
+    await Promise.all(waits)
+
+    expect(live[0].closed).toBe(true)
+    expect(live[1].closed).toBeUndefined()
+  })
+
+  test('never closes a tag it does not own', () => {
+    const { sw } = loadServiceWorker()
+    const live = [
+      { tag: 'session:dead-bot' },
+      { tag: 'schedule:nightly' },
+      { tag: 'supermux' },
+      {},
+    ]
+    // Only the session-tagged card is eligible; the scheduler's lane and an
+    // untagged card belong to rules this one knows nothing about.
+    expect(sw.staleSessionTags(live, [])).toEqual([{ tag: 'session:dead-bot' }])
+  })
+
+  test('an empty keep-set is honoured, a missing one does not throw', () => {
+    const { sw } = loadServiceWorker()
+    const live = [{ tag: 'session:a' }, { tag: 'session:b' }]
+    expect(sw.staleSessionTags(live, ['session:a', 'session:b'])).toEqual([])
+    expect(sw.staleSessionTags(live, undefined as never)).toEqual(live)
+    expect(sw.staleSessionTags(undefined as never, [])).toEqual([])
+  })
+
+  test('a sync message does not touch the badge (the page already wrote it)', async () => {
+    // Applying it from the worker is the chrome-headless-shell renderer-crash
+    // hazard the `badge` message was stripped of; the sync path must not
+    // reintroduce it.
+    const { listeners, badgeCalls, clears } = loadServiceWorker(undefined, [])
+    const waits: unknown[] = []
+    listeners.message({
+      data: { type: 'notifications-sync', badge: 7, tags: [] },
+      waitUntil: (p: unknown) => waits.push(p),
+    } as never)
+    await Promise.all(waits)
+    expect(badgeCalls).toEqual([])
+    expect(clears.count).toBe(0)
+  })
+})
+
+describe('the page and the worker agree about which cards survive', () => {
+  test('the fleet the page sees decides exactly which slots stay open', () => {
+    // The two halves of the fix, joined: the page's badge rule produces the
+    // keep-set, and the worker closes everything else. Neither side can drift
+    // without this failing.
+    const { sw } = loadServiceWorker()
+    const fleet = [
+      { name: 'deploy-fix', status: 'waiting', permission_request: { tool: 'Bash' } },
+      {
+        name: 'persoonlijk-assistant',
+        status: 'stopped',
+        error: { type: 'holder_died', message: 'terminal died: holder exited' },
+      },
+      { name: 'reviewer', status: 'idle', error: { type: 'rate_limit', message: 'slow down' } },
+      { name: 'quiet-bot', status: 'active' },
+    ]
+    const sync = notificationsSyncMessage(fleet)
+    const delivered = fleet.map((s) => ({ tag: `session:${s.name}` }))
+
+    expect(sync.badge).toBe(2)
+    expect(sw.staleSessionTags(delivered, sync.tags).map((n) => n.tag)).toEqual([
+      // The dead bot's card — the one that used to outlive its own usefulness.
+      'session:persoonlijk-assistant',
+      // A bot that never had anything to say keeps no card either.
+      'session:quiet-bot',
+    ])
+  })
+
+  test('the page really does post the sync on foreground', () => {
+    // This suite has no DOM, so the WIRING is asserted against the source: the
+    // visibility handler must send the builder's message, not a bare badge.
+    const src = readFileSync(
+      join(import.meta.dir, '../../src/components/pwa/push-bridge.tsx'),
+      'utf8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    expect(src).toContain('notificationsSyncMessage(')
+    expect(src).toContain('visibilitychange')
+    expect(src).toContain('tellServiceWorker(sync)')
   })
 })
