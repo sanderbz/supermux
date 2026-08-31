@@ -59,6 +59,23 @@ export interface QuickTunnelStatus {
   ephemeral: boolean
 }
 
+/** The connector PROCESS on the box — the thing that makes a Cloudflare tunnel
+ *  actually connect. Mirrors the server's `ConnectorStatusOut`.
+ *
+ *  It exists because a tunnel can sit at `connecting` forever with nothing
+ *  running: provisioning used to write a `systemd --user` unit, which a server
+ *  install (no login session) can never start. `running:false` + `detail` is how
+ *  the wizard says that out loud instead of spinning. */
+export interface ConnectorStatus {
+  running: boolean
+  /** `child` (supermux supervises it) | `adopted` (one was already running) | `none`. */
+  via: string
+  /** The connector's pid, when there is one. */
+  pid?: number
+  /** How it is running, or WHY it is not. Present whenever it is down. */
+  detail?: string
+}
+
 /** Box-wide external-access state — the wizard's entry-routing + live chips. */
 export interface BoxStatus {
   /** `none` | `valid`. */
@@ -82,6 +99,9 @@ export interface BoxStatus {
   /** The DNS records supermux owns in the operator's zone (one per company
    *  host). What the wizard shows so the footprint is never a surprise. */
   dns_records?: string[]
+  /** The connector process on the box. Absent only on an older server — the one
+   *  case the wizard still has to guess. */
+  connector?: ConnectorStatus | null
 }
 
 /** `POST /api/external-access/quick-tunnel` result — the freshly-started ephemeral

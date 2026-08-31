@@ -7,8 +7,8 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, bot_memory, config, connectors, db, external_edit, http, sessions, state,
-    teams, workflows,
+    agents, bot_memory, config, connectors, db, external_access, external_edit, http, sessions,
+    state, teams, workflows,
 };
 
 #[tokio::main]
@@ -168,6 +168,19 @@ async fn main() -> anyhow::Result<()> {
         ),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "workflows: port reconciliation failed"),
+    }
+
+    // External access: bring the tunnel connector back up. The Cloudflare tunnel
+    // and its DNS survive a reboot; the connector PROCESS does not, and nothing
+    // else ever started it — so a restart used to silently take external access
+    // down until someone ran `cloudflared` by hand. No-op on an unprovisioned box,
+    // and it adopts (never doubles) a connector that is already running.
+    //
+    // Detached: serving must never wait on a `cloudflared` spawn. The supervisor
+    // it starts keeps retrying on its own, and `status` reports whatever it finds.
+    {
+        let state = state.clone();
+        tokio::spawn(async move { external_access::resume_connector_on_boot(&state).await });
     }
 
     // Background tasks. The workflows tick (and its crash reaper) run here.

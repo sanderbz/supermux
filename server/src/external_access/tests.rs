@@ -1,6 +1,6 @@
 //! Unit tests for the onboarding-wizard backend. Every Cloudflare call runs
 //! through [`super::cf::MockCfApi`] and the connector unit through
-//! [`super::systemd::MockConnectorHost`], so the whole flow is exercised WITHOUT a
+//! [`super::connector::MockConnectorHost`], so the whole flow is exercised WITHOUT a
 //! live token or `systemctl --user`.
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use axum::Json;
 
 use super::cf::MockCfApi;
 use super::quick::MockQuickTunnelHost;
-use super::systemd::MockConnectorHost;
+use super::connector::MockConnectorHost;
 use super::*;
 use crate::auth_human::AuthContext;
 use crate::config::{company_canonical_host, Config};
@@ -58,6 +58,14 @@ fn inject_host(state: &AppState) -> Arc<MockConnectorHost> {
 
 /// Inject a quick-tunnel mock returning `url`, so provisioning never starts a real
 /// tunnel or touches the network.
+/// Inject a connector mock that reports NOT running, with a reason — the state
+/// the wizard must render honestly instead of spinning forever.
+fn inject_dead_host(state: &AppState, reason: &str) -> Arc<MockConnectorHost> {
+    let host = Arc::new(MockConnectorHost::unavailable(reason));
+    state.external_access.set_host(host.clone());
+    host
+}
+
 fn inject_quick(state: &AppState, url: &str) -> Arc<MockQuickTunnelHost> {
     let q = Arc::new(MockQuickTunnelHost::with_url(url));
     state.external_access.set_quick(q.clone());
@@ -210,28 +218,144 @@ async fn provision_tunnel_creates_once_and_reuses_on_rerun() {
     assert_eq!(cf.create_count(), 1, "idempotent — no re-create");
     assert_eq!(host.provision_count(), 2, "connector re-provisioned (idempotent)");
 
-    // Connector token written 0600, and the unit references it via
-    // EnvironmentFile — the secret is NEVER inline in the unit.
+    // Connector token written 0600, in the `TUNNEL_TOKEN=…` env-file format the
+    // BOOT RESUME reads back — that file is the only reason a reboot can bring
+    // external access up again without the wizard.
     let tok_path = dir.join(super::CONNECTOR_TOKEN_FILE);
     let tok_body = std::fs::read_to_string(&tok_path).unwrap();
-    assert!(tok_body.contains("connector-token-secret"));
+    assert_eq!(
+        super::connector::parse_token_env(&tok_body).as_deref(),
+        Some("connector-token-secret")
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&tok_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "connector token must be 0600");
     }
-    let unit = host.recorded_unit_body().expect("unit recorded");
-    assert!(unit.contains("EnvironmentFile="), "unit must reference the token file");
-    assert!(
-        !unit.contains("connector-token-secret"),
-        "connector secret must NOT be inline in the unit: {unit}"
-    );
+    // The connector the handler asked for is the tunnel's own token.
+    assert_eq!(host.last_token().as_deref(), Some("connector-token-secret"));
     // The tunnel id is persisted (non-secret) so status can poll it.
     assert_eq!(
         std::fs::read_to_string(dir.join(super::TUNNEL_ID_FILE)).unwrap().trim(),
         "tunnel-xyz"
     );
+    cleanup(state, dir).await;
+}
+
+/// Bug 1, the wire half: when the connector does NOT come up, `provision` says
+/// so — with the reason — instead of reporting a started connector nobody ran.
+#[tokio::test]
+async fn provision_reports_a_dead_connector_with_its_reason() {
+    let (state, dir) = test_state().await;
+    let _cf = inject_cf(&state);
+    let host = inject_dead_host(&state, "could not start /home/x/bin/cloudflared: No such file");
+    crate::config::write_token_0600(&dir.join(super::CF_TOKEN_FILE), "valid-cf-token").unwrap();
+    set_base(&state).await;
+
+    let r = provision_tunnel_handler(State(state.clone()), OptCtx(None))
+        .await
+        .expect("provision ok");
+    assert_eq!(r.0.data.connector, "unavailable");
+    assert!(
+        r.0.data
+            .connector_detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("could not start"),
+        "the reason must reach the wizard: {:?}",
+        r.0.data.connector_detail
+    );
+    assert_eq!(host.provision_count(), 1);
+    cleanup(state, dir).await;
+}
+
+/// **Boot resume.** A provisioned box (tunnel id + token env-file on disk) must
+/// start its connector on server boot — a reboot used to leave external access
+/// down until someone ran `cloudflared` by hand.
+#[tokio::test]
+async fn boot_resume_starts_the_connector_on_a_provisioned_box() {
+    let (state, dir) = test_state().await;
+    let host = inject_host(&state);
+    crate::config::write_token_0600(&dir.join(super::TUNNEL_ID_FILE), "tunnel-xyz").unwrap();
+    crate::config::write_token_0600(
+        &dir.join(super::CONNECTOR_TOKEN_FILE),
+        &super::connector::token_env_body("boot-token-secret"),
+    )
+    .unwrap();
+
+    super::resume_connector_on_boot(&state).await;
+
+    assert_eq!(host.provision_count(), 1, "the connector is started on boot");
+    assert_eq!(
+        host.last_token().as_deref(),
+        Some("boot-token-secret"),
+        "with the token from the 0600 env-file"
+    );
+    cleanup(state, dir).await;
+}
+
+/// …and starts NOTHING on a box that was never provisioned (or whose token file
+/// is missing/unreadable). Booting must never spawn a token-less connector.
+#[tokio::test]
+async fn boot_resume_is_a_no_op_without_a_provisioned_tunnel() {
+    let (state, dir) = test_state().await;
+    let host = inject_host(&state);
+
+    // Nothing on disk at all.
+    super::resume_connector_on_boot(&state).await;
+    assert_eq!(host.provision_count(), 0);
+
+    // A tunnel id but no connector token ⇒ still nothing (never an empty token).
+    crate::config::write_token_0600(&dir.join(super::TUNNEL_ID_FILE), "tunnel-xyz").unwrap();
+    super::resume_connector_on_boot(&state).await;
+    assert_eq!(host.provision_count(), 0);
+
+    // A token file that carries no TUNNEL_TOKEN line is not a token either.
+    crate::config::write_token_0600(&dir.join(super::CONNECTOR_TOKEN_FILE), "# nothing here").unwrap();
+    super::resume_connector_on_boot(&state).await;
+    assert_eq!(host.provision_count(), 0);
+    cleanup(state, dir).await;
+}
+
+/// Bug 2's server half: `status` reports the connector PROCESS, running or not,
+/// and always says why not. Without this the wizard could only guess.
+#[tokio::test]
+async fn status_reports_the_connector_process_honestly() {
+    let (state, dir) = test_state().await;
+    set_base(&state).await;
+
+    // Dead connector → running:false WITH a reason.
+    inject_dead_host(&state, "the connector exited (exit status: 1); restarting");
+    let s = status_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Query(StatusQuery { company_id: None }),
+    )
+    .await
+    .expect("status ok");
+    let c = &s.0.data.box_status.connector;
+    assert!(!c.running, "a dead connector is never reported as running");
+    assert_eq!(c.via, "none");
+    assert!(
+        c.detail.as_deref().unwrap_or("").contains("exited"),
+        "status must say WHY it is down: {:?}",
+        c.detail
+    );
+
+    // Live connector → running:true, how, and which pid.
+    inject_host(&state);
+    let s2 = status_handler(
+        State(state.clone()),
+        OptCtx(None),
+        Query(StatusQuery { company_id: None }),
+    )
+    .await
+    .unwrap();
+    let c2 = &s2.0.data.box_status.connector;
+    assert!(c2.running);
+    assert_eq!(c2.via, "child");
+    assert_eq!(c2.pid, Some(4242));
     cleanup(state, dir).await;
 }
 

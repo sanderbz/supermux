@@ -6,7 +6,7 @@
 //! | Method + path | Purpose |
 //! |---|---|
 //! | `POST /api/external-access/cf-token`       | Validate + store the Cloudflare API token (0600, never returned). |
-//! | `POST /api/external-access/provision-tunnel` | One-time idempotent tunnel + connector unit (+ a record per configured company host). |
+//! | `POST /api/external-access/provision-tunnel` | One-time idempotent tunnel + supervised connector child (+ a record per configured company host). |
 //! | `POST /api/external-access/tighten-dns`    | Replace a legacy `*.<base>` wildcard with per-company records. |
 //! | `GET  /api/external-access/status`         | Live-verify source the wizard polls. |
 //! | `GET  /api/external-access/zones`          | List the saved CF token's zones (the base-domain choices). |
@@ -35,7 +35,7 @@
 //! `tighten-dns` replaces it with per-company records ON REQUEST. supermux never
 //! deletes it implicitly, and never touches a DNS record that does not point at
 //! its own tunnel. Cloudflare sits behind
-//! [`cf::CfApi`] and the connector unit behind [`systemd::ConnectorHost`] so the
+//! [`cf::CfApi`] and the connector process behind [`connector::ConnectorHost`] so the
 //! whole flow is unit-testable without a live token or `systemctl --user`.
 //!
 //! # Secrets
@@ -47,9 +47,9 @@
 //! [`store`] (`companies_config.toml`), NEVER the checked-in `config.toml`.
 
 pub mod cf;
+pub mod connector;
 pub mod quick;
 pub mod store;
-pub mod systemd;
 
 use std::sync::{Arc, Mutex};
 
@@ -65,8 +65,8 @@ use crate::scope::OptCtx;
 use crate::state::AppState;
 
 use cf::{CfApi, RealCfApi};
+use connector::{ConnectorHost, ConnectorPlan, ConnectorState, RealConnectorHost};
 use quick::{QuickTunnelHandle, QuickTunnelHost, RealQuickTunnelHost};
-use systemd::{ConnectorHost, ConnectorPlan, ConnectorState, RealConnectorHost};
 
 /// The one tunnel name per box.
 pub const TUNNEL_NAME: &str = "supermux";
@@ -101,7 +101,7 @@ impl ExternalAccess {
     pub fn new() -> Self {
         Self {
             cf: Mutex::new(Arc::new(RealCfApi::new())),
-            host: Mutex::new(Arc::new(RealConnectorHost)),
+            host: Mutex::new(Arc::new(RealConnectorHost::new())),
             quick: Mutex::new(Arc::new(RealQuickTunnelHost)),
             quick_handle: tokio::sync::Mutex::new(None),
         }
@@ -581,18 +581,10 @@ async fn provision_tunnel_handler(
         sync_ingress(&state, dns, &base).await?;
     }
 
-    // Write the connector unit + start it (behind the mockable seam).
-    let host = state.external_access.host();
-    let plan = ConnectorPlan {
-        connector_token: tunnel.token.clone(),
-        token_path: state.config.data_dir.join(CONNECTOR_TOKEN_FILE),
-        unit_path: connector_unit_path(),
-        cloudflared_bin: cloudflared_bin_path(),
-    };
-    let (connector, connector_detail) = match host.provision(&plan) {
-        ConnectorState::Started => ("started".to_string(), None),
-        ConnectorState::Unavailable(reason) => ("unavailable".to_string(), Some(reason)),
-    };
+    // Start (or adopt) the connector CHILD — the supervised process that makes
+    // the tunnel actually connect. Behind the mockable seam.
+    let (connector, connector_detail) =
+        provision_connector(&state, &tunnel.token).await;
 
     Ok(ok(ProvisionResult {
         tunnel_id: tunnel.id,
@@ -605,10 +597,61 @@ async fn provision_tunnel_handler(
     }))
 }
 
-fn connector_unit_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".config/systemd/user/cloudflared.service")
+/// Write the 0600 token env-file and make sure the connector process is running,
+/// returning the `(connector, connector_detail)` pair the wizard renders.
+/// Shared by `provision-tunnel` and the boot resume so they can never drift.
+async fn provision_connector(state: &AppState, token: &str) -> (String, Option<String>) {
+    let plan = ConnectorPlan {
+        connector_token: token.to_string(),
+        token_path: state.config.data_dir.join(CONNECTOR_TOKEN_FILE),
+        cloudflared_bin: cloudflared_bin_path(),
+    };
+    match state.external_access.host().provision(&plan).await {
+        ConnectorState::Started { via, pid } => (
+            "started".to_string(),
+            Some(match pid {
+                Some(pid) => format!("the connector is running ({via}, pid {pid})"),
+                None => format!("the connector is running ({via})"),
+            }),
+        ),
+        ConnectorState::Unavailable(reason) => ("unavailable".to_string(), Some(reason)),
+    }
+}
+
+/// Read the 0600 connector-token env-file (`TUNNEL_TOKEN=…`) written at provision.
+fn read_connector_token(state: &AppState) -> Option<String> {
+    crate::config::read_secret_file(&state.config.data_dir.join(CONNECTOR_TOKEN_FILE))
+        .as_deref()
+        .and_then(connector::parse_token_env)
+}
+
+/// **Boot resume.** A provisioned box must come back with its connector running:
+/// the tunnel + DNS survive a reboot, but the connector process does not, and
+/// nothing else ever started it — which is why a reboot used to take external
+/// access down until someone ran `cloudflared` by hand.
+///
+/// Runs only when this box IS provisioned (a tunnel id AND a readable token);
+/// otherwise a no-op. Never fatal: a failure is logged and surfaced by `status`.
+pub async fn resume_connector_on_boot(state: &AppState) {
+    let Some(tunnel_id) = read_tunnel_id(state) else {
+        return;
+    };
+    let Some(token) = read_connector_token(state) else {
+        tracing::warn!(
+            "external-access: tunnel {tunnel_id} is provisioned but its connector token \
+             is missing or unreadable — re-run Set up access"
+        );
+        return;
+    };
+    match provision_connector(state, &token).await {
+        (c, detail) if c == "started" => {
+            tracing::info!("external-access: connector resumed on boot ({detail:?})")
+        }
+        (_, detail) => tracing::warn!(
+            "external-access: connector did not start on boot: {}",
+            detail.unwrap_or_default()
+        ),
+    }
 }
 
 fn cloudflared_bin_path() -> std::path::PathBuf {
@@ -650,6 +693,34 @@ struct BoxStatus {
     /// The DNS records supermux owns in the operator's zone right now — one per
     /// company host. What the wizard shows so the footprint is never a surprise.
     dns_records: Vec<String>,
+    /// The connector PROCESS on this box — running (how, which pid) or not, and
+    /// WHY not. Cloudflare can only report a tunnel healthy while this is up, so
+    /// a wizard that shows "Connecting…" without checking it is guessing.
+    connector: ConnectorStatusOut,
+}
+
+/// The wire shape of [`connector::ConnectorStatus`].
+#[derive(Debug, Serialize)]
+struct ConnectorStatusOut {
+    running: bool,
+    /// `child` | `adopted` | `none`.
+    via: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    /// How it is running, or why it is not — never omitted while it is down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+impl From<connector::ConnectorStatus> for ConnectorStatusOut {
+    fn from(s: connector::ConnectorStatus) -> Self {
+        Self {
+            running: s.running,
+            via: s.via,
+            pid: s.pid,
+            detail: s.detail,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -787,6 +858,7 @@ async fn status_handler(
         quick_tunnel,
         wildcard_dns,
         dns_records,
+        connector: state.external_access.host().status().await.into(),
     };
 
     let company = match q.company_id {
