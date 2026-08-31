@@ -27,6 +27,10 @@ import {
   type RendererPref,
   type RendererState,
 } from '@/components/chat/renderer-pref'
+import {
+  rememberConversation,
+  type LastConversation,
+} from '@/lib/last-conversation'
 
 export type ViewMode = 'tile' | 'list'
 
@@ -89,6 +93,16 @@ interface UIStore {
    *  needed. Mirrors `hideStopped`'s field+setter shape. */
   activeCompany: number | null
   setActiveCompany: (id: number | null) => void
+  /** "Open where I left off" — the conversation that was OPEN in each browse
+   *  scope, keyed by `scopeKey(activeCompany)` (`'hq'` / `'c:<id>'`). ONE
+   *  additive field, LRU-capped in `rememberConversation`, so an existing
+   *  `version:1` blob (which has no such key) round-trips untouched and simply
+   *  restores nothing. The eligibility rule that decides whether an entry may be
+   *  REOPENED lives in `lib/last-conversation.ts`, never here — this is storage,
+   *  not policy. */
+  lastConversations: Record<string, LastConversation>
+  /** Remember (or, with `null`, forget) the open conversation for one scope. */
+  setLastConversation: (scope: string, next: LastConversation | null) => void
   /** THE MEMBER LOCK (viewer identity plane). `null` for the owner — every
    *  behaviour below is then exactly what it always was. A number means the
    *  viewer is an invited colleague, server-fenced to that company
@@ -171,6 +185,12 @@ export const useUI = create<UIStore>()(
       showHidden: true,
       hideStopped: false,
       activeCompany: null,
+      lastConversations: {},
+      setLastConversation: (scope, next) =>
+        set((st) => {
+          const map = rememberConversation(st.lastConversations, scope, next)
+          return map === st.lastConversations ? {} : { lastConversations: map }
+        }),
       memberCompany: null,
       lockToCompany: (id) =>
         set({ memberCompany: id, activeCompany: id, botMode: true }),
