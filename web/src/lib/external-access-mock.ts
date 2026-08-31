@@ -220,6 +220,12 @@ export const externalAccessMock = {
         wildcard_dns: state.wildcardDns && state.baseDomain != null,
         // One record per company host — and nothing until an address is written.
         dns_records: state.hostWritten && host ? [host] : [],
+        // The mock box always has a live supervised connector — the honest
+        // "nothing is running" branch is exercised by the unit tests.
+        connector:
+          state.provisionedAt == null
+            ? { running: false, via: 'none', detail: 'the connector has not been started on this box' }
+            : { running: true, via: 'child', pid: 4242, detail: 'supermux is running the connector' },
         quick_tunnel: qt
           ? {
               active: qt.active,
@@ -299,6 +305,7 @@ export const externalAccessMock = {
     return {
       tunnel_id: 'e1a2b3c4-5678-90ab-cdef-1234567890ab',
       connector: 'started',
+      connector_detail: 'the connector is running (child, pid 4242)',
       reachable_host: records.join(', '),
       dns_records: records,
     }

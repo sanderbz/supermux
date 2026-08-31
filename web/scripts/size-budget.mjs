@@ -1281,7 +1281,30 @@ const BUDGET_ENTRY_JS = 163 * KB
 // 442.69 (which includes the archive-on-stop copy fix disclosing that the marker
 // is a per-BOT property and fires on a manual stop); 442.69 x 1.02 = 451.5, so
 // 451. Still an awareness ceiling: every PR that moves it justifies its bytes.
-const BUDGET_APP_JS = 451 * KB
+// RATCHETED 451 -> 462 by the connector-supervision fix
+// (`fix/connector-supervision`). Read the measurement honestly, because the
+// interesting half is not this branch:
+//
+//   origin/main (8b10a8d1), built the same way   452.44 KB  ← ALREADY over 451
+//   this branch                                  452.85 KB  ← +0.41 KB
+//
+// i.e. this gate was RED on main before a line of this branch existed; some
+// earlier PR spent the 1.44 KB and did not ratchet. Fixing that here rather than
+// leaving the next author to trip over it. This branch's own +0.41 KB is:
+//   ~+0.25 KB  `lib/connector-view.ts` + the Domain step's third branch — the
+//              wizard can no longer render a spinner captioned "This runs the
+//              connector on your box" while the box has reported that NOTHING is
+//              running. The stalled branch carries the box's own reason and a
+//              "Try again", which is the whole point of the fix.
+//   ~+0.16 KB  the `ConnectorStatus` wire type + the connected-state chip
+//              (which connector is carrying the tunnel: supervised, or one that
+//              was already running).
+// It lands in the LAZY `invite-wizard-sheet-*` chunk (10.95 KB), not the entry
+// chunk: the ENTRY (hero-path) gate is UNMOVED at 162.88/163 — byte-identical to
+// main, because nothing here is on the cold path.
+// The ceiling follows this counter's documented policy (measured x 1.02, NOT
+// ceil(measured) — see the 2026-08-17 note above): 452.85 x 1.02 = 461.9 -> 462.
+const BUDGET_APP_JS = 462 * KB
 // RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
 // keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than

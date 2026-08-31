@@ -86,7 +86,7 @@ pub enum QuickError {
 }
 
 /// The mockable quick-tunnel surface (parallels
-/// [`super::systemd::ConnectorHost`]).
+/// [`super::connector::ConnectorHost`]).
 #[async_trait]
 pub trait QuickTunnelHost: Send + Sync {
     /// Spawn `cloudflared tunnel --url <local_url> --no-autoupdate`, scan stderr

@@ -76,6 +76,7 @@ import {
   subdomainError,
   suggestLabel,
 } from '@/lib/company-subdomain'
+import { connectorLabel, connectorReason, tunnelSetupView } from '@/lib/connector-view'
 import { quickTunnelView } from '@/lib/quick-tunnel'
 
 /** The minimal company identity the wizard needs. */
@@ -399,6 +400,11 @@ function DomainStep({
   const dnsRecords = status?.box_status.dns_records ?? []
   const tunnel = status?.box_status.tunnel ?? 'none'
   const done = tunnel === 'healthy'
+  // The connector PROCESS on the box. `tunnel === 'connecting'` alone used to
+  // drive an indefinite spinner; a tunnel with no connector attached to it is a
+  // failure with a reason, not progress. See `lib/connector-view.ts`.
+  const connector = status?.box_status.connector ?? null
+  const setupView = tunnelSetupView({ tunnel, connector, provisionPending: provision.isPending })
   const startTunnel = () => startQuick.mutate(undefined, { onSuccess: () => refetch() })
 
   // The box knows about a temporary link → the ephemeral panel, LIVE or not.
@@ -583,20 +589,53 @@ function DomainStep({
           refetch={refetch}
         />
 
-        {tunnel === 'connecting' || provision.isPending ? (
+        {setupView === 'connecting' ? (
           <div className="flex flex-col gap-2">
             <StatusChip state="working" label="Connecting… setting up the tunnel" />
             <p className="text-[12.5px] text-muted-foreground">
-              This runs the connector on your box and waits for Cloudflare to report it healthy.
+              {provision.isPending
+                ? 'Creating the tunnel and starting the connector on your box.'
+                : 'The connector is running on your box; waiting for Cloudflare to report it healthy.'}
             </p>
             <Button type="button" variant="ghost" size="sm" className="self-start" onClick={refetch}>
               Check again
             </Button>
           </div>
+        ) : setupView === 'stalled' ? (
+          // The connector is NOT running, so nothing will ever report healthy.
+          // Say that, with the box's own reason — never a spinner that waits on
+          // a process that does not exist.
+          <div className="flex flex-col gap-2">
+            <StatusChip state="error" label="The connector isn’t running on your box" />
+            <p className="text-[12.5px] text-muted-foreground">
+              Cloudflare has the tunnel, but nothing on this box is connected to it, so it will stay
+              at “connecting”. {connectorReason(connector)}
+            </p>
+            {provision.isError && <p className="text-sm text-destructive">{errText(provision.error)}</p>}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => provision.mutate(undefined, { onSuccess: () => refetch() })}
+                disabled={provision.isPending}
+                className="self-start"
+                style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+              >
+                Try again
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={refetch}>
+                Check again
+              </Button>
+            </div>
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
+            {setupView === 'connected' && (
+              <StatusChip state="done" label={connectorLabel(connector)} />
+            )}
             <p className="text-sm text-muted-foreground">
-              One click creates the tunnel, starts the connector, and adds{' '}
+              {setupView === 'connected' ? 'Running it again' : 'One click'} creates the tunnel,
+              starts the connector, and adds{' '}
               {host ? (
                 <>
                   one DNS record — <span className="font-mono text-foreground">{host}</span>
@@ -612,9 +651,14 @@ function DomainStep({
               onClick={() => provision.mutate(undefined, { onSuccess: () => refetch() })}
               disabled={provision.isPending}
               className="self-start"
-              style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
+              variant={setupView === 'connected' ? 'outline' : 'default'}
+              style={
+                setupView === 'connected'
+                  ? undefined
+                  : { background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }
+              }
             >
-              Set up access
+              {setupView === 'connected' ? 'Set up access again' : 'Set up access'}
             </Button>
           </div>
         )}
