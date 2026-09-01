@@ -40,6 +40,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { CompanyMark } from '@/components/roster/company-mark'
 import {
   useAgentInbox,
@@ -82,9 +83,11 @@ import {
   inviteMailto,
   neverSignedIn,
   quickActive,
+  resumeStep,
   runGoogleVerify,
   shareItYourselfLine,
   shareLinkLabel,
+  sheetView,
   showCheckAgain,
   stepAfter,
   type GoogleOutcome,
@@ -111,10 +114,20 @@ export function InviteWizardSheet({
   open,
   onOpenChange,
   company,
+  mode = 'invite',
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   company: WizardCompany
+  /** Which door the owner came through.
+   *
+   *  `invite` (the "Invite a teammate" row) ADAPTS to reality: one honest loader
+   *  while the status is in flight, the Add-people panel once the box is
+   *  configured, the onboarding stepper only while something is genuinely
+   *  unfinished. `settings` (the "External access…" row) always opens the
+   *  stepper, at the top, so a finished setup can still be CHANGED — the steps
+   *  are the editable sections, which is one component instead of two. */
+  mode?: 'invite' | 'settings'
 }) {
   // `isError`/`error` are READ here on purpose: the wizard's whole view is derived
   // from this one query, so a GET that fails must say so — silently rendering the
@@ -161,6 +174,9 @@ export function InviteWizardSheet({
   // react-hooks/set-state-in-effect and a ref write during render, and is one
   // fewer commit than the effect was.
   const [routedOpen, setRoutedOpen] = React.useState(false)
+  // "Access settings" inside the invite panel — the same wizard, opened from the
+  // finished side. Local, so closing the sheet forgets it.
+  const [settingsOverride, setSettingsOverride] = React.useState(false)
   // What THIS session's verify call reported when it reported success. The Google
   // step used to derive its whole view from the status query, so a save+verify
   // that had already landed on the server showed nothing at all until a
@@ -172,16 +188,18 @@ export function InviteWizardSheet({
   if (!open && routedOpen) {
     setRoutedOpen(false)
     setVerifiedDetail(null)
+    setSettingsOverride(false)
   }
+  const settings = mode === 'settings' || settingsOverride
   if (open && status && !routedOpen) {
     setRoutedOpen(true)
-    if (!domainDone(status)) setStep('domain')
-    else if (!isQuick && !googleDone(status)) setStep('google')
-    // Resume on the inbox step when an agent-inbox is already provisioned (e.g. it
-    // still needs its verification click) — otherwise land on Add people.
-    else if (!isQuick && status.company?.agent_inbox) setStep('inbox')
-    else setStep('person')
+    setStep(resumeStep(status, { settings }))
   }
+  // Which of the three surfaces this sheet owes the owner right now. The rail of
+  // status chips is derived from `status` with `?.` defaults, so rendering it
+  // before the query lands states "Not set up" about a box nobody has asked yet —
+  // `loading` exists to make that unrepresentable.
+  const view = sheetView({ isLoading, isError: statusIsError, status, settings })
 
   // The active order branches: the quick-tunnel path skips Google entirely.
   const order = isQuick ? QUICK_ORDER : ORDER
@@ -259,16 +277,37 @@ export function InviteWizardSheet({
       title={
         <span className="flex items-center gap-2.5">
           <CompanyMark slug={company.slug} name={company.display_name} logo={company} size={24} className="grok-identity" />
-          <span className="truncate">Invite a teammate</span>
+          <span className="truncate">{settings ? 'External access' : 'Invite a teammate'}</span>
         </span>
       }
-      description={step === 'success' ? 'All set.' : `Step ${idx + 1} of ${totalSteps}`}
+      description={
+        // Never "Step 1 of 4" over a surface that has no steps — and never a step
+        // count derived from a status that has not landed.
+        view === 'loading'
+          ? 'Checking access…'
+          : view === 'invite'
+            ? `Add people to ${company.display_name}`
+            : settings
+              ? 'Domain, Google login and agent email'
+              : step === 'success'
+                ? 'All set.'
+                : `Step ${idx + 1} of ${totalSteps}`
+      }
       footer={
         // `data-grok` so the portalled footer resolves the Grok accent tokens
         // (`--sm-accent-fill`/`--gr-onaccent` are defined only under `[data-grok]`,
         // which the body-portal escapes) — same fix as the sibling sheets.
+        // Nothing is offered while the status is still in flight: Back/Continue
+        // over a loader is a control for a step the owner cannot yet see.
+        view === 'loading' ? null : (
         <div data-grok>
-          {step === 'success' ? (
+          {view === 'invite' ? (
+            <div className="flex justify-end">
+              <Button type="button" onClick={() => onOpenChange(false)}>
+                Done
+              </Button>
+            </div>
+          ) : step === 'success' ? (
             <div className="flex justify-end">
               <Button type="button" onClick={() => onOpenChange(false)}>
                 Done
@@ -290,11 +329,28 @@ export function InviteWizardSheet({
             </div>
           )}
         </div>
+        )
       }
     >
       {/* `data-grok` so the body-portalled content resolves the Grok accent tokens
           (defined only under `[data-grok]`) — CTAs/chips/copy fields render filled. */}
       <div data-grok className="flex flex-col gap-4 px-5 py-4">
+        {/* ONE honest loader. Everything below is derived from a status that has
+            not landed, so none of it is rendered — not the rail, not the chips,
+            not the step count in the header. */}
+        {view === 'loading' ? (
+          <InviteSheetSkeleton />
+        ) : view === 'invite' ? (
+          <InvitePanel
+            company={company}
+            liveUrl={liveUrl}
+            onSettings={() => {
+              setSettingsOverride(true)
+              setStep('domain')
+            }}
+          />
+        ) : (
+          <>
         {/* The rail — collapses to one line on a phone via responsive class. */}
         {step !== 'success' && (
           <div className="cs-card rounded-xl border border-border p-3">
@@ -315,9 +371,7 @@ export function InviteWizardSheet({
           <GoogleReadyCard detail={verifiedDetail} />
         )}
 
-        {isLoading && !status ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">Checking access…</p>
-        ) : step === 'domain' ? (
+        {step === 'domain' ? (
           <DomainStep status={status} host={host} company={company} refetch={refetch} />
         ) : step === 'google' ? (
           <GoogleStep
@@ -335,6 +389,8 @@ export function InviteWizardSheet({
           <AgentInboxStep status={status} companyId={company.id} baseDomain={baseDomain} refetch={refetch} />
         ) : (
           <SuccessStep company={company} liveUrl={liveUrl} quick={isQuick} onInviteAnother={() => setStep('person')} />
+        )}
+          </>
         )}
       </div>
     </ResponsiveSheet>
@@ -354,6 +410,112 @@ function inboxChipFor(status?: ExternalStatus): { state: ChipState; label: strin
   if (!ai) return { state: 'idle', label: 'Optional' }
   if (ai.verified) return { state: 'done', label: 'Live' }
   return { state: 'working', label: 'Verify' }
+}
+
+/**
+ * The one surface shown while `GET /external-access/status` is in flight.
+ *
+ * It replaces the worst thing the sheet used to do: render the four-step rail
+ * from `status?.…` defaults. Absent and "not set up" are the same expression in
+ * that code, so a fully-configured box was told, in chips, that its domain and
+ * its Google login did not exist — for the whole round-trip, and then again on
+ * every re-open. A placeholder cannot make that claim.
+ *
+ * It fades in on the app's anti-flash DELAY (`.sm-skel-delay`, the class the chat
+ * skeleton uses): a cached status lands before it is ever visible, so the common
+ * case is the panel appearing at once, not a skeleton that blinks. The bars match
+ * the geometry of what follows — a card, an address block, two input rows — so the
+ * swap lands on the same lines instead of jumping.
+ */
+export function InviteSheetSkeleton() {
+  return (
+    <SkeletonRegion label="Checking access…" className="sm-skel-delay flex flex-col gap-4">
+      {/* The address card. */}
+      <div className="cs-card flex flex-col gap-2.5 rounded-xl border border-border p-3">
+        <Skeleton className="h-3.5 w-32 rounded" />
+        <Skeleton className="h-9 rounded-lg" />
+        <Skeleton className="h-10 rounded-lg" />
+      </div>
+      {/* The two lines of copy under it. */}
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-3.5 rounded" />
+        <Skeleton className="h-3.5 w-3/4 rounded" />
+      </div>
+      {/* The draft row + its action pair. */}
+      <div className="cs-card flex flex-col gap-2.5 rounded-xl border border-border p-3">
+        <Skeleton className="h-9 rounded-lg" />
+        <Skeleton className="h-10 rounded-lg" />
+      </div>
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-8 w-28 rounded-md" />
+        <Skeleton className="h-8 w-16 rounded-md" />
+      </div>
+      {/* The roster. Enough of it that the sheet opens at the height the real
+          panel will occupy — a placeholder that grows into its content is its own
+          little jump, and the whole point here is that nothing lurches. */}
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-3 w-24 rounded" />
+        <Skeleton className="h-14 rounded-lg" />
+        <Skeleton className="h-14 rounded-lg" />
+      </div>
+    </SkeletonRegion>
+  )
+}
+
+/**
+ * `<InvitePanel>` — what a CONFIGURED box opens into.
+ *
+ * The owner in the report had domain, Google and DNS all done and still got
+ * "Step 1 of 4" and an onboarding list. There was no step left to take: the only
+ * outstanding act on that box is adding a person. So the sheet skips the stepper
+ * entirely and shows the two things that matter — the address colleagues sign in
+ * at, once, at the top, and the same `<PersonStep>` machinery (drafts, roster,
+ * share links, prefilled mail) the wizard's step 3 already is. DRY by
+ * construction: this is a frame around the existing step, not a second copy of it.
+ *
+ * Setup is still reachable, quietly, for the day the domain changes.
+ */
+export function InvitePanel({
+  company,
+  liveUrl,
+  onSettings,
+}: {
+  company: WizardCompany
+  liveUrl: string
+  /** Opens the full wizard as editable settings (same sheet, `settings` view). */
+  onSettings: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div
+        data-vr="invite-address"
+        className="cs-card flex flex-col gap-2 rounded-xl border border-border p-3"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 text-[12px] font-medium uppercase tracking-wide text-muted-foreground">
+            <Globe aria-hidden className="size-3.5" /> Sign-in address
+          </span>
+          {/* Quiet, and a real 44px tap target on a phone — the way back into
+              the wizard when something about the setup has to CHANGE. */}
+          <button
+            type="button"
+            data-vr="access-settings"
+            onClick={onSettings}
+            className="-mr-1 inline-flex h-11 items-center rounded-md px-2 text-[12px] text-muted-foreground underline underline-offset-2 hover:text-foreground sm:h-8"
+          >
+            Access settings
+          </button>
+        </div>
+        {liveUrl ? (
+          <CopyField value={liveUrl} label={`Copy the sign-in address for ${company.display_name}`} />
+        ) : null}
+      </div>
+
+      {/* The Add-people surface itself, unchanged. `quick=false`: this panel is
+          only ever reached on the permanent path (`setupComplete`). */}
+      <PersonStep company={company} liveUrl={liveUrl} quick={false} />
+    </div>
+  )
 }
 
 // ── Step 1 — Domain / external access ─────────────────────────────────────────
@@ -504,8 +666,13 @@ function DomainStep({
           label={hostWritten ? `Connected · reachable at ${host}` : 'Connected · name this company'}
         />
         <p className="text-sm text-muted-foreground">
+          {/* "Continue to set up Google login" is a lie to an owner who set it up
+              months ago — which is exactly who reaches this card through the
+              "External access…" door. Say what is actually left to do. */}
           {hostWritten
-            ? 'Your box has a public web address. Continue to set up Google login.'
+            ? googleDone(status)
+              ? 'Your box has a public web address. Change it here if your domain or subdomain moves.'
+              : 'Your box has a public web address. Continue to set up Google login.'
             : 'Your box has a public web address. Choose the name this company answers on.'}
         </p>
         {baseDomain && (

@@ -17,6 +17,8 @@
 //           /dev/invite?mock=1&entry=Q&tunnel=1 (a temporary link already live — qt-success)
 //           /dev/invite?mock=1&entry=Q&tunnel=dead (the link's tunnel stopped — qt-stopped)
 //           /dev/invite?mock=1&entry=I       (the Cloudflare agent-inbox step — agent-inbox, pending)
+//           /dev/invite?mock=1&entry=C&slow=1 (the LOADING surface — the status read held open 4s)
+//           /dev/invite?mock=1&entry=C&mode=settings (the "External access…" door — editable sections)
 //
 // On a 390px viewport the ResponsiveSheet renders as the Vaul bottom-sheet; on a
 // wide viewport it is the desktop side sheet.
@@ -35,6 +37,7 @@ export default function DevInvite() {
   const mockOn = params.has('mock')
   const entry = (params.get('entry') ?? 'A').toUpperCase()
   const zonesMulti = params.get('zones') === 'multi'
+  const mode = params.get('mode') === 'settings' ? ('settings' as const) : ('invite' as const)
   const [open, setOpen] = React.useState(true)
 
   // Fresh mock state on every mount so a re-run of the rig starts clean.
@@ -112,6 +115,36 @@ export default function DevInvite() {
           onClick={() => {
             const next = new URLSearchParams(params)
             next.set('mock', '1')
+            if (mode === 'settings') next.delete('mode')
+            else next.set('mode', 'settings')
+            setParams(next)
+            resetExternalAccessMock()
+            setOpen(true)
+          }}
+          className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground"
+        >
+          Door: {mode}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const next = new URLSearchParams(params)
+            next.set('mock', '1')
+            if (params.has('slow')) next.delete('slow')
+            else next.set('slow', '1')
+            setParams(next)
+            resetExternalAccessMock()
+            setOpen(true)
+          }}
+          className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground"
+        >
+          Slow status: {params.has('slow') ? 'on' : 'off'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const next = new URLSearchParams(params)
+            next.set('mock', '1')
             if (zonesMulti) next.delete('zones')
             else next.set('zones', 'multi')
             setParams(next)
@@ -124,7 +157,7 @@ export default function DevInvite() {
         </button>
       </div>
 
-      <InviteWizardSheet open={open} onOpenChange={setOpen} company={MOCK_COMPANY} />
+      <InviteWizardSheet open={open} mode={mode} onOpenChange={setOpen} company={MOCK_COMPANY} />
     </main>
   )
 }

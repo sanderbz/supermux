@@ -68,6 +68,17 @@ function tunnelSeed(): 'none' | 'active' | 'dead' {
   return 'none'
 }
 
+/** `?slow=<ms>` (or `?slow=1` → 4s) holds the STATUS read open, so the sheet's
+ *  loading surface is reviewable offline. The bug this bench now covers was
+ *  entirely a loading-state bug — invisible on a mock that answers instantly. */
+function slowStatusMs(): number {
+  if (typeof window === 'undefined') return 0
+  const v = new URLSearchParams(window.location.search).get('slow')
+  if (v == null) return 0
+  const n = Number(v)
+  return Number.isFinite(n) && n > 1 ? n : 4000
+}
+
 function multiZones(): boolean {
   if (typeof window === 'undefined') return false
   return new URLSearchParams(window.location.search).get('zones') === 'multi'
@@ -207,6 +218,8 @@ function tunnelPhase(): 'none' | 'connecting' | 'healthy' {
 
 export const externalAccessMock = {
   async status(companyId?: number): Promise<ExternalStatus> {
+    const slow = slowStatusMs()
+    if (slow > 0) await wait(slow)
     const tunnel = tunnelPhase()
     const { host, redirect } = derived(state.baseDomain)
     const qt = state.quickTunnel

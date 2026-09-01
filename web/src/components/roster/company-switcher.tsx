@@ -40,7 +40,7 @@
  */
 import * as React from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronsUpDown, Plus, SlidersHorizontal, Trash2, UserPlus } from 'lucide-react'
+import { ChevronsUpDown, Globe, Plus, SlidersHorizontal, Trash2, UserPlus } from 'lucide-react'
 
 import { useCompanies } from '@/hooks/use-companies'
 import { useUI } from '@/stores/ui-store'
@@ -138,7 +138,12 @@ export function CompanySwitcher({
 
   const [open, setOpen] = React.useState(false)
   const [createOpen, setCreateOpen] = React.useState(false)
-  const [inviteOpen, setInviteOpen] = React.useState(false)
+  // ONE wizard sheet, two doors: "Invite a teammate" opens it in `invite` mode
+  // (which adapts — loader, then either the invite panel or the stepper), and
+  // "External access…" opens the SAME sheet in `settings` mode, where the steps
+  // are editable sections for changing the domain, the Google app or the agent
+  // email later. `null` = closed.
+  const [wizardMode, setWizardMode] = React.useState<'invite' | 'settings' | null>(null)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   // The roving highlight index into the flat option list (0 = HQ, then each
@@ -360,7 +365,7 @@ export function CompanySwitcher({
             onMouseEnter={() => !sheet && setCursor(-1)}
             onClick={() => {
               setOpen(false)
-              setInviteOpen(true)
+              setWizardMode('invite')
             }}
           >
             <span
@@ -428,6 +433,30 @@ export function CompanySwitcher({
                 <SlidersHorizontal size={sheet ? 18 : 15} />
               </span>
               Company settings…
+            </button>
+            {/* External access — the domain, the Google login and the agent email,
+                AFTER they are set up. The invite row used to be the only way back
+                into the wizard, which meant an owner with a finished setup had to
+                walk an onboarding stepper to change a subdomain. */}
+            <button
+              type="button"
+              role="menuitem"
+              data-vr="external-access-entry"
+              className={`${rowBase} ${rowSkin}`}
+              onMouseEnter={() => !sheet && setCursor(-1)}
+              onClick={() => {
+                setOpen(false)
+                setWizardMode('settings')
+              }}
+            >
+              <span
+                className="grid place-items-center"
+                aria-hidden
+                style={{ width: markSize, height: markSize, flex: 'none' }}
+              >
+                <Globe size={sheet ? 18 : 15} />
+              </span>
+              External access…
             </button>
             <button
               type="button"
@@ -658,11 +687,12 @@ export function CompanySwitcher({
         </React.Suspense>
       )}
 
-      {inviteOpen && active && (
+      {wizardMode && active && (
         <React.Suspense fallback={null}>
           <InviteWizardSheet
-            open={inviteOpen}
-            onOpenChange={setInviteOpen}
+            open
+            mode={wizardMode}
+            onOpenChange={(v) => !v && setWizardMode(null)}
             company={{ id: active.id, slug: active.slug, display_name: active.display_name }}
           />
         </React.Suspense>
