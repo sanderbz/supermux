@@ -11,7 +11,10 @@
  * panels sit on the store `cs-card` surface, colours are `--gr-*`/`--sm-*` tokens,
  * and inputs are the shared `Button`/`Input`. The only NEW primitives are the tiny
  * `StatusChip`/`CopyField`/`SecretInput`/`RoleSelect`/`WizardStepper`
- * (`wizard-primitives.tsx`). The data plane is the `use-external-access` hooks.
+ * (`wizard-primitives.tsx`). The data plane is the `use-external-access` hooks, and
+ * the pure core — step order, the completion rules, the Google step's outcome and
+ * its save→verify→advance orchestration — is `@/lib/invite-wizard`, so the parts
+ * that decide what the owner SEES are assertable without a DOM.
  *
  * RESUMABLE. On open it reads `GET /api/external-access/status?company_id=<id>`
  * and routes to the FIRST unfinished step — closing the tab mid-Google-detour
@@ -38,7 +41,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { CompanyMark } from '@/components/roster/company-mark'
-import { SessionError } from '@/lib/api'
 import {
   useAgentInbox,
   useCfToken,
@@ -70,6 +72,21 @@ import {
 } from '@/components/companies/wizard-primitives'
 import type { ExternalStatus, QuickTunnelStatus } from '@/lib/api'
 import {
+  ORDER,
+  QUICK_ORDER,
+  domainDone,
+  errText,
+  googleDone,
+  googleOutcome,
+  googleStepDone,
+  quickActive,
+  runGoogleVerify,
+  showCheckAgain,
+  stepAfter,
+  type GoogleOutcome,
+  type StepKey,
+} from '@/lib/invite-wizard'
+import {
   dnsPlanLine,
   labelOf,
   previewHost,
@@ -86,35 +103,6 @@ export interface WizardCompany {
   display_name: string
 }
 
-type StepKey = 'domain' | 'google' | 'person' | 'inbox' | 'success'
-// The full (permanent-domain) order. `inbox` (the optional Cloudflare agent-inbox)
-// sits after people — it needs the connected domain. The quick-tunnel branch omits
-// both Google and the inbox (a trycloudflare host has no zone to route mail on),
-// collapsing to Domain → Add people → Done.
-const ORDER: StepKey[] = ['domain', 'google', 'person', 'inbox', 'success']
-const QUICK_ORDER: StepKey[] = ['domain', 'person', 'success']
-
-function errText(e: unknown): string {
-  if (e instanceof SessionError) {
-    if (e.status === 0) return 'Can’t reach supermux-server. Check it’s running, then try again.'
-    return e.message
-  }
-  return e instanceof Error ? e.message : 'Something went wrong — try again.'
-}
-
-// Derived completion from the live status. Domain is done once the tunnel is
-// healthy OR a temporary quick tunnel is live; Google is done once THIS company's
-// redirect verifies green.
-function quickActive(s?: ExternalStatus): boolean {
-  return !!s?.box_status.quick_tunnel?.active
-}
-function domainDone(s?: ExternalStatus) {
-  return s?.box_status.tunnel === 'healthy' || quickActive(s)
-}
-function googleDone(s?: ExternalStatus) {
-  return s?.box_status.google === 'configured' && s?.company?.redirect_registered === 'ok'
-}
-
 export function InviteWizardSheet({
   open,
   onOpenChange,
@@ -124,7 +112,16 @@ export function InviteWizardSheet({
   onOpenChange: (v: boolean) => void
   company: WizardCompany
 }) {
-  const { status, isLoading, refetch } = useExternalStatus(company.id, { enabled: open })
+  // `isError`/`error` are READ here on purpose: the wizard's whole view is derived
+  // from this one query, so a GET that fails must say so — silently rendering the
+  // last-known (stale) status is exactly how a landed mutation looked like a no-op.
+  const {
+    status,
+    isLoading,
+    isError: statusIsError,
+    error: statusError,
+    refetch,
+  } = useExternalStatus(company.id, { enabled: open })
 
   // Derived host/redirect. The base domain is operator-chosen (BYO) — there is NO
   // hardcoded suffix fallback. Prefer the server's computed host; else derive from
@@ -160,7 +157,18 @@ export function InviteWizardSheet({
   // react-hooks/set-state-in-effect and a ref write during render, and is one
   // fewer commit than the effect was.
   const [routedOpen, setRoutedOpen] = React.useState(false)
-  if (!open && routedOpen) setRoutedOpen(false)
+  // What THIS session's verify call reported when it reported success. The Google
+  // step used to derive its whole view from the status query, so a save+verify
+  // that had already landed on the server showed nothing at all until a
+  // background refetch happened to arrive — and when that GET lagged or failed,
+  // nothing ever moved and nothing was said. The verify response is the truth we
+  // just received: hold it, and let the chip, the gate and the confirmation read
+  // it directly instead of waiting on a second round-trip.
+  const [verifiedDetail, setVerifiedDetail] = React.useState<string | null>(null)
+  if (!open && routedOpen) {
+    setRoutedOpen(false)
+    setVerifiedDetail(null)
+  }
   if (open && status && !routedOpen) {
     setRoutedOpen(true)
     if (!domainDone(status)) setStep('domain')
@@ -173,6 +181,9 @@ export function InviteWizardSheet({
 
   // The active order branches: the quick-tunnel path skips Google entirely.
   const order = isQuick ? QUICK_ORDER : ORDER
+  // Google is done when the live status says so OR when this session's own verify
+  // said so — either is server truth, and the second one does not need a refetch.
+  const googleOk = googleStepDone(status, verifiedDetail)
   const idx = Math.max(0, order.indexOf(step))
   const totalSteps = order.length - 1 // exclude the terminal "success" screen
 
@@ -204,7 +215,7 @@ export function InviteWizardSheet({
         {
           key: 'google',
           title: 'Google login',
-          chip: chipFor(googleDone(status), false, googleDone(status) ? 'Verified' : status?.box_status.google === 'configured' ? 'One URL to add' : 'Not set up'),
+          chip: chipFor(googleOk, false, googleOk ? 'Verified' : status?.box_status.google === 'configured' ? 'One URL to add' : 'Not set up'),
         },
         { key: 'person', title: 'Add people', chip: { state: 'idle', label: 'Invite' } },
         { key: 'inbox', title: 'Agent email', chip: inboxChipFor(status) },
@@ -218,7 +229,7 @@ export function InviteWizardSheet({
     step === 'domain'
       ? domainDone(status)
       : step === 'google'
-        ? googleDone(status)
+        ? googleOk
         : step === 'person' || step === 'inbox'
           ? true
           : false
@@ -227,6 +238,14 @@ export function InviteWizardSheet({
 
   const goBack = () => idx > 0 && setStep(order[idx - 1])
   const goNext = () => idx < order.length - 1 && setStep(order[idx + 1])
+  // Success has to MOVE, not just settle: record what verify said, then walk the
+  // stepper on — the confirmation sentence rides along above the next panel so
+  // the beat is visible even though the advance is immediate.
+  const onGoogleVerified = (detail: string) => {
+    setVerifiedDetail(detail)
+    const next = stepAfter(order, 'google')
+    if (next) setStep(next)
+  }
 
   return (
     <ResponsiveSheet
@@ -279,12 +298,33 @@ export function InviteWizardSheet({
           </div>
         )}
 
+        {/* The status re-read is the wizard's only eye on the server — when it
+            fails, SAY so rather than keep rendering the last-known answer. */}
+        {statusIsError && (
+          <p role="alert" data-vr="status-error" className="text-sm text-destructive">
+            Couldn’t re-check access — {errText(statusError)}
+          </p>
+        )}
+        {/* The Google step's success, carried forward: the chip is already done in
+            the rail above, and this is the sentence the server actually said. */}
+        {verifiedDetail && step !== 'google' && step !== 'success' && (
+          <GoogleReadyCard detail={verifiedDetail} />
+        )}
+
         {isLoading && !status ? (
           <p className="py-8 text-center text-sm text-muted-foreground">Checking access…</p>
         ) : step === 'domain' ? (
           <DomainStep status={status} host={host} company={company} refetch={refetch} />
         ) : step === 'google' ? (
-          <GoogleStep status={status} redirectUri={redirectUri} liveUrl={liveUrl} companyId={company.id} refetch={refetch} />
+          <GoogleStep
+            status={status}
+            redirectUri={redirectUri}
+            liveUrl={liveUrl}
+            companyId={company.id}
+            refetch={refetch}
+            verifiedDetail={verifiedDetail}
+            onVerified={onGoogleVerified}
+          />
         ) : step === 'person' ? (
           <PersonStep company={company} liveUrl={liveUrl} quick={isQuick} />
         ) : step === 'inbox' ? (
@@ -1227,22 +1267,55 @@ function ChooseDomainStep({ company, refetch }: { company: WizardCompany; refetc
 
 // ── Step 2 — Google login ─────────────────────────────────────────────────────
 
+/** The one confirmation surface: chip + the sentence the server actually said.
+ *  Shared by the step itself and by the banner that rides along after the
+ *  stepper advances, so success reads identically in both places. */
+export function GoogleReadyCard({ detail }: { detail: string }) {
+  return (
+    <div
+      data-vr="google-ready"
+      className="cs-card flex flex-col gap-2 rounded-xl border border-border p-3"
+    >
+      <StatusChip state="done" label="Google login verified" />
+      <p role="status" className="text-[12.5px] leading-snug text-muted-foreground">
+        {detail}
+      </p>
+    </div>
+  )
+}
+
+/** Render whatever the last attempt produced — including the thrown case. */
+export function GoogleOutcomeLine({ outcome }: { outcome: GoogleOutcome }) {
+  if (outcome.kind === 'idle') return null
+  if (outcome.kind === 'ready') return <GoogleReadyCard detail={outcome.text} />
+  return (
+    <p role="alert" data-vr="google-error" className="text-sm text-destructive">
+      {outcome.text}
+    </p>
+  )
+}
+
 function GoogleStep({
   status,
   redirectUri,
   liveUrl,
   companyId,
   refetch,
+  verifiedDetail,
+  onVerified,
 }: {
   status?: ExternalStatus
   redirectUri: string
   liveUrl: string
   companyId: number
   refetch: () => void
+  /** What this session's verify already said, if it said `{ok:true}`. */
+  verifiedDetail: string | null
+  /** Success: hand the sentence up so the chip flips and the stepper advances. */
+  onVerified: (detail: string) => void
 }) {
   const boxConfigured = status?.box_status.google === 'configured'
-  const registered = status?.company?.redirect_registered ?? 'unknown'
-  const done = boxConfigured && registered === 'ok'
+  const done = googleStepDone(status, verifiedDetail)
 
   const [clientId, setClientId] = React.useState('')
   const [secret, setSecret] = React.useState('')
@@ -1251,7 +1324,9 @@ function GoogleStep({
   const verify = useVerifyLogin(companyId)
 
   if (done) {
-    return (
+    return verifiedDetail ? (
+      <GoogleReadyCard detail={verifiedDetail} />
+    ) : (
       <div className="cs-card flex flex-col gap-3 rounded-xl border border-border p-4">
         <StatusChip state="done" label="Google login verified" />
         <p className="text-sm text-muted-foreground">
@@ -1263,7 +1338,21 @@ function GoogleStep({
   }
 
   const idValid = /\.apps\.googleusercontent\.com$/.test(clientId.trim())
-  const verifyResult = verify.data
+  // Everything the last attempt produced, in ONE value — a refused verify, a
+  // thrown one, and a failed save all reach the screen through it.
+  const outcome = googleOutcome({
+    saveError: google.isError ? google.error : host.isError ? host.error : null,
+    verifyError: verify.isError ? verify.error : null,
+    verifyResult: verify.data ?? null,
+    verifiedDetail,
+  })
+  const retry = () =>
+    void runGoogleVerify({
+      save: async () => {},
+      verify: () => verify.mutateAsync(),
+      refetch,
+      onVerified,
+    })
 
   // Entry B: the box already has a Google client — only THIS company's redirect
   // URL is missing. Collapse to the single "add one URL" mini-step (no secrets).
@@ -1332,32 +1421,25 @@ function GoogleStep({
         </div>
       )}
 
-      {(google.isError || host.isError) && (
-        <p className="text-sm text-destructive">{errText(google.error || host.error)}</p>
-      )}
-      {verifyResult && !verifyResult.ok && (
-        <p className="text-sm text-destructive">{verifyResult.detail}</p>
-      )}
+      <GoogleOutcomeLine outcome={outcome} />
 
       <div className="flex items-center gap-2">
         <Button
           type="button"
-          onClick={async () => {
-            try {
-              if (miniStep) {
-                // No label argument: re-assert the entry the owner already named
-                // (the server keeps it; only a company with none falls back to
-                // the slug). Passing one here would rename their address back.
-                await host.mutateAsync(undefined)
-              } else {
-                await google.mutateAsync({ client_id: clientId.trim(), client_secret: secret })
-              }
-              await verify.mutateAsync()
-            } catch {
-              /* surfaced via the mutation error above */
-            }
-            refetch()
-          }}
+          onClick={() =>
+            void runGoogleVerify({
+              // No label argument on the mini-step: re-assert the entry the owner
+              // already named (the server keeps it; only a company with none falls
+              // back to the slug). Passing one here would rename their address back.
+              save: () =>
+                miniStep
+                  ? host.mutateAsync(undefined)
+                  : google.mutateAsync({ client_id: clientId.trim(), client_secret: secret }),
+              verify: () => verify.mutateAsync(),
+              refetch,
+              onVerified,
+            })
+          }
           disabled={
             google.isPending ||
             host.isPending ||
@@ -1372,8 +1454,8 @@ function GoogleStep({
               ? 'Verify login'
               : 'Save & verify'}
         </Button>
-        {verifyResult && !verifyResult.ok && (
-          <Button type="button" variant="ghost" onClick={() => verify.mutate(undefined, { onSuccess: () => refetch() })}>
+        {showCheckAgain(outcome) && (
+          <Button type="button" variant="ghost" onClick={retry}>
             Check again
           </Button>
         )}
