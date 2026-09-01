@@ -153,6 +153,23 @@ pub struct SandboxSpec {
     pub read_exec_paths: Vec<PathBuf>,
 }
 
+/// The device nodes a confined company agent is granted READ+WRITE.
+///
+/// Deliberately an explicit list rather than a blanket `/dev` grant — see the
+/// long note in [`SandboxSpec::for_company`]. Absent nodes are dropped by the
+/// backend (`PathFd::new` fails), so this is safe on a stripped container too.
+pub const DEV_RW_NODES: &[&str] = &[
+    "/dev/ptmx",
+    "/dev/pts",
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/shm",
+];
+
 impl SandboxSpec {
     /// Build the allow-list for a company session rooted at `root_dir`, with the
     /// service user's `home` supplying the toolchain / config paths.
@@ -192,6 +209,35 @@ impl SandboxSpec {
         }
         for w in [".claude", ".claude.json", ".config", ".cache", ".local/state"] {
             read_write_paths.push(home.join(w));
+        }
+        // ── RW: the handful of DEVICE NODES a terminal agent cannot boot
+        // without. THE bug this list was missing (measured live on the Strato
+        // box: every company-agent start degraded to unconfined, 20/20 in a
+        // week): `/dev` was on NEITHER list, so a fully-enforced jail denied
+        // `/dev/ptmx` and the pty holder died in `openpty(3)` with
+        // `EACCES: Permission denied` before it ever bound its socket — the
+        // daemon then saw only "holder did not come up in time".
+        //
+        // Enumerated one node at a time ON PURPOSE. A blanket `/dev` grant
+        // would hand a confined agent the block devices (`/dev/sda`),
+        // `/dev/mem`, `/dev/kmsg` and every other host device — i.e. a trivial
+        // escape from the very jail this builds. These are the nodes a shell,
+        // a pty and a node/python toolchain actually open:
+        //
+        //   * `ptmx` + `pts`   — `openpty(3)`: the master, then the `/dev/pts/N`
+        //                        slave the child gets as fds 0/1/2.
+        //   * `null`/`zero`/`full`   — redirections and every libc that probes them.
+        //   * `random`/`urandom`     — entropy for node/python/git/ssh at startup.
+        //   * `tty`                  — `/dev/tty` (the controlling terminal) for
+        //                              TUIs and password prompts.
+        //   * `shm`                  — POSIX shared memory: node, python
+        //                              multiprocessing, headless chromium.
+        //
+        // `/dev/stdin|stdout|stderr` and `/dev/fd/*` need no entry: they are
+        // symlinks into `/proc/self/fd`, and Landlock matches the RESOLVED
+        // target (the pty slave under `/dev/pts`, or a file already allowed).
+        for d in DEV_RW_NODES {
+            read_write_paths.push(PathBuf::from(d));
         }
 
         // ── RO+exec: the standard system surface. ──
@@ -831,6 +877,26 @@ mod tests {
         // unconfines instead, handled in company_confinement).
         let best = IsolationRuntime::from_mode(IsolationMode::BestEffort);
         assert!(best.strict_refusal().is_none());
+    }
+
+    /// Bug B, at the allow-list: a terminal agent cannot boot without its pty
+    /// device nodes, and `/dev` was on NEITHER list. Blanket `/dev` is not the
+    /// fix — the block devices must stay out of a confined agent's reach.
+    #[test]
+    fn the_company_spec_grants_the_pty_devices_and_nothing_more_of_dev() {
+        let spec = SandboxSpec::for_company(Path::new("/tmp/acme"), Path::new("/home/u"));
+        let rw: Vec<&str> = spec
+            .read_write_paths
+            .iter()
+            .filter_map(|p| p.to_str())
+            .collect();
+        for node in ["/dev/ptmx", "/dev/pts", "/dev/null", "/dev/urandom", "/dev/tty"] {
+            assert!(rw.contains(&node), "{node} must be RW-allowed: {rw:?}");
+        }
+        assert!(
+            !rw.contains(&"/dev") && !spec.read_exec_paths.iter().any(|p| p.as_os_str() == "/dev"),
+            "a blanket /dev grant hands the agent the block devices — never do it: {rw:?}",
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! placed in the session environment.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1368,6 +1368,105 @@ fn keys_to_accept_trust(capture: &str) -> Vec<&'static str> {
     }
 }
 
+/// The stable fragment of Claude Code's **background-session refusal**, with all
+/// whitespace squeezed out (see [`squash_ws`]).
+///
+/// The full sentence is:
+///
+/// ```text
+/// Session a30d387a-… is running as a background session (a30d387a). Run
+/// `claude attach a30d387a` to open it, or `claude stop a30d387a` first to
+/// resume it here. Add --fork-session to branch off a copy instead.
+/// ```
+///
+/// We match the SQUEEZED form of a short, stable middle fragment rather than the
+/// sentence: a pane is 80 columns on a phone and this line wraps — anywhere,
+/// mid-word — so any needle with a space in it is a coin flip. Squeezing both
+/// sides makes the match wrap-proof.
+const BG_SESSION_NEEDLE: &str = "isrunningasabackgroundsession";
+
+/// Drop every whitespace character and lowercase the rest. The pane's line
+/// wrapping (and the two spaces Claude indents its error with) then cannot break
+/// a match or an id.
+fn squash_ws(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// **Bug A.** Is the pane showing Claude Code's refusal to `--resume` a
+/// conversation that its own daemon is already holding as a BACKGROUND session —
+/// and is the conversation it names OURS? Returns the id to `claude stop`.
+///
+/// Witnessed live on this box: a session's conversation was also registered as a
+/// Claude Code daemon background session (`claude bg-pty-host … --session-id
+/// <id> --fork-session --reply-on-resume`, parented to init). Every supermux
+/// start then typed `claude --resume <id>`, claude printed the refusal and exited
+/// INSTANTLY, and the owner saw a terminal flash and vanish — after which the
+/// session sat "idle" wrapping a bare bash with no error anywhere. `claude stop
+/// <id>` deregisters the daemon copy and the very next start resumes with full
+/// context.
+///
+/// **We never stop an id that is not ours.** The refusal names the conversation
+/// twice — in full before the fragment, and short in parentheses — and the id is
+/// only returned when one of those matches an id THIS session was launched with
+/// (`cc_conversation_id` / `cc_session_name`, passed as `ours`). A refusal about
+/// somebody else's conversation (a stale scrollback line, a shared pane) reads as
+/// "not ours" and nothing is stopped: killing another agent's background session
+/// is far worse than one failed start.
+///
+/// A row that resumes by NAME while claude answers with the conversation UUID
+/// legitimately does not match — that start falls through to the honest error
+/// rather than guessing at an id.
+fn background_session_refusal(capture: &str, ours: &[&str]) -> Option<String> {
+    let flat = squash_ws(capture);
+    let at = flat.find(BG_SESSION_NEEDLE)?;
+
+    // The full id sits immediately before the fragment ("Session <id> is running
+    // …"): walk back over the id charset. The word "Session" ends in `n`, which
+    // is not a hex digit, so the scan stops exactly at the id's first character.
+    let full: String = flat[..at]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    // …and the short one in the parentheses right after it, which is the id
+    // Claude's own instruction tells the human to pass to `claude stop`.
+    let short = flat[at..]
+        .strip_prefix(BG_SESSION_NEEDLE)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(id, _)| id.to_string())
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .unwrap_or_default();
+
+    // OWNERSHIP. Either spelling has to name a conversation we launched with.
+    let mine = ours.iter().filter(|o| !o.is_empty()).any(|o| {
+        let o = o.to_lowercase();
+        (!full.is_empty() && o == full) || (short.len() >= MIN_BG_ID && o.starts_with(&short))
+    });
+    if !mine {
+        return None;
+    }
+    // Prefer the short id: it is the one Claude printed for `claude stop`.
+    if short.len() >= MIN_BG_ID {
+        Some(short)
+    } else if full.len() >= MIN_BG_ID {
+        Some(full)
+    } else {
+        None
+    }
+}
+
+/// Shortest id we will ever hand to `claude stop`. Claude's own short form is 8
+/// hex characters; anything shorter is a parse accident, not an id.
+const MIN_BG_ID: usize = 8;
+
 /// Should `wait_for_agent_ready` ESCAPE the resume picker (Escape Escape C-c +
 /// `clear_cc`)? Pure so the fix is unit-tested without driving real tmux.
 ///
@@ -1394,6 +1493,12 @@ enum ReadyTick {
     AcceptTrust,
     /// A stale resume picker on a FRESH start: escape it once, then keep polling.
     EscapePicker,
+    /// Claude refused the `--resume` because its own daemon holds the
+    /// conversation as a BACKGROUND session, and the id it named is ours (see
+    /// [`background_session_refusal`]). The agent is already gone — claude exits
+    /// instantly on this one — so there is nothing left to poll for: stop the
+    /// background session and retry the launch ONCE.
+    StopBackgroundSession(String),
     /// The agent's OWN prompt is on screen with no boot modal over it — READY.
     Ready,
     /// Nothing actionable yet — keep polling. Critically this INCLUDES a resume
@@ -1416,6 +1521,8 @@ fn classify_ready_tick(
     resume_intended: bool,
     already_escaped: bool,
     trusted: bool,
+    resume_ids: &[&str],
+    bg_stop_tried: bool,
 ) -> ReadyTick {
     if !trusted && at_trust_dialog(capture) {
         return ReadyTick::AcceptTrust;
@@ -1425,6 +1532,16 @@ fn classify_ready_tick(
     }
     if agent_at_the_wheel(capture) {
         return ReadyTick::Ready;
+    }
+    // AFTER the ready check on purpose. The refusal stays in the pane's
+    // scrollback once the retry succeeds, and a live agent above it must win —
+    // otherwise the second start would `claude stop` the conversation it just
+    // resumed. `bg_stop_tried` makes it a ONE-SHOT: a second refusal is a real
+    // failure to report, not a loop to run.
+    if !bg_stop_tried {
+        if let Some(id) = background_session_refusal(capture, resume_ids) {
+            return ReadyTick::StopBackgroundSession(id);
+        }
     }
     ReadyTick::Wait
 }
@@ -1458,7 +1575,9 @@ async fn wait_for_agent_ready(
     state: &AppState,
     name: &str,
     resume_intended: bool,
-) -> bool {
+    resume_ids: &[&str],
+    bg_stop_tried: bool,
+) -> BootOutcome {
     let mut escaped = false;
     let mut trusted = false;
     for _ in 0..10 {
@@ -1479,7 +1598,8 @@ async fn wait_for_agent_ready(
             // ready arm keys on `agent_at_the_wheel`, so a picker left open on an
             // INTENDED resume (which we deliberately do not escape) reads Wait, not
             // Ready — a heal that only reaches the picker is a FAILED heal.
-            match classify_ready_tick(&cap, resume_intended, escaped, trusted) {
+            match classify_ready_tick(&cap, resume_intended, escaped, trusted, resume_ids, bg_stop_tried)
+            {
                 ReadyTick::AcceptTrust => {
                     // NEVER a bare Enter: a newer Claude Code lists "No, exit" first
                     // and selects it by default, so Enter alone quits the session.
@@ -1504,12 +1624,187 @@ async fn wait_for_agent_ready(
                     let _ = db::sessions::clear_cc(&state.pool, name).await;
                     escaped = true;
                 }
-                ReadyTick::Ready => return true,
+                ReadyTick::StopBackgroundSession(id) => {
+                    // Claude already exited — polling the rest of the window would
+                    // just watch a bash prompt. Hand the id back so the caller can
+                    // stop the background session and retry the launch.
+                    return BootOutcome::BackgroundSession(id);
+                }
+                ReadyTick::Ready => return BootOutcome::Ready,
                 ReadyTick::Wait => {}
             }
         }
     }
-    false
+    BootOutcome::NotReady
+}
+
+/// Why [`wait_for_agent_ready`] stopped waiting. `bool` could not carry the one
+/// failure the caller can actually FIX — see [`background_session_refusal`].
+#[derive(Debug, PartialEq, Eq)]
+enum BootOutcome {
+    /// The agent took the wheel.
+    Ready,
+    /// Claude refused the resume: its own daemon holds this conversation as a
+    /// background session. Carries the id to `claude stop`.
+    BackgroundSession(String),
+    /// The window ran out with no agent — the pre-existing failure mode.
+    NotReady,
+}
+
+impl BootOutcome {
+    fn is_ready(&self) -> bool {
+        matches!(self, BootOutcome::Ready)
+    }
+}
+
+// ── Bug A: the background-session refusal ───────────────────────────────────
+
+/// The error type stamped on a session whose start was refused because Claude's
+/// own daemon holds the conversation as a background session, and the automatic
+/// remedy did not clear it. A NEW type on purpose: `holder_died` would be a lie
+/// (the terminal is perfectly alive — it is sitting at a bash prompt), and the
+/// badge's restart affordance cannot fix this one.
+pub const BACKGROUND_SESSION: &str = "background_session";
+
+/// How long `claude stop <id>` may run before we give up on it. Generous enough
+/// for a cold daemon, short enough that it cannot hold the per-session start
+/// lock open for a user staring at a spinner.
+const BG_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// **The Bug A remedy, automated.** `claude stop <id>` + ONE retry of the launch.
+///
+/// Called only when [`background_session_refusal`] matched an id that is OURS.
+/// Returns the outcome of the retry (or of the failed stop), and stamps an honest
+/// session error when the session still has no agent — the whole point of the
+/// fix is that a start can never again end as a silent idle bash.
+///
+/// Neither the stop nor the retry is fatal to `start`: a session that cannot be
+/// resumed is reported, not thrown. The `Result` exists only for the pane writes,
+/// which fail exactly as the first launch's do.
+///
+/// And the resume link is NEVER cleared here — the deliberate opposite of
+/// [`clear_stale_resume_link`], whose link points at a transcript that is GONE.
+/// This conversation is alive and well; it is merely held open somewhere else, so
+/// dropping the link would throw away exactly the history the human is trying to
+/// get back (the manual remedy — `claude stop`, then Start — resumes it with full
+/// context).
+#[allow(clippy::too_many_arguments)]
+async fn recover_background_session(
+    rt: &dyn SessionRuntime,
+    state: &AppState,
+    s: &Session,
+    name: &str,
+    dir: &Path,
+    env: &HashMap<String, String>,
+    cmd: &str,
+    id: &str,
+    resume_intended: bool,
+    resume_ids: &[&str],
+) -> Result<BootOutcome, AppError> {
+    tracing::warn!(
+        name = %name,
+        conversation = %id,
+        "start: claude refused the resume — its daemon holds this conversation as a \
+         background session; running `claude stop` and retrying the launch once",
+    );
+    let stopped = stop_background_session(dir, env, &config_dir_export(s), id).await;
+    let mut outcome = BootOutcome::NotReady;
+    if stopped {
+        // The pane is back at a bash prompt (claude exited instantly), so the
+        // launch line is typed exactly as the first time.
+        rt.send_text(cmd).await?;
+        submit_gap(rt).await;
+        rt.send_key("Enter").await?;
+        outcome = wait_for_agent_ready(rt, state, name, resume_intended, resume_ids, true).await;
+    }
+    if outcome.is_ready() {
+        tracing::info!(
+            name = %name,
+            conversation = %id,
+            "start: the background session was stopped and the resume came up on the retry",
+        );
+        return Ok(outcome);
+    }
+    // NEVER a silent idle bash. Say what happened and what the human can do.
+    let message = format!(
+        "Claude wouldn't resume conversation {id}: its own daemon still holds it as a \
+         background session. supermux ran `claude stop {id}`{} and the session still did \
+         not come up. From a terminal in this session's directory: `claude attach {id}` to \
+         open it there, or `claude stop {id}` and press Start again.",
+        if stopped { "" } else { " (which failed)" },
+    );
+    tracing::error!(
+        name = %name,
+        conversation = %id,
+        stop_ok = stopped,
+        "start: the background-session refusal survived the automatic `claude stop` + retry",
+    );
+    if state.set_error(name, BACKGROUND_SESSION.to_string(), message.clone()) {
+        let _ = state.sse_tx.send(SseEvent {
+            event: "sessions".to_string(),
+            company_id: None,
+            payload: json!({ "delta": [{
+                "name": name,
+                "error": { "type": BACKGROUND_SESSION, "message": message },
+            }] }),
+        });
+    }
+    Ok(outcome)
+}
+
+/// Run `claude stop <id>` for a conversation Claude's daemon holds as a
+/// background session. `true` iff it exited 0 inside [`BG_STOP_TIMEOUT`].
+///
+/// A SUBPROCESS, not keystrokes into the pane: the pane is at a bash prompt after
+/// claude's instant exit, and a subprocess gives an exit status to log instead of
+/// another capture to guess at. It runs through `bash -lc` so `claude` resolves on
+/// the same login PATH the launch line uses, in the session's own dir, with the
+/// session's env and its `CLAUDE_CONFIG_DIR` export — a session with its own
+/// Claude login must talk to ITS daemon, not the default one.
+///
+/// `id` comes from [`background_session_refusal`], which only ever returns
+/// `[0-9a-f-]+`, and it is single-quoted on top of that.
+async fn stop_background_session(
+    dir: &Path,
+    env: &HashMap<String, String>,
+    config_dir_export: &str,
+    id: &str,
+) -> bool {
+    let line = format!("{config_dir_export}claude stop '{id}'");
+    let mut c = tokio::process::Command::new("bash");
+    c.arg("-lc")
+        .arg(&line)
+        .current_dir(dir)
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    match tokio::time::timeout(BG_STOP_TIMEOUT, c.output()).await {
+        Ok(Ok(out)) if out.status.success() => true,
+        Ok(Ok(out)) => {
+            tracing::warn!(
+                conversation = %id,
+                status = %out.status,
+                stdout = %String::from_utf8_lossy(&out.stdout).trim(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "`claude stop` did not succeed",
+            );
+            false
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(conversation = %id, error = %e, "could not run `claude stop`");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(
+                conversation = %id,
+                "`claude stop` timed out after {}s",
+                BG_STOP_TIMEOUT.as_secs(),
+            );
+            false
+        }
+    }
 }
 
 /// Verify bounds for [`deliver_prompt`]. Worst case is
@@ -2448,7 +2743,31 @@ async fn start_locked_inner(
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
-            wait_for_agent_ready(rt.as_ref(), state, name, resume_intended).await
+            // The conversation ids THIS launch could be refused for — the only
+            // ids we will ever `claude stop` (see `background_session_refusal`).
+            let resume_ids: Vec<&str> = [s.cc_conversation_id.as_str(), s.cc_session_name.as_str()]
+                .into_iter()
+                .filter(|id| !id.is_empty())
+                .collect();
+            let mut outcome =
+                wait_for_agent_ready(rt.as_ref(), state, name, resume_intended, &resume_ids, false)
+                    .await;
+            if let BootOutcome::BackgroundSession(id) = &outcome {
+                outcome = recover_background_session(
+                    rt.as_ref(),
+                    state,
+                    &s,
+                    name,
+                    &dir,
+                    &env,
+                    &cmd,
+                    &id.clone(),
+                    resume_intended,
+                    &resume_ids,
+                )
+                .await?;
+            }
+            outcome.is_ready()
         }
     };
 
@@ -3931,7 +4250,7 @@ mod agent_ready_heuristics_tests {
              which is why keying readiness on it was the bug",
         );
         assert_eq!(
-            classify_ready_tick(picker, /*resume_intended*/ true, /*escaped*/ false, /*trusted*/ false),
+            classify_ready_tick(picker, /*resume_intended*/ true, /*escaped*/ false, /*trusted*/ false, &[], false),
             ReadyTick::Wait,
             "a picker we deliberately do not escape must keep the ready-poll WAITING, \
              so the heal times out to ready=false (a FAILED heal), not a false success",
@@ -3939,15 +4258,131 @@ mod agent_ready_heuristics_tests {
         // The trust dialog is the sibling boot modal: also `❯`, also not ready.
         let trust = "Quick safety check: do you trust the files in this folder?\n❯ 1. Yes";
         assert_eq!(
-            classify_ready_tick(trust, true, false, false),
+            classify_ready_tick(trust, true, false, false, &[], false),
             ReadyTick::AcceptTrust,
             "trust dialog is dismissed, not treated as ready",
         );
         // A real composer prompt (no modal) is the ONLY thing that reads Ready.
         assert_eq!(
-            classify_ready_tick("❯ Try \"fix tests\"\n  ⏵⏵ bypass permissions on", true, false, false),
+            classify_ready_tick(
+                "❯ Try \"fix tests\"\n  ⏵⏵ bypass permissions on",
+                true,
+                false,
+                false,
+                &[],
+                false,
+            ),
             ReadyTick::Ready,
             "the agent's own prompt, with no boot modal over it, is ready",
+        );
+    }
+
+
+    // ── Bug A: Claude's background-session refusal ───────────────────────────
+
+    /// The refusal EXACTLY as claude printed it on this box (session `Reisposter`,
+    /// whose conversation was also registered as a Claude Code daemon background
+    /// session). claude exited instantly on this line, so the owner saw the
+    /// terminal flash and vanish and the session sat idle over a bare bash.
+    const LIVE_REFUSAL: &str = "\
+$ claude --resume 'a30d387a-2ff1-4c9e-8f0a-7b1d2e3c4a5b'
+Session a30d387a-2ff1-4c9e-8f0a-7b1d2e3c4a5b is running as a background session \
+(a30d387a). Run `claude attach a30d387a` to open it, or `claude stop a30d387a` first \
+to resume it here. Add --fork-session to branch off a copy instead.
+$ ";
+    /// Our conversation id in the captures below.
+    const OURS: &str = "a30d387a-2ff1-4c9e-8f0a-7b1d2e3c4a5b";
+
+    /// Hard-wrap `text` at `cols`, the way a narrow pane does — mid-word, no
+    /// hyphen, no regard for the sentence.
+    fn wrap_at(text: &str, cols: usize) -> String {
+        let mut out = String::new();
+        for line in text.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            for (i, chunk) in chars.chunks(cols).enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                out.extend(chunk);
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn background_session_refusal_reads_the_live_line() {
+        assert_eq!(
+            background_session_refusal(LIVE_REFUSAL, &[OURS]).as_deref(),
+            Some("a30d387a"),
+            "the id handed to `claude stop` is the short one claude itself printed",
+        );
+    }
+
+    /// The pane is 80 columns on a phone and this sentence WRAPS — mid-word. A
+    /// needle with a space in it would be a coin flip, which is why both sides are
+    /// whitespace-squeezed before matching.
+    #[test]
+    fn background_session_refusal_survives_an_80_col_wrap() {
+        let wrapped = wrap_at(LIVE_REFUSAL, 80);
+        assert!(
+            wrapped.lines().count() > LIVE_REFUSAL.lines().count(),
+            "precondition: the fixture actually wrapped",
+        );
+        assert_eq!(
+            background_session_refusal(&wrapped, &[OURS]).as_deref(),
+            Some("a30d387a"),
+        );
+        // …and at a width that splits the needle itself.
+        assert_eq!(
+            background_session_refusal(&wrap_at(LIVE_REFUSAL, 34), &[OURS]).as_deref(),
+            Some("a30d387a"),
+        );
+    }
+
+    /// NEVER `claude stop` an id that is not ours. A refusal naming somebody
+    /// else's conversation (a shared pane, a stale scrollback line) must return
+    /// nothing: killing another agent's background session is far worse than one
+    /// failed start.
+    #[test]
+    fn background_session_refusal_ignores_a_foreign_id() {
+        let foreign = "Session ffffffff-0000-1111-2222-333344445555 is running as a background \
+                       session (ffffffff). Run `claude stop ffffffff` first to resume it here.";
+        assert_eq!(background_session_refusal(foreign, &[OURS]), None);
+        // …and a session with no resume link at all can never match either.
+        assert_eq!(background_session_refusal(LIVE_REFUSAL, &[]), None);
+    }
+
+    /// A row that resumes BY NAME matches when claude echoes that name, and an
+    /// ordinary screen never matches at all.
+    #[test]
+    fn background_session_refusal_needs_the_refusal() {
+        assert_eq!(
+            background_session_refusal("❯ Try \"fix tests\"\n  ? for shortcuts", &[OURS]),
+            None,
+        );
+        assert_eq!(background_session_refusal("", &[OURS]), None);
+    }
+
+    /// The tick: the refusal is actionable ONCE. After the automatic `claude stop`
+    /// + retry it must never fire again (that would stop the conversation we just
+    /// resumed), and a live agent drawn over the same scrollback always wins.
+    #[test]
+    fn the_refusal_is_a_one_shot_and_never_beats_a_live_agent() {
+        assert_eq!(
+            classify_ready_tick(LIVE_REFUSAL, true, false, false, &[OURS], false),
+            ReadyTick::StopBackgroundSession("a30d387a".to_string()),
+        );
+        assert_eq!(
+            classify_ready_tick(LIVE_REFUSAL, true, false, false, &[OURS], true),
+            ReadyTick::Wait,
+            "one shot: a second refusal is a failure to report, not a loop to run",
+        );
+        let recovered = format!("{LIVE_REFUSAL}\n❯ Try \"fix tests\"\n  ⏵⏵ bypass permissions on");
+        assert_eq!(
+            classify_ready_tick(&recovered, true, false, false, &[OURS], false),
+            ReadyTick::Ready,
+            "the refusal stays in the scrollback after a successful retry — the agent wins",
         );
     }
 
@@ -3959,11 +4394,11 @@ mod agent_ready_heuristics_tests {
     fn a_fresh_stale_picker_escapes_then_waits_not_ready() {
         let picker = "Select a session to resume\n❯ 1. old chat";
         assert_eq!(
-            classify_ready_tick(picker, false, false, false),
+            classify_ready_tick(picker, false, false, false, &[], false),
             ReadyTick::EscapePicker,
         );
         assert_eq!(
-            classify_ready_tick(picker, false, /*escaped*/ true, false),
+            classify_ready_tick(picker, false, /*escaped*/ true, false, &[], false),
             ReadyTick::Wait,
             "after the one-shot escape, the still-visible menu must not read Ready",
         );
@@ -6113,6 +6548,47 @@ mod write_runtime_tests {
         async fn shell_is_foreground(&self) -> Option<bool> {
             self.shell_fg
         }
+    }
+
+
+    /// **Bug A, at the wait loop.** A pane showing Claude's background-session
+    /// refusal must END the ready wait immediately with the id to stop — not sit
+    /// out the full 10s window and report a nameless failure, which is how a start
+    /// used to end as a silent idle bash. Nothing is typed into the pane on the
+    /// way out (the remedy is a subprocess, not keystrokes), and a foreign id is
+    /// not actionable at all.
+    #[tokio::test]
+    async fn the_ready_wait_ends_on_a_background_session_refusal_with_our_id() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "bg", "/tmp", "claude")
+            .await
+            .unwrap();
+
+        let ours = "a30d387a-2ff1-4c9e-8f0a-7b1d2e3c4a5b";
+        let refusal = format!(
+            "$ claude --resume '{ours}'\nSession {ours} is running as a background session \
+             (a30d387a). Run `claude attach a30d387a` to open it, or `claude stop a30d387a` \
+             first to resume it here.\n$ ",
+        );
+        let rt = StubRuntime::parked_at(&refusal);
+        let outcome = wait_for_agent_ready(rt.as_ref(), &state, "bg", true, &[ours], false).await;
+        assert_eq!(
+            outcome,
+            BootOutcome::BackgroundSession("a30d387a".to_string()),
+            "the refusal must be reported with the id `claude stop` needs",
+        );
+        assert_eq!(
+            rt.text_calls.load(Ordering::SeqCst) + rt.key_calls.load(Ordering::SeqCst),
+            0,
+            "nothing may be typed into the pane on this path",
+        );
+        assert!(
+            rt.capture_calls.load(Ordering::SeqCst) <= 2,
+            "it must bail on the FIRST refusal tick, not sit out the whole window",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// THE CODEX #1 REGRESSION. A session parked at the resume picker, already
