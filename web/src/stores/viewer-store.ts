@@ -18,8 +18,11 @@ import { create } from 'zustand'
 import { authApi } from '@/lib/api/auth'
 import {
   clearAccessKey,
+  loginCapabilitiesFromMe,
+  NO_LOGIN_CAPABILITIES,
   storedAccessKey,
   viewerFromMe,
+  type LoginCapabilities,
   type Viewer,
 } from '@/lib/viewer'
 import { useUI } from '@/stores/ui-store'
@@ -48,6 +51,11 @@ function initialViewer(): Viewer {
 
 interface ViewerStore {
   viewer: Viewer
+  /** Which sign-in paths this box offers on THIS host, straight from the same
+   *  anonymous `/auth/me` answer that produced `anon`. Only the login gate reads
+   *  it; it stays fail-closed (`google:false`) for an owner shell, which never
+   *  makes the call, and for any answer that did not say otherwise. */
+  login: LoginCapabilities
   /** Has a resolution round-trip already been started? (StrictMode double-mounts
    *  every effect in dev; this keeps that to ONE request.) */
   started: boolean
@@ -62,6 +70,7 @@ interface ViewerStore {
 
 export const useViewer = create<ViewerStore>()((set, get) => ({
   viewer: initialViewer(),
+  login: NO_LOGIN_CAPABILITIES,
   started: false,
   resolve: async () => {
     if (get().started) return
@@ -74,9 +83,13 @@ export const useViewer = create<ViewerStore>()((set, get) => ({
     // A pasted access key rides as the bearer; a colleague's cookie rides on its
     // own (`credentials: 'same-origin'`).
     const key = storedAccessKey()
-    const next = viewerFromMe(await authApi.me(key || undefined))
+    const payload = await authApi.me(key || undefined)
+    const next = viewerFromMe(payload)
     applyViewer(next)
-    set({ viewer: next })
+    // The capabilities ride along with the identity: ONE round-trip answers both
+    // "who is this" and "what may we offer them", so the gate never flashes an
+    // access-key-only face and then grows a Google button a moment later.
+    set({ viewer: next, login: loginCapabilitiesFromMe(payload) })
   },
   adopt: (v) => {
     applyViewer(v)

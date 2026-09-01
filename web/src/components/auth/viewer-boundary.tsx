@@ -37,6 +37,10 @@ const LazyMemberWelcomeSheet = React.lazy(() =>
 
 export function ViewerBoundary({ children }: { children: React.ReactNode }) {
   const viewer = useViewer((s) => s.viewer)
+  // Which sign-in paths this host actually offers — resolved by the SAME
+  // `/auth/me` call that produced `anon`, so the gate paints its final face on
+  // the first frame instead of growing a Google button a moment later.
+  const login = useViewer((s) => s.login)
   const resolve = useViewer((s) => s.resolve)
   const adopt = useViewer((s) => s.adopt)
   // Dismissing the welcome sheet is for THIS load only — nothing is persisted,
@@ -55,7 +59,7 @@ export function ViewerBoundary({ children }: { children: React.ReactNode }) {
   if (viewer.kind === 'anon') {
     return (
       <React.Suspense fallback={null}>
-        <LazyLoginGate />
+        <LazyLoginGate google={login.google} />
       </React.Suspense>
     )
   }

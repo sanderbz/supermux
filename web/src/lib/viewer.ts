@@ -29,10 +29,37 @@ export interface MeIdentity {
   role?: string | null
 }
 
+/** The sign-in paths this box actually offers on the host the visitor typed —
+ *  the only thing an ANONYMOUS `/auth/me` says beyond `authenticated:false`.
+ *
+ *  Owner-reported: a company host with Google OIDC configured and verified
+ *  "Ready" still showed a gate with nothing but an access-key field. The server
+ *  ran a complete OIDC start at `GET /auth/login` the whole time; the client had
+ *  no way to know. The server computes this with the SAME checks `/auth/login`
+ *  performs, so a `true` here means that URL really does redirect to Google. */
+export interface LoginCapabilities {
+  /** May the gate offer "Sign in with Google" on THIS host? */
+  google: boolean
+}
+
+/** What a viewer is offered before we hear otherwise: nothing. Fail-closed, so
+ *  an offline / 5xx / old-server answer can never paint a button that 404s. */
+export const NO_LOGIN_CAPABILITIES: LoginCapabilities = { google: false }
+
 /** The `GET /auth/me` envelope. */
 export interface MePayload {
   authenticated?: boolean
   identity?: MeIdentity | null
+  /** Present on the ANONYMOUS answer only. Absent from an older server. */
+  login?: { google?: boolean } | null
+}
+
+/** Read the offered sign-in paths off a `/auth/me` payload. PURE, and strictly
+ *  `=== true`: anything else — absent, null, a string, an old server — is "no". */
+export function loginCapabilitiesFromMe(
+  payload: MePayload | null | undefined,
+): LoginCapabilities {
+  return { google: payload?.login?.google === true }
 }
 
 /** The resolved viewer. `pending` is the pre-resolution state — the app renders

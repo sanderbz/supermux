@@ -434,6 +434,10 @@ async fn profile(
 
 /// `GET /auth/me` — the resolved identity for the SPA. Owner (bearer) or human
 /// (cookie); `{authenticated:false}` when neither. NEVER returns the admin token.
+///
+/// The anonymous answer additionally carries `login: { google: bool }` — the ONE
+/// bit the sign-in screen needs to know whether it may offer a Google button.
+/// See [`login_capabilities`].
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Owner via bearer.
     if let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
@@ -492,7 +496,48 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
         }
     }
 
-    (StatusCode::OK, Json(json!({"authenticated": false}))).into_response()
+    // NOBODY is signed in — so this is the answer the login gate renders from,
+    // and the only place it can learn which sign-in paths this box actually
+    // offers on the address the visitor typed.
+    (
+        StatusCode::OK,
+        Json(json!({
+            "authenticated": false,
+            "login": login_capabilities(&cfg, &headers),
+        })),
+    )
+        .into_response()
+}
+
+/// What an ANONYMOUS caller on this `Host` may honestly be offered.
+///
+/// Owner-reported: a company host with Google OIDC fully configured and verified
+/// "Ready" still showed only "This is a private workspace / Access key". The
+/// server ran a complete OIDC start at `GET /auth/login`; the client simply had
+/// no way to know it existed, because `/auth/me` said nothing but
+/// `{authenticated:false}`.
+///
+/// So this answers exactly the question the gate asks — "may I draw a Google
+/// button?" — using the SAME two checks `login` itself performs before it 302s:
+///
+///   * [`HumanAuthConfig::enabled`] (client id + secret + hosts + keys), which is
+///     what makes `login` a 404 when false; and
+///   * an allowlisted inbound `Host` ([`HumanAuthConfig::host_entry`]), which is
+///     what makes `login` a 403 when absent.
+///
+/// Keeping the predicates identical is the whole point: the button can never
+/// appear on a host where pressing it would land on a 404 or a 403.
+///
+/// It leaks nothing else. Not the client id, not the redirect URI, not the host
+/// allowlist, not a company name — an unauthenticated caller learns ONE bit
+/// about the address they already know they are on.
+fn login_capabilities(
+    cfg: &crate::config::HumanAuthConfig,
+    headers: &HeaderMap,
+) -> serde_json::Value {
+    let google = cfg.enabled()
+        && effective_host(headers, None).is_some_and(|h| cfg.host_entry(&h).is_some());
+    json!({ "google": google })
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -725,5 +770,111 @@ mod invite_tests {
         let resp = call_invite(&state, QUICK_HOST, &token).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         cleanup(state, dir).await;
+    }
+}
+
+#[cfg(test)]
+mod login_capability_tests {
+    //! The ONE bit `/auth/me` tells an anonymous caller: may the sign-in screen
+    //! draw a Google button on THIS host?
+    //!
+    //! Owner-reported bug: a company host with Google OIDC configured and
+    //! verified "Ready" still rendered only the access-key field, because the
+    //! client had no way to learn that `GET /auth/login` would work here.
+    //!
+    //! The contract these pin is a PARITY one — the capability must agree with
+    //! what `login` itself does — so each case below is stated as the status the
+    //! button would land on if it were pressed.
+    use super::*;
+    use crate::config::{CompanyHost, HumanAuthConfig};
+
+    const HOST: &str = "acme.example.com";
+
+    fn headers_for(host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        h
+    }
+
+    /// A fully configured Google surface for `HOST` (what `enabled()` requires).
+    fn google_cfg() -> HumanAuthConfig {
+        HumanAuthConfig {
+            google_client_id: Some("cid.apps.googleusercontent.com".to_string()),
+            google_client_secret: Some("secret".to_string()),
+            company_hosts: vec![CompanyHost {
+                host: HOST.to_string(),
+                company_id: 1,
+                redirect_uri: format!("https://{HOST}/auth/callback"),
+                ephemeral: false,
+            }],
+            cookie_key: b"cookie-key-cookie-key-cookie-key0".to_vec(),
+            csrf_key: b"csrf-key0-csrf-key0-csrf-key0-csr".to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn google_bit(cfg: &HumanAuthConfig, host: Option<&str>) -> bool {
+        let headers = host.map(headers_for).unwrap_or_default();
+        login_capabilities(cfg, &headers)["google"]
+            .as_bool()
+            .expect("google is always a bool")
+    }
+
+    #[test]
+    fn configured_and_on_a_company_host_offers_google() {
+        let cfg = google_cfg();
+        assert!(cfg.enabled(), "the fixture is the enabled shape");
+        // `login` would 302 here — so the button is honest.
+        assert!(google_bit(&cfg, Some(HOST)));
+    }
+
+    #[test]
+    fn a_host_that_is_not_allowlisted_offers_nothing() {
+        // `login` answers 403 "host not allowlisted" here; a button would be a lie.
+        assert!(!google_bit(&google_cfg(), Some("evil.example.com")));
+    }
+
+    #[test]
+    fn google_unconfigured_offers_nothing_even_on_an_allowlisted_host() {
+        // The quick-tunnel / invite-only shape: hosts + keys, no Google client.
+        // `login` answers 404 here, so the gate keeps its access-key-only face.
+        let mut cfg = google_cfg();
+        cfg.google_client_id = None;
+        cfg.google_client_secret = None;
+        assert!(cfg.invite_enabled(), "the invite surface is still live");
+        assert!(!cfg.enabled());
+        assert!(!google_bit(&cfg, Some(HOST)));
+    }
+
+    #[test]
+    fn a_fully_inert_box_offers_nothing() {
+        assert!(!google_bit(&HumanAuthConfig::default(), Some(HOST)));
+    }
+
+    #[test]
+    fn no_host_header_offers_nothing() {
+        // `login` answers 400 "missing host"; fail closed rather than guess.
+        assert!(!google_bit(&google_cfg(), None));
+    }
+
+    #[test]
+    fn the_host_match_is_case_and_port_insensitive_like_login() {
+        let cfg = google_cfg();
+        assert!(google_bit(&cfg, Some("ACME.example.com")));
+        assert!(google_bit(&cfg, Some("acme.example.com:8443")));
+    }
+
+    #[test]
+    fn the_answer_carries_the_bit_and_nothing_else() {
+        // No client id, no redirect URI, no host list, no company name may ride
+        // along: an anonymous caller learns ONE bit.
+        let v = login_capabilities(&google_cfg(), &headers_for(HOST));
+        let obj = v.as_object().expect("an object");
+        assert_eq!(obj.len(), 1, "exactly one key: {obj:?}");
+        assert!(obj.contains_key("google"));
+        let rendered = v.to_string();
+        for leak in ["cid", "googleusercontent", "secret", "callback", HOST] {
+            assert!(!rendered.contains(leak), "{leak} leaked into {rendered}");
+        }
     }
 }

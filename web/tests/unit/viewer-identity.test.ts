@@ -365,3 +365,52 @@ describe('bottomNavItems — the owner plane leaves the tab bar for a member', (
     expect(member).toContain('/workflows')
   })
 })
+
+// ── what the gate may honestly offer ─────────────────────────────────────────
+//
+// Owner-reported: on a company host with Google OIDC configured and verified
+// "Ready", the login gate still showed only "This is a private workspace /
+// Access key". The server ran the full OIDC start at `GET /auth/login` the whole
+// time; nothing in the payload said so. The anonymous `/auth/me` answer now
+// carries that one bit, and this is the pure reader of it — deliberately strict,
+// because every "maybe" here paints a button that lands on a 404.
+
+describe('loginCapabilitiesFromMe', () => {
+  const load = () => import('../../src/lib/viewer')
+
+  test('an anon answer that offers Google says so', async () => {
+    const { loginCapabilitiesFromMe } = await load()
+    expect(
+      loginCapabilitiesFromMe({ authenticated: false, login: { google: true } }),
+    ).toEqual({ google: true })
+  })
+
+  test('an older server — no `login` block at all — offers nothing', async () => {
+    const { loginCapabilitiesFromMe } = await load()
+    expect(loginCapabilitiesFromMe({ authenticated: false })).toEqual({ google: false })
+    expect(loginCapabilitiesFromMe({ authenticated: false, login: null })).toEqual({
+      google: false,
+    })
+  })
+
+  test('a missing / malformed payload offers nothing — fail closed', async () => {
+    const { loginCapabilitiesFromMe } = await load()
+    for (const bad of [null, undefined, {}, { login: {} }]) {
+      expect(loginCapabilitiesFromMe(bad as never)).toEqual({ google: false })
+    }
+  })
+
+  test('only a literal `true` counts — a truthy string is not a capability', async () => {
+    const { loginCapabilitiesFromMe } = await load()
+    for (const truthy of ['true', 1, {}]) {
+      expect(
+        loginCapabilitiesFromMe({ login: { google: truthy } } as never).google,
+      ).toBe(false)
+    }
+  })
+
+  test('the shipped default is nothing on offer', async () => {
+    const { NO_LOGIN_CAPABILITIES } = await load()
+    expect(NO_LOGIN_CAPABILITIES).toEqual({ google: false })
+  })
+})
