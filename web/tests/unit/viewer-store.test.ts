@@ -62,7 +62,11 @@ const { useUI } = await import('../../src/stores/ui-store')
 function reset() {
   installStorage()
   installWindow()
-  useViewer.setState({ viewer: { kind: 'pending' }, started: false })
+  useViewer.setState({
+    viewer: { kind: 'pending' },
+    login: { google: false },
+    started: false,
+  })
   useUI.setState({ botMode: false, activeCompany: null, memberCompany: null })
 }
 
@@ -171,6 +175,46 @@ describe('resolve()', () => {
       useViewer.getState().resolve(),
     ])
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('login capabilities — what the gate may offer', () => {
+  // Owner-reported: a company host with Google OIDC configured and verified
+  // "Ready" still rendered an access-key-only gate. The bit now rides on the
+  // same anonymous `/auth/me` answer that produces `anon`, so the gate paints
+  // its final face on the first frame.
+  test('an anon answer that offers Google is carried to the gate', async () => {
+    installFetch(() => jsonRes({ authenticated: false, login: { google: true } }))
+    await useViewer.getState().resolve()
+    expect(useViewer.getState().viewer.kind).toBe('anon')
+    expect(useViewer.getState().login.google).toBe(true)
+  })
+
+  test('an anon answer that offers nothing keeps the gate as it was', async () => {
+    installFetch(() => jsonRes({ authenticated: false, login: { google: false } }))
+    await useViewer.getState().resolve()
+    expect(useViewer.getState().login.google).toBe(false)
+  })
+
+  test('an older server, which says nothing at all, offers nothing', async () => {
+    installFetch(() => jsonRes({ authenticated: false }))
+    await useViewer.getState().resolve()
+    expect(useViewer.getState().login.google).toBe(false)
+  })
+
+  test('an unreachable server offers nothing — fail closed, no dead button', async () => {
+    ;(globalThis as { fetch?: unknown }).fetch = () => Promise.reject(new Error('offline'))
+    await useViewer.getState().resolve()
+    expect(useViewer.getState().viewer.kind).toBe('anon')
+    expect(useViewer.getState().login.google).toBe(false)
+  })
+
+  test('an owner shell never asks, and so is never told', async () => {
+    installWindow('owner-token')
+    const calls = installFetch(() => jsonRes({ authenticated: false, login: { google: true } }))
+    await useViewer.getState().resolve()
+    expect(calls).toHaveLength(0)
+    expect(useViewer.getState().login.google).toBe(false)
   })
 })
 

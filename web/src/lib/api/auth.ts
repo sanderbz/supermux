@@ -21,6 +21,28 @@ export function csrfCookie(): string {
   return ''
 }
 
+/**
+ * The href for the Google sign-in button — `GET /auth/login`, reached by a plain
+ * full-page NAVIGATION, never by fetch.
+ *
+ * That is not a stylistic choice: the route answers `302 → accounts.google.com`
+ * with `state`/PKCE bound to the inbound Host, and only the browser's own
+ * top-level navigation can follow that into Google's consent screen and come
+ * back to `/auth/callback` carrying cookies. An XHR would follow the redirect
+ * invisibly and land nowhere.
+ *
+ * Same-origin and base-path aware (an install served under a sub-path). Falls
+ * back to the bare path when there is no `window` at all — server-side rendering
+ * in the unit tests — so importing this module never throws.
+ */
+export function googleLoginUrl(): string {
+  try {
+    return apiUrl('/auth/login')
+  } catch {
+    return '/auth/login'
+  }
+}
+
 export const authApi = {
   /**
    * `GET /auth/me` — the resolved identity. Answers for BOTH credentials:

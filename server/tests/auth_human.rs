@@ -708,3 +708,153 @@ async fn companies_list_shows_a_member_only_their_own_company() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ── the anonymous `/auth/me` answer — what the LOGIN GATE may offer ───────────
+//
+// Owner-reported: on a company host with Google OIDC configured and verified
+// "Ready", the sign-in screen still showed only "This is a private workspace /
+// Access key". `GET /auth/login` worked the whole time; the SPA just could not
+// know, because the anonymous `/auth/me` answer was `{authenticated:false}` and
+// nothing else.
+//
+// These drive the REAL router with real `Host` headers and assert the parity
+// that makes the button honest: `login.google` is true exactly where
+// `/auth/login` 302s, and false wherever it would 404 or 403.
+
+/// `GET /auth/me` with no credentials, from `host`.
+async fn anon_me(app: &axum::Router, host: &str) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/me")
+                .header(header::HOST, host)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "/auth/me always answers 200");
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn anon_me_offers_google_exactly_where_login_would_302() {
+    let (app, _state, dir) = enabled_app().await;
+
+    // The owner's case: Google configured, on the allowlisted company host.
+    let v = anon_me(&app, HOST).await;
+    assert_eq!(v["authenticated"], serde_json::json!(false));
+    assert_eq!(v["login"]["google"], serde_json::json!(true), "{v}");
+    // …and that promise is kept: the same host really does start the flow.
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/login")
+                .header(header::HOST, HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::FOUND, "the button's target 302s");
+
+    // A host nobody allowlisted: `/auth/login` is a 403 there, so no button.
+    let v = anon_me(&app, "evil.example.com").await;
+    assert_eq!(v["login"]["google"], serde_json::json!(false), "{v}");
+    let refused = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/login")
+                .header(header::HOST, "evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN, "parity with the bit");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn anon_me_never_leaks_config_and_the_signed_in_answer_is_unchanged() {
+    let (app, _state, dir) = enabled_app().await;
+
+    // The anonymous answer carries the bit and NOTHING else — no client id, no
+    // redirect URI, no host allowlist.
+    let v = anon_me(&app, HOST).await;
+    let rendered = v.to_string();
+    for leak in ["client-123", "googleusercontent", "google-secret", "callback"] {
+        assert!(!rendered.contains(leak), "{leak} leaked into {rendered}");
+    }
+    let top: Vec<&String> = v.as_object().unwrap().keys().collect();
+    assert_eq!(top.len(), 2, "authenticated + login only: {top:?}");
+
+    // An AUTHENTICATED answer is untouched: no capability block rides along —
+    // somebody already signed in is never offered a way to sign in again.
+    let cb = login_flow(&app, "good-code").await;
+    let cookie = set_cookie(&cb, "supermux_hsess").unwrap();
+    let me = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/me")
+                .header(header::HOST, HOST)
+                .header(header::COOKIE, format!("supermux_hsess={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(me.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["authenticated"], serde_json::json!(true));
+    assert!(v.get("login").is_none(), "no login block for a member: {v}");
+
+    // The owner bearer is likewise unchanged.
+    let owner = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/me")
+                .header(header::HOST, HOST)
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(owner.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["authenticated"], serde_json::json!(true));
+    assert!(v.get("login").is_none(), "no login block for the owner: {v}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn anon_me_on_an_invite_only_box_offers_no_google() {
+    // The quick-tunnel shape: an allowlisted host and signing keys, but no
+    // Google client — `/auth/login` is a 404, so the gate keeps its
+    // access-key-and-invite-link face, byte for byte as before.
+    let dir = std::env::temp_dir().join(format!("supermux-humaninv-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = human_auth_cfg();
+    cfg.google_client_id = None;
+    cfg.google_client_secret = None;
+    let config = config_with(&dir, cfg);
+    assert!(!config.human_auth.enabled());
+    assert!(config.human_auth.invite_enabled(), "invites still live");
+    let pool = db::init(&config).await.unwrap();
+    let app = http::router(AppState::new(pool, config));
+
+    let v = anon_me(&app, HOST).await;
+    assert_eq!(v["authenticated"], serde_json::json!(false));
+    assert_eq!(v["login"]["google"], serde_json::json!(false), "{v}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
