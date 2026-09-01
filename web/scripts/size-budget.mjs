@@ -69,7 +69,17 @@ const DIST = join(DIST_ROOT, 'assets')
 // the next regression. Set from the FINAL integration measurement on purpose:
 // budgeting against any single branch of the wave would have been under water
 // again as soon as the others landed.
-const BUDGET_ENTRY_JS = 163 * KB
+// RATCHETED 163 -> 164 by the ledger fix after the v0.6.6 double-merge. Measured
+// on main (bbf5fcf1): 163.09 KB — the two PRs merged that evening each passed
+// under 163 alone and crossed it only combined:
+//   • "reopen where you left off" put `lib/cold-start.ts` on the hero path ON
+//     PURPOSE — the boot-path capture must run in the entry chunk or a lazy
+//     route chunk loads too late to tell a cold start from a walk back to `/`.
+//   • the badge fix reshaped `push-bridge.ts` (needsAttention), already entry.
+// Per this file's own policy (the "161" entry above: honest fix = ceil(measured)
+// with the measurement attached, not clawing unrelated bytes off the hero path):
+// ceil(163.09) = 164. Still the tightest gate in this file.
+const BUDGET_ENTRY_JS = 164 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
