@@ -285,12 +285,7 @@ pub async fn get_one(
     }
     // Catalog-mirror fallback (curated ∪ last-good live), which already carries the
     // per-connector auth descriptor + Lane B/C paste schema.
-    let found = catalog::mirror()
-        .cached_cards()
-        .await
-        .into_iter()
-        .find(|c| c.get("id").and_then(Value::as_str) == Some(id.as_str()));
-    match found {
+    match catalog_card(&id).await {
         Some(v) => Ok(Json(v)),
         None => Err(AppError::NotFound(format!("connector '{id}'"))),
     }
@@ -324,8 +319,21 @@ pub async fn import_mcpb(
 
 /// Shared validate → columns → upsert → audit for both the direct manifest POST
 /// and the `.mcpb` import.
-async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Value>, AppError> {
+async fn store_manifest(state: &AppState, mut manifest: Manifest) -> Result<Json<Value>, AppError> {
     manifest.validate()?;
+    // A CATALOG card installed without its `emit` template would land a row that
+    // grants but cannot LAUNCH: `connector_config::assemble` reads `emit_json` and
+    // would wire an empty `mcpServers` entry. The store's client-side install posts
+    // only the card fields (id/kind/name/icon/description/tools/credentials/auth),
+    // so fill the template back in from the curated ∪ mirrored card for a known
+    // catalog id. A manifest that DECLARED its own emit is never overwritten.
+    if manifest.emit.is_null() || manifest.emit.as_object().is_some_and(Map::is_empty) {
+        if let Some(emit) = catalog_card(&manifest.id).await.and_then(|c| c.get("emit").cloned()) {
+            if emit.is_object() {
+                manifest.emit = emit;
+            }
+        }
+    }
     let cols = manifest.to_columns();
     // Provenance blob (secret-free). When the manifest DECLARED its auth lane, fold
     // the descriptor in so it survives the round-trip and `derive_auth` prefers it
@@ -356,6 +364,88 @@ async fn store_manifest(state: &AppState, manifest: Manifest) -> Result<Json<Val
     .map_err(db_err)?;
     audit(state, "connector.upsert", &manifest.id, json!({ "kind": manifest.kind })).await;
     Ok(Json(json!({ "ok": true, "id": manifest.id })))
+}
+
+/// The catalog card for `id` from the mirror (curated ∪ last-good live), or `None`
+/// when the id is not a catalog card at all. Shared by the read-side fallback in
+/// [`get_one`] and the write-side auto-install in [`ensure_installed`].
+async fn catalog_card(id: &str) -> Option<Value> {
+    catalog::mirror()
+        .cached_cards()
+        .await
+        .into_iter()
+        .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
+}
+
+/// A catalog card → the install manifest, in the SAME shape the store's
+/// client-side install posts (id/kind/display_name/icon/description/tools/
+/// credentials/auth) plus the `emit` template the store drops. `categories` is
+/// deliberately left empty: [`card_categories`] recovers an installed catalog
+/// card's chips from [`catalog::curated_categories`], so folding them into
+/// provenance here would only duplicate the curated source of truth.
+fn manifest_from_catalog_card(card: &Value) -> Manifest {
+    let text = |k: &str| card.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    /// One card field parsed into its manifest type, defaulting when the card
+    /// omits it or carries a shape this build doesn't understand (`auth: null` on
+    /// an un-enriched mirrored row) — an install must never fail on a stray field.
+    fn parsed<T: serde::de::DeserializeOwned + Default>(card: &Value, k: &str) -> T {
+        card.get(k)
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    }
+    Manifest {
+        id: text("id"),
+        kind: card
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::connectors::manifest::KIND_MCP_CATALOG)
+            .to_string(),
+        display_name: text("display_name"),
+        icon: text("icon"),
+        description: text("description"),
+        tools: parsed(card, "tools"),
+        credentials: parsed(card, "credentials"),
+        auth: parsed(card, "auth"),
+        emit: card.get("emit").cloned().unwrap_or(Value::Null),
+        categories: Vec::new(),
+    }
+}
+
+/// Resolve the connector row a WRITE path needs, INSTALLING a catalog card into
+/// the local registry the first time it is used.
+///
+/// Catalog cards (`pmcp-*`) are curated/mirrored JSON, not `connectors` rows —
+/// they only become rows when "installed". The store UI installs client-side
+/// before it grants; the chat **connect card** (a bot calling the `connect` MCP
+/// tool) goes straight to grant/credential, so every catalog connector used to
+/// 404 with `not found: connector '<id>'` on its FIRST use. The read side
+/// ([`get_one`]) already falls back to the catalog mirror; this is the write-side
+/// half, so both entry points agree and the server stays the single source of
+/// truth (no second install path in the client).
+///
+/// Scope note (P3d): the caller's auth check runs BEFORE this, unchanged. A scoped
+/// MEMBER can therefore trigger the auto-install — deliberately: the row is a
+/// curated PUBLIC card carrying no secret, connector definitions are global by
+/// design, and the grant the member is already allowed to make needs the row to
+/// exist. An UNKNOWN id still 404s, so a member can never author a global row.
+async fn ensure_installed(
+    state: &AppState,
+    id: &str,
+    via: &str,
+) -> Result<connectors::Connector, AppError> {
+    if let Some(c) = connectors::get(&state.pool, id).await.map_err(db_err)? {
+        return Ok(c);
+    }
+    let card = catalog_card(id)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    store_manifest(state, manifest_from_catalog_card(&card)).await.map(drop)?;
+    audit(state, "connector.install", id, json!({ "via": via, "source": "catalog" })).await;
+    connectors::get(&state.pool, id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))
 }
 
 /// `DELETE /api/connectors/{id}` — remove a connector (grants + vault CASCADE).
@@ -426,11 +516,10 @@ pub async fn put_credential(
         }
     }
     // Connector must exist (the vault row FK-references it). Keep the row — its
-    // credential schema names the identity field.
-    let connector = connectors::get(&state.pool, &id)
-        .await
-        .map_err(db_err)?
-        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    // credential schema names the identity field. A never-installed CATALOG card is
+    // installed here on first use, so sealing a key from the chat connect card no
+    // longer 404s (see [`ensure_installed`]).
+    let connector = ensure_installed(&state, &id, "credential").await?;
     if body.fields.is_empty() {
         return Err(AppError::BadRequest("no credential fields provided".into()));
     }
@@ -614,10 +703,10 @@ pub async fn grant(
     // (`@company:<their id>` or an own-company session). `*` (global) / another
     // company / a foreign session all collapse to a uniform 404. Owner/admin: no-op.
     crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &session).await?;
-    connectors::get(&state.pool, &id)
-        .await
-        .map_err(db_err)?
-        .ok_or_else(|| AppError::NotFound(format!("connector '{id}'")))?;
+    // Grant-time install: a curated catalog card is materialized into the registry
+    // the first time anyone grants it, so the chat connect card (which never runs
+    // the store's client-side install) works on FIRST use. An unknown id still 404s.
+    ensure_installed(&state, &id, "grant").await?;
     match body.account_ref.as_deref().filter(|s| !s.is_empty()) {
         // Account-aware grant (pins which account this grant feeds).
         Some(aref) => connectors::grant_with_account(
@@ -1138,6 +1227,48 @@ mod tests {
             source_json: source_json.to_string(),
             created_at: 0,
         }
+    }
+
+    #[test]
+    fn manifest_from_a_curated_catalog_card_is_install_ready() {
+        let card = catalog::featured_cards()
+            .into_iter()
+            .find(|c| c["id"] == json!("pmcp-inhouseseo"))
+            .expect("curated card");
+        let m = manifest_from_catalog_card(&card);
+        assert_eq!(m.id, "pmcp-inhouseseo");
+        assert_eq!(m.kind, crate::connectors::manifest::KIND_MCP_CATALOG);
+        assert_eq!(m.display_name, "InhouseSEO");
+        // The auth LANE survives the install (a Lane D card must not degrade to a
+        // generic api-key field once it is a local row).
+        assert_eq!(m.auth.kind, crate::connectors::manifest::AuthKind::McpOauth);
+        // The emit template rides along — without it the row grants but can't launch.
+        assert_eq!(m.emit["url"], json!("https://app.inhouseseo.ai/api/mcp"));
+        // Categories stay empty on purpose: `card_categories` recovers them from the
+        // curated card, so folding them into provenance would duplicate that source.
+        assert!(m.categories.is_empty());
+        assert!(m.validate().is_ok(), "a catalog-derived manifest is storable");
+    }
+
+    #[test]
+    fn manifest_from_a_card_with_junk_fields_still_installs() {
+        // A mirrored row can carry `auth: null` / shapes this build doesn't know —
+        // an install must default rather than fail (the card is still real).
+        let card = json!({
+            "id": "pmcp-weird",
+            "kind": "mcp_catalog",
+            "display_name": "Weird",
+            "auth": Value::Null,
+            "tools": "not-an-array",
+            "credentials": Value::Null,
+            "emit": { "url": "https://example.test/mcp" },
+        });
+        let m = manifest_from_catalog_card(&card);
+        assert_eq!(m.id, "pmcp-weird");
+        assert!(m.tools.is_empty());
+        assert!(m.credentials.is_empty());
+        assert_eq!(m.auth.kind, crate::connectors::manifest::AuthKind::Unspecified);
+        assert_eq!(m.emit["url"], json!("https://example.test/mcp"));
     }
 
     #[test]
