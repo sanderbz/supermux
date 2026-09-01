@@ -903,14 +903,20 @@
     opacity: 1;
   }
 }
-.sm-chat-skel {
+/* `.sm-skel-delay` is the same courtesy for any other skeleton that stands in
+   for a fast query (the invite sheet's "Checking access…"): fade in on a delay so
+   a cached answer replaces it before it was ever seen. One rule, two names — the
+   chat class stays because the chat renderer's comment above is about IT. */
+.sm-chat-skel,
+.sm-skel-delay {
   animation: sm-mount-fade 0.22s ease-out 0.14s both;
 }
 /* Reduce Motion: keep the ANTI-FLASH delay (hold hidden ~140ms) but drop the
    fade — a single opacity step, not a sweep. A skeleton is decoration around an
    absence, so it owes the reader no motion, only the courtesy of not blinking. */
 @media (prefers-reduced-motion: reduce) {
-  .sm-chat-skel {
+  .sm-chat-skel,
+  .sm-skel-delay {
     animation: sm-mount-fade 0.14s step-end both;
   }
 }

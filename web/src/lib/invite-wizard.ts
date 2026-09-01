@@ -168,3 +168,64 @@ export function inviteMailto(v: {
   const href = `mailto:${v.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   return { subject, body, href }
 }
+
+// ── Which surface the sheet OWES the owner ───────────────────────────────────
+//
+// Witnessed live (owner, mobile, a box whose domain + Google + DNS were ALL
+// done): opening "Invite a teammate" showed "Step 1 of 4", a four-step onboarding
+// list with Domain "Not set up" and Google login "Not set up", and a bare
+// "Checking access…" line underneath. Both halves were wrong.
+//
+//   (a) The rail rendered while the status query was still in flight. Every chip
+//       is derived from `status` with `?.` defaults, so an ABSENT status reads
+//       exactly like a box that has nothing set up — the pessimistic default is
+//       indistinguishable from a fact, and it was on screen for the whole fetch.
+//   (b) Once loaded, a fully-configured box still got the onboarding stepper,
+//       when the only thing left to do on it is add a person.
+//
+// So the sheet picks one of three surfaces, from the query state and the SAME
+// completion predicates the stepper already uses.
+
+/** Setup is complete on the permanent path: the tunnel is healthy, THIS company's
+ *  Google redirect verifies, and its address is actually written. All three, and
+ *  from the server — the quick-tunnel (temporary link) path is deliberately NOT
+ *  complete: it is a trial with a link that dies on restart, and its stepper is
+ *  where an owner turns it into something permanent. */
+export function setupComplete(s?: ExternalStatus): boolean {
+  if (!s || quickActive(s)) return false
+  return domainDone(s) && googleDone(s) && (s.company?.company_host_written ?? false)
+}
+
+/** `loading` — the status has never landed: show ONE skeleton, never the rail of
+ *  defaults. `invite` — configured: the Add-people panel, no stepper. `wizard` —
+ *  anything unfinished, or the settings entry point. */
+export type SheetView = 'loading' | 'invite' | 'wizard'
+
+export function sheetView(v: {
+  isLoading: boolean
+  isError?: boolean
+  status?: ExternalStatus
+  /** The "External access…" entry, or "Access settings" from inside the panel. */
+  settings?: boolean
+}): SheetView {
+  // A status that never arrived is not a status that says "nothing is set up".
+  // The error branch falls through to the wizard, which renders the error line —
+  // never to the invite panel, which would imply a box we could not check.
+  if (!v.status) return v.isError ? 'wizard' : v.isLoading ? 'loading' : 'wizard'
+  if (v.settings) return 'wizard'
+  return setupComplete(v.status) ? 'invite' : 'wizard'
+}
+
+/** The step the stepper opens on. Resumable: the FIRST unfinished one, so closing
+ *  the tab mid-Google-detour loses nothing. The settings entry starts at the top
+ *  instead — nothing is unfinished there, the owner came to CHANGE something. */
+export function resumeStep(s: ExternalStatus, opts: { settings?: boolean } = {}): StepKey {
+  if (opts.settings) return 'domain'
+  if (!domainDone(s)) return 'domain'
+  const quick = quickActive(s)
+  if (!quick && !googleDone(s)) return 'google'
+  // Resume on the inbox step when an agent-inbox is already provisioned (e.g. it
+  // still needs its verification click) — otherwise land on Add people.
+  if (!quick && s.company?.agent_inbox) return 'inbox'
+  return 'person'
+}
