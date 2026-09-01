@@ -188,8 +188,14 @@ pub(crate) fn fork_probe(provider: &dyn IsolationProvider) -> IsolationLevel {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Fork a child, apply the REAL company [`SandboxSpec`] for a temp company root,
-/// and `execv` a real binary (`/bin/sh -c "exit 0"`) under the confinement.
-/// Returns `true` iff the confined child could boot + exec (child exit 0).
+/// open a pty master, and `execv` a real binary (`/bin/sh -c "exit 0"`) under the
+/// confinement. Returns `true` iff the confined child could boot + openpty + exec
+/// (child exit 0).
+///
+/// The `openpty` half is not decoration: the pty holder opens `/dev/ptmx` before
+/// it does anything else, so an allow-list without the device nodes fails THERE,
+/// not at exec — which is how a self-test that only exec'd reported "usable" for
+/// a jail that killed every company holder.
 ///
 /// This is the honest, self-correcting guarantee: it mirrors exactly what a real
 /// company holder does — confine (BestEffort: fail-open on a confine error, so a
@@ -227,6 +233,12 @@ pub(crate) fn self_test_confined_exec(home: &Path) -> bool {
     let arg0 = std::ffi::CString::new("sh").unwrap();
     let dashc = std::ffi::CString::new("-c").unwrap();
     let prog = std::ffi::CString::new("exit 0").unwrap();
+    // …and the FIRST thing a real holder does, before it execs anything:
+    // `openpty(3)`. The self-test used to exec only, which is exactly why a
+    // `/dev/ptmx`-less allow-list passed the gate at boot and then killed every
+    // company holder at `openpty` (EACCES) — 20/20 confined starts degraded to
+    // unconfined, and the gate that exists to catch that said "usable".
+    let ptmx = std::ffi::CString::new("/dev/ptmx").unwrap();
 
     // SAFETY: mirrors `fork_probe` — the child runs only Landlock syscalls and
     // `execv`/`_exit` on pre-owned paths; it never returns into the Rust runtime.
@@ -237,6 +249,16 @@ pub(crate) fn self_test_confined_exec(home: &Path) -> bool {
         // exec a real binary. A Full jail whose allow-list denies the exec makes
         // execv fail ⇒ we _exit(127) ⇒ the caller reads "not usable".
         let _ = LandlockLinux.confine(&spec);
+        // A holder that cannot open the pty master is dead on arrival, so prove
+        // that under the jail too — `_exit(126)` ⇒ "not usable", same as a denied
+        // exec. (Only `open`/`close`/`_exit`: async-signal-safe.)
+        unsafe {
+            let master = libc::open(ptmx.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+            if master < 0 {
+                libc::_exit(126);
+            }
+            libc::close(master);
+        }
         let argv = [arg0.as_ptr(), dashc.as_ptr(), prog.as_ptr(), std::ptr::null()];
         unsafe {
             libc::execv(sh.as_ptr(), argv.as_ptr());
@@ -500,6 +522,91 @@ mod tests {
             "confined company child: expected write|libread|sibling-denied|exec (bits {}), got {}",
             B_WRITE | B_LIBREAD | B_SIBDENY | B_EXEC,
             code,
+        );
+    }
+
+    /// REPRO (bug B): a confined company holder must be able to `openpty(3)` —
+    /// i.e. open `/dev/ptmx` RW and then its `/dev/pts/N` slave. Without the
+    /// device nodes on the allow-list the kernel denies `/dev/ptmx` with EACCES,
+    /// the pty holder dies at `openpty` before it binds its socket, and the
+    /// daemon only ever sees "holder did not come up in time" (measured live:
+    /// every company-agent start degraded to UNCONFINED, 20/20 in a week).
+    #[test]
+    fn company_plan_permits_openpty() {
+        use std::ffi::CString;
+        use std::path::PathBuf;
+
+        const SKIP: i32 = 42;
+        const OK: i32 = 0;
+        const DENIED_PTMX: i32 = 1;
+        const DENIED_SLAVE: i32 = 2;
+
+        let Some(home) = dirs::home_dir() else {
+            eprintln!("no home dir; skipping");
+            return;
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root: PathBuf = home.join(format!(".supermux-iso-pty-{}-{}", std::process::id(), nanos));
+        std::fs::create_dir_all(&root).expect("mk company root");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Cleanup(root.clone());
+
+        let spec = SandboxSpec::for_company(&root, &home);
+        let ptmx = CString::new("/dev/ptmx").unwrap();
+
+        // SAFETY: mirrors `fork_probe` — the child runs only Landlock syscalls,
+        // libc open/ioctl on pre-owned paths, and `_exit(2)`.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            let level = match LandlockLinux.confine(&spec) {
+                Ok(l) => l,
+                Err(_) => unsafe { libc::_exit(SKIP) },
+            };
+            if !level.is_enforced() {
+                unsafe { libc::_exit(SKIP) };
+            }
+            let master = unsafe { libc::open(ptmx.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+            if master < 0 {
+                unsafe { libc::_exit(DENIED_PTMX) };
+            }
+            // grantpt/unlockpt then open the slave — the second half of openpty().
+            let mut name = [0i8; 128];
+            let named = unsafe {
+                libc::grantpt(master) == 0
+                    && libc::unlockpt(master) == 0
+                    && libc::ptsname_r(master, name.as_mut_ptr(), name.len()) == 0
+            };
+            if !named {
+                unsafe { libc::_exit(DENIED_SLAVE) };
+            }
+            let slave = unsafe { libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+            if slave < 0 {
+                unsafe { libc::_exit(DENIED_SLAVE) };
+            }
+            unsafe { libc::_exit(OK) };
+        }
+        assert!(pid > 0, "fork failed");
+
+        let mut status: libc::c_int = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let exited = (status & 0x7f) == 0;
+        let code = if exited { (status >> 8) & 0xff } else { -1 };
+        if code == SKIP {
+            eprintln!("landlock not enforced on this host; skipping the openpty assertion");
+            return;
+        }
+        assert_eq!(
+            code, OK,
+            "a confined company holder must be able to openpty (1 = /dev/ptmx denied, \
+             2 = the /dev/pts slave denied); got {code}",
         );
     }
 

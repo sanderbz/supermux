@@ -537,7 +537,13 @@ impl NativeSession {
         }
         // The Child is dropped immediately: the holder is intentionally
         // detached, and tokio's orphan queue reaps it if it exits while we run.
-        let _child = cmd.spawn().context("spawn pty holder")?;
+        // The Child is KEPT for the duration of the wait below — but only to read
+        // its exit status if it dies (see `holder_failure_detail`). The holder is
+        // intentionally detached (`kill_on_drop(false)`), so dropping the handle
+        // on either exit path leaves it running; tokio's orphan queue reaps it if
+        // it exits while we run.
+        let mut child = cmd.spawn().context("spawn pty holder")?;
+        let child_pid = child.id();
 
         // Wait for the holder to bind and the pump to attach.
         let deadline = std::time::Instant::now() + SPAWN_TIMEOUT;
@@ -547,7 +553,19 @@ impl NativeSession {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        bail!("native session '{}': holder did not come up in time", self.name)
+        // THE FAILURE MUST NAME ITSELF. This bail used to say only "did not come
+        // up in time", and that is all the confinement fail-safe could log — so a
+        // Landlock allow-list missing `/dev/ptmx` killed every company holder in
+        // `openpty` with `EACCES` for a week while the ERROR line said nothing
+        // about it. The holder's own stderr is its `holder.log` (it `dup2`s fd 2
+        // onto the file at startup), so quote the tail of it plus the exit status
+        // here: the next allow-list gap is then readable straight off the ERROR.
+        let status = child.try_wait().ok().flatten();
+        bail!(
+            "native session '{}': holder did not come up in time{}",
+            self.name,
+            holder_failure_detail(&self.dir, child_pid, status),
+        )
     }
 
     /// Is the session's child still running?
@@ -1561,6 +1579,86 @@ pub(crate) mod pump_hooks {
 /// rebuild or an in-place install under a running server.
 const DELETED_SUFFIX: &str = " (deleted)";
 
+// ── holder-boot failure diagnostics ─────────────────────────────────────────
+
+/// How many `holder.log` lines a boot failure may quote…
+const HOLDER_TAIL_LINES: usize = 20;
+/// …and the hard character cap on the quoted tail (the newest end is kept).
+const HOLDER_TAIL_CHARS: usize = 600;
+
+/// Everything we know about a holder that never came up: its exit status (when
+/// it already died) plus the tail of its OWN incident log.
+///
+/// `<dir>/holder.log` IS the holder's stderr — it `dup2`s fd 2 onto the file
+/// before anything else — so it carries the anyhow error, any panic + backtrace
+/// and the allocator's abort message. The daemon spawns the holder with
+/// `stderr(null)`, so this file is the only place the reason exists.
+///
+/// Why it matters: for a week every company-agent start on the Strato box logged
+/// `holder failed under Landlock, started unconfined … holder did not come up in
+/// time` and nothing else, while `holder.log` had said `openpty: EACCES:
+/// Permission denied` all along (the allow-list had no `/dev/ptmx`). Quoting it
+/// in the error makes the next allow-list gap name itself.
+///
+/// Best-effort and bounded: a missing or unreadable log simply adds nothing.
+fn holder_failure_detail(
+    dir: &Path,
+    pid: Option<u32>,
+    status: Option<std::process::ExitStatus>,
+) -> String {
+    let mut out = String::new();
+    if let Some(st) = status {
+        out.push_str(&format!(" (holder exited: {st})"));
+    }
+    let text = std::fs::read_to_string(dir.join("holder.log")).unwrap_or_default();
+    let tail = holder_log_tail(&text, pid);
+    if !tail.is_empty() {
+        out.push_str(" — holder.log: ");
+        out.push_str(&tail);
+    }
+    out
+}
+
+/// The `holder.log` lines belonging to the holder we just spawned, flattened onto
+/// one line. Pure, so the scoping rules are unit-tested without a real holder.
+///
+/// Every holder line is stamped `pid=<n>`, so the tail starts at that pid's own
+/// `holder starting` line — the LAST one, because pids are reused and a spool dir
+/// outlives many holders. Continuation lines (anyhow's `Caused by:` block, a
+/// panic backtrace) carry no stamp and are kept as-is. With no pid, or a pid that
+/// wrote nothing (it can die before it opens the log), the last few lines are
+/// quoted instead: still the right neighbourhood, and honest about being a tail.
+fn holder_log_tail(text: &str, pid: Option<u32>) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = pid.and_then(|p| {
+        let stamp = format!("pid={p} ");
+        let started = format!("{stamp}holder starting");
+        lines
+            .iter()
+            .rposition(|l| l.contains(&started))
+            .or_else(|| lines.iter().rposition(|l| l.contains(&stamp)))
+    });
+    let from = match start {
+        Some(i) => i,
+        None => lines.len().saturating_sub(HOLDER_TAIL_LINES),
+    };
+    let picked: Vec<&str> = lines[from..]
+        .iter()
+        .rev()
+        .take(HOLDER_TAIL_LINES)
+        .rev()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let joined = picked.join(" | ");
+    if joined.chars().count() <= HOLDER_TAIL_CHARS {
+        return joined;
+    }
+    // Keep the NEWEST end — the error is at the bottom.
+    let skip = joined.chars().count() - HOLDER_TAIL_CHARS;
+    format!("…{}", joined.chars().skip(skip).collect::<String>())
+}
+
 /// The sentence a caller can put in front of a user, and the marker
 /// [`crate::sessions::lifecycle::start`] matches on to answer 409 with it rather
 /// than a naked 500. Kept as a constant so the two ends cannot drift.
@@ -1634,6 +1732,93 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+
+    // ── holder-boot failure diagnostics (the Landlock blind spot) ────────────
+
+    /// A `holder.log` written by three holders in a row — the shape a real spool
+    /// dir has. The tail quoted in a boot failure must be OUR holder's lines, not
+    /// whatever the previous one said.
+    const THREE_HOLDERS: &str = "\
+2026-08-30T18:09:25.818Z pid=1111 holder starting session=Reisposter cols=52 rows=31 cmd=/bin/bash
+2026-08-30T18:09:25.822Z pid=1111 holder exiting with error: openpty: EACCES: Permission denied
+2026-08-31T08:28:28.539Z pid=2222 holder starting session=Reisposter cols=80 rows=24 cmd=/bin/bash
+2026-08-31T08:28:28.540Z pid=2222 child pid=2223 started
+2026-09-01T09:50:30.254Z pid=3333 holder starting session=Reisposter cols=145 rows=57 cmd=/bin/bash
+2026-09-01T09:50:30.257Z pid=3333 holder exiting with error: openpty: EACCES: Permission denied
+Error: openpty
+
+Caused by:
+    EACCES: Permission denied
+";
+
+    /// THE MEASURED BUG: the reason a confined holder died was in `holder.log`
+    /// all along (`openpty: EACCES`) while the ERROR line said only "did not come
+    /// up in time". Scoped to the pid we spawned, the tail names it.
+    #[test]
+    fn the_holder_log_tail_quotes_our_pids_lines_and_the_real_reason() {
+        let tail = holder_log_tail(THREE_HOLDERS, Some(3333));
+        assert!(tail.contains("openpty: EACCES"), "the reason must survive: {tail}");
+        assert!(
+            tail.contains("Caused by:") && tail.contains("Permission denied"),
+            "anyhow's unstamped continuation lines belong to the same holder: {tail}",
+        );
+        assert!(
+            !tail.contains("pid=1111") && !tail.contains("pid=2222"),
+            "a previous holder's incident must not be quoted as this one's: {tail}",
+        );
+    }
+
+    /// Pids are reused and a spool dir outlives many holders, so the tail starts
+    /// at the LAST `holder starting` line for that pid.
+    #[test]
+    fn the_holder_log_tail_starts_at_the_newest_run_of_a_reused_pid() {
+        let reused = THREE_HOLDERS.replace("pid=3333", "pid=1111");
+        let tail = holder_log_tail(&reused, Some(1111));
+        assert!(tail.contains("cols=145"), "the NEWEST run of that pid: {tail}");
+        assert!(!tail.contains("cols=52"), "not the older one: {tail}");
+    }
+
+    /// A holder can die before it ever opens the log (and a caller may have no
+    /// pid). Quoting the last few lines is still the right neighbourhood — and an
+    /// absent/empty log adds nothing rather than becoming a second failure.
+    #[test]
+    fn the_holder_log_tail_falls_back_to_the_last_lines_and_tolerates_nothing() {
+        let tail = holder_log_tail(THREE_HOLDERS, Some(9999));
+        assert!(tail.contains("EACCES"), "fallback still quotes the tail: {tail}");
+        assert_eq!(holder_log_tail("", Some(1)), "");
+        assert_eq!(holder_log_tail("   \n\n", None), "");
+    }
+
+    /// Bounded: a runaway log can never turn one error line into a wall of text,
+    /// and the NEWEST end — where the error is — is what survives the cap.
+    #[test]
+    fn the_holder_log_tail_is_capped_and_keeps_the_newest_end() {
+        let mut log = String::from("2026-01-01T00:00:00.000Z pid=7 holder starting session=x\n");
+        for i in 0..200 {
+            log.push_str(&format!("2026-01-01T00:00:00.000Z pid=7 noise line {i}\n"));
+        }
+        log.push_str("2026-01-01T00:00:00.000Z pid=7 holder exiting with error: openpty: EACCES\n");
+        let tail = holder_log_tail(&log, Some(7));
+        assert!(tail.chars().count() <= HOLDER_TAIL_CHARS + 1, "capped: {} chars", tail.chars().count());
+        assert!(tail.contains("openpty: EACCES"), "the newest end survives: {tail}");
+    }
+
+    /// The failure detail is assembled from the exit status AND the log, and a
+    /// spool dir with no log at all yields an empty (never a panicking) detail.
+    #[test]
+    fn the_failure_detail_carries_the_log_and_survives_a_missing_one() {
+        let dir = data_dir("holderdetail");
+        std::fs::write(dir.join("holder.log"), THREE_HOLDERS).unwrap();
+        let detail = holder_failure_detail(&dir, Some(3333), None);
+        assert!(detail.contains("holder.log:"), "{detail}");
+        assert!(detail.contains("openpty: EACCES"), "{detail}");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let gone = data_dir("holderdetail-empty");
+        assert_eq!(holder_failure_detail(&gone, Some(1), None), "");
+        let _ = std::fs::remove_dir_all(&gone);
     }
 
     macro_rules! wait_until {
@@ -2478,6 +2663,62 @@ mod tests {
         session.stop_pump();
         holder.abort();
         crate::sessions::native::forget("pumpdead");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    /// **The observability half of Bug B.** When the holder cannot come up, the
+    /// error the daemon logs must NAME the reason — the confinement fail-safe
+    /// re-logs this exact string, and for a week it said only "did not come up in
+    /// time" while `holder.log` held `openpty: EACCES` the whole time.
+    ///
+    /// Costs one `SPAWN_TIMEOUT` (10s) by construction: the message under test is
+    /// the one produced when the wait window runs out.
+    #[tokio::test]
+    async fn a_holder_that_never_comes_up_names_its_exit_status_and_its_own_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::sessions::native::test_serial().await;
+        let dir = data_dir("bootdetail");
+        let sess_dir = spool::session_dir(&dir, "bootdetail");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+
+        // A stand-in holder that does what the real one did under a broken jail:
+        // write its incident to `<dir>/holder.log` (its stderr) and die, never
+        // binding the socket. `$$` is the pid the daemon spawned, which is what
+        // scopes the quoted tail.
+        let script = dir.join("fake-holder.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n\
+             echo \"2026-09-01T00:00:00.000Z pid=$$ holder exiting with error: \
+             openpty: EACCES: Permission denied\" >> \"$5/holder.log\"\n\
+             exit 3\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("SUPERMUX_HOLDER_BIN", &script);
+
+        let session = NativeSession::new("bootdetail", &dir);
+        let err = session
+            .spawn(&dir, &HashMap::new(), "sh")
+            .await
+            .expect_err("a holder that never binds must fail the spawn");
+        std::env::remove_var("SUPERMUX_HOLDER_BIN");
+        session.stop_pump();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("holder did not come up in time"),
+            "the historical sentence stays: {msg}",
+        );
+        assert!(
+            msg.contains("exit status: 3"),
+            "…and now it carries the holder's exit status: {msg}",
+        );
+        assert!(
+            msg.contains("openpty: EACCES"),
+            "…and the holder's own stderr, which is where the reason lives: {msg}",
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
