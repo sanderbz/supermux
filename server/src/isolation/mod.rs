@@ -307,6 +307,19 @@ impl SandboxSpec {
         for ro in [".supermux/connectors", ".supermux/bin", ".supermux/uploads"] {
             push_ro_resolved(&mut read_exec_paths, home.join(ro));
         }
+
+        // ── RO: DNS resolution targets OUTSIDE /etc. Landlock enforces on the
+        // RESOLVED path, and on systemd-resolved hosts `/etc/resolv.conf` is a
+        // symlink into `/run/systemd/resolve/` — which no rule above covers, so
+        // a confined agent could not resolve ANY hostname and every API call
+        // failed as a "network error" (live on the Strato box, 2026-09-01: the
+        // agent looked jailed off the internet while the jail never touched
+        // TCP at all). Grant the resolved target of resolv.conf plus the
+        // resolver state dirs the common stacks use; absent paths drop out.
+        push_ro_resolved(&mut read_exec_paths, PathBuf::from("/etc/resolv.conf"));
+        for ro in ["/run/systemd/resolve", "/run/resolvconf", "/run/NetworkManager"] {
+            push_ro_resolved(&mut read_exec_paths, PathBuf::from(ro));
+        }
         // The holder/provider binaries above may be reached through a symlink;
         // also resolve the pty-holder binary itself (an out-of-tree install could
         // be symlinked). `current_exe` was already pushed as-is above; add its
