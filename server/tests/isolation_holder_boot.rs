@@ -131,6 +131,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
          /bin/cat {sib}/settings.json > {c}/sibcfg.out 2>&1; \
          /bin/cat {root} > {c}/rootsecret.out 2>&1; \
          /bin/cat {conn} > {c}/connectors.out 2>&1; \
+         /bin/cat /etc/resolv.conf > {c}/resolv.out 2>&1; \
          echo ok > {c}/done; \
          sleep 30",
         sibling.display(),
@@ -204,6 +205,15 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
             !sibcfg.contains("sibling session settings"),
             "the per-session grant leaked: a confined agent read a SIBLING \
              session's settings: {sibcfg}",
+        );
+        // DNS: `/etc/resolv.conf` may resolve into /run (systemd-resolved);
+        // a jail that cannot read it cuts every hostname lookup — the agent
+        // then looks banned from the network while TCP was never restricted.
+        assert!(
+            !wrote(&company.join("resolv.out")).contains("Permission denied"),
+            "a confined agent must be able to read /etc/resolv.conf (via its \
+             resolved target): {}",
+            wrote(&company.join("resolv.out")),
         );
         let rootsecret = wrote(&company.join("rootsecret.out"));
         assert!(
