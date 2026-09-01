@@ -79,8 +79,12 @@ import {
   googleDone,
   googleOutcome,
   googleStepDone,
+  inviteMailto,
+  neverSignedIn,
   quickActive,
   runGoogleVerify,
+  shareItYourselfLine,
+  shareLinkLabel,
   showCheckAgain,
   stepAfter,
   type GoogleOutcome,
@@ -1471,13 +1475,18 @@ interface Draft {
   role: HumanRole
 }
 
+// The roster's three derived states (`human_users::list_by_company`), named for
+// what actually happened. NOTHING here may imply a delivery: `invited` means the
+// row exists and the link is still sitting with the owner — no mail was sent.
+// `pending` means they HAVE signed in before and have no live session now, which
+// is why it no longer says "Pending first login".
 const STATUS_CHIP: Record<string, { state: ChipState; label: string }> = {
   active: { state: 'done', label: 'Active' },
-  pending: { state: 'working', label: 'Pending first login' },
-  invited: { state: 'idle', label: 'Invited' },
+  pending: { state: 'idle', label: 'Signed out' },
+  invited: { state: 'idle', label: 'Link ready — share it' },
 }
 
-function PersonStep({
+export function PersonStep({
   company,
   liveUrl,
   quick,
@@ -1531,6 +1540,11 @@ function PersonStep({
           <span className="font-mono text-foreground">{liveUrl}</span> creates their account.
         </p>
       )}
+      {/* Said BEFORE anyone is added, because the field + button look exactly like
+          a mailer and there is none: adding a person sends nothing at all. */}
+      <p data-vr="no-mailer" className="text-sm font-medium text-foreground">
+        {shareItYourselfLine(quick)}
+      </p>
 
       <div className="flex flex-col gap-3">
         {drafts.map((d, i) => (
@@ -1574,7 +1588,7 @@ function PersonStep({
             disabled={validDrafts.length === 0 || invite.isPending}
             style={{ background: 'var(--sm-accent-fill)', color: 'var(--gr-onaccent)' }}
           >
-            {invite.isPending ? 'Inviting…' : `Invite ${validDrafts.length || ''}`.trim()}
+            {invite.isPending ? 'Adding…' : `Add ${validDrafts.length || ''}`.trim()}
           </Button>
         </div>
         {invite.isError && <p className="text-sm text-destructive">{errText(invite.error)}</p>}
@@ -1593,7 +1607,12 @@ function PersonStep({
           <ul className="flex flex-col gap-1.5">
             {humans.map((h) => {
               const chip = STATUS_CHIP[h.status] ?? STATUS_CHIP.invited
-              const link = quick ? links[h.id] : undefined
+              // What there is to share, per path. Quick-tunnel: the personal magic
+              // link, which the server mints once — we only hold the ones minted in
+              // this session. Permanent: the company's sign-in address, which is the
+              // same for everyone and always known.
+              const link = quick ? links[h.id] : liveUrl
+              const share = neverSignedIn(h.status) && link ? link : null
               return (
                 <li
                   key={h.id}
@@ -1614,14 +1633,36 @@ function PersonStep({
                       <Trash2 className="size-4" />
                     </button>
                   </div>
-                  {link && (
-                    <div className="flex flex-col gap-1">
+                  {/* The delivery mechanism, since there is no mailer: the link
+                      itself, and the owner's own mail client, prefilled. */}
+                  {share ? (
+                    <div data-vr="share-link" className="flex flex-col gap-1.5">
                       <span className="text-[11.5px] text-muted-foreground">
-                        Personal invite link — send it to {h.email}
+                        {shareLinkLabel(quick, h.email)}
                       </span>
-                      <CopyField value={link} label={`Copy invite link for ${h.email}`} />
+                      <CopyField value={share} label={`Copy the link for ${h.email}`} />
+                      <Button asChild variant="outline" size="sm" className="self-start">
+                        <a
+                          data-vr="email-the-link"
+                          href={
+                            inviteMailto({
+                              email: h.email,
+                              company: company.display_name,
+                              loginUrl: share,
+                              quick,
+                            }).href
+                          }
+                        >
+                          <Mail className="size-4" /> Email the link
+                        </a>
+                      </Button>
                     </div>
-                  )}
+                  ) : quick && neverSignedIn(h.status) ? (
+                    <p className="text-[11.5px] text-muted-foreground">
+                      Their personal link was shown once, when you added them — remove and re-add{' '}
+                      {h.email} to mint a new one.
+                    </p>
+                  ) : null}
                 </li>
               )
             })}

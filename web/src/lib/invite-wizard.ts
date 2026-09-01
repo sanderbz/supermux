@@ -109,3 +109,62 @@ export async function runGoogleVerify(v: {
   }
   v.refetch()
 }
+
+// ── Step 3 — Add people: the share affordance ────────────────────────────────
+//
+// supermux has NO mailer. `POST /api/companies/{id}/humans` creates the
+// `human_users` row and hands back a `login_url` — nothing is ever sent. An owner
+// added a colleague and then waited for an email that could not arrive, because
+// the step's shape (an email field, an "Invite" button, an "Invited" chip) implied
+// a delivery that does not exist. The copy below says so before the row is made,
+// and the share block after it is the actual delivery mechanism: the owner's own
+// mail client, prefilled.
+
+/** The one sentence that has to be on screen BEFORE anyone is added. */
+export function shareItYourselfLine(quick: boolean): string {
+  return quick
+    ? 'supermux doesn’t send email — you share each personal link yourself.'
+    : 'supermux doesn’t send email — you share the sign-in address yourself.'
+}
+
+/** What the roster row calls the thing it is offering to share. */
+export function shareLinkLabel(quick: boolean, email: string): string {
+  return quick
+    ? `Personal invite link — send it to ${email}`
+    : `Sign-in address — send it to ${email}`
+}
+
+/** A person who has never signed in (`invited`, or any status we don't know) is
+ *  the one still waiting on the owner to pass the link along. */
+export function neverSignedIn(status: string): boolean {
+  return status !== 'active' && status !== 'pending'
+}
+
+export interface InviteMail {
+  subject: string
+  body: string
+  /** `mailto:` href — opens the owner's own mail client, on desktop and in the
+   *  iOS/Android PWA alike. Zero infrastructure, which is the whole point. */
+  href: string
+}
+
+/** Prefill the mail the owner is going to send anyway.
+ *
+ *  The two paths differ in what the link IS: a quick-tunnel invite is a personal,
+ *  single-person magic link that expires (7 days, `DEFAULT_INVITE_TTL_SECS`); the
+ *  permanent path's `login_url` is just the company's sign-in address, where the
+ *  colleague signs in with the Google account that was added. Saying the wrong one
+ *  would be the same class of lie this whole change is removing. */
+export function inviteMailto(v: {
+  email: string
+  company: string
+  loginUrl: string
+  quick: boolean
+}): InviteMail {
+  const subject = `Join ${v.company}`
+  const body = v.quick
+    ? `Hi,\n\nYou’ve been added to ${v.company}.\n\nOpen your personal link to join — it’s just for you, and it expires in 7 days:\n${v.loginUrl}\n`
+    : `Hi,\n\nYou’ve been added to ${v.company}.\n\nSign in with your Google account (${v.email}) here:\n${v.loginUrl}\n`
+  const href = `mailto:${v.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+  return { subject, body, href }
+}
