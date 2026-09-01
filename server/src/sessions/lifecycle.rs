@@ -2106,9 +2106,21 @@ async fn company_confinement(
             ))
         })?;
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let plan = state
+    let mut plan = state
         .isolation
         .plan_for(std::path::Path::new(&company.root_dir), &home);
+    if let Some(p) = plan.as_mut() {
+        // THIS session's own launch config (`--settings`, the connect catalog) —
+        // scoped to `<name>` so a confined agent cannot read a sibling session's
+        // settings; the company-generic runtime paths (connectors/bin/uploads)
+        // are already on `SandboxSpec::for_company`'s list.
+        p.allow_ro(home.join(".supermux/session-config").join(name));
+        // A per-session Claude account dir (`CLAUDE_CONFIG_DIR`) is written at
+        // boot (credentials cache, statsig) — RW, same as the default `~/.claude`.
+        if !s.config_dir.trim().is_empty() {
+            p.allow_rw(std::path::PathBuf::from(s.config_dir.trim()));
+        }
+    }
 
     // Surface the MEASURED level per session (BestEffort surfaces the measured
     // level, never the requested mode) — log it + stash it for a later UI badge.

@@ -289,6 +289,24 @@ impl SandboxSpec {
         ] {
             push_ro_resolved(&mut read_exec_paths, home.join(cache));
         }
+
+        // ── RO: the supermux SESSION RUNTIME under `~/.supermux` — only the
+        // pieces a booting agent actually reads, named one by one. The launch
+        // line points claude at `--settings ~/.supermux/session-config/<name>/…`,
+        // spawns its MCP connectors from `~/.supermux/connectors/*.py`, prepends
+        // `~/.supermux/bin` to PATH, and chat attachments arrive as paths under
+        // `~/.supermux/uploads`. NONE of that was on the list — invisible for as
+        // long as confinement silently failed to boot; the /dev fix made the jail
+        // real and every company claude then died reading its own settings
+        // (`EACCES … session-config/<name>/settings.json`, live 2026-09-01).
+        // The REST of `~/.supermux` stays denied on purpose: `auth_token`,
+        // `data.db`, `vault/`, `deploy/`, `cloudflared_token` are exactly what a
+        // confined agent must never read. The per-session `session-config/<name>`
+        // grant is added by the SPAWN path (`ConfinePlan::allow_ro`), so one
+        // session cannot read a sibling session's settings.
+        for ro in [".supermux/connectors", ".supermux/bin", ".supermux/uploads"] {
+            push_ro_resolved(&mut read_exec_paths, home.join(ro));
+        }
         // The holder/provider binaries above may be reached through a symlink;
         // also resolve the pty-holder binary itself (an out-of-tree install could
         // be symlinked). `current_exe` was already pushed as-is above; add its
@@ -314,6 +332,14 @@ impl SandboxSpec {
     /// session's spool/socket dir). Chainable-free; mutates in place.
     pub fn allow_rw(&mut self, path: PathBuf) {
         self.read_write_paths.push(path);
+    }
+
+    /// Grant read(+exec) to an additional absolute path — the per-session grants
+    /// the spawn path adds (this session's own `session-config/<name>` dir).
+    /// Rides `read_exec_paths` (read+execute): the extra execute bit on a config
+    /// dir is harmless, and it keeps the backend's two-tier model intact.
+    pub fn allow_ro(&mut self, path: PathBuf) {
+        push_ro_resolved(&mut self.read_exec_paths, path);
     }
 }
 
@@ -435,6 +461,12 @@ impl ConfinePlan {
     /// plan is moved into the child.
     pub fn allow_rw(&mut self, path: PathBuf) {
         self.spec.allow_rw(path);
+    }
+
+    /// Grant an extra RO(+exec) path (this session's own config dir) before the
+    /// plan is moved into the child.
+    pub fn allow_ro(&mut self, path: PathBuf) {
+        self.spec.allow_ro(path);
     }
 
     /// Run INSIDE the forked child, post-fork / pre-exec.
