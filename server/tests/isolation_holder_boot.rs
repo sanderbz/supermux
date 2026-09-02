@@ -98,6 +98,51 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     std::fs::write(sib_cfg.join("settings.json"), b"sibling session settings").expect("write sib settings");
     std::fs::write(&root_secret, b"supermux root secret").expect("write root secret");
     std::fs::write(&conn_probe, b"connector probe ok").expect("write connector probe");
+    // The CLAUDE-HOME fixtures (the cross-project transcript leak): `~/.claude`
+    // used to be granted read+write WHOLESALE, so a confined company bot could
+    // read every Claude transcript on the box. All fixtures live under the REAL
+    // `~/.claude` / `~/.config` (a jail is only proven against the real tree),
+    // are uniquely named, and are removed at the end:
+    //   * a SIBLING project dir under `~/.claude/projects/`  → must be DENIED
+    //   * `~/.claude/projects` itself (a listing)            → must be DENIED
+    //   * a `history.jsonl`-shaped file in `~/.claude`       → must be DENIED
+    //     (never touch the real `history.jsonl`)
+    //   * a `gh`-shaped credential dir under `~/.config`     → must be DENIED
+    //   * the session's OWN project dir                      → must READ + WRITE
+    //   * the real `~/.claude/settings.json`                 → must READ (granted)
+    let claude_home = home.join(".claude");
+    let sib_proj = claude_home
+        .join("projects")
+        .join(format!("iso-e2e-sibling-{}", uuid::Uuid::new_v4()));
+    let hist_probe = claude_home.join(format!("iso-e2e-history-{}.jsonl", uuid::Uuid::new_v4()));
+    let gh_probe = home
+        .join(".config")
+        .join(format!("gh-iso-e2e-{}", uuid::Uuid::new_v4()));
+    // A file inside a GRANTED dir of the enumerated read-only slice
+    // (`~/.claude/commands`), so the "the agent can still read what it needs"
+    // half is asserted on a fixture we control — a CI runner has no
+    // `~/.claude/settings.json` to read (that one is asserted only when the box
+    // actually has it, below).
+    let cmd_probe = claude_home
+        .join("commands")
+        .join(format!("iso-e2e-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&sib_proj).expect("mk sibling project dir");
+    std::fs::create_dir_all(&gh_probe).expect("mk gh-shaped dir");
+    std::fs::create_dir_all(cmd_probe.parent().expect("commands parent"))
+        .expect("mk ~/.claude/commands");
+    std::fs::write(&cmd_probe, b"granted-claude-home-read").expect("write command probe");
+    std::fs::write(sib_proj.join("transcript.jsonl"), b"sibling project transcript secret")
+        .expect("write sibling transcript");
+    std::fs::write(&hist_probe, b"every prompt ever typed").expect("write history probe");
+    std::fs::write(gh_probe.join("hosts.yml"), b"oauth_token: ghp_fake_for_the_test")
+        .expect("write gh probe");
+    // The session's own project dir, resolved EXACTLY as the spawn path resolves
+    // it (`project_dir_for(config_dir, dir)` on the session's cwd).
+    let own_proj = supermux_server::sessions::resumable::project_dir_for(
+        "",
+        company.to_str().expect("utf-8 company path"),
+    );
+
     let data_dir = std::env::temp_dir().join(format!("supermux-iso-e2e-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&data_dir).expect("mk data dir");
 
@@ -118,6 +163,10 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     // `sessions/lifecycle.rs`: this session's own config dir, and nothing else
     // under `session-config/`.
     plan.allow_ro(own_cfg.clone());
+    // …and the Claude project grant the same function adds: THIS session's own
+    // `~/.claude/projects/<encoded cwd>` (created by the call), and nothing else
+    // under `projects/`.
+    plan.allow_claude_project(own_proj.clone());
 
     // The confined child: read the sibling secret (must be DENIED), read a system
     // file (must be ALLOWED), then park. The `sleep` matters — the runtime's
@@ -132,6 +181,14 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
          /bin/cat {root} > {c}/rootsecret.out 2>&1; \
          /bin/cat {conn} > {c}/connectors.out 2>&1; \
          /bin/cat /etc/resolv.conf > {c}/resolv.out 2>&1; \
+         /bin/cat {sibproj}/transcript.jsonl > {c}/sibproj.out 2>&1; \
+         /bin/ls {projects} > {c}/projectsls.out 2>&1; \
+         /bin/cat {hist} > {c}/history.out 2>&1; \
+         /bin/cat {gh}/hosts.yml > {c}/gh.out 2>&1; \
+         /bin/cat {settings} > {c}/settings.out 2>&1; \
+         /bin/cat {cmdprobe} > {c}/cmdprobe.out 2>&1; \
+         echo own-transcript > {ownproj}/probe.jsonl 2>{c}/ownwrite.err; \
+         /bin/cat {ownproj}/probe.jsonl > {c}/ownproj.out 2>&1; \
          echo ok > {c}/done; \
          sleep 30",
         sibling.display(),
@@ -139,6 +196,13 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
         sib = sib_cfg.display(),
         root = root_secret.display(),
         conn = conn_probe.display(),
+        sibproj = sib_proj.display(),
+        projects = claude_home.join("projects").display(),
+        hist = hist_probe.display(),
+        gh = gh_probe.display(),
+        settings = claude_home.join("settings.json").display(),
+        cmdprobe = cmd_probe.display(),
+        ownproj = own_proj.display(),
     );
 
     let session = NativeSession::new("iso-e2e", &data_dir);
@@ -221,6 +285,57 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
             "the jail let the agent read a file in the ~/.supermux ROOT (the \
              auth_token/data.db tier): {rootsecret}",
         );
+
+        // ── the CLAUDE-HOME contract (the cross-project transcript leak) ────
+        let sibproj = wrote(&company.join("sibproj.out"));
+        assert!(
+            !sibproj.contains("sibling project transcript secret"),
+            "the jail let a company agent read ANOTHER project's Claude \
+             transcript — the reported leak (648 files, zero blocked): {sibproj}",
+        );
+        let projects_ls = wrote(&company.join("projectsls.out"));
+        assert!(
+            projects_ls.contains("denied"),
+            "a company agent must not even LIST ~/.claude/projects (which \
+             projects, repos and sibling companies exist), got: {projects_ls:?}",
+        );
+        let history = wrote(&company.join("history.out"));
+        assert!(
+            !history.contains("every prompt ever typed"),
+            "the jail let a company agent read a ~/.claude/history.jsonl-shaped \
+             file (every prompt ever typed on this box): {history}",
+        );
+        let gh = wrote(&company.join("gh.out"));
+        assert!(
+            !gh.contains("ghp_fake_for_the_test"),
+            "the jail let a company agent read a ~/.config/gh-shaped credential \
+             file (the owner's GitHub token lives there): {gh}",
+        );
+        // …and the grants that keep a confined Claude WORKING.
+        assert!(
+            wrote(&company.join("cmdprobe.out")).contains("granted-claude-home-read"),
+            "a confined agent must still read the ENUMERATED slice of the Claude \
+             home it boots from (~/.claude/commands here): {}",
+            wrote(&company.join("cmdprobe.out")),
+        );
+        // The real `settings.json` too — but only on a box that HAS one (a CI
+        // runner's home has no Claude config at all).
+        if claude_home.join("settings.json").is_file() {
+            let settings = wrote(&company.join("settings.out"));
+            assert!(
+                !settings.contains("Permission denied"),
+                "a confined agent must still read ~/.claude/settings.json (Claude \
+                 Code reads it at boot): {settings:?}",
+            );
+        }
+        assert!(
+            wrote(&company.join("ownproj.out")).contains("own-transcript"),
+            "a confined agent must READ+WRITE its OWN ~/.claude/projects/<cwd> \
+             dir (that is where Claude Code writes its transcript): out={:?} \
+             err={:?}",
+            wrote(&company.join("ownproj.out")),
+            wrote(&company.join("ownwrite.err")),
+        );
     } else {
         eprintln!(
             "landlock not enforced on this host ({}); skipping the denial half",
@@ -234,4 +349,9 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let _ = std::fs::remove_dir_all(&sib_cfg);
     let _ = std::fs::remove_file(&root_secret);
     let _ = std::fs::remove_file(&conn_probe);
+    let _ = std::fs::remove_dir_all(&sib_proj);
+    let _ = std::fs::remove_dir_all(&gh_probe);
+    let _ = std::fs::remove_file(&hist_probe);
+    let _ = std::fs::remove_file(&cmd_probe);
+    let _ = std::fs::remove_dir_all(&own_proj);
 }
