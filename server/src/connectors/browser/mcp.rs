@@ -208,6 +208,54 @@ pub async fn seed(state: &AppState) {
     tracing::info!(connector = BROWSER_ID, "seeded the built-in Shared Browser connector");
 }
 
+/// **Every bot the human has already lent a tab gets the connector grant.**
+///
+/// `browser::api::lend_the_browser` does this at grant time, but installs
+/// upgrading into that fix carry tab grants written before it existed — and those
+/// bots are precisely the ones already in the broken state: a tab in the DB, no
+/// `browser_*` tools in their launch, no way to discover the tab they hold. One
+/// idempotent pass at boot lands the tools on their next start instead of asking
+/// the human to re-lend every tab.
+///
+/// Idempotent by construction ([`connectors::ensure_enabled`] returns early when
+/// the grant is already enabled), so a steady-state boot writes nothing and
+/// re-stamps no `granted_at` — a bot that already picked the browser up is not
+/// nagged to restart. Best-effort: any read failure just skips the pass.
+///
+/// Called from `main` at BOOT, deliberately not from [`seed`]: `seed` is also
+/// re-run lazily by `browser::api::lend_the_browser` when the builtin's row is
+/// missing, and backfilling from inside that call would grant the connector a
+/// moment before the lend does — which would make the lend report "nothing
+/// changed" and swallow the restart hint the human needs.
+pub async fn backfill_tab_grants(state: &AppState) {
+    let Ok(tabs) = crate::db::browser_tabs::list(&state.pool).await else {
+        return;
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut granted = 0usize;
+    for tab in &tabs {
+        let Ok(grants) = crate::db::browser_tabs::grants_for_tab(&state.pool, &tab.id).await else {
+            continue;
+        };
+        for g in grants.iter().filter(|g| g.enabled != 0) {
+            if !seen.insert(g.grantee.clone()) {
+                continue;
+            }
+            match connectors::ensure_enabled(&state.pool, &g.grantee, BROWSER_ID).await {
+                Ok(true) => {
+                    granted += 1;
+                    tracing::info!(target = %g.grantee, "backfilled the shared-browser grant for a bot that already holds a tab");
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, target = %g.grantee, "shared-browser backfill failed"),
+            }
+        }
+    }
+    if granted > 0 {
+        tracing::info!(count = granted, "shared-browser: backfilled tab-grant holders");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

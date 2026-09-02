@@ -1197,6 +1197,54 @@ mod tests {
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let body = if req.contains("GET /two") {
                         "<title>Second</title><body>second-page</body>"
+                    } else if req.contains("GET /passkey") {
+                        // A WebAuthn probe page. `window.__pk` is filled in by the
+                        // time `load` fires, so the test can just read it: what the
+                        // two availability probes answered, and — the part that
+                        // matters — whether a real ceremony REJECTS instead of
+                        // hanging, with which error name, and how fast.
+                        r#"<title>Passkey probe</title><body>probe</body><script>
+window.__pk = {done:false};
+window.__pk.marker = window.__supermuxNoPasskeys || null;
+window.__pk.getIsShim = !!(navigator.credentials && navigator.credentials.get
+  && navigator.credentials.get.__supermuxNoPasskeys);
+window.__pk.createIsShim = !!(navigator.credentials && navigator.credentials.create
+  && navigator.credentials.create.__supermuxNoPasskeys);
+(async () => {
+  const t0 = performance.now();
+  const o = window.__pk;
+  try {
+    o.uvpaa = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch (e) { o.uvpaa = 'threw:' + e.name; }
+  try {
+    o.cond = await PublicKeyCredential.isConditionalMediationAvailable();
+  } catch (e) { o.cond = 'threw:' + e.name; }
+  try {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: new Uint8Array(32),
+        timeout: 60000,
+        userVerification: 'required',
+      },
+    });
+    o.get = 'RESOLVED';
+  } catch (e) { o.get = e.name; o.getMsgRaw = String(e.message || ''); }
+  try {
+    await navigator.credentials.create({
+      publicKey: {
+        challenge: new Uint8Array(32),
+        rp: {name: 'probe'},
+        user: {id: new Uint8Array(16), name: 'a', displayName: 'a'},
+        pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      },
+    });
+    o.create = 'RESOLVED';
+  } catch (e) { o.create = e.name; }
+  o.getMsg = o.getMsgRaw || '';
+  o.ms = performance.now() - t0;
+  o.done = true;
+})();
+</script>"#
                     } else {
                         "<title>Landing</title><body>landing-page</body>"
                     };
@@ -1211,6 +1259,85 @@ mod tests {
             }
         });
         (port, handle)
+    }
+
+    /// **Passkeys must fail fast, not hang.** Measured live: a Google sign-in in
+    /// the shared browser stops at *"Verifying it's you — complete sign-in using
+    /// your passkey"* and never moves. There is no platform authenticator on a
+    /// server, so `navigator.credentials.get()` returns a promise that nobody
+    /// will ever settle — and it is dead for the HUMAN on takeover too, so the
+    /// tab cannot be signed in by anyone.
+    ///
+    /// This drives a REAL chrome against a probe page and pins the contract:
+    /// both availability probes answer `false` (so a provider offers the password
+    /// path and the ceremony never starts), and a ceremony that starts anyway
+    /// rejects with `NotAllowedError` — the same error a human cancelling the OS
+    /// prompt raises, which every provider already has a fallback for — in
+    /// milliseconds rather than never.
+    ///
+    /// Run with `cargo test -- --ignored real_chrome_passkeys`.
+    #[tokio::test]
+    #[ignore = "spawns a real chrome; run with --ignored on a box that has the pinned binary"]
+    async fn real_chrome_passkeys_fail_fast_instead_of_hanging_the_sign_in() {
+        let (state, dir) = test_state().await;
+        if !state.browser.config().executable.exists() {
+            eprintln!("SKIP: no chrome at {}", state.browser.config().executable.display());
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let (port, _server) = page_server();
+        // Open on the landing page and NAVIGATE to the probe: a sign-in is always
+        // reached by a navigation, and that is the path
+        // `addScriptToEvaluateOnNewDocument` covers unconditionally (the document
+        // a target is CREATED with is covered best-effort — see
+        // `AgentContext::disable_passkeys`).
+        let landing = format!("http://localhost:{port}/");
+        let probe_url = format!("http://localhost:{port}/passkey");
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": landing })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+        let (st, v) = send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/navigate"),
+            json!({ "url": probe_url }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+
+        // The probe is async; poll its own `done` flag rather than sleeping a
+        // guessed interval. A HANG is the failure this test exists to catch, so
+        // the budget is deliberately short — the real bug never finishes at all.
+        let page = wake_tab_by_id(&state, &id).await.expect("a live tab");
+        let mut probe = Value::Null;
+        for _ in 0..40 {
+            probe = page.page().evaluate("window.__pk || {}").await.unwrap_or(Value::Null);
+            if probe.get("done").and_then(Value::as_bool) == Some(true) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        eprintln!("passkey probe: {probe}");
+        assert_eq!(
+            probe.get("done").and_then(Value::as_bool),
+            Some(true),
+            "the WebAuthn probes must SETTLE — an unsettled promise IS the bug: {probe}"
+        );
+        assert_eq!(
+            probe["getIsShim"], json!(true),
+            "credentials.get must BE our shim — otherwise a refusal proves nothing: {probe}"
+        );
+        assert_eq!(probe["createIsShim"], json!(true), "{probe}");
+        assert_eq!(probe["uvpaa"], json!(false), "advertise no platform authenticator: {probe}");
+        assert_eq!(probe["cond"], json!(false), "no conditional mediation either: {probe}");
+        assert_eq!(
+            probe["get"], json!("NotAllowedError"),
+            "a ceremony must reject with the error providers already fall back on: {probe}"
+        );
+        assert_eq!(probe["create"], json!("NotAllowedError"), "{probe}");
+        let ms = probe["ms"].as_f64().unwrap_or(f64::MAX);
+        assert!(ms < 1000.0, "it must fail FAST, took {ms}ms: {probe}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The page verbs answer `404` for a row that is not there — and, like every

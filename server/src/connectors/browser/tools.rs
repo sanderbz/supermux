@@ -121,10 +121,22 @@ async fn tool_handler(
     if !crate::sessions::valid_name(&body.session) {
         return Err(AppError::BadRequest("invalid session name".into()));
     }
-    // 2. Grant: no `shared-browser` grant, no browser — and no chrome spawned.
-    if !has_browser_grant(&state, &body.session).await? {
+    // 2. Grant: no browser access, no browser — and no chrome spawned.
+    //
+    //    **Either grant opens this door** ([`may_use_browser`]): the store's
+    //    `shared-browser` connector grant, OR a tab the human has lent this bot.
+    //    Keying it on the connector grant alone is what made "the human lent me a
+    //    tab" and "I may touch a browser" two different facts, and a bot lent a
+    //    tab got a bare 403 here — measured live on `folderwijzer`, whose own
+    //    helper script hit `forbidden: session 'folderwijzer' has no
+    //    'shared-browser' grant` on `list_tabs` right after a restart, while its
+    //    tab grant sat in the DB. Lending now writes the connector grant too
+    //    (`browser::api::lend_the_browser`), so the two agree going forward; this
+    //    is the authorization layer saying the same thing, so a row written
+    //    before the fix, or by any other path, can never resurrect that 403.
+    if !may_use_browser(&state, &body.session).await? {
         return Err(AppError::Forbidden(format!(
-            "session '{}' has no '{BROWSER_ID}' grant",
+            "session '{}' has no '{BROWSER_ID}' grant and no shared tab; ask the human to lend you a tab in supermux -> Browser",
             body.session
         )));
     }
@@ -309,13 +321,37 @@ async fn has_browser_grant(state: &AppState, session: &str) -> Result<bool, AppE
         .any(|g| g.connector_id == BROWSER_ID && g.enabled != 0))
 }
 
+/// **May this session touch a browser at all?** The connector grant OR at least
+/// one tab the human has lent it.
+///
+/// The second half is not redundant. `browser::api::lend_the_browser` writes the
+/// connector grant whenever a tab is lent, so the two normally agree — but the
+/// AUTHORIZATION must not depend on that write having happened. A tab grant made
+/// before that existed, restored from a backup, or written by any other path
+/// would otherwise leave the human's own decision ("this bot may use my
+/// signed-in tab") refused at the door, which is exactly the 403 this fix is
+/// about. The human lending a tab IS the grant; the connector row is how the
+/// TOOLS get wired at launch.
+///
+/// It is not a widening either: a session with neither is refused exactly as
+/// before, and WHICH tab may be touched is still `has_tab_grant`, unchanged.
+async fn may_use_browser(state: &AppState, session: &str) -> Result<bool, AppError> {
+    if has_browser_grant(state, session).await? {
+        return Ok(true);
+    }
+    Ok(!db_tabs::tabs_for_session(&state.pool, session)
+        .await
+        .unwrap_or_default()
+        .is_empty())
+}
+
 /// **Does this session hold a grant on THIS tab?** (v1 §5.2 / §8.2 — R2.)
 ///
 /// Two conditions, both required:
 ///
-/// 1. the connector-level `shared-browser` grant — **necessary, and no longer
-///    sufficient**: holding it lets a bot open a scratch browser, not read the
-///    human's authenticated tabs;
+/// 1. browser access at all ([`may_use_browser`] — the connector grant, or any
+///    lent tab) — **necessary, and nowhere near sufficient**: it lets a bot open
+///    a scratch browser, not read the human's authenticated tabs;
 /// 2. a per-tab grant resolved through the same three tiers as
 ///    `grants_for_session` (own slug > `@company:<id>` > `*`, `enabled = 1`),
 ///    **with the hard company containment of §8.3 re-checked at call time** — so
@@ -329,7 +365,7 @@ async fn has_browser_grant(state: &AppState, session: &str) -> Result<bool, AppE
 /// **Fail-closed on every path.** A DB error, a malformed row, a missing session
 /// — all read as *not granted*. There is no error branch that reaches a page.
 pub async fn has_tab_grant(state: &AppState, session: &str, tab_id: &str) -> bool {
-    match has_browser_grant(state, session).await {
+    match may_use_browser(state, session).await {
         Ok(true) => {}
         _ => return false,
     }
@@ -348,9 +384,9 @@ pub async fn has_tab_grant(state: &AppState, session: &str, tab_id: &str) -> boo
 /// A `needs_login` tab is still LISTED, with its state, so the agent can report
 /// the blockage accurately instead of guessing why its verbs are refused.
 async fn list_tabs(state: &AppState, session: &str) -> Result<Value, AppError> {
-    if !has_browser_grant(state, session).await? {
+    if !may_use_browser(state, session).await? {
         return Err(AppError::Forbidden(format!(
-            "session '{session}' has no '{BROWSER_ID}' grant"
+            "session '{session}' has no '{BROWSER_ID}' grant and no shared tab"
         )));
     }
     let rows = db_tabs::tabs_for_session(&state.pool, session)
@@ -952,6 +988,79 @@ mod tests {
         req
     }
 
+    /// **The 403 the owner's bot actually hit.** `folderwijzer` held a tab grant
+    /// and no connector row, and its own helper got
+    /// `forbidden: session 'folderwijzer' has no 'shared-browser' grant` on
+    /// `list_tabs` — so the human's decision ("use my signed-in tab") was refused
+    /// at the door. A lent tab is browser access at this layer too, independent
+    /// of whether the implied connector grant has been written.
+    #[tokio::test]
+    async fn a_lent_tab_is_browser_access_at_the_hook_door() {
+        let (state, dir) = test_state().await;
+        // Deliberately NOT granted the connector — this is the legacy row shape.
+        seed_session(&state, "folderwijzer", "tok-f", false).await;
+
+        // Precondition: with neither grant it is refused, exactly as before.
+        let resp = router_for(state.clone())
+            .oneshot(tool_request("folderwijzer", "tok-f", "list_tabs", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "no grant, no browser");
+
+        // The human lends a tab — the ONLY thing that changes.
+        let tab_id = db::browser_tabs::new_tab_id();
+        db::browser_tabs::create(
+            &state.pool,
+            &tab_id,
+            "https://search.google.com/search-console/",
+            None,
+            &["search.google.com".to_string()],
+        )
+        .await
+        .unwrap();
+        db::browser_tabs::grant(&state.pool, &tab_id, "folderwijzer", true)
+            .await
+            .unwrap();
+
+        let resp = router_for(state.clone())
+            .oneshot(tool_request("folderwijzer", "tok-f", "list_tabs", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "a lent tab IS the grant");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["result"]["tabs"][0]["tab"], json!(tab_id), "and it can see it: {v}");
+
+        // …and the tab gate still governs WHICH tab: a second, unlent tab is not
+        // reachable just because this session now has browser access.
+        let other = db::browser_tabs::new_tab_id();
+        db::browser_tabs::create(&state.pool, &other, "https://mail.example.com/", None, &[])
+            .await
+            .unwrap();
+        assert!(
+            !has_tab_grant(&state, "folderwijzer", &other).await,
+            "browser access is not tab access"
+        );
+        assert!(!state.browser.is_running().await, "and nothing spawned chrome");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A refusal a bot can ACT on. The bare "not allowed to visit" is what sent
+    /// the owner's bot to PATCH the tab's allowlist itself with his bearer token.
+    #[test]
+    fn the_off_allowlist_refusal_names_the_host_and_who_widens_it() {
+        let msg = BrowserError::OriginNotAllowed {
+            tab: "tb_x".into(),
+            host: "accounts.google.com".into(),
+        }
+        .to_string();
+        assert!(msg.contains("accounts.google.com"), "{msg}");
+        assert!(msg.contains("not yours to widen"), "{msg}");
+        assert!(msg.contains("Ask them"), "{msg}");
+        // The sign-in hop is the common case; naming it saves a round trip.
+        assert!(msg.contains("sign-in hop"), "{msg}");
+    }
+
     /// GATE 1 + GATE 2, and the thing that matters most about both: neither can
     /// spawn a browser. A wrong token is a 401, an ungranted session is a 403,
     /// and in both cases chrome never starts.
@@ -1200,14 +1309,29 @@ mod tests {
             has_tab_grant(&state, "alice", "tb_realtab0001").await,
             "the per-tab grant is what unlocks the tab"
         );
-        // …but the CONNECTOR grant is still necessary. Revoke it and the tab
-        // grant alone is not enough.
+        // …and the tab grant STANDS ON ITS OWN. It used to require the connector
+        // grant as well, and that second requirement is exactly the bug: the
+        // human lent a tab in the workspace, the store row was never written, and
+        // the bot got a bare 403 on `list_tabs` while holding the tab. Both are
+        // deliberate human acts; a lend is not a lesser one. So revoking the
+        // store card does NOT retract a tab the human is still lending —
+        // un-lending the tab does (asserted below), which is the control that
+        // actually names this tab.
         db_connectors::grant(&state.pool, "alice", BROWSER_ID, None, false)
             .await
             .unwrap();
         assert!(
+            has_tab_grant(&state, "alice", "tb_realtab0001").await,
+            "a tab the human is lending is access on its own"
+        );
+        // The per-tab grant remains the ONLY thing that names a tab: revoke it
+        // and every verb on it is refused again, connector grant or not.
+        crate::db::browser_tabs::revoke(&state.pool, "tb_realtab0001", "alice")
+            .await
+            .unwrap();
+        assert!(
             !has_tab_grant(&state, "alice", "tb_realtab0001").await,
-            "connector grant is NECESSARY; a tab grant alone must not suffice"
+            "un-lending the tab is what takes it away"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
