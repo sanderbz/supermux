@@ -5054,6 +5054,15 @@ mod company_confinement_gate_tests {
     //! something other than `company_id`) would silently break HQ. The positive
     //! control in the same test proves the `None` is the GATE talking and not a
     //! disabled sandbox: a session WITH a `company_id` does get a plan.
+    //!
+    //! The gate is asserted for EVERY [`IsolationMode`], because it is the FIRST
+    //! branch in [`company_confinement`] — ahead of the `off` escape hatch and
+    //! ahead of the `strict-required` refusal. So HQ is unconfined under
+    //! `best-effort`, unconfined under `off`, and under `strict-required` it is
+    //! neither confined NOR refused: a strict host that refuses to start company
+    //! sessions must still start HQ. That last one is a second way this could
+    //! regress — an `Err` out of this function blocks the spawn just as surely as
+    //! a jail would.
     use super::*;
 
     fn cfg(data_dir: std::path::PathBuf) -> crate::config::Config {
@@ -5126,65 +5135,104 @@ mod company_confinement_gate_tests {
     }
 
     #[tokio::test]
-    async fn an_hq_session_is_never_confined_while_a_company_session_is() {
-        let base = std::env::temp_dir().join(format!("supermux-hq-gate-{}", uuid::Uuid::new_v4()));
-        let data_dir = base.join("data");
-        let hq_dir = base.join("hq");
-        let company_root = base.join("acme");
-        for d in [&data_dir, &hq_dir, &company_root] {
-            std::fs::create_dir_all(d).expect("mk dir");
-        }
-        let config = cfg(data_dir.clone());
-        let pool = crate::db::init(&config).await.expect("init pool");
-        let state = AppState::new(pool, config);
+    async fn an_hq_session_is_never_confined_under_any_isolation_mode() {
+        for mode in [
+            crate::isolation::IsolationMode::BestEffort,
+            crate::isolation::IsolationMode::Off,
+            crate::isolation::IsolationMode::StrictRequired,
+        ] {
+            let base =
+                std::env::temp_dir().join(format!("supermux-hq-gate-{}", uuid::Uuid::new_v4()));
+            let data_dir = base.join("data");
+            let hq_dir = base.join("hq");
+            let company_root = base.join("acme");
+            for d in [&data_dir, &hq_dir, &company_root] {
+                std::fs::create_dir_all(d).expect("mk dir");
+            }
+            let mut config = cfg(data_dir.clone());
+            config.isolation_mode = mode;
+            let pool = crate::db::init(&config).await.expect("init pool");
+            let state = AppState::new(pool, config);
+            assert_eq!(state.isolation.mode(), mode, "the runtime carries the mode");
 
-        // ── HQ / main / PA / tech-admin: company_id NULL ⇒ NO plan, ever. ──
-        let hq = session("hq", hq_dir.to_str().unwrap(), None);
-        let plan = company_confinement(&state, &hq, "hq")
-            .await
-            .expect("the gate must not error");
-        assert!(
-            plan.is_none(),
-            "an HQ / main agent (company_id NULL) must NEVER be confined — it \
-             keeps full access to the box (owner constraint)",
-        );
-
-        // ── positive control: a COMPANY session does get one. ──
-        let company = crate::db::companies::create(
-            &state.pool,
-            "acme",
-            "Acme",
-            company_root.to_str().unwrap(),
-        )
-        .await
-        .expect("create company");
-        let member = session("bot", company_root.to_str().unwrap(), Some(company.id));
-        let plan = company_confinement(&state, &member, "bot")
-            .await
-            .expect("the company path must not error");
-        if state.isolation.confinement_usable() {
+            // ── HQ / main / PA / tech-admin: company_id NULL ⇒ NO plan, ever. ──
+            // `Ok(None)` on BOTH counts: no jail, and no refusal either — under
+            // strict-required a refusal would stop HQ from starting at all.
+            let hq = session("hq", hq_dir.to_str().unwrap(), None);
+            let plan = company_confinement(&state, &hq, "hq").await.unwrap_or_else(|e| {
+                panic!(
+                    "isolation_mode={mode}: an HQ / main agent must never be \
+                     REFUSED either — the gate returns before the strict check; \
+                     got: {e}"
+                )
+            });
             assert!(
-                plan.is_some(),
-                "a company session MUST get a confinement plan — otherwise the \
-                 HQ assertion above proves nothing (the sandbox would just be off)",
+                plan.is_none(),
+                "isolation_mode={mode}: an HQ / main agent (company_id NULL) must \
+                 NEVER be confined — it keeps full access to the box (owner \
+                 constraint)",
             );
-        } else {
-            // A host whose startup self-test says a confined child cannot boot
-            // (no Landlock, or a seccomp-blocked one) fails OPEN by design: the
-            // company bot starts unconfined. Nothing to control against there.
-            eprintln!(
-                "confinement not usable on this host; skipping the company-session \
-                 positive control"
-            );
-        }
 
-        // The company grant pre-creates this session's own Claude project dir in
-        // the REAL Claude home — remove it again.
-        let _ = std::fs::remove_dir_all(crate::sessions::resumable::project_dir_for(
-            "",
-            company_root.to_str().unwrap(),
-        ));
-        let _ = std::fs::remove_dir_all(&base);
+            // ── positive control: a COMPANY session DOES get a plan, so the
+            // assertion above cannot pass merely because the sandbox is off. What
+            // "does" means is per-mode: `off` is the documented escape hatch (no
+            // plan for anybody), and a host whose startup self-test says a
+            // confined child cannot boot fails OPEN by design.
+            let company = crate::db::companies::create(
+                &state.pool,
+                "acme",
+                "Acme",
+                company_root.to_str().unwrap(),
+            )
+            .await
+            .expect("create company");
+            let member = session("bot", company_root.to_str().unwrap(), Some(company.id));
+            let got = company_confinement(&state, &member, "bot").await;
+            match mode {
+                crate::isolation::IsolationMode::Off => assert!(
+                    matches!(got, Ok(None)),
+                    "isolation_mode=off is the escape hatch: no plan for a company \
+                     session either",
+                ),
+                crate::isolation::IsolationMode::BestEffort => {
+                    let plan = got.expect("best-effort never refuses a company session");
+                    if state.isolation.confinement_usable() {
+                        assert!(
+                            plan.is_some(),
+                            "a company session MUST get a confinement plan — \
+                             otherwise the HQ assertion proves nothing",
+                        );
+                    } else {
+                        eprintln!(
+                            "confinement not usable on this host; skipping the \
+                             company-session positive control"
+                        );
+                    }
+                }
+                // Strict on a host that enforces nothing REFUSES the company
+                // session (fail-closed) — the sharpest control of all: same call,
+                // same state, and only the company one is stopped.
+                crate::isolation::IsolationMode::StrictRequired => match got {
+                    Ok(plan) => assert!(
+                        plan.is_some(),
+                        "strict-required on an enforcing host must yield a plan",
+                    ),
+                    Err(e) => assert!(
+                        matches!(e, AppError::Conflict(_)),
+                        "strict-required refuses a company session with a Conflict, \
+                         got {e}",
+                    ),
+                },
+            }
+
+            // The company grant pre-creates this session's own Claude project dir
+            // in the REAL Claude home — remove it again.
+            let _ = std::fs::remove_dir_all(crate::sessions::resumable::project_dir_for(
+                "",
+                company_root.to_str().unwrap(),
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 }
 
