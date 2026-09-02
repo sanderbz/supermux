@@ -36,6 +36,9 @@ const HOST_B: &str = "beta.test";
 struct Fixture {
     app: axum::Router,
     root_a: std::path::PathBuf,
+    /// The live state, so a test can assert on the DB directly (e.g. that a
+    /// refused grant left NO connector row behind).
+    state: AppState,
 }
 
 fn human_auth_cfg() -> HumanAuthConfig {
@@ -121,7 +124,7 @@ async fn fixture() -> Fixture {
     state.human_auth.set_verifier(mock);
 
     let app = http::router(state.clone());
-    Fixture { app, root_a }
+    Fixture { app, root_a, state }
 }
 
 // ── login + request helpers ─────────────────────────────────────────────────────
@@ -445,6 +448,48 @@ async fn member_connector_grant_confined_to_own_company() {
         send_cookie(&f.app, "DELETE", "/api/connectors/mail", &alice, &csrf,
             serde_json::json!({})).await,
         StatusCode::NOT_FOUND, "member 404s deleting a global connector definition");
+}
+
+/// A grant of a never-installed CATALOG card auto-installs it (that is what makes
+/// the chat connect card work on first use) — but ONLY behind the same scope gate:
+/// the guard runs BEFORE the install, so a refused grant leaves no row behind, and
+/// an unknown id is still a uniform 404 (a member can never author a global row).
+#[tokio::test]
+async fn member_grant_of_a_catalog_card_installs_only_within_scope() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let installed = |id: &'static str| {
+        let pool = f.state.pool.clone();
+        async move { db::connectors::get(&pool, id).await.unwrap().is_some() }
+    };
+
+    // A refused grant must NOT install: the scope guard precedes the install.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/connectors/pmcp-notion/grant", &alice, &csrf,
+            serde_json::json!({"session_name":"all"})).await,
+        StatusCode::NOT_FOUND, "member 404s an all-agents grant of a catalog card");
+    assert!(!installed("pmcp-notion").await, "a refused grant installs nothing");
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/connectors/pmcp-notion/grant", &alice, &csrf,
+            serde_json::json!({"session_name":"company:2"})).await,
+        StatusCode::NOT_FOUND, "member 404s a cross-company grant of a catalog card");
+    assert!(!installed("pmcp-notion").await, "a cross-company grant installs nothing");
+
+    // An unknown id inside their OWN scope is still a 404 — no row authoring.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/connectors/not-a-real-connector/grant", &alice, &csrf,
+            serde_json::json!({"session_name":"company:1"})).await,
+        StatusCode::NOT_FOUND, "member 404s granting an unknown connector id");
+    assert!(!installed("not-a-real-connector").await);
+
+    // Their OWN company scope + a real curated card → installed and granted. The row
+    // is a curated PUBLIC card carrying no secret, and the grant they are already
+    // allowed to make needs it to exist.
+    assert_eq!(
+        send_cookie(&f.app, "POST", "/api/connectors/pmcp-notion/grant", &alice, &csrf,
+            serde_json::json!({"session_name":"company:1"})).await,
+        StatusCode::OK, "member grants a catalog card into their own company");
+    assert!(installed("pmcp-notion").await, "the in-scope grant installed the card");
 }
 
 #[tokio::test]
