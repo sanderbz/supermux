@@ -35,7 +35,7 @@ import type { Server } from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 import { api, freePort, injectGlobals, startBackend, type Backend } from './harness'
 import {
@@ -46,6 +46,13 @@ import {
   tunnelReady,
   type MockState,
 } from './connector-oauth-mock'
+
+/** Screenshot after the sheet's slide-in has settled — these images are read by
+ *  humans on the PR, and one caught mid-transition is evidence of nothing. */
+async function shoot(page: Page, name: string): Promise<void> {
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: join(SHOTS, name), fullPage: true })
+}
 
 const CONNECTOR_ID = 'mock-seo'
 const CONNECTOR_NAME = 'Mock SEO'
@@ -143,7 +150,7 @@ test.describe('brokered OAuth sign-in returns connected', () => {
     // auth snapshot; the card now reads the live catalog.
     await expect(lane).not.toContainText('terminal')
     await expect(lane).toContainText("you'll come straight back here")
-    await page.screenshot({ path: join(SHOTS, '01-not-connected.png'), fullPage: true })
+    await shoot(page, '01-not-connected.png')
 
     // ONE picker: the library "Grant to" step. There must not be a second one.
     await expect(page.getByText('Grant to', { exact: true })).toHaveCount(1)
@@ -169,7 +176,7 @@ test.describe('brokered OAuth sign-in returns connected', () => {
     await expect(page.getByText('Grant to', { exact: true })).toHaveCount(0)
     await expect(page.getByText('Choose who gets it first')).toHaveCount(0)
     await expect(page.getByRole('button', { name: `Sign in with ${CONNECTOR_NAME}` })).toHaveCount(0)
-    await page.screenshot({ path: join(SHOTS, '02-connected.png'), fullPage: true })
+    await shoot(page, '02-connected.png')
 
     // The server agrees — the card carries the account, and the grant is honest
     // about not being applied to the running bot yet.
@@ -199,7 +206,7 @@ test.describe('brokered OAuth sign-in returns connected', () => {
     await page.reload()
     await expect(page.getByTestId('oauth-lane')).toHaveAttribute('data-state', 'connected', { timeout: 30_000 })
     await expect(page.getByTestId('oauth-status')).toContainText(`Connected as ${MOCK_EMAIL}`)
-    await page.screenshot({ path: join(SHOTS, '03-after-reload.png'), fullPage: true })
+    await shoot(page, '03-after-reload.png')
 
     // ── (iii) signing in AGAIN for the same bot must not fork the account ──
     // The connected state offers "Sign in again" only when the account is dead,
@@ -234,6 +241,6 @@ test.describe('brokered OAuth sign-in returns connected', () => {
       })
     ).json()
     expect(consumers.grants).toHaveLength(1)
-    await page.screenshot({ path: join(SHOTS, '04-second-signin-no-duplicate.png'), fullPage: true })
+    await shoot(page, '04-second-signin-no-duplicate.png')
   })
 })

@@ -1314,7 +1314,33 @@ const BUDGET_ENTRY_JS = 164 * KB
 // main, because nothing here is on the cold path.
 // The ceiling follows this counter's documented policy (measured x 1.02, NOT
 // ceil(measured) — see the 2026-08-17 note above): 452.85 x 1.02 = 461.9 -> 462.
-const BUDGET_APP_JS = 462 * KB
+//
+// RATCHETED 462 -> 471 by the brokered-OAuth return fix (`fix/oauth-return-ux`).
+// Same shape as the ratchet above, and the interesting half is again not this
+// branch:
+//
+//   origin/main (e9870fd5), built the same way   461.67 KB  ← 99.93% of 462
+//   this branch                                  461.88 KB  ← +0.21 KB
+//   this branch, on CI's zlib                    462.03 KB  ← RED by 30 bytes
+//
+// 0.33 KB of headroom on a shared per-PR gate is not a budget, it is the
+// tripwire this file warns about twice: gzip output differs by ~0.16 KB between
+// this box and the runner, so on main the gate was already inside its own
+// measurement noise. The next author to add ANY feature was going to get a red
+// that says nothing about their change. Ratcheting here rather than leaving it.
+//
+// This branch's own +0.21 KB, all of it in LAZY route chunks (the ENTRY gate
+// MOVED DOWN, 161.05 -> 160.29, because nothing here is on the cold path):
+//   ~+0.10 KB  `oauthConnection` / `consumerTargets` in `lib/api/connectors.ts`
+//              — the pure derivation of "is this connector connected, as whom,
+//              with how many tools" from the card's accounts. It replaces a
+//              local-state guess that a full-page OAuth redirect destroyed, which
+//              is why a completed sign-in kept rendering its initial state.
+//   ~+0.11 KB  `<McpOauthLane>` + its status line: one status header, one picker,
+//              one action — net of DELETING the old lane, the duplicate "Sign in
+//              again" button and the second grant control it replaces.
+// Policy: 461.88 x 1.02 = 471.1 -> 471.
+const BUDGET_APP_JS = 471 * KB
 // RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
 // keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than

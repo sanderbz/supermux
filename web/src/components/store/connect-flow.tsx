@@ -55,7 +55,7 @@ import {
   CredentialTextField as TextField,
   defaultStr,
 } from './credential-fields'
-import { OauthConnectButton } from './oauth-connect-button'
+import { OauthConnectButton, oauthPrimaryClass } from './oauth-connect-button'
 
 /** The outcome of a successful seal — what the surface + the test leg need. */
 export interface ConnectFlowResult {
@@ -347,11 +347,7 @@ export function ConnectFlow({
             onClick={startSignIn}
             disabled={submitDisabled}
             data-vr="connect-oauth"
-            className={cn(
-              chat
-                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
-                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
-            )}
+            className={oauthPrimaryClass(chat)}
             style={
               chat
                 ? { borderColor: 'color-mix(in oklab, var(--sm-accent) 40%, transparent)', borderWidth: '0.5px' }
@@ -575,11 +571,7 @@ function McpOauthLane({
             disabled={submitDisabled || !onSignIn}
             data-vr="connect-oauth"
             aria-label={signInLabel}
-            className={cn(
-              chat
-                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
-                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
-            )}
+            className={oauthPrimaryClass(chat)}
           >
             {signInLabel}
           </button>
