@@ -257,6 +257,21 @@ pub async fn safe_open_read(path: &Path) -> std::io::Result<tokio::fs::File> {
     open_nofollow(tokio::fs::OpenOptions::new().read(true), path).await
 }
 
+/// Open `path` for APPEND (create if absent) with `O_NOFOLLOW`.
+///
+/// The resumable chunk writer's opener: every `PATCH` re-opens the `.part`
+/// file and appends, so a truncating open would silently discard everything
+/// already received. `O_NOFOLLOW` guards the final component exactly as the
+/// read/write helpers do — a symlink planted at the `.part` path is refused
+/// (ELOOP → 403) rather than followed out of the upload directory.
+pub async fn safe_open_append(path: &Path) -> std::io::Result<tokio::fs::File> {
+    open_nofollow(
+        tokio::fs::OpenOptions::new().write(true).create(true).append(true),
+        path,
+    )
+    .await
+}
+
 /// Open `path` for truncating write/create with `O_NOFOLLOW`.
 pub async fn safe_open_write(path: &Path) -> std::io::Result<tokio::fs::File> {
     open_nofollow(

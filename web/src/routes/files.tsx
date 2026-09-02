@@ -54,8 +54,10 @@ import {
 import { SelectBar } from '@/components/files/select-bar'
 import { SendToBotSheet } from '@/components/files/send-to-bot-sheet'
 import { SpaceCrumb } from '@/components/files/space-crumb'
+import { UploadTray, useUploads } from '@/components/files/upload-tray'
 import { SpacesGrid } from '@/components/files/spaces-grid'
 import { spaceCards, spacesSkipTarget } from '@/components/files/spaces'
+import { uploads } from '@/lib/upload/manager'
 import { useIsMember } from '@/stores/viewer-store'
 import { attachmentSentence } from '@/components/chat/composer-insert'
 import { insertIntoComposer } from '@/components/chat/composer-draft'
@@ -69,7 +71,6 @@ import {
   useMoveEntry,
   useSaveFile,
   useSessionDir,
-  useUploadFiles,
 } from '@/hooks/use-files'
 import { useSessions } from '@/hooks/use-sessions'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
@@ -221,7 +222,6 @@ export function Files() {
   const [viewerDirty, setViewerDirty] = React.useState(false)
 
   const listing = useDirListing(currentPath, showHidden, wantsDirectory)
-  const upload = useUploadFiles()
   const del = useDeleteFile()
   const mkdir = useMkdir()
   const move = useMoveEntry()
@@ -344,10 +344,24 @@ export function Files() {
     })
   }, [entries, sortKey, sortDir])
 
+  // Uploads go through the CHUNKED, RESUMABLE manager (`lib/upload/manager`),
+  // not a single buffered multipart POST: the old path held every byte in
+  // server memory, capped at 200 MB, showed no progress, and lost the whole
+  // transfer on any blip. The manager is a module singleton, so a 9 GB upload
+  // keeps running while the person browses elsewhere in the app.
   const onUploadFiles = (files: File[]) => {
     if (!files.length) return
-    upload.mutate({ dir: dirPath, files })
+    uploads.enqueue(dirPath, files)
   }
+
+  // The `files` SSE frame already refreshes the listing when a file lands, but
+  // that stream can be scoped or briefly down; a completed upload must never
+  // leave the directory it went into looking empty.
+  const uploadItems = useUploads()
+  const doneCount = uploadItems.filter((u) => u.state === 'done').length
+  React.useEffect(() => {
+    if (doneCount > 0) void qc.invalidateQueries({ queryKey: ['files', 'ls'] })
+  }, [doneCount, qc])
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -860,6 +874,8 @@ export function Files() {
           onCancel={exitSelect}
         />
       )}
+
+      <UploadTray />
 
       <NewEntrySheet
         key={newOpen ? 'new-open' : 'new-closed'}
