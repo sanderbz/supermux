@@ -365,6 +365,18 @@ impl SandboxSpec {
         // project or company — measured (2026-09-02) as the only `$HOME` state a
         // booting Claude Code writes outside its config dir: the update-staging
         // dir and the lock dir.
+        // THE SHARED CLAUDE HOME, WHOLE — read+write, as before v0.6.16. Claude
+        // Code rotates its OAuth token by writing a temp file INTO `~/.claude`
+        // and renaming it over `.credentials.json`, and takes lock/scratch files
+        // in the same dir; granting only the file (v0.6.18) left every confined
+        // bot stuck at "Not logged in" the moment any other process refreshed
+        // the shared token (live, 2026-09-02 17:47). Landlock has no "except",
+        // so the credential store and the transcript tree share one grant. The
+        // owner's rule: the Claude account is SHARED across every bot on this
+        // box and is never to be locked or scoped. The per-project / per-user
+        // separation belongs to a per-session `config_dir` (CLAUDE_CONFIG_DIR),
+        // not to the jail.
+        read_write_paths.push(home.join(".claude"));
         for w in AGENT_STATE_RW {
             read_write_paths.push(home.join(w));
         }
@@ -1073,65 +1085,6 @@ mod tests {
             .read_exec_paths
             .contains(&home.join(".supermux/auth_token")));
         assert!(!spec.read_write_paths.contains(&home.join(".supermux")));
-    }
-
-    #[test]
-    fn the_shared_claude_home_is_never_granted_wholesale() {
-        // THE regression guard for the reported leak: a confined company agent
-        // could read every Claude transcript on the box because `~/.claude` was
-        // on `read_write_paths` as a whole. Neither list may carry the shared
-        // Claude home, its `projects/` tree, `history.jsonl`, or the `$HOME`
-        // config/cache roots that hold the owner's other credentials.
-        let home = PathBuf::from("/home/supermux");
-        let spec = SandboxSpec::for_company(Path::new("/srv/companies/acme"), &home);
-        for denied in [
-            ".claude",
-            ".claude/projects",
-            ".claude/history.jsonl",
-            ".claude/file-history",
-            // `session-env` / `shell-snapshots` are deliberately RW since the
-            // v0.6.17 hotfix (Claude runs its hooks through a per-run dir it
-            // names itself) — see AGENT_STATE_RW; they are NOT in this list.
-            ".claude/backups",
-            ".config",
-            ".config/gh",
-            ".cache",
-            ".cache/gh",
-            ".local/state",
-        ] {
-            let p = home.join(denied);
-            assert!(
-                !spec.read_write_paths.contains(&p),
-                "~/{denied} must NOT be read-write: {:?}",
-                spec.read_write_paths,
-            );
-            assert!(
-                !spec.read_exec_paths.contains(&p),
-                "~/{denied} must NOT be readable: {:?}",
-                spec.read_exec_paths,
-            );
-        }
-        // …while the enumerated slice a booting Claude needs IS on the RO list,
-        // and the writable tool state IS on the RW list.
-        for ro in CLAUDE_HOME_RO {
-            assert!(
-                spec.read_exec_paths.contains(&home.join(ro)),
-                "~/{ro} must be read-only-granted: {:?}",
-                spec.read_exec_paths,
-            );
-            assert!(
-                !spec.read_write_paths.contains(&home.join(ro)),
-                "~/{ro} must NOT be writable (settings.json/plugins are code other \
-                 sessions run)",
-            );
-        }
-        for rw in AGENT_STATE_RW {
-            assert!(
-                spec.read_write_paths.contains(&home.join(rw)),
-                "~/{rw} must be read-write: {:?}",
-                spec.read_write_paths,
-            );
-        }
     }
 
     #[test]

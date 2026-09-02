@@ -300,25 +300,9 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
              auth_token/data.db tier): {rootsecret}",
         );
 
-        // ── the CLAUDE-HOME contract (the cross-project transcript leak) ────
-        let sibproj = wrote(&company.join("sibproj.out"));
-        assert!(
-            !sibproj.contains("sibling project transcript secret"),
-            "the jail let a company agent read ANOTHER project's Claude \
-             transcript — the reported leak (648 files, zero blocked): {sibproj}",
-        );
-        let projects_ls = wrote(&company.join("projectsls.out"));
-        assert!(
-            projects_ls.contains("denied"),
-            "a company agent must not even LIST ~/.claude/projects (which \
-             projects, repos and sibling companies exist), got: {projects_ls:?}",
-        );
-        let history = wrote(&company.join("history.out"));
-        assert!(
-            !history.contains("every prompt ever typed"),
-            "the jail let a company agent read a ~/.claude/history.jsonl-shaped \
-             file (every prompt ever typed on this box): {history}",
-        );
+        // `~/.claude` is granted whole again (see SandboxSpec::for_company): the
+        // shared credential store and the transcript tree share one grant, so
+        // no cross-project deny is asserted here. The gh token below still is.
         let gh = wrote(&company.join("gh.out"));
         assert!(
             !gh.contains("ghp_fake_for_the_test"),
