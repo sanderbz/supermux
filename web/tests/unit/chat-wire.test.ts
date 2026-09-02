@@ -650,6 +650,8 @@ describe('the harness rows cc 2.1.25x background agents produce', () => {
     ])
     expect(row.kind).toBe('background-agent')
     expect(row.text).toBe('Agent "Count words in note file" finished')
+    // …and the XML envelope never reaches the surface as a detail line.
+    expect(row.detail ?? '').not.toContain('<task-notification>')
     // …and it is NOT a message from the person sitting in front of the app.
     expect(row.kind).not.toBe('user')
   })
