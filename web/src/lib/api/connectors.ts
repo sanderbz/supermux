@@ -51,8 +51,8 @@ export type ConnectorKind =
  *   - `api_key`       → one secret field + a "Get your key →" link (GitHub PAT…).
  *   - `form`          → identity + secret + non-secret fields (iCloud, a DSN).
  *   - `oauth_device`/`oauth_redirect` → a "Sign in with X" primary (wired in P2).
- *   - `mcp_oauth`     → a hosted MCP that signs in IN THE BOT'S TERMINAL — an
- *     honest note, never a fake key field (Slack/Notion/Linear/Sentry…).
+ *   - `mcp_oauth`     → a hosted MCP whose OAuth supermux BROKERS ("Sign in with
+ *     X" → the provider → back) — never a fake key field (Slack/Notion/Linear…).
  *   - `unspecified`   → not declared; callers derive from the schema. */
 export type AuthKind =
   | 'none'
@@ -113,6 +113,8 @@ export interface ConnectorAccount {
   last_checked_at?: number
   /** A masked, human-readable reason for the last non-ok verdict; `null` on ok. */
   last_error?: string | null
+  /** The company that owns this account (P2b), `null` = HQ / global. */
+  company_id?: number | null
   grant_level: GrantLevel
 }
 
@@ -189,6 +191,18 @@ export interface SessionConnector {
   has_secret: boolean
   enabled: boolean
   card: ConnectorCard | null
+  /** Epoch seconds the grant row was written. */
+  granted_at?: number
+  /** SERVER-computed restart honesty: has a launch of this session already bound
+   *  this grant (its `last_started` ≥ the grant / the secret's last (re)seal)?
+   *  Survives a full-page redirect, unlike React-local "restart pending" state. */
+  applied?: boolean
+  /** Is the session live right now (a restart is meaningful)? A stopped bot
+   *  binds at its next start and needs nothing. */
+  running?: boolean
+  account_ref?: string | null
+  /** The account this grant feeds (status / health / identity), when any. */
+  account?: Pick<ConnectorAccount, 'id' | 'account_label' | 'status' | 'has_secret' | 'last_used_at' | 'health' | 'last_checked_at' | 'last_error'> | null
 }
 
 /** The supermux connector manifest (the runtime/listing format). */
@@ -584,9 +598,10 @@ export function connectorAuthKind(card: ConnectorCard): AuthKind {
   return 'none'
 }
 
-/** Does this connector lead with a supermux-driven "Sign in with {service}"
- *  primary (Lane A)? ONLY the real OAuth lanes — NOT `mcp_oauth` (that signs in in
- *  the bot's terminal, shown as an honest note) and NOT `api_key` (a key paste). */
+/** Does this connector lead with the DEVICE-code "Sign in with {service}"
+ *  primary (Lane A)? ONLY `oauth_device`/`oauth_redirect` — NOT `mcp_oauth`
+ *  (that lane has its own brokered button, `<OauthConnectButton>`) and NOT
+ *  `api_key` (a key paste). */
 export function connectorHasOAuth(card: ConnectorCard): boolean {
   const k = connectorAuthKind(card)
   return k === 'oauth_device' || k === 'oauth_redirect'
@@ -594,19 +609,106 @@ export function connectorHasOAuth(card: ConnectorCard): boolean {
 
 /** Does this connector need a human to hand over a credential / sign-in before it
  *  works — i.e. is a missing secret an honest "Needs sign-in"? True for the paste
- *  and supermux-OAuth lanes; FALSE for `none` (no auth) and `mcp_oauth` (the client
- *  drives sign-in at first use, nothing to paste here). Replaces the old
- *  `!has_secret && credentials.some(sensitive)` heuristic that showed a hosted-OAuth
- *  connector as a false green. */
+ *  lanes AND every OAuth lane — `mcp_oauth` included, now that supermux brokers
+ *  that sign-in and holds the token (a grant with no sealed token is a bot that
+ *  will meet a 401). FALSE only for `none`. */
 export function connectorNeedsCredential(card: ConnectorCard): boolean {
   const k = connectorAuthKind(card)
-  return k === 'api_key' || k === 'form' || k === 'oauth_device' || k === 'oauth_redirect'
+  return k === 'api_key' || k === 'form' || k === 'oauth_device' || k === 'oauth_redirect' || k === 'mcp_oauth'
+}
+
+// ── the one status helper every chip reads ────────────────────────────────────
+
+export type ConnectorStatusKey =
+  | 'not_added'
+  | 'needs_sign_in'
+  | 'connecting'
+  | 'connected'
+  | 'restart'
+  | 'stale'
+  | 'broken'
+  | 'not_verified'
+  | 'ready'
+  | 'disabled'
+
+export interface ConnectorChip {
+  key: ConnectorStatusKey
+  label: string
+  tone: 'active' | 'warn' | 'error' | 'muted'
+}
+
+/** A token refreshed only at launch is ~24 h; past this age a running bot's
+ *  green is no longer trustworthy without context. Seconds. */
+export const STALE_AFTER_SECS = 20 * 60 * 60
+
+export interface StatusInputs {
+  /** The grant on the bot (absent = never granted). */
+  grant?: Pick<SessionConnector, 'has_secret' | 'enabled' | 'applied' | 'running'> | null
+  /** The account the grant feeds (absent = account-less). */
+  account?: Pick<ConnectorAccount, 'status' | 'health' | 'last_checked_at' | 'last_used_at' | 'account_label' | 'has_secret'> | null
+  /** A sign-in for this connector is mid-hop (pending key in sessionStorage). */
+  connecting?: boolean
+  /** The bot's live status (`active` = mid-turn), when known. */
+  sessionStatus?: string | null
+  /** `Date.now()/1000` — injectable for tests. */
+  now?: number
+}
+
+/** The honest chip for a connector on a bot: expired / error / needs-sign-in NEVER
+ *  render green; green comes only from a probe (`health === 'ok'`). Pure. */
+export function connectorStatus(card: ConnectorCard, input: StatusInputs): ConnectorChip {
+  const { grant, account, connecting } = input
+  const now = input.now ?? Math.floor(Date.now() / 1000)
+  const kind = connectorAuthKind(card)
+  const needsCred = connectorNeedsCredential(card)
+  if (connecting) return { key: 'connecting', label: 'Connecting…', tone: 'warn' }
+  if (!grant) return { key: 'not_added', label: 'Not added', tone: 'muted' }
+  if (grant.enabled === false) return { key: 'disabled', label: 'Disabled', tone: 'muted' }
+  if (account?.health === 'error') {
+    return { key: 'broken', label: 'Broken', tone: 'error' }
+  }
+  if (account?.health === 'expired' || account?.status === 'disconnected') {
+    return { key: 'needs_sign_in', label: 'Needs sign-in', tone: 'warn' }
+  }
+  if (needsCred && (!grant.has_secret || (kind === 'mcp_oauth' && account && account.status !== 'active'))) {
+    return { key: 'needs_sign_in', label: 'Needs sign-in', tone: 'warn' }
+  }
+  if (grant.applied === false && grant.running) {
+    return { key: 'restart', label: 'Restart to apply', tone: 'warn' }
+  }
+  if (!needsCred && kind === 'none') return { key: 'ready', label: 'Ready', tone: 'active' }
+  const checked = (account?.last_checked_at ?? 0) > 0
+  if (!checked || account?.health == null) {
+    return { key: 'not_verified', label: 'Added — not verified yet', tone: 'muted' }
+  }
+  if (grant.running && kind === 'mcp_oauth' && account) {
+    const used = account.last_used_at ?? 0
+    if (used > 0 && now - used > STALE_AFTER_SECS) {
+      return { key: 'stale', label: `Connected · signed in at start, ${ageLabel(now - used)}`, tone: 'warn' }
+    }
+    if (used > 0) {
+      return { key: 'connected', label: `Connected · signed in at start, ${ageLabel(now - used)}`, tone: 'active' }
+    }
+  }
+  const who = account?.account_label ? `Connected as ${account.account_label}` : 'Connected'
+  return { key: 'connected', label: who, tone: 'active' }
+}
+
+/** "3h ago" from an age in seconds (coarse, for the chip). */
+export function ageLabel(secs: number): string {
+  const s = Math.max(0, Math.floor(secs))
+  if (s < 60) return 'just now'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
 }
 
 /** How EASY is this connector to connect, as an ordering rank (lower = easier)?
  *  The store surfaces zero-setup lanes first so a non-technical user connects
  *  something before ever meeting a `client_id`:
- *    0 `mcp_oauth`   — the bot signs in in its own terminal (no app, no key).
+ *    0 `mcp_oauth`   — supermux brokers a browser sign-in (no app, no key).
  *    1 `oauth_device`/`oauth_redirect` — one-tap sign-in (once the app is enabled).
  *    2 `none`        — built-ins, nothing to hand over.
  *    3 `api_key`/`form`/anything else — paste a key. */

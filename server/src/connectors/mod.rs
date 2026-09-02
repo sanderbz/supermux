@@ -34,6 +34,9 @@ pub mod imap_connector;
 pub mod manifest;
 /// P2a — connector-OAuth device-code sign-in + guided per-company app registration.
 pub mod oauth;
+/// Supermux-brokered authorization-code + PKCE sign-in for remote MCP servers
+/// (the `mcp_oauth` lane): discovery, DCR, callback, refresh-at-launch.
+pub mod oauth_code;
 
 use axum::routing::{delete, get, post};
 use axum::Router;

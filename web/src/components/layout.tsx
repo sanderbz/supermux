@@ -1,5 +1,7 @@
 import * as React from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+
+import { OauthReturnEffect } from '@/components/store/oauth-return'
 // Primary-nav glyphs — Solar (inlined; see components/nav-glyphs.tsx). Each takes
 // `active` and renders a rich bold-duotone glyph when active (premium in the
 // accent) or a clean linear outline when idle, plus the `className` the rail
@@ -708,6 +710,7 @@ export function Layout() {
           // fixed` (out of `<main>`'s flow), so clipping `<main>` changes nothing.
           className={cn('min-h-0 flex-1', chromeless ? 'overflow-hidden' : 'overflow-auto')}
         >
+          <OauthReturnEffect />
           <Outlet />
         </main>
         {!chromeless && <BottomNav grok={grok} />}

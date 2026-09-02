@@ -195,7 +195,7 @@ fn should_splice_admin_token(state: &AppState, headers: &HeaderMap) -> bool {
 ///
 /// Everything else — company hosts, public hosts, unknown/forged Hosts — is
 /// untrusted (no token).
-fn is_trusted_owner_transport(cfg: &crate::config::HumanAuthConfig, host: &str) -> bool {
+pub(crate) fn is_trusted_owner_transport(cfg: &crate::config::HumanAuthConfig, host: &str) -> bool {
     let lowered = host.trim().to_ascii_lowercase();
     // Strip the port. IPv6 literals arrive bracketed (`[::1]:8824`); pull the
     // address out of the brackets, otherwise split on the single `:port`.

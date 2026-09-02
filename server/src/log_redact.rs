@@ -44,6 +44,12 @@ const SECRET_QUERY_KEYS: &[&str] = &[
     "device_code",
     "access_token",
     "refresh_token",
+    // Supermux-brokered authorization-code flow: the code, the PKCE pair and any
+    // id_token are single-use secrets that would otherwise ride a callback URL.
+    "code",
+    "code_verifier",
+    "code_challenge",
+    "id_token",
 ];
 
 /// Redact any secret-bearing substring from `input`.

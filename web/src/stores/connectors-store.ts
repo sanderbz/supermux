@@ -41,6 +41,8 @@ import {
   type TestConnectionResult,
 } from '@/lib/api/connectors'
 import { ApiError } from '@/lib/api/client'
+import { startMcpOauth } from '@/lib/api/oauth'
+import { beginSignIn, browserPendingStore } from '@/lib/oauth-pending'
 import { useToast } from '@/components/ui/use-toast'
 
 // ── query keys ────────────────────────────────────────────────────────────────
@@ -136,6 +138,11 @@ export interface ConnectorActions {
   putCredentialFull: (id: string, args: PutCredentialArgs) => Promise<CredentialResponse>
   /** Remove a connector (grants + vault CASCADE). */
   remove: (id: string) => Promise<void>
+  /** Supermux-brokered sign-in for a remote MCP (`mcp_oauth`): start the flow,
+   *  keep the pending key in this tab, and hand the tab to the provider
+   *  (top-level `location.assign`). Resolves once the hop starts; the boot-time
+   *  return handler finishes the grant. `false` = refused (toast shown). */
+  signIn: (id: string, target: string, returnTo: string) => Promise<boolean>
 }
 
 export function useConnectorActions(): ConnectorActions {
@@ -272,5 +279,17 @@ export function useConnectorActions(): ConnectorActions {
     },
     putCredentialFull: (id, args) => credM.mutateAsync({ id, args }),
     remove: (id) => removeM.mutateAsync(id),
+    signIn: (id, target, returnTo) =>
+      beginSignIn(
+        {
+          start: startMcpOauth,
+          store: browserPendingStore(),
+          assign: (url) => window.location.assign(url),
+          toast: (message) => toast({ message, tone: 'error', duration: 4000 }),
+        },
+        id,
+        target,
+        returnTo,
+      ),
   }
 }

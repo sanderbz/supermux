@@ -415,7 +415,7 @@ export default function App() {
                   }
                 />
                 <Route
-                  path="/store"
+                  path="/store/:id?"
                   element={
                     <Suspense fallback={null}>
                       <Store />

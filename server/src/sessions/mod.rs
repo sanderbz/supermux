@@ -210,6 +210,11 @@ pub fn router_for(state: AppState) -> Router {
             "/api/sessions/{name}/connect_request",
             post(connect_request_handler),
         )
+        // "Not now" on the chat Connect card: clear the pending ask.
+        .route(
+            "/api/sessions/{name}/connect_request/dismiss",
+            post(connect_request_dismiss_handler),
+        )
         // ── reopen a past Claude conversation for the dir ──
         .route(
             "/api/sessions/{name}/resumable",
@@ -2694,6 +2699,25 @@ async fn connect_request_handler(
         crate::hooks::broadcast_activity_delta(&state, &name);
     }
     Ok(ok(json!({ "connector_id": id })))
+}
+
+/// `POST /api/sessions/{name}/connect_request/dismiss` — the human tapped "Not
+/// now": clear the session's pending connect ask (the SAME live-state the hook
+/// producer / the store handoff set). Same two fences as the push handler.
+async fn connect_request_dismiss_handler(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(name): Path<String>,
+) -> Result<Json<Envelope<serde_json::Value>>, AppError> {
+    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &name).await?;
+    db::sessions::get(&state.pool, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
+    let changed = state.clear_connect_request(&name);
+    if changed {
+        crate::hooks::broadcast_activity_delta(&state, &name);
+    }
+    Ok(ok(json!({ "dismissed": changed })))
 }
 
 // ── resume picker ────────────────────────────────────────────────────────────

@@ -470,6 +470,18 @@ pub async fn company_of_grant_target(pool: &SqlitePool, session_name: &str) -> O
         .and_then(|s| s.company_id)
 }
 
+/// The account whose sealed secret is `secret_ref` (one vault row per account,
+/// so at most one). Used by the launch-time OAuth refresh to write the honest
+/// `disconnected`/`expired` verdict on a dead refresh token.
+pub async fn account_by_secret_ref(pool: &SqlitePool, secret_ref: &str) -> sqlx::Result<Option<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts WHERE secret_ref = ? ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(secret_ref)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Fetch one account by its id (the `account_ref`).
 pub async fn account_get(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Account>> {
     sqlx::query_as::<_, Account>("SELECT * FROM connector_accounts WHERE id = ?")

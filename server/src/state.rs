@@ -765,6 +765,16 @@ pub struct AppState {
     /// returned, never logged); the client holds only the handle. Entries drop on
     /// terminal status and self-prune on a poll past expiry. In-memory only.
     pub oauth_device_handles: Arc<DashMap<String, crate::connectors::oauth::DeviceHandle>>,
+    /// Supermux-brokered authorization-code flows for remote MCP servers, keyed
+    /// by `state`. RAM only (PKCE verifier, DCR secret, and — between the public
+    /// callback and the authenticated `complete` — the exchanged tokens). Swept
+    /// on every `start`/`callback`; single-use.
+    pub oauth_code_flows: Arc<DashMap<String, crate::connectors::oauth_code::CodeFlow>>,
+    /// The broker's outbound-URL policy. Production is `UrlPolicy::default()`
+    /// (https-only, public DNS names). The ONLY way to relax it is
+    /// [`set_oauth_url_policy_for_tests`](Self::set_oauth_url_policy_for_tests) —
+    /// never config, never env.
+    pub oauth_url_policy: Arc<arc_swap::ArcSwap<crate::connectors::oauth_code::UrlPolicy>>,
 }
 
 impl AppState {
@@ -866,7 +876,25 @@ impl AppState {
             external_access: Arc::new(crate::external_access::ExternalAccess::new()),
             oauth_apps: Arc::new(arc_swap::ArcSwap::from_pointee(oauth_apps_seed)),
             oauth_device_handles: Arc::new(DashMap::new()),
+            oauth_code_flows: Arc::new(DashMap::new()),
+            oauth_url_policy: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::connectors::oauth_code::UrlPolicy::default(),
+            )),
         }
+    }
+
+    /// The broker's current outbound-URL policy (cheap `Arc` load).
+    pub fn oauth_url_policy(&self) -> crate::connectors::oauth_code::UrlPolicy {
+        **self.oauth_url_policy.load()
+    }
+
+    /// TEST ONLY: relax the broker's URL policy so an in-process mock
+    /// authorization server on `http://127.0.0.1:<port>` can be reached. Compiled
+    /// out of production binaries (`test-support` is a dev-only feature); there
+    /// is deliberately no config/env path to this.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_oauth_url_policy_for_tests(&self, policy: crate::connectors::oauth_code::UrlPolicy) {
+        self.oauth_url_policy.store(Arc::new(policy));
     }
 
     /// The LIVE human-auth config snapshot (hot-swappable by the onboarding

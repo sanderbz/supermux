@@ -1014,6 +1014,13 @@ export const sessionsApi = {
       body: JSON.stringify({ connector_id: connectorId }),
     }),
 
+  /** `POST .../connect_request/dismiss` — "Not now" on the chat Connect card:
+   *  clears the bot's pending connect ask (the same live-state the push set). */
+  dismissConnectRequest: (name: string): Promise<{ dismissed: boolean }> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/connect_request/dismiss`, {
+      method: 'POST',
+    }),
+
   /** `POST .../recover` — rung 1: the manual holder heal, bypassing the
    *  automatic layer's cooldown (B5/T8).
    *
