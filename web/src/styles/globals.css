@@ -673,6 +673,22 @@
 .chat-thinking-summary::-webkit-details-marker {
   display: none;
 }
+/* The inline thinking SUMMARY (Fable 5 `display: summarized`): the narration
+   line between two tool calls. Quiet ink, no chrome — it is context, not an
+   answer, so it must never compete with the assistant bubble beneath it. */
+@utility chat-thinking-inline {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--sm-ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+@utility chat-thinking-meta {
+  margin-left: 0.375rem;
+  font-size: 12px;
+  color: var(--sm-ink-3);
+  white-space: nowrap;
+}
 @utility chat-thinking-body {
   margin-top: 8px;
   border-left: 1.5px solid var(--sm-hairline);

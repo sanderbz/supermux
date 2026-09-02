@@ -522,6 +522,17 @@ function AgentRow({
  * `entries.ts::toDisplayList`). With no row above to measure from, the summary
  * says "Thought" and claims nothing.
  */
+/** Is this thinking text a SUMMARY (a sentence or two, one paragraph) rather
+ *  than raw extended reasoning? Pure + exported for the unit test. The cap is
+ *  deliberately generous for one narration line and far below any raw block. */
+export const THINKING_SUMMARY_MAX_CHARS = 320
+export function isThinkingSummary(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  if (t.length > THINKING_SUMMARY_MAX_CHARS) return false
+  return !/\n\s*\n/.test(t)
+}
+
 function ThinkingDisclosure({
   item,
   surface,
@@ -531,6 +542,29 @@ function ThinkingDisclosure({
 }) {
   if (item.type !== 'thinking') return null
   const label = item.secs ? `Thought for ${item.secs}s` : 'Thought'
+  // A SUMMARY READS INLINE. Fable 5-family models hand back their reasoning as
+  // a short, user-facing summary (the API's `display: "summarized"` thinking —
+  // the terminal prints it as a plain line with "· summarized"). That sentence
+  // is the narration between two tool calls ("adding the address line, then
+  // checking the DB") and hiding it behind a "Thought for 8s" chevron threw
+  // away the one line the reader wanted. So: a short single-paragraph block
+  // renders as a quiet inline line; a long / multi-paragraph block (raw
+  // extended thinking on older models) keeps the collapsed disclosure — the
+  // calm view is still the promise there.
+  if (isThinkingSummary(item.text)) {
+    return (
+      <p
+        className="chat-thinking-inline min-w-0"
+        style={{ maxWidth: surface === 'phone' ? BUBBLE_MAX.phoneAssistant : BUBBLE_MAX.assistant }}
+        data-testid="chat-thinking"
+        data-summary=""
+      >
+        {item.text}
+        {item.secs ? <span className="chat-thinking-meta">· {item.secs}s</span> : null}
+        {item.truncated && <ClippedMarker uuid={item.uuid} />}
+      </p>
+    )
+  }
   return (
     <details
       className="group min-w-0"

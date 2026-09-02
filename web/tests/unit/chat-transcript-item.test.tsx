@@ -20,7 +20,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { toDisplayList, type ChatEntry } from '../../src/components/chat/entries'
 import { buildTranscript, entryLabels } from '../../src/components/chat/grouping'
-import { TranscriptItem } from '../../src/components/chat/transcript-item'
+import {
+  TranscriptItem,
+  isThinkingSummary,
+  THINKING_SUMMARY_MAX_CHARS,
+} from '../../src/components/chat/transcript-item'
 
 /** Wire entries (newest-first, as `/recall?chat=true` hands them over) → HTML. */
 function render(entries: ChatEntry[], extra: Record<string, unknown> = {}): string {
@@ -310,13 +314,46 @@ describe('thinking', () => {
     ...over,
   })
 
-  test('the reasoning is in the DOM, and it is closed', () => {
-    const html = render([thinking()])
+  // Raw extended reasoning: long, multi-paragraph — the shape older models
+  // write when thinking is displayed in full.
+  const RAW = [
+    'Let me work through this carefully. 91 divided by 7 is 13 exactly, so it factors.',
+    'That settles primality; now the follow-up about 97: 97 is not divisible by 2, 3, 5, 7 — and 11² exceeds it, so 97 is prime.',
+    'I should answer both and note the method so the user can reuse it.',
+  ].join('\n\n')
+
+  test('raw reasoning is in the DOM, and it is closed', () => {
+    const html = render([thinking({ text: RAW })])
     expect(html).toContain('data-testid="chat-thinking"')
-    expect(html).toContain('91 is 7 × 13')
+    expect(html).toContain('91 divided by 7')
     // `<details>` renders `open` only when it IS open. The calm view is the
     // promise: one line high until somebody asks for the rest.
     expect(html).not.toMatch(/<details[^>]*\sopen\b/)
+  })
+
+  test('a SUMMARY reads inline — no chevron, visible without a click', () => {
+    // Fable 5-family `display: summarized` thinking: one narration sentence
+    // between tool calls. The terminal prints it as a plain line; so do we.
+    const html = render([
+      thinking({ text: 'Adding the address line under each trip, then checking the DB.', ts: 1_760_000_008 }),
+      { uuid: 'u1', ts: 1_760_000_000, text: 'Add the address line', kind: 'prompt' },
+    ])
+    expect(html).toContain('data-testid="chat-thinking"')
+    expect(html).toContain('data-summary')
+    expect(html).not.toContain('<details')
+    const out = text(html)
+    expect(out).toContain('Adding the address line under each trip')
+    expect(out).toContain('8s')
+    expect(out).not.toMatch(/Thought for/)
+  })
+
+  test('the summary rule: short + one paragraph is a summary, long or multi-paragraph is not', () => {
+    expect(isThinkingSummary('One quick sentence.')).toBe(true)
+    expect(isThinkingSummary('')).toBe(false)
+    expect(isThinkingSummary('   ')).toBe(false)
+    expect(isThinkingSummary(RAW)).toBe(false)
+    expect(isThinkingSummary('x'.repeat(THINKING_SUMMARY_MAX_CHARS + 1))).toBe(false)
+    expect(isThinkingSummary('x'.repeat(THINKING_SUMMARY_MAX_CHARS))).toBe(true)
   })
 
   test('“Thought for Ns” is measured from the row above, never guessed', () => {
@@ -324,7 +361,7 @@ describe('thinking', () => {
     // thinking block complete at t+8.
     const out = text(
       render([
-        thinking({ ts: 1_760_000_008 }),
+        thinking({ text: RAW, ts: 1_760_000_008 }),
         { uuid: 'u1', ts: 1_760_000_000, text: 'Is 91 prime?', kind: 'prompt' },
       ]),
     )
@@ -332,7 +369,7 @@ describe('thinking', () => {
   })
 
   test('…and with nothing above it to measure from, it claims nothing', () => {
-    const out = text(render([thinking()]))
+    const out = text(render([thinking({ text: RAW })]))
     expect(out).toContain('Thought')
     expect(out).not.toMatch(/Thought for/)
   })
