@@ -5040,6 +5040,155 @@ $ ";
 }
 
 #[cfg(test)]
+mod company_confinement_gate_tests {
+    //! **HQ / main agents are NEVER confined.** The one-fact gate is
+    //! `company_id IS NULL`: [`company_confinement`] returns `Ok(None)` for a
+    //! main / PA / tech-admin bot, so `ConfinePlan::apply_in_child` is never
+    //! reached and the agent keeps FULL access to the box — its own `~/.claude`,
+    //! every project, `~/.supermux`, the lot.
+    //!
+    //! This is an owner constraint, not an implementation detail, and the
+    //! narrowed `SandboxSpec::for_company` allow-list makes it worth pinning:
+    //! everything that PR tightened lives behind this gate, so a future edit that
+    //! moved the jail up one level (confining every session, or gating on
+    //! something other than `company_id`) would silently break HQ. The positive
+    //! control in the same test proves the `None` is the GATE talking and not a
+    //! disabled sandbox: a session WITH a `company_id` does get a plan.
+    use super::*;
+
+    fn cfg(data_dir: std::path::PathBuf) -> crate::config::Config {
+        crate::config::Config {
+            data_dir,
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "t".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            swarm_reaper: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            // The DEFAULT mode, so the `None` below can only come from the
+            // company_id gate — never from `isolation_mode = off`.
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
+            extra_origins: Vec::new(),
+        }
+    }
+
+    fn session(name: &str, dir: &str, company_id: Option<i64>) -> Session {
+        Session {
+            name: name.into(),
+            display_name: name.into(),
+            dir: dir.into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            flags: String::new(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+            company_id,
+            mark_pin: None,
+            runtime: "native".into(),
+            notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
+            role_id: None,
+            archive_on_stop: 0,
+            config_dir: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_hq_session_is_never_confined_while_a_company_session_is() {
+        let base = std::env::temp_dir().join(format!("supermux-hq-gate-{}", uuid::Uuid::new_v4()));
+        let data_dir = base.join("data");
+        let hq_dir = base.join("hq");
+        let company_root = base.join("acme");
+        for d in [&data_dir, &hq_dir, &company_root] {
+            std::fs::create_dir_all(d).expect("mk dir");
+        }
+        let config = cfg(data_dir.clone());
+        let pool = crate::db::init(&config).await.expect("init pool");
+        let state = AppState::new(pool, config);
+
+        // ── HQ / main / PA / tech-admin: company_id NULL ⇒ NO plan, ever. ──
+        let hq = session("hq", hq_dir.to_str().unwrap(), None);
+        let plan = company_confinement(&state, &hq, "hq")
+            .await
+            .expect("the gate must not error");
+        assert!(
+            plan.is_none(),
+            "an HQ / main agent (company_id NULL) must NEVER be confined — it \
+             keeps full access to the box (owner constraint)",
+        );
+
+        // ── positive control: a COMPANY session does get one. ──
+        let company = crate::db::companies::create(
+            &state.pool,
+            "acme",
+            "Acme",
+            company_root.to_str().unwrap(),
+        )
+        .await
+        .expect("create company");
+        let member = session("bot", company_root.to_str().unwrap(), Some(company.id));
+        let plan = company_confinement(&state, &member, "bot")
+            .await
+            .expect("the company path must not error");
+        if state.isolation.confinement_usable() {
+            assert!(
+                plan.is_some(),
+                "a company session MUST get a confinement plan — otherwise the \
+                 HQ assertion above proves nothing (the sandbox would just be off)",
+            );
+        } else {
+            // A host whose startup self-test says a confined child cannot boot
+            // (no Landlock, or a seccomp-blocked one) fails OPEN by design: the
+            // company bot starts unconfined. Nothing to control against there.
+            eprintln!(
+                "confinement not usable on this host; skipping the company-session \
+                 positive control"
+            );
+        }
+
+        // The company grant pre-creates this session's own Claude project dir in
+        // the REAL Claude home — remove it again.
+        let _ = std::fs::remove_dir_all(crate::sessions::resumable::project_dir_for(
+            "",
+            company_root.to_str().unwrap(),
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
 mod build_env_tests {
     //! `build_env` injects the per-pane tmux environment. These pin the two
     //! Claude-only escape hatches that fix browser-terminal regressions:
