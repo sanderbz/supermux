@@ -36,6 +36,7 @@ import {
   sanitiseText,
   toChatEntries,
   toolLine,
+  transcriptFreshMs,
   truncatedUuids,
 } from '../../src/components/chat/wire-entries'
 
@@ -579,5 +580,96 @@ describe('thinking entries', () => {
       block({ uuid: 'a1', kind: 'assistant', truncated: true, body: { text: 'long…' } }),
     ]
     expect(truncatedUuids(wire, 12)).toEqual(['a1'])
+  })
+})
+
+/* ── the transcript plane's own clock (cc 2.1.25x background agents) ─────── */
+
+describe('transcriptFreshMs', () => {
+  /** A wire entry, reduced to the two fields this clock reads. */
+  const w = (ts_ms: number, agent_id?: string): WireEntry =>
+    ({ ...ENTRY_JSON, ts_ms, ...(agent_id ? { agent_id } : {}) }) as unknown as WireEntry
+
+  test('a subagent-only stretch still moves the clock', () => {
+    // THE REPORTED BUG, as arithmetic. A turn launches a background agent and
+    // goes quiet; for as long as that agent runs the ONLY confirmed traffic is
+    // its own, and `toChatEntries` draws none of it. Measured live on cc 2.1.258
+    // (2026-09-02): entries confirmed 2 s ago, rendered clock 12 s behind, so
+    // the "Live terminal · unconfirmed" card came up over a current transcript
+    // and re-showed prose the reader could already see confirmed above it.
+    const renderedTs = 1_788_339_231 // the last MAIN entry, in seconds
+    const wire = [w(renderedTs * 1000), w(1_788_339_241_000, 'a1b2c3')]
+    expect(transcriptFreshMs(wire, renderedTs)).toBe(1_788_339_241_000)
+    // …which is what the card is gated on: 10 s of apparent lag, gone.
+    const now = 1_788_339_243_000
+    expect(now - renderedTs * 1000 > 5_000).toBe(true) // before
+    expect(now - transcriptFreshMs(wire, renderedTs) > 5_000).toBe(false) // after
+  })
+
+  test('a genuinely stalled plane is still reported as behind', () => {
+    // The card is the honest fallback and this must not blind it: with nothing
+    // confirmed for a minute the reading is unchanged.
+    const renderedTs = 1_788_339_180
+    const wire = [w(renderedTs * 1000)]
+    const now = 1_788_339_243_000
+    expect(now - transcriptFreshMs(wire, renderedTs)).toBe(63_000)
+  })
+
+  test('the pointer lines Claude Code writes last carry no clock', () => {
+    // `custom-title` / `mode` / `atis-latch` are appended AFTER most turns with
+    // `ts_ms: 0`. Reading the end of the array would report the plane as 56
+    // years behind; the scan walks back to the newest entry that has a clock.
+    const wire = [w(1_788_339_241_000), w(0), w(0), w(0)]
+    expect(transcriptFreshMs(wire, 0)).toBe(1_788_339_241_000)
+  })
+
+  test('a paged-in backlog entry newer than the socket window still wins', () => {
+    expect(transcriptFreshMs([w(1_000)], 5)).toBe(5_000)
+  })
+
+  test('an empty window reports the rendered clock, and never a negative one', () => {
+    expect(transcriptFreshMs([], 0)).toBe(0)
+  })
+})
+
+/* ── harness-injected user lines are notices, not prompts ────────────────── */
+
+describe('the harness rows cc 2.1.25x background agents produce', () => {
+  const sys = (label: string, body: unknown): WireEntry =>
+    ({ ...ENTRY_JSON, seq: 1, uuid: 'u1', kind: 'system', label, body }) as unknown as WireEntry
+
+  test('a finished background agent reads as one calm line, not raw XML', () => {
+    const [row] = toChatEntries([
+      sys('agent_notification', {
+        notice: 'A background agent finished',
+        summary: 'Agent "Count words in note file" finished',
+        status: 'completed',
+        content: '<task-notification>\n<task-id>a1b2c3</task-id>\n…',
+        task_notification: true,
+      }),
+    ])
+    expect(row.kind).toBe('background-agent')
+    expect(row.text).toBe('Agent "Count words in note file" finished')
+    // …and it is NOT a message from the person sitting in front of the app.
+    expect(row.kind).not.toBe('user')
+  })
+
+  test('a non-completed agent says so', () => {
+    const [row] = toChatEntries([
+      sys('agent_notification', { summary: 'Agent "Draft the answer" finished', status: 'failed' }),
+    ])
+    expect(row.text).toBe('Agent "Draft the answer" finished · failed')
+  })
+
+  test('with no summary the row still states the fact', () => {
+    const [row] = toChatEntries([sys('agent_notification', { status: 'completed' })])
+    expect(row.text).toBe('a background agent finished')
+  })
+
+  test('any other harness injection shows its first line, never a page of one', () => {
+    const [row] = toChatEntries([
+      sys('harness_notice', { content: 'Caveat: the messages below…\nand four\nmore\nlines' }),
+    ])
+    expect(row.text).toBe('Caveat: the messages below…')
   })
 })

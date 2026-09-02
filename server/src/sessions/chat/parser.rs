@@ -376,7 +376,26 @@ fn user_block(line: &Map<String, Value>, base: &Header, i: usize, b: &Value) -> 
                 Some(hint) => {
                     base.entry_at(i, Kind::System, grace_body(text, hint), Some("limit_grace"))
                 }
-                None => base.entry_at(i, Kind::Prompt, text_body(b, "text"), None),
+                // THE FLAG HALF, at last (`recall.rs::classify_user` step 5).
+                //
+                // A user-role line whose `promptSource` is `"system"` was
+                // INJECTED BY THE HARNESS. Nobody typed it, and the live chat
+                // plane — unlike the older history plane, which has read this
+                // flag for as long as `classify_user` has existed — read it as a
+                // prompt and put Claude Code's own plumbing in the user's mouth.
+                //
+                // Claude Code 2.1.25x made that visible every time a background
+                // agent finishes: it writes a `type:"user"` line with
+                // `promptSource:"system"`, `origin:{kind:"task-notification"}`
+                // and a `<task-notification>…</task-notification>` XML body, and
+                // the chat drew that raw envelope as a message from the human
+                // sitting in front of it. The terminal renders the same event as
+                // one calm line (`● Agent "…" finished · 1m 45s`), which is what
+                // this row is for.
+                None => match harness_notice(line, text) {
+                    Some((label, body)) => base.entry_at(i, Kind::System, body, Some(label)),
+                    None => base.entry_at(i, Kind::Prompt, text_body(b, "text"), None),
+                },
             }
         }
         "tool_result" => {
@@ -654,6 +673,125 @@ fn grace_body(text: &str, hint: &'static str) -> Value {
         "limit_grace": true,
         "blocked": false,
     })
+}
+
+/// A user-role line the HARNESS wrote, not the human — the flag half of
+/// `recall.rs::classify_user` (step 5), ported to the live chat plane.
+///
+/// Returns `(label, body)` for a line to be published as [`Kind::System`], or
+/// `None` for a real prompt.
+///
+/// TWO SIGNALS, EITHER ONE SUFFICIENT, because Claude Code sets them in
+/// different releases: `promptSource: "system"` (present since ~2.1.20x) and
+/// `origin: {kind: "…"}` (2.1.24x+). `origin.kind: "human"` is the harness
+/// saying a person typed it, so it is never a notice; every other non-human
+/// origin is plumbing.
+///
+/// SUPERMUX'S OWN WRAPPERS ARE NEVER SWALLOWED. A delegation, a colleague's
+/// message and a scheduled fire are all typed into the pty, so Claude Code
+/// stamps them `promptSource: "typed"` and they never reach here — but the
+/// refusal is written down rather than assumed, because a future send path that
+/// injected instead of typing would otherwise make every teammate message
+/// vanish into a grey system row. `classify_by_wrapper` outranking the system
+/// bucket is exactly the shape `recall.rs` already has.
+fn harness_notice(line: &Map<String, Value>, text: &str) -> Option<(&'static str, Value)> {
+    let origin_kind = line
+        .get("origin")
+        .and_then(Value::as_object)
+        .and_then(|o| str_at(o, &["kind"]));
+    // AN ORIGIN THAT NAMES A SPEAKER IS NEVER PLUMBING, whatever else the line
+    // says. `human` is Claude Code stating a person typed it; `peer` is ANOTHER
+    // CLAUDE SESSION's message, which arrives as `Another Claude session sent a
+    // message:` + `<teammate-message>` blocks and is this app's whole bot-mode
+    // group chat (`wire-entries.ts` intercepts it as `teammate`/`coordination`
+    // rows before `classifyPrompt` ever runs). Observed on this host carrying
+    // `isMeta: true` and NO `promptSource` — so an arm that keyed on "any
+    // non-human origin" would have turned every teammate message into a grey
+    // notice. The allow-list is inverted for exactly that reason: only signals
+    // that positively mean HARNESS count.
+    if matches!(origin_kind, Some("human") | Some("peer")) {
+        return None;
+    }
+    let system_source = str_at(line, &["promptSource", "prompt_source"]) == Some("system");
+    let task_notification = origin_kind == Some("task-notification")
+        || text.trim_start().starts_with("<task-notification");
+    if !system_source && !task_notification {
+        return None;
+    }
+    // …and neither is a line that speaks FOR somebody: supermux's own
+    // authorship wrappers, and the cross-session envelope above.
+    if speaks_for_somebody(text) {
+        return None;
+    }
+    if task_notification {
+        return Some(("agent_notification", task_notification_body(text)));
+    }
+    Some((
+        "harness_notice",
+        serde_json::json!({
+            "notice": "Claude Code injected this into the conversation",
+            "content": text.trim(),
+            "level": "info",
+            "origin": origin_kind,
+        }),
+    ))
+}
+
+/// Does `text` carry an AUTHORSHIP claim — somebody's message, wrapped?
+///
+/// Two families, both of which outrank the harness bucket:
+///   · supermux's own `<supermux-delegation>` / `<supermux-human>` /
+///     `<supermux-schedule>` wrappers, which are the only thing standing between
+///     a colleague's name and a faceless row, and
+///   · Claude Code's cross-session envelope (`Another Claude session sent a
+///     message:` + `<teammate-message>` / `<cross-session-message>` blocks) —
+///     the transport this app's company group chat runs on.
+///
+/// `recall.rs::classify_user` reaches the same verdict by letting
+/// `classify_by_wrapper` outrank `promptSource: "system"`; this is that rule,
+/// stated for the live plane.
+fn speaks_for_somebody(text: &str) -> bool {
+    if crate::agents::delegate::wrapper_markup(text) {
+        return true;
+    }
+    let head = &text[..text.len().min(4096)];
+    head.contains("<teammate-message")
+        || head.contains("<cross-session-message")
+        || head.contains("Another Claude session sent a message")
+}
+
+/// The wire body of a background-agent completion notice.
+///
+/// The XML envelope is Claude Code's message TO THE MODEL — an id, a path, a
+/// status and a one-line summary — and the only parts a reader wants are the
+/// last two. They are pulled out defensively (a missing or reshaped tag simply
+/// goes absent) and the raw envelope is kept alongside them, so a build that
+/// renames a tag degrades to "the notice, verbatim" rather than to nothing.
+fn task_notification_body(text: &str) -> Value {
+    let mut body = serde_json::json!({
+        "notice": "A background agent finished",
+        "content": text.trim(),
+        "level": "info",
+        "task_notification": true,
+    });
+    for (tag, key) in [("summary", "summary"), ("status", "status"), ("task-id", "task_id")] {
+        if let Some(v) = xml_tag(text, tag) {
+            body[key] = Value::String(v);
+        }
+    }
+    body
+}
+
+/// The text between `<tag>` and `</tag>`, trimmed. First occurrence only, and
+/// `None` for anything that is not a well-formed pair — this reads a fixed
+/// envelope, it is not an XML parser.
+fn xml_tag(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    let inner = text[start..end].trim();
+    (!inner.is_empty()).then(|| inner.to_string())
 }
 
 /// The uuids a system line says are withdrawn, as a non-empty array of strings.
@@ -1477,5 +1615,223 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── background agents on Claude Code 2.1.25x ────────────────────────────
+    //
+    // Every line in `background-agent.jsonl` was captured live on this host on
+    // 2026-09-02 from cc 2.1.258, driving a real session through
+    // `POST /api/sessions/{name}/send`, and anonymized the way the rest of the
+    // corpus is (paths, ids and the conversation uuid are synthetic; every
+    // enum-like value, key and shape is verbatim).
+
+    /// THE `task-notification` IS NOT A PROMPT.
+    ///
+    /// This is the line that put Claude Code's plumbing in the user's mouth: a
+    /// `type:"user"` record carrying a `<task-notification>` XML envelope, which
+    /// the live chat plane drew as a message from the human. Claude Code marks it
+    /// twice — `promptSource: "system"` and `origin: {kind: "task-notification"}`
+    /// — and `recall.rs::classify_user` has read the first of those for years.
+    #[test]
+    fn task_notification_is_a_system_row_not_a_user_prompt() {
+        let line = fixture("background-agent.jsonl")
+            .lines()
+            .find(|l| l.contains("task-notification"))
+            .expect("fixture carries the notification line")
+            .to_string();
+        let ParsedLine::Entry(entries) = parse_line(&line, 0) else {
+            panic!("notification line must parse");
+        };
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.kind, Kind::System, "a harness injection is never a prompt");
+        assert_eq!(e.label.as_deref(), Some("agent_notification"));
+        // The two fields a reader wants, lifted out of the envelope…
+        assert_eq!(
+            e.body["summary"].as_str(),
+            Some("Agent \"Count words in note file\" finished")
+        );
+        assert_eq!(e.body["status"].as_str(), Some("completed"));
+        // …and the envelope kept whole underneath them.
+        assert!(e.body["content"].as_str().unwrap().starts_with("<task-notification>"));
+    }
+
+    /// The rest of the turn is untouched: the `Agent` call and its launch
+    /// receipt are an ordinary `tool_use`/`tool_result` pair, and BOTH confirm.
+    /// This is the half of the reported bug that turned out to be sound, and it
+    /// is pinned so a later change to the notification arm cannot break it.
+    #[test]
+    fn a_backgrounded_agent_call_confirms_as_tool_use_and_result() {
+        let lines: Vec<String> = fixture("background-agent.jsonl")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let ParsedLine::Entry(call) = parse_line(&lines[0], 0) else {
+            panic!("tool_use line must parse")
+        };
+        assert_eq!(call[0].kind, Kind::ToolUse);
+        assert_eq!(call[0].label.as_deref(), Some("Agent"));
+        // `caller` is new on the block in 2.1.25x and must not disturb the id.
+        assert_eq!(call[0].tool_use_id.as_deref(), Some("toolu_01AAAAAAAAAAAAAAAAAAAAAA"));
+
+        let ParsedLine::Entry(receipt) = parse_line(&lines[1], 0) else {
+            panic!("tool_result line must parse")
+        };
+        assert_eq!(receipt[0].kind, Kind::ToolResult);
+        assert_eq!(receipt[0].ok, Some(true));
+        assert_eq!(receipt[0].tool_use_id.as_deref(), Some("toolu_01AAAAAAAAAAAAAAAAAAAAAA"));
+    }
+
+    /// `origin.kind: "human"` is Claude Code SAYING a person typed it, so it
+    /// outranks everything: a prompt that happens to open with `<` is still a
+    /// prompt. Without this the flag half would swallow real messages.
+    #[test]
+    fn origin_human_is_always_a_prompt() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "u-human",
+            "origin": { "kind": "human" },
+            "message": { "role": "user", "content": "<not-a-tag> just a message" },
+        });
+        let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(entries[0].kind, Kind::Prompt);
+    }
+
+    /// SUPERMUX'S OWN WRAPPERS SURVIVE. A delegation, a colleague's message and
+    /// a scheduled fire are AUTHORSHIP CLAIMS this surface renders as people;
+    /// swallowing one into a grey harness row would erase the sender. They are
+    /// typed into the pty (so cc stamps them `"typed"` and they never reach the
+    /// arm at all) — this pins the refusal anyway, because the day a send path
+    /// injects instead of typing is not the day to discover it.
+    #[test]
+    fn a_supermux_wrapper_is_never_swallowed_by_the_harness_arm() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "u-wrap",
+            "promptSource": "system",
+            "message": {
+                "role": "user",
+                "content": "<supermux-human from=\"sam\">hello</supermux-human>",
+            },
+        });
+        let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(entries[0].kind, Kind::Prompt, "authorship wrappers stay prompts");
+    }
+
+    /// A CROSS-SESSION TEAMMATE MESSAGE IS SOMEBODY SPEAKING.
+    ///
+    /// Claude Code delivers another session's message as a user-role line with
+    /// `origin:{kind:"peer"}` and `isMeta:true` — and, on this host's corpus, NO
+    /// `promptSource` at all. It is the transport this app's company group chat
+    /// runs on: `wire-entries.ts` intercepts the envelope and renders
+    /// `teammate`/`coordination` rows from it. An arm that read "any non-human
+    /// origin is plumbing" would have turned every teammate message into a grey
+    /// harness notice — a whole feature, silently faceless. Pinned both ways:
+    /// by the origin, and by the envelope on its own.
+    #[test]
+    fn a_cross_session_teammate_message_is_never_a_harness_notice() {
+        for line in [
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u-peer",
+                "isMeta": true,
+                "origin": { "kind": "peer", "name": "keuze-agent" },
+                "message": {
+                    "role": "user",
+                    "content": "Another Claude session sent a message:\n<teammate-message teammate_id=\"keuze-agent\">{}</teammate-message>",
+                },
+            }),
+            // The same envelope, this time WITH the system stamp — the belt to
+            // the origin's braces.
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u-peer2",
+                "promptSource": "system",
+                "message": {
+                    "role": "user",
+                    "content": "Another Claude session sent a message:\n<teammate-message teammate_id=\"keuze-agent\">{}</teammate-message>",
+                },
+            }),
+        ] {
+            let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+                panic!("must parse")
+            };
+            assert_eq!(
+                entries[0].kind,
+                Kind::Prompt,
+                "a teammate's message must reach the coordination arm intact",
+            );
+        }
+    }
+
+    /// A `promptSource: "system"` line with no recognised envelope is still not
+    /// a prompt — it is a notice, and it says so.
+    #[test]
+    fn a_bare_system_injection_becomes_a_harness_notice() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "u-inj",
+            "promptSource": "system",
+            "message": { "role": "user", "content": "Caveat: the messages below were generated…" },
+        });
+        let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(entries[0].kind, Kind::System);
+        assert_eq!(entries[0].label.as_deref(), Some("harness_notice"));
+    }
+
+    /// THE GRACE WINDOW KEEPS ITS OWN NAME. It is also a system injection, and
+    /// it also carries `promptSource: "system"` — but it has a reset clause and
+    /// a renderer arm of its own, so the more specific arm must win.
+    #[test]
+    fn the_grace_window_still_outranks_the_generic_harness_arm() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "u-grace",
+            "promptSource": "system",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "[Usage limit reached — grace window active. Wrap up your current work.]",
+                }],
+            },
+        });
+        let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(entries[0].kind, Kind::System);
+        assert_eq!(entries[0].label.as_deref(), Some("limit_grace"));
+    }
+
+    /// An unknown assistant BLOCK type never stalls the line or swallows its
+    /// siblings: it becomes an addressable `unknown` entry beside them. cc keeps
+    /// inventing these (`fallback`, and whatever a patch release adds next).
+    #[test]
+    fn an_unknown_block_type_is_kept_beside_its_siblings() {
+        let line = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a-mixed",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    { "type": "fallback", "from": { "model": "claude-fable-5" }, "to": { "model": "claude-opus-5" } },
+                    { "type": "text", "text": "and here is the answer" },
+                ],
+            },
+        });
+        let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+            panic!("must parse")
+        };
+        assert_eq!(entries.len(), 2, "the unknown block must not eat the text one");
+        assert_eq!(entries[0].kind, Kind::Unknown);
+        assert_eq!(entries[0].label.as_deref(), Some("fallback"));
+        assert_eq!(entries[1].kind, Kind::Assistant);
+        assert_eq!(entries[1].body["text"].as_str(), Some("and here is the answer"));
     }
 }

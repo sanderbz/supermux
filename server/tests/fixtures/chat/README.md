@@ -17,7 +17,7 @@ structure against the (private, not-checked-in) source lines, regenerates the
 anonymization byte-for-byte, and runs a forbidden-substring privacy scan.
 41/41 lines pass as of 2026-08-13.
 
-**Claude Code versions**: captured across 2.1.211 → 2.1.231 (the deployed CLI
+**Claude Code versions**: captured across 2.1.211 → 2.1.231 (plus `background-agent.jsonl`, captured 2026-09-02 on **2.1.258**) (the deployed CLI
 auto-updated from 2.1.227 to 2.1.231 during capture on 2026-08-13; the live
 probe session that produced the `subagents/` pair ran 2.1.231). Each entry that
 carries a `version` field states its true source version — see the table.
@@ -60,6 +60,9 @@ marked `—`.
 | file-history.jsonl:3 | `file-history-delta` (`trackingPath`, `backup`) | — |
 | subagents/agent-a03a3cf7ef12532dc.jsonl (8 lines) | full subagent transcript: `isSidechain:true`, `agentId`, user/assistant/attachment lines | 2.1.231 |
 | subagents/agent-a03a3cf7ef12532dc.meta.json | subagent meta: `agentType`, `description`, `toolUseId`, `spawnDepth` | 2.1.231 capture |
+| background-agent.jsonl:1 | assistant, `tool_use` **Agent** with the 2.1.25x `caller` field — a BACKGROUNDED subagent launch | 2.1.258 |
+| background-agent.jsonl:2 | user, `tool_result` — the async launch receipt (`Async agent launched successfully…`) | 2.1.258 |
+| background-agent.jsonl:3 | user, `promptSource:"system"` + `origin:{kind:"task-notification"}`, `<task-notification>` XML body — the completion notice Claude Code injects when a background agent finishes. **Not a prompt**; drawn as one it put CC's plumbing in the user's mouth | 2.1.258 |
 
 Notes for the parser:
 - **Assistant lines are single-block ~99.995% of the time, not 100%**: one live

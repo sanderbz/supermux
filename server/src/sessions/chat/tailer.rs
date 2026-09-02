@@ -1928,6 +1928,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A WHOLE BACKGROUND-AGENT TURN, from the live cc 2.1.258 corpus.
+    ///
+    /// The main file gets the `Agent` call, its launch receipt and — later — the
+    /// `task-notification` Claude Code injects when the agent finishes, with the
+    /// agent's own file streaming underneath the whole time. Every one of those
+    /// main lines must CONFIRM, and the notification must not confirm as a
+    /// prompt: that is the shape the owner reported as "shown only as Live
+    /// terminal · unconfirmed".
+    ///
+    /// An unknown top-level type is spliced into the middle on purpose. Claude
+    /// Code invents them every few releases (`atis-latch`, `cost-state`,
+    /// `pr-link`) and one that stalled the cursor would silently freeze the
+    /// transcript from that byte on — the failure mode this test is really for.
+    #[tokio::test]
+    async fn a_background_agent_turn_confirms_every_main_line() {
+        let dir = tmp_project("bgagent");
+        let f = dir.join("conv-a.jsonl");
+        let fixture = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/chat/background-agent.jsonl"),
+        )
+        .unwrap();
+        let real: Vec<String> = fixture
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(real.len(), 3, "fixture: tool_use, tool_result, notification");
+
+        let unknown = r#"{"type":"atis-latch","atis":"","sessionId":"s1"}"#.to_string();
+        append(&f, &[real[0].clone(), real[1].clone(), unknown, real[2].clone()]);
+        let sub = dir.join("conv-a").join("subagents").join("agent-a1b2c3d4e5f60718a.jsonl");
+        append(&sub, &[sidechain_line("s1", None)]);
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        let poll = t.poll();
+        use crate::sessions::chat::model::Kind;
+        let kinds: Vec<Kind> = poll.entries.iter().map(|e| e.kind).collect();
+        // Subagent first, then the four main lines in file order.
+        assert_eq!(
+            kinds,
+            vec![Kind::Prompt, Kind::ToolUse, Kind::ToolResult, Kind::Unknown, Kind::System],
+        );
+        assert_eq!(poll.entries[0].agent_id.as_deref(), Some("a1b2c3d4e5f60718a"));
+        assert_eq!(poll.entries[1].label.as_deref(), Some("Agent"));
+        // THE LINE THE BUG WAS ABOUT: a system notice, never a prompt.
+        let notice = poll.entries.last().unwrap();
+        assert_eq!(notice.label.as_deref(), Some("agent_notification"));
+        assert!(!notice.is_sidechain);
+
+        // The cursor is intact past the unknown line: the next append arrives.
+        append(&f, &[user_line("after")]);
+        assert_eq!(uuids(&t.poll().entries), ["after"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn sidechain_lines_in_the_main_file_are_dropped_not_double_counted() {
         // They are re-read, with their agent id, from `subagents/`.

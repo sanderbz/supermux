@@ -17,6 +17,7 @@ this page, in its filename, or both — never silently.
 | `composer-idle.txt` | Same live launch, after `/clear`. Same two redactions. Holds the **`❯` collision** A0 warns about: the echoed `❯ /clear` in scrollback sits above an *empty* composer. |
 | `composer-draft.txt` | Same live session with `half a thought` typed and **not** submitted. Same two redactions. |
 | `composer-draft-ansi.txt` | The same frame, ANSI-preserved (`tmux capture-pane -p -e`). Proves the lens strips SGR before matching. |
+| `cc258-background-agent-panel.txt` | **Captured live** here, 2026-09-02, Claude Code **v2.1.258**, throwaway session in `/tmp`, driven through `POST /api/sessions/{name}/send` and read back with `GET …/peek?ansi=1`, 80 cols. The only edit is the session slug (→ `probe-cc258`), which appears in the composer's TITLED top rule. Holds three shapes at once: the titled rule (`──── probe-cc258 ─`) that stopped `RULE_ROW` matching the composer, the BACKGROUND-AGENT MANAGER PANEL Claude Code paints below it (`● main` / `◯ general-purpose … · ↓ 25.8k tokens`), and a soft-WRAPPED prompt echo whose continuation rows carry no `❯`. All three rendered as "Live terminal · unconfirmed" prose before the fix. |
 
 ## Two facts these captures pinned that A0 did not have
 
