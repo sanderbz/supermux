@@ -616,6 +616,45 @@
   padding-top: env(safe-area-inset-top);
 }
 
+/* ── Sticky route chrome: ONE rung for every page header ────────────────────
+   Route chrome that sticks over its own scroller — a page header, or the
+   equivalent pinned footer in a sheet — MUST sit on the
+   `--sm-z-header` rung (30) — above `--sm-z-content` (10), the rung in-flow
+   page content is allowed to use.
+
+   Every shipped page header instead carried a bare `z-10`, which does not sit
+   above content, it TIES with it. A tie is broken by tree order, and page
+   content always comes after the header in the tree, so any card that layers
+   its own rows at `z-10` (the store cards stack their content over a
+   full-bleed hit target that has to sit underneath) painted straight THROUGH
+   the header while the list scrolled: title, search field and tabs interleaved
+   with card icons and Connect buttons. Measured on a 1440x900 desktop with the
+   shell's <main> scrolled 450px, 9 of 54 hit-test points inside the /store
+   header band were owned by a card; 0 of 54 after.
+
+   `isolation: isolate` makes the header its own stacking context, so its
+   internal layering is self-contained and it is stacked as ONE unit at 30 —
+   a child of the header can never be out-stacked from outside it either.
+
+   Apply to the sticky element itself. It only sets the rung, so the chrome
+   keeps its own `sticky top-*` / `bottom-*`, padding, background and blur. */
+@utility sm-page-header {
+  z-index: var(--sm-z-header);
+  isolation: isolate;
+}
+
+/* The scroll body a `sm-page-header` sticks over. `isolation: isolate` traps
+   EVERY z-index the page content uses inside this box, so no card, row or
+   popover in the list can reach the header's rung no matter what it does
+   internally — the containment half of the same fix, so a future card is
+   correct by construction instead of by remembering the ladder. Content still
+   sits on its own `--sm-z-content` rung relative to the header. */
+@utility sm-page-scroll {
+  position: relative;
+  z-index: var(--sm-z-content);
+  isolation: isolate;
+}
+
 /* ── Terminal touch-scroll ──────────────────────────────────────────────────
    xterm 6.0 has NO built-in touch-drag scroll: its VS Code scrollable element
    scrolls on WHEEL (desktop) but ignores one-finger touch drags, and its

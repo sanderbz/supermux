@@ -305,7 +305,7 @@ function ClaudeToolsBody({
               tool-registry tabs below. Hidden when there's no focused session OR
               the session isn't a Claude pane (modes are a Claude-only concept). */}
           {sessionName && <ModeSection name={sessionName} />}
-          <div className="sticky top-0 z-10 border-b border-border bg-background/90 px-4 pb-3 pt-3 backdrop-blur-sm sm:px-5">
+          <div className="sm-page-header sticky top-0 border-b border-border bg-background/90 px-4 pb-3 pt-3 backdrop-blur-sm sm:px-5">
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="mcp">MCP</TabsTrigger>
               <TabsTrigger value="skills">Skills</TabsTrigger>

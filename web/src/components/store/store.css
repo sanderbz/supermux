@@ -46,6 +46,26 @@
   background: var(--background);
 }
 
+/* A card is ONE layer in the page, never a set of loose layers.
+ *
+ * `.cs-card` is `position: relative` with no z-index, so it does NOT open a
+ * stacking context — and its internals do layer: a full-bleed `z-0` hit target
+ * under `z-10` content rows. Without a context of its own those child rungs
+ * escaped into the ROOT stacking context, where a card's `z-10` row tied with
+ * the sticky header's rung and won on tree order — cards scrolled straight
+ * through the header. `isolation: isolate` keeps that layering inside the card,
+ * where it belongs, so the card stacks as a single unit wherever it is used
+ * (page grid, bot-panel sheet, featured rail).
+ *
+ * Paired with `.sm-page-header` / `.sm-page-scroll` in globals.css: the header
+ * takes the rung it should always have had, and content is contained twice
+ * over — the ladder alone would work, but a future card that reaches for a
+ * bigger number would silently break it again. */
+.cs-card,
+.cs-featured {
+  isolation: isolate;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cs-card,
   .cs-featured,

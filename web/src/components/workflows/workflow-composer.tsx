@@ -426,7 +426,7 @@ export function ComposerBody({
       {/* pt reserves the iOS status-bar inset (0 off a notched standalone PWA),
           mirroring the other full-screen route headers; the bottom bar already
           has its `pb-safe` twin. */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-background/85 px-3 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] backdrop-blur sm:px-5 sm:pt-2">
+      <div className="sm-page-header sticky top-0 flex items-center gap-2 border-b border-border bg-background/85 px-3 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] backdrop-blur sm:px-5 sm:pt-2">
         <Link
           to={WORKFLOWS_ROUTE}
           aria-label="Back to workflows"
@@ -576,7 +576,7 @@ export function ComposerBody({
       </div>
 
       {/* the pinned footer — the validity line lives here, always */}
-      <div className="pb-safe sticky bottom-0 z-10 border-t border-border bg-background/95 px-3 py-2.5 backdrop-blur sm:px-5">
+      <div className="sm-page-header pb-safe sticky bottom-0 border-t border-border bg-background/95 px-3 py-2.5 backdrop-blur sm:px-5">
         {/* Stacked on a phone: three items in one row at 390px means the
             validity line gets four words, which is not enough for a sentence
             that has to NAME the problem. */}
