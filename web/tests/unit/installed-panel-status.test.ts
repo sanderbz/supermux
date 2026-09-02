@@ -4,8 +4,8 @@
  *   · `statusMeta`: `mcp_oauth && !has_secret` is "Needs sign-in" (was the
  *     terminal note); a `none` lane is Ready.
  *   · `noAccountMeta`: an installed row with `accounts: []` STILL gets a chip.
- *   · `preselectGrant`: a brokered card never opens on a disabled "Choose who
- *     gets it first" — the referring bot, else the active company, else All bots.
+ *   · `preselectGrant`: the referring bot, else the active company, else NOTHING
+ *     — a brokered sign-in must never default to `*` (every bot, every company).
  */
 import { describe, expect, test } from 'bun:test'
 
@@ -44,19 +44,20 @@ describe('statusMeta', () => {
 
 describe('preselectGrant', () => {
   const bots = [{ name: 'folderwijzer' }, { name: 'other' }]
+  const none = { allAgents: false, companyChosen: false, bots: [] }
   test('the referring bot wins', () => {
-    expect(preselectGrant({ isLibrary: true, isMcpOauth: true, activeCompany: 3, referrer: 'folderwijzer', bots })).toEqual({ allAgents: false, companyChosen: false, bots: ['folderwijzer'] })
+    expect(preselectGrant({ isLibrary: true, activeCompany: 3, referrer: 'folderwijzer', bots })).toEqual({ allAgents: false, companyChosen: false, bots: ['folderwijzer'] })
   })
-  test('else the active company, else All bots for a brokered card', () => {
-    expect(preselectGrant({ isLibrary: true, isMcpOauth: true, activeCompany: 3, referrer: null, bots })).toEqual({ allAgents: false, companyChosen: true, bots: [] })
-    expect(preselectGrant({ isLibrary: true, isMcpOauth: true, activeCompany: null, referrer: null, bots })).toEqual({ allAgents: true, companyChosen: false, bots: [] })
+  test('else the active company', () => {
+    expect(preselectGrant({ isLibrary: true, activeCompany: 3, referrer: null, bots })).toEqual({ allAgents: false, companyChosen: true, bots: [] })
   })
-  test('other lanes keep the deliberate empty default; a bot scope preselects nothing', () => {
-    expect(preselectGrant({ isLibrary: true, isMcpOauth: false, activeCompany: null, referrer: null, bots })).toEqual({ allAgents: false, companyChosen: false, bots: [] })
-    expect(preselectGrant({ isLibrary: false, isMcpOauth: true, activeCompany: null, referrer: 'folderwijzer', bots })).toEqual({ allAgents: false, companyChosen: false, bots: [] })
+  test('NEVER all-agents: no referrer and no company preselects nothing', () => {
+    expect(preselectGrant({ isLibrary: true, activeCompany: null, referrer: null, bots })).toEqual(none)
+    expect(preselectGrant({ isLibrary: true, activeCompany: null, referrer: 'ghost', bots })).toEqual(none)
   })
-  test('an unknown referrer is ignored', () => {
-    expect(preselectGrant({ isLibrary: true, isMcpOauth: true, activeCompany: null, referrer: 'ghost', bots }).allAgents).toBe(true)
+  test('a bot scope (not the library) preselects nothing', () => {
+    expect(preselectGrant({ isLibrary: false, activeCompany: null, referrer: 'folderwijzer', bots })).toEqual(none)
+    expect(preselectGrant({ isLibrary: false, activeCompany: 3, referrer: null, bots })).toEqual(none)
   })
   test('referringBot reads the focus and team routes', () => {
     expect(referringBot('/focus/folderwijzer')).toBe('folderwijzer')

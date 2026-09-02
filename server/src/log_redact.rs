@@ -50,6 +50,10 @@ const SECRET_QUERY_KEYS: &[&str] = &[
     "code_verifier",
     "code_challenge",
     "id_token",
+    // The callback URL carries `?code=…&state=…`: the state is the single-use
+    // handle that binds (and completes) one in-flight sign-in, so it is scrubbed
+    // beside the code rather than left readable in a would-be request line.
+    "state",
 ];
 
 /// Redact any secret-bearing substring from `input`.
@@ -217,5 +221,10 @@ mod tests {
         assert!(!is_secret_query_key("monkey"));
         assert!(!is_secret_query_key("path"));
         assert_eq!(redact("/x?monkey=ok"), "/x?monkey=ok");
+        // The brokered-OAuth callback line: BOTH halves of `?code=…&state=…` go.
+        assert_eq!(
+            redact("/api/oauth/callback?code=abc123&state=flowhandle&iss=https://as.example"),
+            format!("/api/oauth/callback?code={REDACTED}&state={REDACTED}&iss=https://as.example")
+        );
     }
 }

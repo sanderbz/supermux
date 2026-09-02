@@ -817,11 +817,39 @@ fn host_is_loopback(lowered: &str) -> bool {
     bare == "127.0.0.1" || bare == "::1" || bare == "localhost"
 }
 
+/// The scheme a fronting proxy declares in `X-Forwarded-Proto`: the FIRST value
+/// (RFC 7239 leaves the list left-to-right), lowercased, and ONLY when it is
+/// exactly `http` or `https`. Anything else — a third scheme, an injected list,
+/// junk — is `None` so the caller keeps its own rule.
+pub fn forwarded_scheme(raw: Option<&str>) -> Option<&'static str> {
+    let first = raw?.split(',').next()?.trim();
+    if first.eq_ignore_ascii_case("http") {
+        Some("http")
+    } else if first.eq_ignore_ascii_case("https") {
+        Some("https")
+    } else {
+        None
+    }
+}
+
 /// Derive the callback base (`scheme://host`) from the raw `Host` header, fail
 /// closed: the host must be a trusted owner transport (loopback / `*.ts.net` /
 /// `owner_hosts`) or a NON-ephemeral company host. `?host=` overrides and
 /// `X-Forwarded-Host` are never consulted.
-pub fn redirect_base(cfg: &crate::config::HumanAuthConfig, raw_host: Option<&str>) -> Result<String, AppError> {
+///
+/// The SCHEME is not guessed when the transport tells us: once the host has
+/// passed the allowlist above, `X-Forwarded-Proto` (which both `tailscale serve`
+/// and a Cloudflare tunnel set) decides it — otherwise a trusted transport that
+/// terminates in plain http could never complete a sign-in, because the callback
+/// URI we registered would name a scheme the browser never lands on. An
+/// untrusted host is refused before this point, so a forwarded header from one
+/// is never consulted at all; absent/unparseable, today's rule stands (http for
+/// loopback, https elsewhere).
+pub fn redirect_base(
+    cfg: &crate::config::HumanAuthConfig,
+    raw_host: Option<&str>,
+    forwarded_proto: Option<&str>,
+) -> Result<String, AppError> {
     let refuse = || AppError::BadRequest("sign-in is not available on this address".into());
     let raw = raw_host.map(str::trim).filter(|s| !s.is_empty()).ok_or_else(refuse)?;
     if raw.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\' || c == '@' || c == '?' || c == '#') {
@@ -833,7 +861,10 @@ pub fn redirect_base(cfg: &crate::config::HumanAuthConfig, raw_host: Option<&str
     if !trusted {
         return Err(refuse());
     }
-    let scheme = if host_is_loopback(&host) { "http" } else { "https" };
+    let guess = if host_is_loopback(&host) { "http" } else { "https" };
+    // `trusted` is true here by construction — the forwarded header is only ever
+    // honoured for a host that already cleared the same allowlist.
+    let scheme = forwarded_scheme(forwarded_proto).unwrap_or(guess);
     Ok(format!("{scheme}://{host}"))
 }
 
@@ -852,6 +883,10 @@ pub struct TokenResponse {
     pub expires_in: Option<u64>,
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
+    /// The OIDC id_token when the AS returned one. Kept ONLY to read its
+    /// `sub`/`email` claim as the account's stable identity key — never
+    /// verified, never trusted for authentication, never sealed.
+    pub id_token: Option<String>,
 }
 
 impl fmt::Debug for TokenResponse {
@@ -862,6 +897,7 @@ impl fmt::Debug for TokenResponse {
             .field("expires_in", &self.expires_in)
             .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
             .field("scope", &self.scope)
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -926,6 +962,11 @@ pub fn parse_token_response(status: u16, body: &[u8]) -> Result<TokenResponse, T
             expires_in,
             refresh_token: rt,
             scope: v.get("scope").and_then(Value::as_str).map(String::from),
+            id_token: v
+                .get("id_token")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && s.len() <= MAX_TOKEN_LEN)
+                .map(String::from),
         });
     }
     if (400..500).contains(&status) {
@@ -941,14 +982,16 @@ pub fn parse_token_response(status: u16, body: &[u8]) -> Result<TokenResponse, T
 #[derive(Clone)]
 pub enum FlowStage {
     Started,
-    Exchanged { tokens: TokenResponse, label: String },
+    Exchanged { tokens: TokenResponse, identity: Identity },
 }
 
 impl fmt::Debug for FlowStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FlowStage::Started => f.write_str("Started"),
-            FlowStage::Exchanged { label, .. } => f.debug_struct("Exchanged").field("label", label).finish(),
+            FlowStage::Exchanged { identity, .. } => {
+                f.debug_struct("Exchanged").field("label", &identity.label).finish()
+            }
         }
     }
 }
@@ -1133,7 +1176,10 @@ pub async fn start(
 
     // 3. redirect host (allowlisted, fail-closed) + return_to.
     let raw_host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-    let base = redirect_base(&state.human_auth_cfg(), raw_host)?;
+    // The fronting transport's own scheme (tailscale-serve / cloudflared set it);
+    // only honoured once the Host has cleared the allowlist inside redirect_base.
+    let fwd_proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok());
+    let base = redirect_base(&state.human_auth_cfg(), raw_host, fwd_proto)?;
     let redirect_uri = redirect_uri_for(&base);
     let return_to = validate_return_to(&body.return_to)?;
 
@@ -1370,12 +1416,12 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
             return error_redirect(&snap.return_to, "exchange");
         }
     };
-    let label = fetch_identity_label(&snap, &tokens.access_token, &policy).await;
+    let identity = fetch_identity(&snap, &tokens, &policy).await;
     // Stash (RAM only): Started → Exchanged in place.
     let mut ok = false;
     if let Some(mut f) = state.oauth_code_flows.get_mut(st) {
         if matches!(f.stage, FlowStage::Started) {
-            f.stage = FlowStage::Exchanged { tokens, label };
+            f.stage = FlowStage::Exchanged { tokens, identity };
             f.expires_at = now + FLOW_TTL_SECS;
             ok = true;
         }
@@ -1435,14 +1481,74 @@ async fn token_request(
     r
 }
 
-/// Best-effort NON-secret identity label: `userinfo` `email` ▷
-/// `preferred_username` ▷ `name` ▷ `sub`, else the resource host. Never fatal.
-pub async fn fetch_identity_label(flow: &CodeFlow, access_token: &str, policy: &UrlPolicy) -> String {
+/// Who signed in: the NON-secret display `label`, plus the provider's STABLE
+/// `key` when one can be read. The two are deliberately separate — the label is
+/// what the owner reads ("sander@acme.com", or the bare resource host when the
+/// provider exposes nothing), the key is what the ACCOUNT ROW is deduped on.
+/// Keying on the label alone collapsed two identities into one account (the
+/// second sign-in re-pointed the shared secret under the first one's grants).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Identity {
+    pub label: String,
+    /// `sub` ▷ `id` ▷ `email` from userinfo, else the same out of the id_token.
+    /// `None` when the provider gives us nothing stable to key on.
+    pub key: Option<String>,
+}
+
+/// The stable subject in a userinfo / id_token claims object: `sub` ▷ `id` ▷
+/// `email`. A numeric `id` (GitHub-shaped) counts. Clamped like a label.
+pub fn identity_key_of(v: &Value) -> Option<String> {
+    ["sub", "id", "email"].iter().find_map(|k| {
+        let c = v.get(*k)?;
+        let raw = match c {
+            Value::String(s) => s.trim().to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => return None,
+        };
+        let clamped = clamp_label(&raw);
+        (!clamped.trim().is_empty()).then_some(clamped)
+    })
+}
+
+/// The claims of a JWT, decoded WITHOUT verification. The id_token here rides a
+/// direct, TLS-pinned, PKCE-bound response from the token endpoint we just
+/// discovered, and its claims are used for exactly one thing: an opaque dedup key
+/// for the account row. Nothing is authenticated on the strength of it, so no
+/// signature check is implied — and a malformed token simply yields `None`.
+fn jwt_claims(token: &str) -> Option<Value> {
+    if token.len() > MAX_TOKEN_LEN {
+        return None;
+    }
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Best-effort identity: the `userinfo` document when the AS advertises one
+/// (`email` ▷ `preferred_username` ▷ `name` ▷ `sub` for the label, `sub` ▷ `id`
+/// ▷ `email` for the key), else the id_token's claims, else the resource host as
+/// a label with NO key. Never fatal — a sign-in is never blocked on it.
+pub async fn fetch_identity(flow: &CodeFlow, tokens: &TokenResponse, policy: &UrlPolicy) -> Identity {
+    // The id_token's claims are the floor: they stand in when userinfo is absent
+    // or unusable, and they never override a live userinfo answer.
+    let from_id_token = tokens.id_token.as_deref().and_then(jwt_claims);
     let fallback = || {
-        Url::parse(&flow.resource)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_string))
-            .unwrap_or_else(|| flow.connector_id.clone())
+        let key = from_id_token.as_ref().and_then(identity_key_of);
+        let label = from_id_token
+            .as_ref()
+            .and_then(|v| {
+                ["email", "preferred_username", "name", "sub"]
+                    .iter()
+                    .find_map(|k| v.get(*k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()))
+                    .map(clamp_label)
+            })
+            .unwrap_or_else(|| {
+                Url::parse(&flow.resource)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                    .unwrap_or_else(|| flow.connector_id.clone())
+            });
+        Identity { label, key }
     };
     let Some(ep) = flow.userinfo_endpoint.as_deref() else { return fallback() };
     let Ok(url) = policy.parse(ep) else { return fallback() };
@@ -1450,7 +1556,7 @@ pub async fn fetch_identity_label(flow: &CodeFlow, access_token: &str, policy: &
     let fut = client
         .get(url)
         .header(header::ACCEPT, "application/json")
-        .bearer_auth(access_token)
+        .bearer_auth(&tokens.access_token)
         .send();
     let Ok(Ok(resp)) = tokio::time::timeout(Duration::from_secs(5), fut).await else { return fallback() };
     let Ok(b) = bounded(resp).await else { return fallback() };
@@ -1458,12 +1564,15 @@ pub async fn fetch_identity_label(flow: &CodeFlow, access_token: &str, policy: &
         return fallback();
     }
     let v: Value = serde_json::from_slice(&b.body).unwrap_or(Value::Null);
+    let key = identity_key_of(&v).or_else(|| from_id_token.as_ref().and_then(identity_key_of));
     let pick = ["email", "preferred_username", "name", "sub"]
         .iter()
         .find_map(|k| v.get(*k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()));
     match pick {
-        Some(s) => clamp_label(s),
-        None => fallback(),
+        Some(s) => Identity { label: clamp_label(s), key },
+        // Userinfo answered but named nobody: keep its key (if any) on the
+        // id_token / resource-host label.
+        None => Identity { label: fallback().label, key },
     }
 }
 
@@ -1490,13 +1599,16 @@ pub async fn complete(
     let identity = identity_of(ctx.0.as_ref());
     // Single-use: remove first, then check every binding; any miss is uniform.
     let Some((_, flow)) = state.oauth_code_flows.remove(&body.state) else { return Err(not_found()) };
-    let FlowStage::Exchanged { tokens, label } = flow.stage.clone() else { return Err(not_found()) };
+    let FlowStage::Exchanged { tokens, identity: account_identity } = flow.stage.clone() else {
+        return Err(not_found());
+    };
+    let label = account_identity.label.clone();
     if flow.connector_id != id || flow.expires_at < now || flow.initiator != identity {
         return Err(not_found());
     }
     authorize_connector_target(&state, ctx.0.as_ref(), &flow.session).await.map_err(|_| not_found())?;
 
-    let (account_ref, secret_ref) = seal_and_grant(&state, &flow, &tokens, &label).await?;
+    let (account_ref, secret_ref) = seal_and_grant(&state, &flow, &tokens, &account_identity).await?;
 
     // Probe with the bearer once — the only source of a green.
     let connector = connectors::get(&state.pool, &id)
@@ -1578,21 +1690,55 @@ fn seal_fields(flow: &CodeFlow, tokens: &TokenResponse, now: i64) -> BTreeMap<St
 
 /// Seal the tokens into the vault (one row per account, re-sealed in place on a
 /// re-sign-in) + account + grant. Returns `(account_ref, secret_ref)`.
+///
+/// The account is keyed on the STABLE identity (`identity.key`), not on the
+/// display label: the label falls back to the resource host, so two distinct
+/// people on the same connector used to collapse into one row — and the second
+/// sign-in's `account_replace` re-pointed the shared `secret_ref` while the
+/// first one's grants still referenced it, silently swapping their token. Same
+/// identity ⇒ rotate in place (every grant stays wired); a DIFFERENT identity ⇒
+/// a NEW row, existing grants untouched. With no key at all (a provider that
+/// exposes neither userinfo nor an id_token) the label stays the key, which is
+/// exactly today's behaviour.
 async fn seal_and_grant(
     state: &AppState,
     flow: &CodeFlow,
     tokens: &TokenResponse,
-    label: &str,
+    identity: &Identity,
 ) -> Result<(String, String), AppError> {
     ensure_connector_installed(state, &flow.connector_id).await?;
     let now = chrono::Utc::now().timestamp();
+    let label = identity.label.as_str();
     let fields = seal_fields(flow, tokens, now);
     let vault = Vault::open(&state.config.data_dir)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("vault unavailable: {e}")))?;
     let account_company = connectors::company_of_grant_target(&state.pool, &flow.session).await;
-    let existing = connectors::account_find_by_label(&state.pool, &flow.connector_id, label, account_company)
-        .await
-        .map_err(db_err)?;
+    let existing = match identity.key.as_deref() {
+        // Keyed: the row carrying this identity, else an UN-KEYED row with the
+        // same label (a pre-0042 / paste-minted account this identity adopts —
+        // the key is stamped below). A row already carrying a DIFFERENT key is
+        // never matched, so a second identity gets its own row.
+        Some(key) => {
+            match connectors::account_find_by_identity(&state.pool, &flow.connector_id, key, account_company)
+                .await
+                .map_err(db_err)?
+            {
+                Some(a) => Some(a),
+                None => connectors::account_find_unkeyed_by_label(
+                    &state.pool,
+                    &flow.connector_id,
+                    label,
+                    account_company,
+                )
+                .await
+                .map_err(db_err)?,
+            }
+        }
+        // No stable identity to key on — today's label dedup, unchanged.
+        None => connectors::account_find_by_label(&state.pool, &flow.connector_id, label, account_company)
+            .await
+            .map_err(db_err)?,
+    };
     let (account_ref, secret_ref) = match existing {
         Some(a) => {
             let secret_ref = a.secret_ref.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -1623,6 +1769,13 @@ async fn seal_and_grant(
             (id, secret_ref)
         }
     };
+    // Stamp the identity on the row (mint OR adopt) so the NEXT sign-in — this
+    // identity's or another's — keys on it instead of the display label.
+    if let Some(key) = identity.key.as_deref() {
+        connectors::account_set_identity(&state.pool, &account_ref, key)
+            .await
+            .map_err(db_err)?;
+    }
     connectors::grant_with_account(&state.pool, &flow.session, &flow.connector_id, Some(&secret_ref), true, Some(&account_ref))
         .await
         .map_err(db_err)?;
@@ -2100,18 +2253,194 @@ mod tests {
                 ephemeral: true,
             },
         ]);
-        assert_eq!(redirect_base(&cfg, Some("box.taild681cb.ts.net")).unwrap(), "https://box.taild681cb.ts.net");
-        assert_eq!(redirect_base(&cfg, Some("127.0.0.1:8824")).unwrap(), "http://127.0.0.1:8824");
-        assert_eq!(redirect_base(&cfg, Some("acme.example.com")).unwrap(), "https://acme.example.com");
-        assert!(redirect_base(&cfg, Some("calm-frog-1234.trycloudflare.com")).is_err(), "ephemeral refused");
-        assert!(redirect_base(&cfg, Some("unknown.example.net")).is_err());
-        assert!(redirect_base(&cfg, None).is_err());
-        assert!(redirect_base(&cfg, Some("")).is_err());
-        assert!(redirect_base(&cfg, Some("box.taild681cb.ts.net/evil")).is_err());
+        assert_eq!(redirect_base(&cfg, Some("box.taild681cb.ts.net"), None).unwrap(), "https://box.taild681cb.ts.net");
+        assert_eq!(redirect_base(&cfg, Some("127.0.0.1:8824"), None).unwrap(), "http://127.0.0.1:8824");
+        assert_eq!(redirect_base(&cfg, Some("acme.example.com"), None).unwrap(), "https://acme.example.com");
+        assert!(redirect_base(&cfg, Some("calm-frog-1234.trycloudflare.com"), None).is_err(), "ephemeral refused");
+        assert!(redirect_base(&cfg, Some("unknown.example.net"), None).is_err());
+        assert!(redirect_base(&cfg, None, None).is_err());
+        assert!(redirect_base(&cfg, Some(""), None).is_err());
+        assert!(redirect_base(&cfg, Some("box.taild681cb.ts.net/evil"), None).is_err());
         assert_eq!(
-            redirect_uri_for(&redirect_base(&cfg, Some("Box.Taild681cb.ts.net:443")).unwrap()),
-            redirect_uri_for(&redirect_base(&cfg, Some("box.taild681cb.ts.net")).unwrap())
+            redirect_uri_for(&redirect_base(&cfg, Some("Box.Taild681cb.ts.net:443"), None).unwrap()),
+            redirect_uri_for(&redirect_base(&cfg, Some("box.taild681cb.ts.net"), None).unwrap())
         );
+    }
+
+    #[test]
+    fn forwarded_proto_decides_the_callback_scheme_on_a_trusted_transport() {
+        let cfg = cfg_with(vec![crate::config::CompanyHost {
+            host: "acme.example.com".into(),
+            company_id: 1,
+            redirect_uri: "https://acme.example.com/auth/callback".into(),
+            ephemeral: false,
+        }]);
+        // A plain-http trusted transport can now complete a sign-in…
+        assert_eq!(
+            redirect_base(&cfg, Some("acme.example.com"), Some("http")).unwrap(),
+            "http://acme.example.com"
+        );
+        assert_eq!(
+            redirect_base(&cfg, Some("box.taild681cb.ts.net"), Some("http")).unwrap(),
+            "http://box.taild681cb.ts.net"
+        );
+        // …and a TLS-terminating proxy in front of the loopback listener says https.
+        assert_eq!(
+            redirect_base(&cfg, Some("127.0.0.1:8824"), Some("https")).unwrap(),
+            "https://127.0.0.1:8824"
+        );
+        // The first list value wins; case is irrelevant.
+        assert_eq!(
+            redirect_base(&cfg, Some("acme.example.com"), Some("HTTP, https")).unwrap(),
+            "http://acme.example.com"
+        );
+        // Junk / a third scheme is ignored — today's guess stands.
+        for junk in ["ftp", "", "  ", "https evil", "javascript"] {
+            assert_eq!(
+                redirect_base(&cfg, Some("acme.example.com"), Some(junk)).unwrap(),
+                "https://acme.example.com",
+                "junk proto {junk:?} must not steer the scheme"
+            );
+        }
+        // An UNTRUSTED host is refused outright, so its forwarded header never lands.
+        assert!(redirect_base(&cfg, Some("unknown.example.net"), Some("http")).is_err());
+        assert!(redirect_base(&cfg, Some("calm-frog-1234.trycloudflare.com"), Some("http")).is_err());
+        assert_eq!(forwarded_scheme(None), None);
+        assert_eq!(forwarded_scheme(Some(" https ")), Some("https"));
+    }
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-oauth-code-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            swarm_reaper: Default::default(),
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:8823".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            human_auth: Default::default(),
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        connectors::upsert(&pool, "pmcp-x", "mcp_remote", "X", "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+        (AppState::new(pool, config), dir)
+    }
+
+    async fn cleanup(state: AppState, dir: std::path::PathBuf) {
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn tokens_with(access: &str) -> TokenResponse {
+        TokenResponse {
+            access_token: access.into(),
+            token_type: "Bearer".into(),
+            expires_in: Some(3600),
+            refresh_token: None,
+            scope: None,
+            id_token: None,
+        }
+    }
+
+    /// The access token sealed behind an account's `secret_ref`.
+    async fn sealed_access(state: &AppState, secret_ref: &str) -> String {
+        let vault = Vault::open(&state.config.data_dir).unwrap();
+        let row = connectors::vault_get(&state.pool, secret_ref).await.unwrap().expect("vault row");
+        let fields = vault.open_fields(&row.fields_enc, &row.nonce).unwrap();
+        fields.get(ACCESS_TOKEN_FIELD).cloned().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn two_identities_on_one_connector_never_collapse_into_one_account() {
+        let (state, dir) = test_state().await;
+        // Both sign-ins carry the SAME display label — the resource-host fallback
+        // shape that used to collapse them — but DIFFERENT stable subjects.
+        let label = "app.example".to_string();
+        let a = Identity { label: label.clone(), key: Some("sub-A".into()) };
+        let b = Identity { label: label.clone(), key: Some("sub-B".into()) };
+
+        let mut fa = flow("owner", 0, 10_000_000_000, FlowStage::Started);
+        fa.session = "botA".into();
+        let mut fb = flow("owner", 0, 10_000_000_000, FlowStage::Started);
+        fb.session = "botB".into();
+
+        let (acct_a, sref_a) = seal_and_grant(&state, &fa, &tokens_with("at-A1"), &a).await.unwrap();
+        // A RE-sign-in of the SAME identity rotates the one row in place.
+        let (acct_a2, sref_a2) = seal_and_grant(&state, &fa, &tokens_with("at-A2"), &a).await.unwrap();
+        assert_eq!(acct_a, acct_a2, "same identity must reuse its account row");
+        assert_eq!(sref_a, sref_a2, "the secret is rotated IN PLACE (grants stay wired)");
+        assert_eq!(sealed_access(&state, &sref_a).await, "at-A2", "token rotated");
+
+        // A DIFFERENT identity mints its OWN row + its own sealed secret.
+        let (acct_b, sref_b) = seal_and_grant(&state, &fb, &tokens_with("at-B1"), &b).await.unwrap();
+        assert_ne!(acct_b, acct_a, "a second identity must not reuse the first one's row");
+        assert_ne!(sref_b, sref_a, "…nor its vault row");
+        let accounts = connectors::accounts_for_connector(&state.pool, "pmcp-x").await.unwrap();
+        assert_eq!(accounts.len(), 2, "two identities → two account rows");
+
+        // The first identity's grant is untouched: still its account, still its token.
+        let grants = connectors::grants_for_connector(&state.pool, "pmcp-x").await.unwrap();
+        let ga = grants.iter().find(|g| g.session_name == "botA").expect("botA grant");
+        assert_eq!(ga.account_ref.as_deref(), Some(acct_a.as_str()));
+        assert_eq!(sealed_access(&state, &sref_a).await, "at-A2", "no cross-identity token swap");
+        assert_eq!(sealed_access(&state, &sref_b).await, "at-B1");
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn an_unkeyed_account_is_adopted_once_and_a_keyless_provider_keys_on_the_label() {
+        let (state, dir) = test_state().await;
+        let f = flow("owner", 0, 10_000_000_000, FlowStage::Started);
+        // A pre-0042 / paste-minted row: same label, NO identity_key.
+        let legacy = connectors::account_add(&state.pool, "pmcp-x", "app.example", Some("legacy-sref"), None)
+            .await
+            .unwrap();
+        let a = Identity { label: "app.example".into(), key: Some("sub-A".into()) };
+        let (acct, _) = seal_and_grant(&state, &f, &tokens_with("at-1"), &a).await.unwrap();
+        assert_eq!(acct, legacy, "an un-keyed same-label row is ADOPTED, not duplicated");
+        let row = connectors::account_get(&state.pool, &acct).await.unwrap().unwrap();
+        assert_eq!(row.identity_key.as_deref(), Some("sub-A"), "the key is stamped on adoption");
+        // …and only ONCE: a second identity no longer sees an un-keyed row.
+        let b = Identity { label: "app.example".into(), key: Some("sub-B".into()) };
+        let (acct_b, _) = seal_and_grant(&state, &f, &tokens_with("at-2"), &b).await.unwrap();
+        assert_ne!(acct_b, legacy);
+
+        // A provider that exposes NO stable identity keeps today's label dedup.
+        let keyless = Identity { label: "keyless.example".into(), key: None };
+        let (k1, s1) = seal_and_grant(&state, &f, &tokens_with("at-3"), &keyless).await.unwrap();
+        let (k2, s2) = seal_and_grant(&state, &f, &tokens_with("at-4"), &keyless).await.unwrap();
+        assert_eq!((k1, s1.clone()), (k2, s2), "no key → same-label reuse, unchanged");
+        assert_eq!(sealed_access(&state, &s1).await, "at-4");
+        cleanup(state, dir).await;
+    }
+
+    #[test]
+    fn identity_key_prefers_a_stable_subject_over_a_display_name() {
+        assert_eq!(identity_key_of(&json!({"sub": "u-1", "email": "a@b.c"})).as_deref(), Some("u-1"));
+        assert_eq!(identity_key_of(&json!({"id": 4711, "name": "Sander"})).as_deref(), Some("4711"));
+        assert_eq!(identity_key_of(&json!({"email": " a@b.c "})).as_deref(), Some("a@b.c"));
+        // A display name alone is NOT an identity — two people can share one.
+        assert_eq!(identity_key_of(&json!({"name": "Sander", "preferred_username": "s"})), None);
+        assert_eq!(identity_key_of(&json!({"sub": "   "})), None);
+        assert_eq!(identity_key_of(&Value::Null), None);
+        // The id_token's claims are read WITHOUT verification (dedup key only).
+        let jwt = format!(
+            "h.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sub":"jwt-sub","email":"a@b.c"}"#)
+        );
+        assert_eq!(jwt_claims(&jwt).as_ref().and_then(identity_key_of).as_deref(), Some("jwt-sub"));
+        assert!(jwt_claims("not-a-jwt").is_none());
+        assert!(jwt_claims("h.!!!not-base64!!!.s").is_none());
     }
 
     fn flow(initiator: &str, created_at: i64, expires_at: i64, stage: FlowStage) -> CodeFlow {
@@ -2141,8 +2470,8 @@ mod tests {
     fn sweep_both_stages_and_single_use() {
         let flows: DashMap<String, CodeFlow> = DashMap::new();
         flows.insert("old-started".into(), flow("owner", 1, 100, FlowStage::Started));
-        let tokens = TokenResponse { access_token: "at".into(), token_type: "Bearer".into(), expires_in: None, refresh_token: None, scope: None };
-        flows.insert("old-exchanged".into(), flow("owner", 1, 100, FlowStage::Exchanged { tokens, label: "x".into() }));
+        let tokens = TokenResponse { access_token: "at".into(), token_type: "Bearer".into(), expires_in: None, refresh_token: None, scope: None, id_token: None };
+        flows.insert("old-exchanged".into(), flow("owner", 1, 100, FlowStage::Exchanged { tokens, identity: Identity { label: "x".into(), key: None } }));
         flows.insert("live".into(), flow("owner", 1, 10_000_000_000, FlowStage::Started));
         sweep_expired(&flows, 1000);
         assert_eq!(flows.len(), 1);
@@ -2168,10 +2497,10 @@ mod tests {
 
     #[test]
     fn debug_output_leaks_no_secret() {
-        let tokens = TokenResponse { access_token: "AT-SECRET".into(), token_type: "Bearer".into(), expires_in: Some(1), refresh_token: Some("RT-SECRET".into()), scope: None };
-        let f = flow("owner", 0, 1, FlowStage::Exchanged { tokens: tokens.clone(), label: "me".into() });
+        let tokens = TokenResponse { access_token: "AT-SECRET".into(), token_type: "Bearer".into(), expires_in: Some(1), refresh_token: Some("RT-SECRET".into()), scope: None, id_token: Some("ID-SECRET".into()) };
+        let f = flow("owner", 0, 1, FlowStage::Exchanged { tokens: tokens.clone(), identity: Identity { label: "me".into(), key: Some("sub-1".into()) } });
         let s = format!("{f:?} {tokens:?}");
-        for secret in ["AT-SECRET", "RT-SECRET", "shh-secret", "verifier-secret"] {
+        for secret in ["AT-SECRET", "RT-SECRET", "ID-SECRET", "shh-secret", "verifier-secret"] {
             assert!(!s.contains(secret), "{secret} leaked: {s}");
         }
         assert!(s.contains("<redacted>"));

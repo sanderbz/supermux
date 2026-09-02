@@ -52,25 +52,27 @@ export function referringBot(path: string | null | undefined): string | null {
   }
 }
 
-/** The library "Grant to" preselection (design §4.2 D19): a brokered-OAuth card
- *  must never open on a disabled "Choose who gets it first" — preselect the bot
- *  the owner came from, else the active company, else All bots. Other lanes keep
- *  the deliberate empty default (company when one is active). Pure. */
+/** The library "Grant to" preselection (design §4.2 D19): preselect the bot the
+ *  owner came from, else the active company, else NOTHING — the owner picks.
+ *
+ *  A brokered OAuth sign-in mints a REAL credential, so the default target is
+ *  never `*`: "All bots" hands one owner's live account to every agent in every
+ *  company, and a default must not do that silently. The `*` option stays in the
+ *  picker (with its warning) for an owner who deliberately chooses it. Pure. */
 export function preselectGrant(input: {
   isLibrary: boolean
-  isMcpOauth: boolean
   activeCompany: number | null
   referrer: string | null
   bots: { name: string }[]
 }): { allAgents: boolean; companyChosen: boolean; bots: string[] } {
-  const { isLibrary, isMcpOauth, activeCompany, referrer, bots } = input
-  if (!isLibrary) return { allAgents: false, companyChosen: false, bots: [] }
+  const { isLibrary, activeCompany, referrer, bots } = input
+  const none = { allAgents: false, companyChosen: false, bots: [] as string[] }
+  if (!isLibrary) return none
   if (referrer && bots.some((b) => b.name === referrer)) {
     return { allAgents: false, companyChosen: false, bots: [referrer] }
   }
   if (activeCompany !== null) return { allAgents: false, companyChosen: true, bots: [] }
-  if (isMcpOauth) return { allAgents: true, companyChosen: false, bots: [] }
-  return { allAgents: false, companyChosen: false, bots: [] }
+  return none
 }
 
 /** The device-flow provider a card is backed by, or `null` when the card isn't a
@@ -235,7 +237,6 @@ export function ConnectorDetail({
     preselected.current = true
     const pre = preselectGrant({
       isLibrary: grantTarget === null,
-      isMcpOauth: isMcpOauthCard,
       activeCompany: useUI.getState().activeCompany,
       referrer,
       bots,
@@ -243,7 +244,7 @@ export function ConnectorDetail({
     if (pre.allAgents) setAllAgents(true)
     if (pre.bots.length > 0) setSelectedBots(new Set(pre.bots))
     if (pre.bots.length > 0 && !pre.companyChosen) setCompanyChosen(false)
-  }, [bots, botsOverride, sessionsQuery.isLoading, grantTarget, isMcpOauthCard, referrer])
+  }, [bots, botsOverride, sessionsQuery.isLoading, grantTarget, referrer])
   // "All agents" is a superset — when it is on, the per-bot rows AND the company
   // row show as checked (and locked), and the grant resolves to a single `*` row.
   const chosenTargets: string[] = allAgents

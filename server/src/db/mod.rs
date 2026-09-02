@@ -121,8 +121,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 40,
-            "expected forty applied migrations (0001-0005, 0007-0041)"
+            applied, 41,
+            "expected forty-one applied migrations (0001-0005, 0007-0042)"
         );
 
         // 0037 applied cleanly: the new nullable company_id column exists and a
@@ -137,6 +137,12 @@ mod tests {
         assert!(
             cols.iter().any(|c| c == "company_id"),
             "0037 adds connector_accounts.company_id"
+        );
+        // 0042: the stable identity the brokered-OAuth account is keyed on (NULL
+        // on every pre-existing row = un-keyed, adoptable by the first sign-in).
+        assert!(
+            cols.iter().any(|c| c == "identity_key"),
+            "0042 adds connector_accounts.identity_key"
         );
 
         // 0039 (shared-browser v1): the workspace tab + per-tab grant tables. The
