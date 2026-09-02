@@ -74,8 +74,6 @@ fn secret_paths() -> Vec<PathBuf> {
     let home = probe_home();
     vec![
         home.join(".supermux/auth_token"),
-        // Every prompt ever typed on this box.
-        home.join(".claude/history.jsonl"),
     ]
 }
 
@@ -88,10 +86,6 @@ fn secret_paths() -> Vec<PathBuf> {
 fn secret_subpaths() -> Vec<PathBuf> {
     let home = probe_home();
     vec![
-        home.join(".claude/projects"),
-        home.join(".claude/file-history"),
-        home.join(".claude/backups"),
-        home.join(".claude/paste-cache"),
         home.join(".config/gh"),
     ]
 }
