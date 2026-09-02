@@ -565,30 +565,20 @@ function McpOauthLane({
             disabled={submitDisabled}
             label={signInLabel}
           />
-        ) : onSignIn ? (
+        ) : onSignIn || returnTo ? (
+          // No target chosen yet (or a caller that drives OAuth itself). Same
+          // button, disabled until the picker above is answered — the blocked
+          // label right below says why.
           <button
             type="button"
-            onClick={() => void onSignIn(card.id)}
-            disabled={submitDisabled}
-            data-vr="connect-oauth"
-            className={cn(
-              chat
-                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
-                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
-            )}
-          >
-            {signInLabel}
-          </button>
-        ) : returnTo ? (
-          <button
-            type="button"
-            disabled
+            onClick={onSignIn ? () => void onSignIn(card.id) : undefined}
+            disabled={submitDisabled || !onSignIn}
             data-vr="connect-oauth"
             aria-label={signInLabel}
             className={cn(
               chat
-                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink opacity-60'
-                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground opacity-60 shadow-sm',
+                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
+                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
             )}
           >
             {signInLabel}
