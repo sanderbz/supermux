@@ -161,7 +161,9 @@ pub fn catalog_id(s: &PulseServer) -> Option<String> {
 fn emit_template(s: &PulseServer) -> Value {
     if let Some(r) = s.remotes.iter().find(|r| r.url_direct.is_some()) {
         let url = r.url_direct.clone().unwrap_or_default();
-        return json!({ "url": url });
+        // `type` is REQUIRED by Claude Code for a hosted remote (it skips a
+        // bare `{ "url" }` entry at boot); see `connector_config::with_remote_transport`.
+        return json!({ "type": "http", "url": url });
     }
     match (s.package_registry.as_deref(), s.package_name.as_deref()) {
         (Some("npm"), Some(pkg)) => json!({ "command": "npx", "args": ["-y", pkg] }),
@@ -692,7 +694,9 @@ pub fn featured_cards() -> Vec<Value> {
         json!({ "command": "uvx", "args": args })
     }
     fn remote(url: &str) -> Value {
-        json!({ "url": url })
+        // Claude Code refuses a hosted remote without its transport — see
+        // `connector_config::with_remote_transport` for the live warning.
+        json!({ "type": "http", "url": url })
     }
     let mut cards = vec![
         // ── Tier 1 — first-party Anthropic / MCP reference servers (official) ──
