@@ -118,8 +118,19 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let gh_probe = home
         .join(".config")
         .join(format!("gh-iso-e2e-{}", uuid::Uuid::new_v4()));
+    // A file inside a GRANTED dir of the enumerated read-only slice
+    // (`~/.claude/commands`), so the "the agent can still read what it needs"
+    // half is asserted on a fixture we control — a CI runner has no
+    // `~/.claude/settings.json` to read (that one is asserted only when the box
+    // actually has it, below).
+    let cmd_probe = claude_home
+        .join("commands")
+        .join(format!("iso-e2e-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&sib_proj).expect("mk sibling project dir");
     std::fs::create_dir_all(&gh_probe).expect("mk gh-shaped dir");
+    std::fs::create_dir_all(cmd_probe.parent().expect("commands parent"))
+        .expect("mk ~/.claude/commands");
+    std::fs::write(&cmd_probe, b"granted-claude-home-read").expect("write command probe");
     std::fs::write(sib_proj.join("transcript.jsonl"), b"sibling project transcript secret")
         .expect("write sibling transcript");
     std::fs::write(&hist_probe, b"every prompt ever typed").expect("write history probe");
@@ -175,6 +186,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
          /bin/cat {hist} > {c}/history.out 2>&1; \
          /bin/cat {gh}/hosts.yml > {c}/gh.out 2>&1; \
          /bin/cat {settings} > {c}/settings.out 2>&1; \
+         /bin/cat {cmdprobe} > {c}/cmdprobe.out 2>&1; \
          echo own-transcript > {ownproj}/probe.jsonl 2>{c}/ownwrite.err; \
          /bin/cat {ownproj}/probe.jsonl > {c}/ownproj.out 2>&1; \
          echo ok > {c}/done; \
@@ -189,6 +201,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
         hist = hist_probe.display(),
         gh = gh_probe.display(),
         settings = claude_home.join("settings.json").display(),
+        cmdprobe = cmd_probe.display(),
         ownproj = own_proj.display(),
     );
 
@@ -298,13 +311,23 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
             "the jail let a company agent read a ~/.config/gh-shaped credential \
              file (the owner's GitHub token lives there): {gh}",
         );
-        // …and the two grants that keep a confined Claude WORKING.
-        let settings = wrote(&company.join("settings.out"));
+        // …and the grants that keep a confined Claude WORKING.
         assert!(
-            settings.contains('{') && !settings.contains("Permission denied"),
-            "a confined agent must still read ~/.claude/settings.json (Claude \
-             Code reads it at boot): {settings:?}",
+            wrote(&company.join("cmdprobe.out")).contains("granted-claude-home-read"),
+            "a confined agent must still read the ENUMERATED slice of the Claude \
+             home it boots from (~/.claude/commands here): {}",
+            wrote(&company.join("cmdprobe.out")),
         );
+        // The real `settings.json` too — but only on a box that HAS one (a CI
+        // runner's home has no Claude config at all).
+        if claude_home.join("settings.json").is_file() {
+            let settings = wrote(&company.join("settings.out"));
+            assert!(
+                !settings.contains("Permission denied"),
+                "a confined agent must still read ~/.claude/settings.json (Claude \
+                 Code reads it at boot): {settings:?}",
+            );
+        }
         assert!(
             wrote(&company.join("ownproj.out")).contains("own-transcript"),
             "a confined agent must READ+WRITE its OWN ~/.claude/projects/<cwd> \
@@ -329,5 +352,6 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let _ = std::fs::remove_dir_all(&sib_proj);
     let _ = std::fs::remove_dir_all(&gh_probe);
     let _ = std::fs::remove_file(&hist_probe);
+    let _ = std::fs::remove_file(&cmd_probe);
     let _ = std::fs::remove_dir_all(&own_proj);
 }
