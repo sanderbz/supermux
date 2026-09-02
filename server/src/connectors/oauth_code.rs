@@ -1531,6 +1531,7 @@ pub async fn complete(
             "company_id": flow.company_id,
             "initiator": identity,
             "health": health,
+            "tool_count": outcome.tool_count,
         }),
     )
     .await;
@@ -1539,7 +1540,14 @@ pub async fn complete(
         "ok": true,
         "account_ref": account_ref,
         "label": label,
-        "health": { "status": health, "error": if health == Some("expired") { Some("Server refused the new sign-in".to_string()) } else { error } },
+        "health": {
+            "status": health,
+            "error": if health == Some("expired") { Some("Server refused the new sign-in".to_string()) } else { error },
+            // The probe's line + the count its real `tools/list` returned (null
+            // when the probe never got that far — never invented).
+            "message": outcome.message,
+            "tool_count": outcome.tool_count,
+        },
         "target": flow.session,
     })))
 }

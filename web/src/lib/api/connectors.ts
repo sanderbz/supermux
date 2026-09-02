@@ -544,10 +544,15 @@ export interface TestConnectionResult {
   last_checked_at?: number
   /** A short line to show the operator (always present). */
   message: string
+  /** How many tools a URL MCP listed in the probe's real `tools/list`
+   *  (`initialize` → `notifications/initialized` → `tools/list` on one session).
+   *  `null`/absent when the probe never got that far — never invented. */
+  tool_count?: number | null
 }
 
 /** `POST /api/connectors/{id}/test` — run a per-kind liveness probe for one account
- *  (IMAP login for iCloud, a reachability GET for a URL MCP, else "can't test") and
+ *  (IMAP login for iCloud/mail, a JSON-RPC `initialize` + `tools/list` with the
+ *  sealed bearer for a URL MCP, else "can't test") and
  *  record the honest health verdict. Owner/admin-only. Secret-free: the sealed
  *  credential is read server-side only to feed the probe, never returned. */
 export async function testConnection(

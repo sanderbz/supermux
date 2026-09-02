@@ -3,7 +3,9 @@
 //!
 //! The mock (one axum app on `127.0.0.1:0`) plays both roles:
 //!   * `POST /mcp` — 401 + `WWW-Authenticate: Bearer resource_metadata=…` until
-//!     the bearer is one it minted, then a JSON-RPC `initialize` result;
+//!     the bearer is one it minted, then a JSON-RPC `initialize` result, a 202 for
+//!     `notifications/initialized`, and a two-tool `tools/list` result (the probe
+//!     runs all three; the counters tell them apart);
 //!   * `/.well-known/oauth-protected-resource` (RFC 9728) → `resource = /mcp`,
 //!     `authorization_servers = [self]`;
 //!   * `/.well-known/oauth-authorization-server` (RFC 8414) → issuer = self,
@@ -72,6 +74,7 @@ struct MockState {
     /// access token → family
     access_family: HashMap<String, u32>,
     initialize_authed: u32,
+    tools_list_authed: u32,
     refresh_calls: u32,
     refresh_forms: Vec<HashMap<String, String>>,
     exchange_forms: Vec<HashMap<String, String>>,
@@ -93,19 +96,31 @@ fn bearer_of(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn mock_mcp(AxState(m): AxState<Mock>, headers: HeaderMap) -> Response {
+async fn mock_mcp(AxState(m): AxState<Mock>, headers: HeaderMap, body: String) -> Response {
     let mut g = m.lock().unwrap();
     let ok = bearer_of(&headers)
         .filter(|t| g.access.contains(t))
         .filter(|t| !g.revoked_families.contains(g.access_family.get(t).unwrap_or(&u32::MAX)))
         .is_some();
     if ok {
-        g.initialize_authed += 1;
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            json!({ "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-06-18", "capabilities": { "tools": {} }, "serverInfo": { "name": "mock", "version": "1" } } }).to_string(),
-        )
-            .into_response();
+        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        let reply = match method {
+            "initialize" => {
+                g.initialize_authed += 1;
+                json!({ "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-06-18", "capabilities": { "tools": {} }, "serverInfo": { "name": "mock", "version": "1" } } })
+            }
+            "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
+            "tools/list" => {
+                g.tools_list_authed += 1;
+                json!({ "jsonrpc": "2.0", "id": 2, "result": { "tools": [
+                    { "name": "echo", "inputSchema": { "type": "object" } },
+                    { "name": "whoami", "inputSchema": { "type": "object" } },
+                ] } })
+            }
+            _ => json!({ "jsonrpc": "2.0", "id": 0, "error": { "code": -32601, "message": "not implemented" } }),
+        };
+        return ([(header::CONTENT_TYPE, "application/json")], reply.to_string()).into_response();
     }
     let www = format!(r#"Bearer resource_metadata="{}/.well-known/oauth-protected-resource""#, g.base);
     (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, www)]).into_response()
@@ -543,6 +558,9 @@ async fn callback_stashes_only_and_complete_seals_grants_and_probes() {
     assert_eq!(out["health"]["status"], json!("ok"));
     assert_eq!(out["target"], json!("bot"));
     assert_eq!(h.mock.lock().unwrap().initialize_authed, 1, "exactly one authenticated initialize");
+    assert_eq!(h.mock.lock().unwrap().tools_list_authed, 1, "the probe ran a REAL tools/list with the bearer");
+    assert_eq!(out["health"]["tool_count"], json!(2), "the count the server actually listed: {out}");
+    assert_eq!(out["health"]["message"], json!("Server answered — 2 tools."));
     let accounts = connectors::accounts_for_connector(&h.state.pool, ID).await.unwrap();
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].account_label, "owner@test");

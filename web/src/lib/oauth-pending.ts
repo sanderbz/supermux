@@ -146,7 +146,15 @@ export function connectErrorCopy(code: string, name: string): string {
 export interface CompleteResult {
   account_ref: string
   label: string
-  health: { status: string | null; error?: string | null }
+  health: {
+    status: string | null
+    error?: string | null
+    /** The probe's own line ("Server answered — 2 tools."). */
+    message?: string | null
+    /** How many tools the server listed in the probe's real `tools/list`;
+     *  null/absent when the probe never got that far — never invented. */
+    tool_count?: number | null
+  }
   target: string
 }
 
@@ -205,7 +213,11 @@ export async function handleOauthReturn(search: string, deps: ReturnDeps): Promi
   try {
     const r = await deps.complete(pending.id, { state: pending.state })
     const ok = r.health?.status === 'ok'
-    const detail = r.health?.error ? ` — ${r.health.error}` : ok ? '' : ' — not verified yet'
+    const n = r.health?.tool_count
+    // A green carries the count the server actually listed (a real tools/list),
+    // never a catalog blurb; a non-ok verdict says why.
+    const tools = typeof n === 'number' ? ` — ${n} tool${n === 1 ? '' : 's'}` : ''
+    const detail = r.health?.error ? ` — ${r.health.error}` : ok ? tools : ' — not verified yet'
     deps.toast(`Connected as ${r.label}${detail}`, ok ? 'default' : 'error')
     deps.invalidate(r.target || pending.target)
     return { kind: 'connected', id: pending.id, target: r.target || pending.target, label: r.label, health: r.health?.status ?? null }

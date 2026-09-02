@@ -1058,7 +1058,12 @@ pub async fn test_account(
         &state,
         "connector.test",
         &id,
-        json!({ "account_ref": account.id, "health": outcome.health, "testable": outcome.testable }),
+        json!({
+            "account_ref": account.id,
+            "health": outcome.health,
+            "testable": outcome.testable,
+            "tool_count": outcome.tool_count,
+        }),
     )
     .await;
 
@@ -1077,6 +1082,9 @@ pub async fn test_account(
         "last_error": outcome.last_error,
         "last_checked_at": if outcome.testable { now } else { account.last_checked_at },
         "message": outcome.message,
+        // How many tools a URL MCP listed in the probe's real `tools/list`;
+        // `null` when the probe never got that far. Never invented.
+        "tool_count": outcome.tool_count,
     })))
 }
 

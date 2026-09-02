@@ -79,6 +79,24 @@ describe('handleOauthReturn', () => {
     expect(d.invalidated).toEqual(['folderwijzer'])
   })
 
+  test('a green carries the tool count the server actually listed (real tools/list), never a blurb', async () => {
+    const d = deps(pendingStore(), { account_ref: 'a1', label: 'owner@test', health: { status: 'ok', message: 'Server answered — 2 tools.', tool_count: 2 }, target: 'folderwijzer' })
+    await handleOauthReturn('?oauth_pending=1', d.deps)
+    expect(d.toasts).toEqual([{ message: 'Connected as owner@test — 2 tools', tone: 'default' }])
+    // One tool is singular; a server that answered but would not list its tools
+    // (tool_count null) stays plain — the count is never invented.
+    const d1 = deps(pendingStore(), { account_ref: 'a1', label: 'owner@test', health: { status: 'ok', tool_count: 1 }, target: 'folderwijzer' })
+    await handleOauthReturn('?oauth_pending=1', d1.deps)
+    expect(d1.toasts[0].message).toBe('Connected as owner@test — 1 tool')
+    const d0 = deps(pendingStore(), { account_ref: 'a1', label: 'owner@test', health: { status: 'ok', tool_count: null }, target: 'folderwijzer' })
+    await handleOauthReturn('?oauth_pending=1', d0.deps)
+    expect(d0.toasts[0].message).toBe('Connected as owner@test')
+    // A non-ok verdict says why, count or not.
+    const dx = deps(pendingStore(), { account_ref: 'a1', label: 'owner@test', health: { status: 'expired', error: 'Needs sign-in', tool_count: null }, target: 'folderwijzer' })
+    await handleOauthReturn('?oauth_pending=1', dx.deps)
+    expect(dx.toasts[0]).toEqual({ message: 'Connected as owner@test — Needs sign-in', tone: 'error' })
+  })
+
   test('a non-ok probe is said out loud, never a silent green', async () => {
     const store = pendingStore()
     const d = deps(store, { account_ref: 'a1', label: 'owner@test', health: { status: 'expired', error: 'Server refused the new sign-in' }, target: 'folderwijzer' })
