@@ -687,10 +687,13 @@ function systemRow(w: WireEntry): { text: string; badge: string; detail?: string
       const summary = str(w.body, 'summary')
       const status = str(w.body, 'status')
       const ended = status && status !== 'completed' ? ` · ${status}` : ''
+      // NO `detail`: the envelope is `<task-notification>` XML with a task id
+      // and an output-file path — chrome, not evidence. Rendered under the row
+      // it was a six-line grey XML dump on a phone (owner screenshot); the
+      // summary IS Claude Code's own sentence, and that is the whole row.
       return {
         text: summary ? `${summary}${ended}` : `a background agent finished${ended}`,
         badge: 'background-agent',
-        detail: str(w.body, 'content'),
       }
     }
     // ANY OTHER HARNESS-INJECTED USER LINE (`promptSource: "system"`). Named so
