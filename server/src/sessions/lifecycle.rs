@@ -2114,11 +2114,16 @@ async fn company_confinement(
     // company's slug; unsafe entries are refused with a reason (never silently
     // dropped) so a bot that still cannot read a path shows WHY in the log.
     if let (Some(p), Some(extra)) = (plan.as_mut(), state.isolation.extras_for(&company.slug)) {
-        let resolved = extra.resolve(&home, &state.config.data_dir);
+        let resolved = extra.resolve(
+            &home,
+            &state.config.data_dir,
+            std::path::Path::new(&company.root_dir),
+        );
         for (entry, why) in &resolved.rejected {
             tracing::warn!(
                 session = name,
-                company = %company.slug,
+                company = cid,
+                slug = %company.slug,
                 entry = %entry,
                 "isolation: [[company_isolation]] entry refused — {why}",
             );
@@ -2126,18 +2131,14 @@ async fn company_confinement(
         if !resolved.read_only.is_empty() || !resolved.read_write.is_empty() {
             tracing::info!(
                 session = name,
-                company = %company.slug,
+                company = cid,
+                slug = %company.slug,
                 read_only = ?resolved.read_only,
                 read_write = ?resolved.read_write,
                 "isolation: widening the company jail per [[company_isolation]]",
             );
         }
-        for path in resolved.read_only {
-            p.allow_ro(path);
-        }
-        for path in resolved.read_write {
-            p.allow_rw(path);
-        }
+        p.widen(&resolved);
     }
     if let Some(p) = plan.as_mut() {
         // THIS session's own launch config (`--settings`, the connect catalog) —
