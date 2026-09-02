@@ -569,6 +569,34 @@ function ThinkingDisclosure({
       </p>
     )
   }
+  // AN EMPTY BLOCK IS A STATIC PILL. Claude Code writes the thinking entry with
+  // an empty `thinking` field on this model family (2.1.233: 20,831 blocks,
+  // none with text), so the label — a reasoning phase happened, and for how
+  // long — is the whole of what the transcript preserved. A chevron on it is
+  // a disclosure with nothing to disclose: the click opened onto one line of
+  // apology. So the pill keeps the fact (the duration, and the reason there
+  // is nothing more, in the title) and drops the affordance: no `<details>`,
+  // no chevron, no pointer, plain-text semantics.
+  if (!item.text.trim()) {
+    const notSaved = 'The model’s reasoning was not saved to this transcript.'
+    return (
+      <p
+        className="chat-thinking-pill min-w-0"
+        style={{ maxWidth: surface === 'phone' ? BUBBLE_MAX.phoneAssistant : BUBBLE_MAX.assistant }}
+        data-testid="chat-thinking"
+        data-static=""
+      >
+        <span className="chat-thinking-pill-label" title={notSaved}>
+          {label}
+        </span>
+        {/* The reason the pill is inert, for assistive tech: a `title` is
+            mouse-only and `aria-label` on a generic span is ignored, so the
+            sentence rides as visually-hidden text instead. */}
+        <span className="sr-only">{notSaved}</span>
+        {item.truncated && <ClippedMarker uuid={item.uuid} />}
+      </p>
+    )
+  }
   return (
     <details
       className="group min-w-0"
@@ -582,13 +610,7 @@ function ThinkingDisclosure({
         {label}
       </summary>
       <p className="chat-thinking-body">
-        {/* AN EMPTY BLOCK IS STILL A FACT. Claude Code writes the thinking entry
-            with an empty `thinking` field on every model this app has seen
-            (2.1.233: 20,831 blocks, none with text), so the summary above — a
-            reasoning phase happened, and for how long — is the whole of what the
-            transcript preserved. Saying that out loud beats a blank disclosure,
-            and beats the row not existing at all. */}
-        {item.text || 'The model’s reasoning was not saved to this transcript.'}
+        {item.text}
         {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </p>
     </details>

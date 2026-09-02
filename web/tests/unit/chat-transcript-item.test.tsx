@@ -374,21 +374,50 @@ describe('thinking', () => {
     expect(out).not.toMatch(/Thought for/)
   })
 
-  test('an empty block still says how long, and says the reasoning was not saved', () => {
+  test('an empty block is a static pill: the duration, no disclosure, no “not saved” body', () => {
     // THE ONLY SHAPE THIS PRODUCT ACTUALLY SEES. Claude Code 2.1.233 writes
     // every thinking block with an empty body (20,831 on the audit host, none
-    // with text), so a disclosure that renders only when there IS text renders
-    // for nobody — while the terminal, on the same turn, prints "✻ Cogitated
-    // for 12s". The duration is the fact that survived; the row carries it and
-    // is honest about the rest.
-    const out = text(
-      render([
-        thinking({ text: '', ts: 1_760_000_012 }),
-        { uuid: 'u1', ts: 1_760_000_000, text: 'Think hard about this.', kind: 'prompt' },
-      ]),
-    )
+    // with text), so a chevron on it is a disclosure with nothing to disclose:
+    // the click opened onto one line of apology. The duration is the fact that
+    // survived; the pill carries it as plain text and keeps the "not saved"
+    // reason in a title / aria-label, never as a body the reader has to open.
+    const html = render([
+      thinking({ text: '', ts: 1_760_000_012 }),
+      { uuid: 'u1', ts: 1_760_000_000, text: 'Think hard about this.', kind: 'prompt' },
+    ])
+    const out = text(html)
     expect(out).toContain('Thought for 12s')
-    expect(out).toContain('not saved')
+    expect(html).not.toContain('<details')
+    // The sentence exists for assistive tech only (visually hidden), never
+    // inside the pill label itself.
+    expect(html).toMatch(/class="sr-only">[^<]*not saved/)
+    expect(html).not.toMatch(/chat-thinking-pill-label[^>]*>[^<]*not saved/)
+    // The fact is preserved where a hover / screen reader finds it.
+    expect(html).toMatch(/title="[^"]*not saved[^"]*"/)
+      })
+
+  test('the static pill is not interactive; a long block still discloses', () => {
+    const pill = render([
+      thinking({ text: '', ts: 1_760_000_012 }),
+      { uuid: 'u1', ts: 1_760_000_000, text: 'Think hard about this.', kind: 'prompt' },
+    ])
+    expect(pill).toContain('data-testid="chat-thinking"')
+    expect(pill).toContain('data-static')
+    expect(pill).not.toContain('<summary')
+    expect(pill).not.toContain('data-open')
+    expect(pill).not.toContain('chat-thinking-summary')
+    expect(pill).not.toMatch(/cursor-pointer/)
+    expect(pill).not.toContain('group-open')
+    // Whitespace-only is empty too.
+    const blank = render([thinking({ text: '   \n ' })])
+    expect(blank).not.toContain('<details')
+    expect(text(blank)).toContain('Thought')
+    // The disclosure is still the shape for real reasoning text.
+    const long = render([thinking({ text: RAW, ts: 1_760_000_012 })])
+    expect(long).toContain('<details')
+    expect(long).toContain('<summary')
+    expect(long).toContain('chat-thinking-summary')
+    expect(long).toContain('91 divided by 7')
   })
 })
 
