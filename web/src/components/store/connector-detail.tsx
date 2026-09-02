@@ -6,9 +6,9 @@
 // scope is active, granted to that bot in the same call. The secret is never
 // echoed back — the field flips to a masked "Added" state.
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Check, Loader2, Trash2 } from 'lucide-react'
+import { Check, Loader2, Trash2, Unplug } from 'lucide-react'
 
 import { Sparkles } from 'lucide-react'
 
@@ -23,7 +23,8 @@ import {
 import type { OauthProvider } from '@/lib/api/oauth'
 import { sessionsApi, displayLabel } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
-import { useConnectorActions } from '@/stores/connectors-store'
+import { useConnectorActions, useSessionConnectors } from '@/stores/connectors-store'
+import { RestartToApply } from '@/components/roster/granted-connectors'
 import { useOauthApps } from '@/hooks/use-oauth-apps'
 import { useUI } from '@/stores/ui-store'
 import { useCompanies } from '@/hooks/use-companies'
@@ -36,6 +37,43 @@ import { GrantControl, type GrantScope } from './grant-control'
 import { ConnectFlow, type ConnectFlowResult } from './connect-flow'
 import { ConnectInBotPicker } from './connect-in-bot-picker'
 import { EnableSigninSheet } from './enable-signin-sheet'
+import { OauthConnectButton } from './oauth-connect-button'
+
+/** The bot a `/focus/<bot>` (or `/team/<t>/<bot>`) route names — the "referring
+ *  bot" a store deep-link preselects as the grant target. Pure. */
+export function referringBot(path: string | null | undefined): string | null {
+  if (!path) return null
+  const m = /^\/focus\/([^/?#]+)/.exec(path) ?? /^\/team\/[^/]+\/([^/?#]+)/.exec(path)
+  if (!m) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return null
+  }
+}
+
+/** The library "Grant to" preselection (design §4.2 D19): preselect the bot the
+ *  owner came from, else the active company, else NOTHING — the owner picks.
+ *
+ *  A brokered OAuth sign-in mints a REAL credential, so the default target is
+ *  never `*`: "All bots" hands one owner's live account to every agent in every
+ *  company, and a default must not do that silently. The `*` option stays in the
+ *  picker (with its warning) for an owner who deliberately chooses it. Pure. */
+export function preselectGrant(input: {
+  isLibrary: boolean
+  activeCompany: number | null
+  referrer: string | null
+  bots: { name: string }[]
+}): { allAgents: boolean; companyChosen: boolean; bots: string[] } {
+  const { isLibrary, activeCompany, referrer, bots } = input
+  const none = { allAgents: false, companyChosen: false, bots: [] as string[] }
+  if (!isLibrary) return none
+  if (referrer && bots.some((b) => b.name === referrer)) {
+    return { allAgents: false, companyChosen: false, bots: [referrer] }
+  }
+  if (activeCompany !== null) return { allAgents: false, companyChosen: true, bots: [] }
+  return none
+}
 
 /** The device-flow provider a card is backed by, or `null` when the card isn't a
  *  provider we can enable one-tap sign-in for. Only GitHub is wired (P2b); the
@@ -99,9 +137,17 @@ export function ConnectorDetail({
     setSigninOpen(true)
   }
   // The connect flow's outcome once sealed/granted (seeded to an added state when
-  // the connector is already granted, so re-opening it shows the confirmation).
+  // the connector is already granted, so re-opening it shows the confirmation —
+  // with the connected identity when the card carries one, e.g. straight after a
+  // brokered sign-in's return hop).
+  const connectedAccount = React.useMemo(
+    () => (card.accounts ?? []).find((a) => a.status === 'active') ?? (card.accounts ?? [])[0] ?? null,
+    [card.accounts],
+  )
   const [added, setAdded] = React.useState<ConnectFlowResult | null>(
-    granted ? { restartHint: false } : null,
+    granted
+      ? { restartHint: false, accountRef: connectedAccount?.id ?? null, accountLabel: connectedAccount?.account_label ?? null }
+      : null,
   )
   const [localGrant, setLocalGrant] = React.useState<GrantScope>(granted)
 
@@ -123,9 +169,12 @@ export function ConnectorDetail({
     enabled: !botsOverride,
   })
   const bots: BotChoice[] = botsOverride ?? sessionsQuery.data ?? []
-  const [selectedBots, setSelectedBots] = React.useState<Set<string>>(
-    () => new Set(),
-  )
+  // The route the owner came FROM (a `/focus/<bot>` deep link into the store
+  // carries it as router state) — the referring bot preselects the grant target.
+  const location = useLocation()
+  const referrer = referringBot((location.state as { from?: string } | null)?.from ?? null)
+  const isMcpOauthCard = card.auth?.kind === 'mcp_oauth'
+  const [selectedBots, setSelectedBots] = React.useState<Set<string>>(() => new Set())
   const [allAgents, setAllAgents] = React.useState(false)
   // The active company (roster scope) is a third library grant target — "All bots
   // in this company". Only offered inside a company (`activeCompany !== null`).
@@ -172,7 +221,7 @@ export function ConnectorDetail({
     if (eligibleBots.length === 1) void runHandoff(eligibleBots[0].name)
     else if (eligibleBots.length > 1) setPickerOpen(true)
   }
-  const isMcpOauth = card.auth?.kind === 'mcp_oauth'
+  const isMcpOauth = isMcpOauthCard
   // With a company active in the library view, the company is the DEFAULT install
   // target — so one tap on "Install" grants the connector to `@company:<id>` and
   // it lands in the company store, no picker step required. HQ (no company) keeps
@@ -180,6 +229,22 @@ export function ConnectorDetail({
   const [companyChosen, setCompanyChosen] = React.useState(
     () => isLibrary && activeCompany !== null,
   )
+  // Preselect once the bot list has landed (the referrer must exist in it).
+  const preselected = React.useRef(false)
+  React.useEffect(() => {
+    if (preselected.current) return
+    if (!botsOverride && sessionsQuery.isLoading) return
+    preselected.current = true
+    const pre = preselectGrant({
+      isLibrary: grantTarget === null,
+      activeCompany: useUI.getState().activeCompany,
+      referrer,
+      bots,
+    })
+    if (pre.allAgents) setAllAgents(true)
+    if (pre.bots.length > 0) setSelectedBots(new Set(pre.bots))
+    if (pre.bots.length > 0 && !pre.companyChosen) setCompanyChosen(false)
+  }, [bots, botsOverride, sessionsQuery.isLoading, grantTarget, referrer])
   // "All agents" is a superset — when it is on, the per-bot rows AND the company
   // row show as checked (and locked), and the grant resolves to a single `*` row.
   const chosenTargets: string[] = allAgents
@@ -328,17 +393,32 @@ export function ConnectorDetail({
         onSubmit={onSubmit}
         onDone={(r) => setAdded(r)}
         initialAdded={!!added}
+        initialResult={added ?? undefined}
+        // Lane D (supermux-brokered OAuth): the sign-in lands on the FIRST chosen
+        // target and returns to this very sheet (`/store/<id>`).
+        oauthTarget={targetsFor()[0]}
+        oauthReturnTo={`/store/${encodeURIComponent(card.id)}`}
         submitLabel={needsSecret ? 'Connect' : grantTarget ? 'Add to this bot' : 'Add to a bot'}
         blockedLabel="Choose who gets it first"
         submitDisabled={needChoice}
-        suppressCta={isMcpOauth}
-        renderAddedExtra={() => <RestartTargets targets={addedTargets} bots={bots} />}
+        renderAddedExtra={() => (
+          <>
+            {isMcpOauth && connectedAccount && (
+              <OauthAccountActions
+                card={card}
+                account={connectedAccount}
+                target={addedTargets[0] ?? grantTarget ?? ALL_AGENTS}
+              />
+            )}
+            <RestartTargets targets={addedTargets} bots={bots} connectorId={card.id} />
+          </>
+        )}
       >
         {/* GRANT TO — the choose-who-gets-it step, library scope only. In a bot
             scope the sheet already carries the one target, so this is skipped.
-            An mcp_oauth card can't be granted without a bot signing in, so its
-            grant-only picker is meaningless — hidden (the handoff is its path). */}
-        {isLibrary && !isMcpOauth && (
+            A brokered-OAuth card shows it too (preselected, so its sign-in button
+            is never disabled on "choose who gets it first"). */}
+        {isLibrary && (
           <GrantPicker
             bots={bots}
             selectedBots={selectedBots}
@@ -349,6 +429,7 @@ export function ConnectorDetail({
             onToggleBot={toggleBot}
             onToggleAll={() => setAllAgents((v) => !v)}
             onToggleCompany={() => setCompanyChosen((v) => !v)}
+            warnAll={isMcpOauth ? 'This signs every bot in every company in as you.' : undefined}
           />
         )}
       </ConnectFlow>
@@ -378,33 +459,10 @@ export function ConnectorDetail({
         />
       )}
 
-      {/* Connect in a bot — the store→chat handoff. For mcp_oauth this IS the
-          single primary CTA (Lane D has no key to paste, so signing in inside a
-          bot's terminal is the only path). For every other lane it demotes to a
-          subtle text-link escape hatch — never a competing second big button. */}
-      {isMcpOauth ? (
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={onConnectInBot}
-            disabled={eligibleBots.length === 0 || handoffBusy !== null}
-            aria-label="Connect in a bot"
-            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60"
-          >
-            {handoffBusy && <Loader2 className="size-4 animate-spin" aria-hidden />}
-            {eligibleBots.length === 0
-              ? 'Create a bot first'
-              : handoffBusy
-                ? 'Opening bot…'
-                : 'Connect in a bot'}
-          </button>
-          {handoffError && (
-            <span className="text-[12px] text-destructive">
-              Couldn't open the connect card — try again.
-            </span>
-          )}
-        </div>
-      ) : eligibleBots.length > 0 ? (
+      {/* Connect in a bot — the store→chat handoff, the SECONDARY path on every
+          lane (a subtle text link, never a competing second big button). For a
+          brokered-OAuth card the primary is "Sign in with {name}" above. */}
+      {eligibleBots.length > 0 ? (
         <div className="flex flex-col gap-0.5">
           <button
             type="button"
@@ -502,90 +560,95 @@ function primaryCategory(card: Card): string | null {
   return (card.categories ?? []).find((c) => c !== 'featured') ?? null
 }
 
-/** The per-bot restart buttons, shown inside <ConnectFlow>'s added panel (via
- *  `renderAddedExtra`). One button per named grant target; for the `*` all-agents
- *  grant, one per known bot. A mid-turn bot asks for a confirm tap first — a running
- *  turn is never torn down by a stray tap. */
-function RestartTargets({ targets, bots }: { targets: string[]; bots: BotChoice[] }) {
+/** The per-bot restart affordance inside <ConnectFlow>'s added panel (via
+ *  `renderAddedExtra`). One row per named grant target; for the `*` all-agents
+ *  grant, one per known bot. Each row is SERVER-driven: it reads that bot's
+ *  `session_connectors` (`applied` / `running`) and shows "Restart to apply" only
+ *  while the bot is running on a launch that predates the grant — so the chip
+ *  survives the brokered sign-in's full-page redirect and never nags a stopped
+ *  bot (its next start binds). A mid-turn bot asks for a confirm tap first. */
+function RestartTargets({ targets, bots, connectorId }: { targets: string[]; bots: BotChoice[]; connectorId: string }) {
   const isAll = targets.includes(ALL_AGENTS)
-  const named = targets.filter((t) => t !== ALL_AGENTS)
+  const named = targets.filter((t) => t !== ALL_AGENTS && !t.startsWith('@company:'))
+  const companyTargets = targets.filter((t) => t.startsWith('@company:'))
   const restartTargets: BotChoice[] = isAll
     ? bots
-    : named.map((n) => bots.find((b) => b.name === n) ?? { name: n })
+    : companyTargets.length > 0
+      ? bots
+      : named.map((n) => bots.find((b) => b.name === n) ?? { name: n })
   if (restartTargets.length === 0) return null
   return (
     <div className="mt-1 flex flex-col gap-1.5">
-      {isAll && (
+      {(isAll || companyTargets.length > 0) && (
         <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Restart all granted bots
+          Restart running bots to apply
         </span>
       )}
       {restartTargets.map((b) => (
-        <RestartButton
-          key={b.name}
-          name={b.name}
-          label={displayLabel(b)}
-          busy={b.status === 'active' || b.status === 'starting'}
-        />
+        <RestartIfNeeded key={b.name} name={b.name} label={displayLabel(b)} connectorId={connectorId} />
       ))}
     </div>
   )
 }
 
-/** A single "Restart <bot>" action wired to `POST /api/sessions/{name}/restart`
- *  (the atomic stop→start; conversation, worktree and schedules survive, the live
- *  terminal is rebuilt so the new grants bind). Idempotent-safe: a bot that is
- *  mid-turn (`active`/`starting`) needs a second confirm tap before it fires, so a
- *  running turn is never torn down by a stray tap. */
-function RestartButton({ name, label, busy }: { name: string; label: string; busy: boolean }) {
-  type S = 'idle' | 'confirm' | 'running' | 'done' | 'error'
-  const [state, setState] = React.useState<S>('idle')
-
-  const run = async () => {
-    setState('running')
-    try {
-      await sessionsApi.restart(name)
-      setState('done')
-    } catch {
-      setState('error')
-    }
+/** One bot's server-computed restart state for `connectorId`: `!applied &&
+ *  running` → the RestartToApply chip; applied → "Applied"; stopped → nothing. */
+function RestartIfNeeded({ name, label, connectorId }: { name: string; label: string; connectorId: string }) {
+  const { data } = useSessionConnectors(name)
+  const grant = (data ?? []).find((g) => g.connector_id === connectorId)
+  if (!grant || !grant.running) return null
+  if (grant.applied === false) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12.5px] text-foreground/80">{label}</span>
+        <RestartToApply name={name} />
+      </div>
+    )
   }
-  const onClick = () => {
-    if (state === 'running' || state === 'done') return
-    if (state === 'idle' && busy) {
-      setState('confirm')
-      return
-    }
-    void run()
-  }
-
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={state === 'running' || state === 'done'}
-      aria-label={`Restart ${label}`}
-      className={cn(
-        'inline-flex h-9 items-center justify-center gap-1.5 self-start rounded-lg px-3 text-[12.5px] font-medium transition-colors',
-        state === 'confirm'
-          ? 'bg-status-active/15 text-status-active-ink hover:bg-status-active/25'
-          : state === 'done'
-            ? 'bg-status-ready/15 text-status-ready-ink'
-            : 'bg-foreground/[0.06] text-foreground hover:bg-foreground/10',
+    <span className="inline-flex items-center gap-1.5 text-[12px] text-status-ready-ink">
+      <Check className="size-3.5" aria-hidden />
+      {label} · applied
+    </span>
+  )
+}
+
+/** The brokered-OAuth account verbs in the added panel: Disconnect (keeps the
+ *  sealed sign-in for a reconnect), and "Sign in again" when the account is
+ *  expired / disconnected (re-seals the same vault row in place). */
+function OauthAccountActions({
+  card,
+  account,
+  target,
+}: {
+  card: Card
+  account: NonNullable<Card['accounts']>[number]
+  target: string
+}) {
+  const actions = useConnectorActions()
+  const dead = account.health === 'expired' || account.status === 'disconnected'
+  return (
+    <div className="flex flex-col gap-2">
+      {dead && (
+        <OauthConnectButton
+          card={card}
+          target={target}
+          returnTo={`/store/${encodeURIComponent(card.id)}`}
+          label={`Sign in again with ${card.display_name}`}
+        />
       )}
-    >
-      {state === 'running' && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-      {state === 'done' && <Check className="size-3.5" aria-hidden />}
-      {state === 'confirm'
-        ? `${label} is mid-turn — restart anyway?`
-        : state === 'running'
-          ? 'Restarting…'
-          : state === 'done'
-            ? 'Restarted'
-            : state === 'error'
-              ? 'Restart failed — retry'
-              : `Restart ${label}`}
-    </button>
+      {account.status !== 'disconnected' && (
+        <button
+          type="button"
+          onClick={() => void actions.disconnect(card.id, account.id)}
+          disabled={actions.pending}
+          className="inline-flex h-9 items-center gap-1.5 self-start rounded-lg bg-foreground/[0.06] px-3 text-[12.5px] font-medium text-foreground transition-colors hover:bg-foreground/10 disabled:opacity-60"
+        >
+          <Unplug className="size-3.5" aria-hidden />
+          Disconnect
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -604,6 +667,7 @@ function GrantPicker({
   onToggleBot,
   onToggleAll,
   onToggleCompany,
+  warnAll,
 }: {
   bots: BotChoice[]
   selectedBots: Set<string>
@@ -615,6 +679,9 @@ function GrantPicker({
   onToggleBot: (name: string) => void
   onToggleAll: () => void
   onToggleCompany: () => void
+  /** A one-line confirm shown under "All agents" while it is on (a personal
+   *  OAuth identity granted box-wide deserves a sentence). */
+  warnAll?: string
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -628,6 +695,9 @@ function GrantPicker({
           label="All agents"
           sub="Every bot — now and future"
         />
+        {allAgents && warnAll && (
+          <p data-vr="grant-all-warn" className="px-2.5 pb-1 text-[12px] text-status-active-ink">{warnAll}</p>
+        )}
         {company && (
           // "All agents" supersets the company, so lock this row while it is on.
           <GrantOption

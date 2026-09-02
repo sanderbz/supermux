@@ -17,8 +17,10 @@
  *     button, never a fake key field.
  *   · B `api_key` → one secret field + a "Get your key →" link + a one-line steer.
  *   · C `form` → the identity + secret + non-secret fields the schema declares.
- *   · D `mcp_oauth` → an HONEST note ("signs in in your bot's terminal") — NO key
- *     field, NO sign-in button; the client drives it at first use.
+ *   · D `mcp_oauth` → "Sign in with {name}": supermux BROKERS the OAuth (start →
+ *     the provider's consent page, same tab → back here). No key field. Rendered
+ *     by `<OauthConnectButton>` when the surface names a target (`oauthTarget`),
+ *     else via the caller's `onSignIn`, else an honest "sign in from the store".
  *   · E `none` → "No sign-in needed" (now TRUE, only for kind=none).
  *
  * Chrome is per-surface (`variant`): the chat card wraps this in `DialogShell`, the
@@ -31,7 +33,7 @@
  * runtime import stays relative, exactly like `connect-card.tsx` / `live-layer.tsx`.
  */
 import * as React from 'react'
-import { ArrowUpRight, Check, Copy, Loader2, Lock, Terminal } from 'lucide-react'
+import { ArrowUpRight, Check, Copy, Loader2, Lock } from 'lucide-react'
 
 import {
   connectorAuthKind,
@@ -51,6 +53,7 @@ import {
   CredentialTextField as TextField,
   defaultStr,
 } from './credential-fields'
+import { OauthConnectButton } from './oauth-connect-button'
 
 /** The outcome of a successful seal — what the surface + the test leg need. */
 export interface ConnectFlowResult {
@@ -103,6 +106,13 @@ export interface ConnectFlowProps {
   renderAddedExtra?: (r: ConnectFlowResult) => React.ReactNode
   /** Seed straight to the added state (store re-opening an already-granted card). */
   initialAdded?: boolean
+  /** With `initialAdded`: what to show ("Connected as …", the test leg's account). */
+  initialResult?: ConnectFlowResult
+  /** Lane D (`mcp_oauth`, supermux-brokered): the grant target the sign-in lands
+   *  on. When set, the lane renders `<OauthConnectButton>` (same-tab hop). */
+  oauthTarget?: string
+  /** Lane D: the same-origin path the provider sends the owner back to. */
+  oauthReturnTo?: string
 }
 
 // The `device` phase renders the code panel + runs the poll loop; it subsumes the
@@ -125,6 +135,9 @@ export function ConnectFlow({
   children,
   renderAddedExtra,
   initialAdded,
+  initialResult,
+  oauthTarget,
+  oauthReturnTo,
 }: ConnectFlowProps) {
   const kind = connectorAuthKind(card)
   const secret = secretField(card)
@@ -143,7 +156,7 @@ export function ConnectFlow({
   const [secretVal, setSecretVal] = React.useState('')
   const [reveal, setReveal] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [result, setResult] = React.useState<ConnectFlowResult | null>(null)
+  const [result, setResult] = React.useState<ConnectFlowResult | null>(initialResult ?? null)
   // Lane A device sub-flow: the started grant (code + verification URL + handle).
   const [dev, setDev] = React.useState<DeviceStart | null>(null)
   const pollRef = React.useRef<number | null>(null)
@@ -290,7 +303,9 @@ export function ConnectFlow({
   }
 
   const chat = variant === 'chat'
-  const showCta = keyLaneOpen && !suppressCta // during the OAuth lead the "Sign in" button is the primary; mcp_oauth suppresses it entirely (store)
+  // During the OAuth lead the "Sign in" button is the primary. Lane D never shows
+  // the key/Add CTA: signing in IS its connect (a grant with no token is a 401).
+  const showCta = keyLaneOpen && !suppressCta && !isMcpOauth
   const ctaBase = submitLabel ?? (needsSecret ? 'Connect' : 'Add')
   const ctaLabel =
     phase === 'saving' ? 'Connecting…' : submitDisabled && blockedLabel ? blockedLabel : ctaBase
@@ -341,16 +356,41 @@ export function ConnectFlow({
         </div>
       )}
 
-      {/* Lane D — hosted MCP that signs in in the bot's terminal (no key here). */}
+      {/* Lane D — a hosted MCP whose sign-in supermux BROKERS. One button: the
+          same-tab hop to the provider and straight back here. */}
       {isMcpOauth && (
-        <div
-          className={cn(
-            'flex items-start gap-2 rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.45]',
-            chat ? 'mt-[11px] bg-fill-soft text-ink-2' : 'bg-muted/50 text-muted-foreground',
+        <div className={cn('flex flex-col gap-2', chat ? 'mt-[13px]' : '')}>
+          {oauthTarget ? (
+            <OauthConnectButton
+              card={card}
+              target={oauthTarget}
+              returnTo={oauthReturnTo ?? '/store'}
+              chat={chat}
+              disabled={submitDisabled}
+            />
+          ) : onSignIn ? (
+            <button
+              type="button"
+              onClick={startSignIn}
+              disabled={submitDisabled}
+              data-vr="connect-oauth"
+              className={cn(
+                chat
+                  ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
+                  : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
+              )}
+            >
+              Sign in with {card.display_name}
+            </button>
+          ) : null}
+          {submitDisabled && blockedLabel && (
+            <p className={cn('text-[12px]', chat ? 'text-ink-3' : 'text-muted-foreground')}>{blockedLabel}</p>
           )}
-        >
-          <Terminal className="mt-px size-4 shrink-0" aria-hidden />
-          <span>{auth?.help_text || `${card.display_name} signs in the first time your bot uses it — approve it in the bot's terminal. There's no key to paste here.`}</span>
+          <p className={cn('text-[12px] leading-[1.4]', chat ? 'text-ink-3' : 'text-muted-foreground')}>
+            {oauthTarget || onSignIn
+              ? `Tap Sign in with ${card.display_name} — you'll come straight back here.`
+              : (auth?.help_text || `Sign in with ${card.display_name} from the store — supermux keeps the sign-in for the bots you choose.`)}
+          </p>
         </div>
       )}
 
@@ -624,7 +664,7 @@ function AddedBlock({
         </p>
       )}
       {result?.restartHint && (
-        <p className="text-[12.5px] text-muted-foreground">Restart the bot to apply — grants bind at the next launch.</p>
+        <p className="text-[12.5px] text-muted-foreground">Restart the bot to apply.</p>
       )}
       <TestRow card={card} accountRef={accountRef} />
       {result && renderAddedExtra?.(result)}
@@ -638,8 +678,8 @@ function TestRow({ card, accountRef, chat }: { card: ConnectorCard; accountRef: 
   const [state, setState] = React.useState<TestState>('idle')
   const [note, setNote] = React.useState<{ message: string; tone: 'ok' | 'bad' | 'muted' } | null>(null)
 
-  // No connected account to probe (identity-less seal, or an mcp_oauth/none lane):
-  // fall back to the honest agent-as-probe line rather than a fake green.
+  // No connected account to probe (identity-less seal, or a `none` lane): fall
+  // back to the honest agent-as-probe line rather than a fake green.
   if (!accountRef) {
     return (
       <p className={cn('text-[12px] leading-[1.4]', chat ? 'text-ink-3' : 'text-muted-foreground')}>

@@ -8,7 +8,15 @@ import * as React from 'react'
 import { AlertTriangle, Loader2, Plus, RotateCw } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { companyGrantKey, connectorNeedsCredential, toolCountLabel, type SessionConnector } from '@/lib/api/connectors'
+import {
+  companyGrantKey,
+  connectorAuthKind,
+  connectorNeedsCredential,
+  connectorStatus,
+  toolCountLabel,
+  type ConnectorChip,
+  type SessionConnector,
+} from '@/lib/api/connectors'
 import { useSessionConnectors, useConnectorActions } from '@/stores/connectors-store'
 import { useSession } from '@/hooks/use-sessions'
 import { useRecovery } from '@/hooks/use-recovery'
@@ -220,14 +228,35 @@ function ConnectorRow({
 }) {
   const card = grant.card
   const tools = card ? toolCountLabel(card) : ''
-  // "Needs sign-in" now derives from the connector's real AUTH LANE, not the old
-  // `!has_secret && credentials.some(sensitive)` heuristic that painted a hosted
-  // mcp_oauth connector (no vaulted secret, signs in in the terminal) a false green
-  // "Active" AND flagged a no-auth `none` connector as needing a sign-in it doesn't.
-  // Only the paste / supermux-OAuth lanes count as "needs a credential from you".
-  const needsSignIn = card ? connectorNeedsCredential(card) && !grant.has_secret : false
+  const kind = card ? connectorAuthKind(card) : 'unspecified'
+  const isMcpOauth = kind === 'mcp_oauth'
+  // "Needs sign-in" derives from the connector's real AUTH LANE (never a
+  // brand regex), plus — for a supermux-brokered OAuth grant — the ACCOUNT the
+  // grant feeds: a token the server marked expired/disconnected is a bot that
+  // will meet a 401, so it never reads green.
+  const account = grant.account ?? null
+  const needsSignIn = card
+    ? (connectorNeedsCredential(card) && !grant.has_secret) ||
+      (isMcpOauth && (!grant.has_secret || (account !== null && (account.status !== 'active' || account.health === 'expired'))))
+    : false
+  // The restart chip is SERVER-computed (`applied` vs the bot's `last_started`),
+  // so it survives the sign-in's full-page redirect; the React-local flag only
+  // bridges the moment between a toggle here and the next refetch.
+  const { session } = useSession(botName)
+  const serverRestart = grant.applied === false && grant.running === true
+  const showRestart = restartPending || serverRestart
+  const status: ConnectorChip | null = card
+    ? connectorStatus(card, { grant, account, sessionStatus: session?.status ?? null })
+    : null
   const actions = useConnectorActions()
   const [busy, setBusy] = React.useState(false)
+  const signInHere = () => {
+    if (isMcpOauth) {
+      void actions.signIn(grant.connector_id, botName, `/focus/${encodeURIComponent(botName)}`)
+    } else {
+      onSignIn()
+    }
+  }
 
   // A grant reaching this bot via a broader scope (all-agents OR its company) is
   // read-only on this row — you flip it from the store, at that scope.
@@ -268,9 +297,15 @@ function ConnectorRow({
 
         {/* status / affordance cluster */}
         {needsSignIn ? (
-          <StatusChip needsSignIn onSignIn={onSignIn} />
-        ) : restartPending ? (
+          <StatusChip
+            needsSignIn
+            onSignIn={signInHere}
+            signInLabel={isMcpOauth && card ? `Sign in with ${card.display_name}` : undefined}
+          />
+        ) : showRestart ? (
           <StatusChip restartPending />
+        ) : status && (status.key === 'stale' || status.key === 'broken' || status.key === 'not_verified') ? (
+          <StatusChip status={status} />
         ) : shared ? (
           // Shared grants (all-agents / company) are read-only here — show state,
           // not a control.
@@ -301,13 +336,28 @@ function ConnectorRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {restartPending && (
+      {showRestart && (
         <div className="ml-[3rem] flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 text-[11.5px] text-status-active-ink">
             <AlertTriangle className="size-3 shrink-0" aria-hidden />
             Restart to apply this grant.
           </span>
           <RestartToApply name={botName} />
+        </div>
+      )}
+      {!needsSignIn && !showRestart && status?.key === 'stale' && (
+        <div className="ml-[3rem] flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-status-active-ink">
+            <AlertTriangle className="size-3 shrink-0" aria-hidden />
+            The sign-in this bot started with is getting old.
+          </span>
+          <button
+            type="button"
+            onClick={signInHere}
+            className="inline-flex min-h-8 items-center rounded-lg bg-foreground/[0.06] px-2.5 text-[12px] font-semibold text-foreground hover:bg-foreground/10"
+          >
+            Sign in again
+          </button>
         </div>
       )}
     </li>
@@ -348,16 +398,29 @@ function RowToggle({
   )
 }
 
+const STATUS_TONE: Record<ConnectorChip['tone'], string> = {
+  active: 'bg-status-ready/12 text-status-ready-ink',
+  warn: 'bg-status-active/12 text-status-active-ink',
+  error: 'bg-destructive/12 text-destructive',
+  muted: 'bg-muted text-muted-foreground',
+}
+
 function StatusChip({
   enabled,
   needsSignIn,
   restartPending,
   onSignIn,
+  signInLabel,
+  status,
 }: {
   enabled?: boolean
   needsSignIn?: boolean
   restartPending?: boolean
   onSignIn?: () => void
+  /** Brokered OAuth: the row's sign-in button reads "Sign in with {name}". */
+  signInLabel?: string
+  /** A generic honest chip (`stale` / `broken` / `not_verified`). */
+  status?: ConnectorChip
 }) {
   if (needsSignIn) {
     // Actionable: opens the connector's sign-in flow instead of sitting inert.
@@ -366,11 +429,21 @@ function StatusChip({
         type="button"
         onClick={onSignIn}
         data-vr="connector-signin"
-        aria-label="Sign in to this connector"
+        aria-label={signInLabel ?? 'Sign in to this connector'}
         className="inline-flex items-center gap-1 rounded-full bg-status-active/12 px-2.5 py-1 text-[11.5px] font-semibold text-status-active-ink transition-colors hover:bg-status-active/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Needs sign-in
+        {signInLabel ?? 'Needs sign-in'}
       </button>
+    )
+  }
+  if (status) {
+    return (
+      <span
+        className={cn('inline-flex max-w-[16rem] items-center gap-1 truncate rounded-full px-2.5 py-1 text-[11.5px] font-medium', STATUS_TONE[status.tone])}
+        title={status.label}
+      >
+        {status.key === 'broken' ? 'Broken' : status.key === 'not_verified' ? 'Not verified yet' : status.label}
+      </span>
     )
   }
   if (restartPending) {

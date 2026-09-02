@@ -83,7 +83,7 @@ pub fn connector_provider(id: &str) -> Option<&'static str> {
 /// [`crate::connectors::api::get_one`] falls back to. `cached_cards()` always folds
 /// the curated set in (`merge_featured`), so a cold mirror still resolves
 /// `pmcp-github`.
-async fn catalog_card(id: &str) -> Option<Value> {
+pub(super) async fn catalog_card(id: &str) -> Option<Value> {
     catalog::mirror()
         .cached_cards()
         .await
@@ -107,7 +107,7 @@ async fn catalog_has(id: &str) -> bool {
 /// Provenance = `{ imported:true }` only (secret-free, same as `store_manifest`):
 /// `derive_auth` STEP 0 re-derives the `oauth_device` lane from the registered app,
 /// so no auth descriptor needs persisting.
-async fn ensure_connector_installed(state: &AppState, id: &str) -> Result<(), AppError> {
+pub(super) async fn ensure_connector_installed(state: &AppState, id: &str) -> Result<(), AppError> {
     if connectors::get(&state.pool, id).await.map_err(db_err)?.is_some() {
         return Ok(());
     }
@@ -351,7 +351,11 @@ pub fn router_for(state: AppState) -> Router {
             post(device_start),
         )
         .route("/api/connectors/{id}/oauth/device/poll", post(device_poll))
-        .with_state(state)
+        .with_state(state.clone())
+        // The supermux-brokered authorization-code lane for remote MCP servers
+        // (`/oauth/start` + `/oauth/complete`, owner/admin-only inside). The
+        // PUBLIC callback is merged separately in `http::router`.
+        .merge(super::oauth_code::protected_routes(state))
 }
 
 // ── registration (owner/admin only) ─────────────────────────────────────────────
@@ -945,7 +949,7 @@ fn provider_error(context: &str, detail: &str, secrets: &[&str]) -> AppError {
 /// Normalize a grant scope string onto its stored `session_connectors.session_name`
 /// (mirrors the api.rs helper): `all`/`*` → `*`, `company:<id>` → `@company:<id>`,
 /// else pass-through.
-fn normalize_session(s: &str) -> String {
+pub(super) fn normalize_session(s: &str) -> String {
     let t = s.trim();
     if t == "all" || t == connectors::ALL_AGENTS {
         connectors::ALL_AGENTS.to_string()
@@ -956,12 +960,12 @@ fn normalize_session(s: &str) -> String {
     }
 }
 
-fn db_err(e: sqlx::Error) -> AppError {
+pub(super) fn db_err(e: sqlx::Error) -> AppError {
     AppError::Internal(anyhow::anyhow!(e))
 }
 
 /// Audit row — KEYS / ids only, NEVER a secret value.
-async fn audit(state: &AppState, action: &str, id: &str, detail: Value) {
+pub(super) async fn audit(state: &AppState, action: &str, id: &str, detail: Value) {
     crate::db::audit::log(&state.pool, "user", action, id, detail)
         .await
         .ok();

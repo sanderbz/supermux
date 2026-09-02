@@ -111,7 +111,7 @@ fn how_to_for(auth_kind: &str, help_url: Option<&str>, help_text: Option<&str>) 
         return t.to_string();
     }
     match auth_kind {
-        "mcp_oauth" => "Signs in the first time your bot uses it, right in the bot's terminal. Nothing to paste here.".to_string(),
+        "mcp_oauth" => "The human connects this in the supermux app (Store → Connect). Do NOT run OAuth yourself and do not open localhost callbacks.".to_string(),
         "oauth_device" => "One-tap sign-in: you'll get a short code to approve in your browser.".to_string(),
         "api_key" => match help_url {
             Some(u) => format!("Paste an API key/token — get one at {u}."),

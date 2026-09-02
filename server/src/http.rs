@@ -86,6 +86,12 @@ pub fn router(state: AppState) -> Router {
         // Merged OUTSIDE the bearer layer, beside the public router. Inert unless
         // `config.human_auth` is configured (routes 404 / return not-authenticated).
         .merge(auth_human::router::router_for(state.clone()))
+        // Connector-OAuth PUBLIC callback (`GET /api/oauth/callback`). Outside the
+        // bearer layer AND outside `member_allowlist_mw` on purpose: the provider
+        // redirects the owner's browser here with no credential. It exchanges the
+        // code and stashes the tokens in RAM only — the authenticated
+        // `/oauth/complete` is what seals + grants. Uniform 302 on every failure.
+        .merge(crate::connectors::oauth_code::public_router_for(state.clone()))
         // Embedded SPA — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
         // assets or the SPA shell (with `window._SUPERMUX_AUTH_TOKEN` injected). The

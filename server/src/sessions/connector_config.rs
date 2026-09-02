@@ -536,6 +536,9 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
         let agent_inbox_addr = agent_inbox_address(state, session_name).await;
 
         let mut resolved: Vec<ResolvedGrant> = Vec::new();
+        // Env-var names already claimed by a brokered-OAuth grant in THIS launch
+        // (so `a-b` and `a_b` never collide on one bot).
+        let mut oauth_env_taken: std::collections::HashSet<String> = std::collections::HashSet::new();
         for g in &grants {
             let Some(connector) = connectors::get(&state.pool, &g.connector_id).await? else {
                 tracing::warn!(connector = %g.connector_id, "connector launch: grant references a missing connector; skipping");
@@ -573,6 +576,35 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 }
             }
             let secrets = resolve_secret(state, vault.as_ref(), g).await;
+            // Supermux-brokered remote OAuth: refresh-at-launch + inject ONLY the
+            // access token as `headers.Authorization = "Bearer ${VAR}"` (the
+            // refresh token / expiry / meta never enter the child env).
+            let (mut emit, mut secrets, oauth) = crate::connectors::oauth_code::apply_to_launch(
+                state,
+                vault.as_ref(),
+                g,
+                emit,
+                secrets,
+                &mut oauth_env_taken,
+            )
+            .await;
+            match oauth {
+                crate::connectors::oauth_code::OauthLaunch::Injected => {
+                    // A `*` (all-agents) grant of a personal identity into every
+                    // company's bots must be visible in the journal.
+                    let company_id = company_id_of(state, session_name).await;
+                    tracing::info!(connector = %g.connector_id, target = %session_name, ?company_id, "connector launch: brokered OAuth token injected");
+                }
+                crate::connectors::oauth_code::OauthLaunch::NeedsSignIn => {
+                    tracing::info!(connector = %g.connector_id, target = %session_name, "connector launch: brokered OAuth token is stale and could not be refreshed — the bot will see the server's own 401 (sign in again from the store)");
+                }
+                crate::connectors::oauth_code::OauthLaunch::NotOauth => {
+                    // A PAT-style hosted remote (Lane B with a `url`): send the
+                    // sealed token as a bearer. Fixes pmcp-github / pmcp-stripe,
+                    // which granted fine and then never authenticated.
+                    inject_remote_bearer(&connector, &mut emit, &mut secrets);
+                }
+            }
             // Peel FILE credentials out of the env map using the connector's schema:
             // a `file_env` field is materialized to a 0600 file at launch and its env
             // var points at the PATH — the content is never an env value.
@@ -711,6 +743,39 @@ async fn agent_inbox_address(state: &AppState, session_name: &str) -> Option<Str
     let company_id = session.company_id?;
     let cfg = crate::external_access::store::read_or_default(&state.config.data_dir).ok()?;
     crate::external_access::store::agent_inbox_for(&cfg, company_id).map(|a| a.address.clone())
+}
+
+/// This session's company id (display context for the OAuth injection log line).
+async fn company_id_of(state: &AppState, session_name: &str) -> Option<i64> {
+    crate::db::sessions::get(&state.pool, session_name)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.company_id)
+}
+
+/// A PAT-style hosted remote (`url` emit + a Lane B `token_field` whose value is
+/// in `secrets`) gets `headers.Authorization = "Bearer ${<token_field>}"` — unless
+/// the emit already declares `headers` (never overwritten). Pure; stdio untouched.
+pub fn inject_remote_bearer(
+    connector: &connectors::Connector,
+    emit: &mut Value,
+    secrets: &mut BTreeMap<String, String>,
+) {
+    let has_url = emit.get("url").and_then(Value::as_str).is_some_and(|u| !u.trim().is_empty());
+    if !has_url || emit.get("headers").is_some() {
+        return;
+    }
+    let Some(field) = crate::connectors::health::token_field_for(connector) else { return };
+    if !secrets.contains_key(&field) {
+        return;
+    }
+    if let Some(obj) = emit.as_object_mut() {
+        obj.insert(
+            "headers".to_string(),
+            json!({ "Authorization": format!("Bearer ${{{field}}}") }),
+        );
+    }
 }
 
 /// Decrypt a grant's secret field-map, or return an empty map (no secret / a
@@ -998,6 +1063,150 @@ mod tests {
             "assembling a launch must never spawn chrome"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── supermux-brokered remote OAuth at launch (§7.2) ──────────────────────
+
+    /// Seal `fields` for `connector_id` into a fresh vault row + an account + a
+    /// grant to `session`, returning `(secret_ref, account_ref)`.
+    async fn seed_oauth_grant(
+        state: &crate::state::AppState,
+        connector_id: &str,
+        session: &str,
+        fields: &BTreeMap<String, String>,
+    ) -> (String, String) {
+        let vault = Vault::open(&state.config.data_dir).unwrap();
+        let sealed = vault.seal(fields).unwrap();
+        let secret_ref = uuid::Uuid::new_v4().to_string();
+        connectors::vault_put(&state.pool, &secret_ref, connector_id, &sealed.fields_enc, &sealed.nonce, false)
+            .await
+            .unwrap();
+        let account_ref = connectors::account_add(&state.pool, connector_id, "owner@test", Some(&secret_ref), None)
+            .await
+            .unwrap();
+        connectors::grant_with_account(&state.pool, session, connector_id, Some(&secret_ref), true, Some(&account_ref))
+            .await
+            .unwrap();
+        (secret_ref, account_ref)
+    }
+
+    fn oauth_fields(access: &str, refresh: Option<&str>, expires_at: i64) -> BTreeMap<String, String> {
+        use crate::connectors::oauth_code as oc;
+        let mut f = BTreeMap::new();
+        f.insert(oc::ACCESS_TOKEN_FIELD.to_string(), access.to_string());
+        if let Some(r) = refresh {
+            f.insert(oc::REFRESH_TOKEN_FIELD.to_string(), r.to_string());
+        }
+        f.insert(oc::EXPIRES_AT_FIELD.to_string(), expires_at.to_string());
+        f.insert(
+            oc::META_FIELD.to_string(),
+            json!({ "issuer": "https://as.example", "token_endpoint": "https://as.example/token", "client_id": "cid", "resource": "https://app.example/mcp", "redirect_uri": "https://box/api/oauth/callback" }).to_string(),
+        );
+        f
+    }
+
+    #[tokio::test]
+    async fn a_remote_oauth_grant_injects_only_the_access_token_as_a_bearer_header() {
+        let (state, dir) = browser_state().await;
+        connectors::upsert(&state.pool, "remote-oauth", "mcp_catalog", "Remote", "", "", "[]", "[]",
+            &json!({ "url": "https://app.example/mcp" }).to_string(), r#"{"auth":{"kind":"mcp_oauth"}}"#)
+            .await
+            .unwrap();
+        crate::db::sessions::insert_minimal(&state.pool, "alice", "/tmp", "claude").await.unwrap();
+        // Fresh for an hour: no refresh attempt (no network in this test).
+        let fields = oauth_fields("tok", Some("r"), chrono::Utc::now().timestamp() + 3600);
+        let (_sr, account_ref) = seed_oauth_grant(&state, "remote-oauth", "alice", &fields).await;
+
+        let fin = assemble(&state, "alice").await.unwrap().expect("active config");
+        let cfg = mcp_config_json(&fin);
+        let entry = &cfg["mcpServers"]["remote-oauth"];
+        assert_eq!(entry["type"], json!("http"));
+        assert_eq!(entry["url"], json!("https://app.example/mcp"));
+        assert_eq!(entry["headers"]["Authorization"], json!("Bearer ${SUPERMUX_MCP_TOKEN_REMOTE_OAUTH}"));
+        // The env carries EXACTLY the access token under the placeholder name.
+        assert_eq!(fin.env.get("SUPERMUX_MCP_TOKEN_REMOTE_OAUTH").map(String::as_str), Some("tok"));
+        assert!(!fin.env.values().any(|v| v == "r"), "the refresh token never enters the child env");
+        assert!(!fin.env.contains_key("MCP_OAUTH_REFRESH_TOKEN"));
+        assert!(!fin.env.contains_key("MCP_OAUTH_META"));
+        // No plaintext in the launch flags or the settings overlay.
+        let flags = fin.launch_flags.join(" ");
+        assert!(!flags.contains("tok") || flags.contains("${SUPERMUX_MCP_TOKEN"), "flags: {flags}");
+        assert!(!flags.contains("\"r\""));
+        let settings = std::fs::read_to_string(settings_flag(&fin).unwrap()).unwrap();
+        assert!(!settings.contains("tok") && !settings.contains("MCP_OAUTH"), "settings leaked: {settings}");
+        // `last_used_at` was stamped for the account.
+        let a = connectors::account_get(&state.pool, &account_ref).await.unwrap().unwrap();
+        assert!(a.last_used_at > 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_with_no_refresh_still_emits_the_entry_and_flags_sign_in() {
+        use crate::connectors::oauth_code::{apply_to_launch, OauthLaunch};
+        let (state, dir) = browser_state().await;
+        connectors::upsert(&state.pool, "remote-oauth", "mcp_catalog", "Remote", "", "", "[]", "[]",
+            &json!({ "url": "https://app.example/mcp" }).to_string(), "{}")
+            .await
+            .unwrap();
+        // Expired an hour ago, no refresh token: nothing to refresh with.
+        let fields = oauth_fields("stale", None, chrono::Utc::now().timestamp() - 3600);
+        let (_sr, account_ref) = seed_oauth_grant(&state, "remote-oauth", "bob", &fields).await;
+        let grant = connectors::grants_for_session(&state.pool, "bob").await.unwrap().remove(0);
+        let vault = Vault::open(&state.config.data_dir).unwrap();
+        let mut taken = std::collections::HashSet::new();
+        let (emit, secrets, outcome) =
+            apply_to_launch(&state, Some(&vault), &grant, json!({ "url": "https://app.example/mcp" }), fields, &mut taken).await;
+        assert_eq!(outcome, OauthLaunch::NeedsSignIn);
+        // Still emitted with the stale bearer, so the bot sees the server's own 401.
+        assert_eq!(emit["headers"]["Authorization"], json!("Bearer ${SUPERMUX_MCP_TOKEN_REMOTE_OAUTH}"));
+        assert_eq!(emit["type"], json!("http"));
+        assert_eq!(secrets.get("SUPERMUX_MCP_TOKEN_REMOTE_OAUTH").map(String::as_str), Some("stale"));
+        assert_eq!(secrets.len(), 1);
+        let a = connectors::account_get(&state.pool, &account_ref).await.unwrap().unwrap();
+        assert!(a.last_used_at > 0, "stamped even on the stale path");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pat_style_remote_gets_its_bearer_header() {
+        let row = |id: &str, emit: Value| connectors::Connector {
+            id: id.to_string(),
+            kind: "mcp_catalog".to_string(),
+            display_name: id.to_string(),
+            icon: String::new(),
+            description: String::new(),
+            tools_json: "[]".to_string(),
+            credentials_json: "[]".to_string(),
+            emit_json: emit.to_string(),
+            source_json: "{}".to_string(),
+            created_at: 0,
+        };
+        let mut secrets = BTreeMap::new();
+        secrets.insert("GITHUB_TOKEN".to_string(), "pat".to_string());
+
+        // pmcp-github: curated token_field GITHUB_TOKEN + a url emit → header.
+        let gh = row("pmcp-github", json!({ "type": "http", "url": "https://api.githubcopilot.com/mcp/" }));
+        let mut emit = json!({ "type": "http", "url": "https://api.githubcopilot.com/mcp/" });
+        inject_remote_bearer(&gh, &mut emit, &mut secrets);
+        assert_eq!(emit["headers"]["Authorization"], json!("Bearer ${GITHUB_TOKEN}"));
+        assert_eq!(secrets.get("GITHUB_TOKEN").map(String::as_str), Some("pat"), "the env still carries it");
+
+        // A stdio card is untouched.
+        let stdio = row("pmcp-github", json!({ "command": "npx", "args": ["x"] }));
+        let mut emit = json!({ "command": "npx", "args": ["x"] });
+        inject_remote_bearer(&stdio, &mut emit, &mut secrets);
+        assert!(emit.get("headers").is_none());
+
+        // An existing headers map is never overwritten.
+        let mut emit = json!({ "url": "https://api.githubcopilot.com/mcp/", "headers": { "X-Api-Key": "${GITHUB_TOKEN}" } });
+        inject_remote_bearer(&gh, &mut emit, &mut secrets);
+        assert!(emit["headers"].get("Authorization").is_none());
+        assert_eq!(emit["headers"]["X-Api-Key"], json!("${GITHUB_TOKEN}"));
+
+        // No secret value for the field → no header.
+        let mut emit = json!({ "url": "https://api.githubcopilot.com/mcp/" });
+        inject_remote_bearer(&gh, &mut emit, &mut BTreeMap::new());
+        assert!(emit.get("headers").is_none());
     }
 
     /// Seed a mail connector card whose emit carries an `env` block (the shared

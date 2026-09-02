@@ -84,3 +84,51 @@ export async function deleteOauthApp(
       : `/api/oauth/apps/${provider}/${companyId}`
   await settingsRequest(path, { method: 'DELETE' })
 }
+
+// ── supermux-brokered remote-MCP OAuth (the `mcp_oauth` lane) ─────────────────
+//
+// SECRET HYGIENE: the client only ever sees the provider's `authorize_url` and an
+// opaque `state`. The PKCE verifier, the DCR client secret and the tokens live
+// server-side; the public callback stashes the exchange in RAM and the
+// AUTHENTICATED `complete` is what seals + grants. The `state` is kept in
+// `sessionStorage` (this tab), never in a URL.
+
+export interface McpOauthStart {
+  /** The provider's consent page — `location.assign` it (same tab, iOS PWA). */
+  authorize_url: string
+  /** Opaque; the finishing `complete` call needs it back. */
+  state: string
+  expires_in: number
+}
+
+export interface McpOauthComplete {
+  ok: boolean
+  account_ref: string
+  /** The connected identity ("sander@…"), or the resource host as a fallback. */
+  label: string
+  /** The REAL probe verdict written for the account: only `ok` is green. */
+  health: { status: string | null; error?: string | null }
+  target: string
+}
+
+/** `POST /api/connectors/{id}/oauth/start { session_name, return_to }`. */
+export async function startMcpOauth(
+  id: string,
+  args: { session_name: string; return_to: string },
+): Promise<McpOauthStart> {
+  return settingsRequest<McpOauthStart>(`/api/connectors/${encodeURIComponent(id)}/oauth/start`, {
+    method: 'POST',
+    body: JSON.stringify(args),
+  })
+}
+
+/** `POST /api/connectors/{id}/oauth/complete { state }` — the finishing step. */
+export async function completeMcpOauth(
+  id: string,
+  args: { state: string },
+): Promise<McpOauthComplete> {
+  return settingsRequest<McpOauthComplete>(`/api/connectors/${encodeURIComponent(id)}/oauth/complete`, {
+    method: 'POST',
+    body: JSON.stringify(args),
+  })
+}

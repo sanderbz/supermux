@@ -136,8 +136,9 @@ export function ConnectorCard({
 }
 
 /** The ease pill — surfaces the zero-setup lanes so a non-technical user reaches
- *  for them first. `mcp_oauth` (the bot signs in in its own terminal, no app, no
- *  key) is the EASIEST; `oauth_device` is one-tap once an owner has enabled it.
+ *  for them first. `mcp_oauth` (supermux brokers a browser sign-in: two taps + a
+ *  consent, no key) reads "Sign in"; `oauth_device` is one-tap once an owner has
+ *  enabled it.
  *  Grok-token styled and kept SUBTLE (quieter than the Official badge). Nothing
  *  for the paste/none lanes — the absence is the signal. */
 export function EaseBadge({ card }: { card: Card }) {
@@ -147,10 +148,10 @@ export function EaseBadge({ card }: { card: Card }) {
       <span
         className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium"
         style={{ color: 'var(--gr-done)', background: 'color-mix(in oklab, var(--gr-done) 13%, transparent)' }}
-        title="Easiest — your bot signs in from its own terminal. No app, no key to set up."
+        title="Sign in once in your browser — supermux keeps the sign-in for the bots you choose."
       >
         <Sparkles className="size-3" aria-hidden />
-        Easiest
+        Sign in
       </span>
     )
   }

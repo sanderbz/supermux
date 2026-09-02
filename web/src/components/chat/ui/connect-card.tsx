@@ -66,6 +66,9 @@ export interface ConnectCardProps {
   onSignIn?: (connectorId: string) => Promise<void>
   /** Dismiss ("Not now"). */
   onDismiss?: () => void
+  /** Lane D (`mcp_oauth`): where the provider sends the owner back after the
+   *  same-tab sign-in hop — this bot's chat. The grant target is `sessionName`. */
+  oauthReturnTo?: string
   /** Test seam: skip the network schema fetch, render against this card. */
   card?: ConnectorCard
 }
@@ -75,6 +78,7 @@ export function ConnectCard({
   sessionName,
   onSignIn,
   onDismiss,
+  oauthReturnTo,
   card: seedCard,
 }: ConnectCardProps) {
   const [card, setCard] = useState<ConnectorCard | null>(seedCard ?? null)
@@ -127,9 +131,10 @@ export function ConnectCard({
   // Called ONLY from <ConnectFlow>'s primary button (its `submit`), so every path
   // below is behind a human tap — the bot cannot grant itself a connector.
   const seal = async ({ fields }: { fields: Record<string, string> }): Promise<ConnectFlowResult> => {
-    // No credential to seal (a `none` or `mcp_oauth` connector — the latter signs
-    // in in the bot's terminal). Just land the grant so the connector is available;
-    // the vault write path rejects an empty field-map, so never call it here.
+    // No credential to seal (a `none` connector). Just land the grant so the
+    // connector is available; the vault write path rejects an empty field-map, so
+    // never call it here. (An `mcp_oauth` card never reaches this: its connect is
+    // the brokered sign-in, which grants server-side on `complete`.)
     if (Object.keys(fields).length === 0) {
       const r = await apiGrant(request.connector_id, { session_name: sessionName })
       return { restartHint: !!r.restartHint, accountRef: null, accountLabel: null }
@@ -170,7 +175,7 @@ export function ConnectCard({
         why={
           added
             ? added.restartHint
-              ? 'Restart the bot to apply — grants bind at the next launch.'
+              ? 'Restart the bot to apply.'
               : undefined
             : `Your bot asked to use ${name}${toolsLine ? ` · ${toolsLine}` : ''}.`
         }
@@ -185,6 +190,8 @@ export function ConnectCard({
               // card is an OAuth-device lane, ConnectFlow runs the built-in device
               // sub-flow (code panel + poll) and auto-grants to THIS bot.
               deviceTarget={{ session: sessionName }}
+              oauthTarget={oauthReturnTo ? sessionName : undefined}
+              oauthReturnTo={oauthReturnTo}
               onSignIn={onSignIn}
               onDismiss={onDismiss}
               onSubmit={seal}

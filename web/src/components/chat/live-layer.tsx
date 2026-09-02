@@ -42,7 +42,7 @@ import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
 
 import type { HarnessEvent } from '../../lib/api/harness'
-import type { PermissionRequestInfo, QuestionRequestInfo, SessionMode } from '../../lib/api/sessions'
+import { sessionsApi, type PermissionRequestInfo, type QuestionRequestInfo, type SessionMode } from '../../lib/api/sessions'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
@@ -375,6 +375,10 @@ export function LiveLayer({
           key={session.connect_request.id ?? session.connect_request.connector_id}
           request={session.connect_request}
           sessionName={name}
+          // A supermux-brokered remote MCP (`mcp_oauth`) signs in from THIS
+          // card: same-tab hop to the provider, back to this chat.
+          oauthReturnTo={`/focus/${encodeURIComponent(name)}`}
+          onDismiss={() => void sessionsApi.dismissConnectRequest(name).catch(() => {})}
         />
       ) : session?.elicitation ? (
         <FormCard

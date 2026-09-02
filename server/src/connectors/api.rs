@@ -648,6 +648,14 @@ pub async fn put_credential(
     let keys: Vec<&String> = body.fields.keys().collect();
     audit(&state, "connector.credential", &id, json!({ "fields": keys, "rotate": rotate })).await;
 
+    // Honest health (§5.1 b): probe the freshly-sealed credential ONCE so a wrong
+    // key reads "Broken — key rejected" instead of "Added". Untestable kinds
+    // (stdio) persist nothing; the verdict rides the account row.
+    let probe = match account_ref.as_deref() {
+        Some(aref) => Some(probe_and_store(&state, &connector, aref, &body.fields).await),
+        None => None,
+    };
+
     // Masked echo — keys survive, values are the sentinel. `account_label` is
     // deliberately cleartext (it is non-secret, display-only).
     let masked: Map<String, Value> = body
@@ -662,7 +670,36 @@ pub async fn put_credential(
         "account_label": identity_label,
         "fields": masked,
         "restartHint": true,
+        "health": probe.as_ref().and_then(|o| o.health),
+        "health_message": probe.as_ref().map(|o| o.message.clone()),
     })))
+}
+
+/// Run the connector's probe against `secrets` for `account_ref` and persist a
+/// REAL verdict (an untestable kind leaves the row untouched). Returns the outcome
+/// for the caller's immediate note. Never fails the calling write.
+async fn probe_and_store(
+    state: &AppState,
+    connector: &connectors::Connector,
+    account_ref: &str,
+    secrets: &BTreeMap<String, String>,
+) -> super::health::ProbeOutcome {
+    let outcome = super::health::run_probe(connector, secrets).await;
+    if outcome.testable {
+        let now = chrono::Utc::now().timestamp();
+        if let Err(e) = connectors::account_set_health(
+            &state.pool,
+            account_ref,
+            outcome.health,
+            outcome.last_error.as_deref(),
+            now,
+        )
+        .await
+        {
+            tracing::warn!(connector = %connector.id, error = %e, "connector probe: could not store health");
+        }
+    }
+    outcome
 }
 
 // ── grants ────────────────────────────────────────────────────────────────────
@@ -706,19 +743,41 @@ pub async fn grant(
     // Grant-time install: a curated catalog card is materialized into the registry
     // the first time anyone grants it, so the chat connect card (which never runs
     // the store's client-side install) works on FIRST use. An unknown id still 404s.
-    ensure_installed(&state, &id, "grant").await?;
+    let connector = ensure_installed(&state, &id, "grant").await?;
     match body.account_ref.as_deref().filter(|s| !s.is_empty()) {
-        // Account-aware grant (pins which account this grant feeds).
-        Some(aref) => connectors::grant_with_account(
-            &state.pool,
-            &session,
-            &id,
-            body.secret_ref.as_deref(),
-            body.enabled,
-            Some(aref),
-        )
-        .await
-        .map_err(db_err)?,
+        // Account-aware grant (pins which account this grant feeds). FENCE (§2.8):
+        // the account must belong to THIS connector and — for a scoped member —
+        // to their own company; the grant's `secret_ref` is DERIVED from the
+        // account row server-side, never taken from the body (a member could
+        // otherwise wire another company's long-lived refresh token to their bot).
+        Some(aref) => {
+            let account = connectors::account_get(&state.pool, aref)
+                .await
+                .map_err(db_err)?
+                .filter(|a| a.connector_id == id)
+                .ok_or_else(|| AppError::NotFound(format!("account '{aref}'")))?;
+            if let Scope::Company(hc) = Scope::of(ctx.0.as_ref()) {
+                if account.company_id != Some(hc) {
+                    return Err(AppError::NotFound(format!("account '{aref}'")));
+                }
+            }
+            connectors::grant_with_account(
+                &state.pool,
+                &session,
+                &id,
+                account.secret_ref.as_deref(),
+                body.enabled,
+                Some(&account.id),
+            )
+            .await
+            .map_err(db_err)?;
+            // Honest health (§5.1 d): an account that has NEVER been checked gets
+            // its first real probe on grant. Best-effort, never blocks the grant.
+            if account.last_checked_at == 0 && body.enabled {
+                let secrets = decrypt_account_secret(&state, &account).await;
+                let _ = probe_and_store(&state, &connector, &account.id, &secrets).await;
+            }
+        }
         // Legacy path — preserves any existing account_ref on a re-grant.
         None => connectors::grant(&state.pool, &session, &id, body.secret_ref.as_deref(), body.enabled)
             .await
@@ -770,17 +829,68 @@ pub async fn session_connectors(
         .map_err(db_err)?;
     let oauth_apps = state.oauth_apps.load();
     let scope = Scope::of(ctx.0.as_ref());
+    // Restart honesty (§4.3): `applied` is SERVER-computed from the session's
+    // `last_started` vs the grant's `granted_at` and the vault row's rotation, so
+    // the "Restart to apply" chip survives a full-page redirect. `running` says
+    // whether a restart is even meaningful (a stopped bot binds on its next start).
+    let (last_started, running) = session_launch_facts(&state, &name).await;
     let mut out = Vec::new();
     for g in &grants {
         let c = connectors::get(&state.pool, &g.connector_id).await.map_err(db_err)?;
+        let sealed_at = match g.secret_ref.as_deref() {
+            Some(sr) => connectors::vault_get(&state.pool, sr)
+                .await
+                .ok()
+                .flatten()
+                .map(|v| if v.rotated_at > 0 { v.rotated_at } else { v.created_at })
+                .unwrap_or(0),
+            None => 0,
+        };
+        let applied = grant_applied(last_started, g.granted_at, sealed_at);
+        let account = match g.account_ref.as_deref() {
+            Some(aref) => connectors::account_get(&state.pool, aref).await.ok().flatten(),
+            None => None,
+        };
         out.push(json!({
             "connector_id": g.connector_id,
             "has_secret": g.secret_ref.is_some(),
             "enabled": g.enabled != 0,
+            "granted_at": g.granted_at,
+            "applied": applied,
+            "running": running,
+            "account_ref": g.account_ref,
+            "account": account.as_ref().map(|a| json!({
+                "id": a.id,
+                "account_label": a.account_label,
+                "status": a.status,
+                "has_secret": a.secret_ref.is_some(),
+                "last_used_at": a.last_used_at,
+                "health": a.health,
+                "last_checked_at": a.last_checked_at,
+                "last_error": a.last_error,
+            })),
             "card": c.as_ref().map(|c| card(&oauth_apps, scope, c)),
         }));
     }
     Ok(Json(json!({ "session_name": name, "connectors": out })))
+}
+
+/// Pure: has a launch at `last_started` already bound a grant made at
+/// `granted_at` whose secret was (re)sealed at `sealed_at`? A never-started
+/// session (`0`) has applied nothing.
+pub(crate) fn grant_applied(last_started: i64, granted_at: i64, sealed_at: i64) -> bool {
+    last_started > 0 && last_started >= granted_at.max(sealed_at)
+}
+
+/// `(last_started, running)` for a session name; a sentinel (`*`/`@company:`) or
+/// a missing row is `(0, false)`.
+async fn session_launch_facts(state: &AppState, name: &str) -> (i64, bool) {
+    let Ok(Some(s)) = crate::db::sessions::get(&state.pool, name).await else { return (0, false) };
+    let running = match crate::db::sessions::runtime(&state.pool, name).await {
+        Ok(Some(r)) => matches!(r.last_status.as_str(), "active" | "waiting" | "idle" | "starting"),
+        _ => false,
+    };
+    (s.last_started, running)
 }
 
 // ── consumers / blast-radius + account lifecycle ────────────────────────────────
@@ -920,7 +1030,15 @@ pub async fn test_account(
     // Decrypt this account's sealed fields ONLY to feed the probe (never returned,
     // never logged). A missing/undecryptable secret yields an empty map — the probe
     // then reports an honest error, never a fake green.
-    let secrets = decrypt_account_secret(&state, &account).await;
+    let mut secrets = decrypt_account_secret(&state, &account).await;
+    // A brokered-OAuth account refreshes its access token first (a stale token
+    // would read "Needs sign-in" for a merely-expired one).
+    if secrets.contains_key(super::oauth_code::ACCESS_TOKEN_FIELD) {
+        if let (Some(sr), Ok(vault)) = (account.secret_ref.as_deref(), Vault::open(&state.config.data_dir)) {
+            let (fresh, _) = super::oauth_code::ensure_fresh(&state, &vault, sr, secrets).await;
+            secrets = fresh;
+        }
+    }
 
     let outcome = super::health::run_probe(&connector, &secrets).await;
     let now = chrono::Utc::now().timestamp();
@@ -940,7 +1058,12 @@ pub async fn test_account(
         &state,
         "connector.test",
         &id,
-        json!({ "account_ref": account.id, "health": outcome.health, "testable": outcome.testable }),
+        json!({
+            "account_ref": account.id,
+            "health": outcome.health,
+            "testable": outcome.testable,
+            "tool_count": outcome.tool_count,
+        }),
     )
     .await;
 
@@ -959,6 +1082,9 @@ pub async fn test_account(
         "last_error": outcome.last_error,
         "last_checked_at": if outcome.testable { now } else { account.last_checked_at },
         "message": outcome.message,
+        // How many tools a URL MCP listed in the probe's real `tools/list`;
+        // `null` when the probe never got that far. Never invented.
+        "tool_count": outcome.tool_count,
     })))
 }
 
@@ -1031,6 +1157,7 @@ async fn accounts_json(
             "health": a.health,
             "last_checked_at": a.last_checked_at,
             "last_error": a.last_error,
+            "company_id": a.company_id,
             "grant_level": grant_level(&resolved),
         }));
     }
