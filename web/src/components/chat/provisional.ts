@@ -21,9 +21,36 @@ import { readLens } from './peek-lens'
  *  The last alternative is the status line's MODEL/EFFORT chip — `● high ·
  *  /effort`, `● opus · /model` — which sits below the composer and is the only
  *  row left standing on eight more of them. Claude's own `●` lines are prose
- *  (`● Done.`, `● Bash(…)`); none of them is one word followed by ` · /command`. */
+ *  (`● Done.`, `● Bash(…)`); none of them is one word followed by ` · /command`.
+ *
+ *  THE HORIZONTAL RULE MAY CARRY A TITLE. Claude Code draws the composer's top
+ *  rule with the session's own name in it — `──────────── tailprobe ─` — for
+ *  every session supermux launches (it always passes `--name`). A rule pattern
+ *  anchored at `$` right after the dashes did not match that, so the titled rule
+ *  was not furniture here and, worse, was not a composer CUT below (`RULE_ROW`),
+ *  which is how the whole bottom of the screen started leaking into this block.
+ *
+ *  THE BACKGROUND-AGENT MANAGER PANEL (cc 2.1.25x). While background agents run,
+ *  Claude Code paints a roster UNDER the composer — `  ● main` and one
+ *  `  ◯ general-purpose  <task>   18s · ↓ 25.8k tokens` per agent. The composer
+ *  cut removes it, and these two alternatives are the belt to that braces: the
+ *  HOLLOW circle is the panel's own glyph (Claude's prose bullet is always the
+ *  filled `●`), and `● main` is the panel's name for the main thread — never a
+ *  sentence. Measured live on cc 2.1.258 (`chatrec`/`peekloop` capture,
+ *  2026-09-02), where they were the entire content of the unconfirmed card.
+ *
+ *  THE SPINNER CYCLES THROUGH MORE GLYPHS THAN TWO. `✻`/`✽` were the two frames
+ *  somebody happened to capture; the same capture run also produced `✶`, `✢` and
+ *  a plain ASCII `*` — `✢ Zesting… (12s · ↓ 312 tokens)` rendered as prose. The
+ *  dingbats join the class outright (no sentence opens with one); the ASCII `*`
+ *  is matched only in the spinner's own SHAPE (`* Word… (12s ·`), because a
+ *  bare asterisk is also how a person writes a bullet.
+ *
+ *  `⎿  Tip: …` is Claude Code's rotating hint under the spinner, not a tool
+ *  result. Only THAT `⎿` row is dropped: the others carry real output (`⎿
+ *  Backgrounded agent …`, `⎿  Interrupted`) and belong in the block. */
 const NOISE =
-  /esc to interrupt|shift\+tab|\? for shortcuts|^[⏵⏸✻✽·╰│]|^\s*❯|^[─╌—]{3,}$|^●\s\S+\s·\s\/\w+$/i
+  /esc to interrupt|shift\+tab|\? for shortcuts|^[⏵⏸✻✽✶✢✳∗·╰│]|^\*\s\S+.*\(\d+[smh]\s|^\s*❯|^[─╌—]{3,}(\s\S.*\s[─╌—]+)?$|^●\s\S+\s·\s\/\w+$|^◯\s|^●\s+main$|^⎿\s+Tip:/i
 
 /**
  * A shell prompt head — `user@host:/path` — anchored to the start of a line.
@@ -122,7 +149,24 @@ const MIN_PANE_COLS = 40
  *     draft in it. A prompt echo never has a rule immediately above it.
  */
 const BARE_CARET = /^❯[\s\u00a0]*$/
-const RULE_ROW = /^[─╌—]{3,}$/
+/**
+ * A full-width horizontal rule, WITH OR WITHOUT A TITLE IN IT.
+ *
+ * The titled form is what Claude Code actually draws above the composer of a
+ * NAMED session — `──────────────────── tailprobe ─` — and supermux launches every
+ * session with `--name`, so for this app the titled rule is not the exception,
+ * it is the shape. Requiring the dashes to run to the end of the string meant
+ * the composer was never recognised as the bottom CUT: the scan fell through to
+ * the turn's own prompt echo far above it, and the card then rendered the
+ * composer's draft, the mode hint and — new in cc 2.1.25x — the background-agent
+ * manager panel as if all of it were the agent's in-progress prose (measured
+ * live on cc 2.1.258, 2026-09-02). The fixture corpus has carried a titled rule
+ * since cc233 (`11-optsem-cmdrule-99-rule-applies.txt`), unread until now.
+ *
+ * The title must be FENCED by dashes on both sides, so an ordinary sentence that
+ * happens to open with an em dash can never be mistaken for a rule.
+ */
+const RULE_ROW = /^[─╌—]{3,}(\s\S.*\s[─╌—]+)?$/
 
 /** A `❯` row that carries text — the prompt echo Claude prints at the head of a
  *  turn, and the only `❯` that may START a block. */
@@ -209,6 +253,27 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
   for (let i = cut - 1; i >= start; i--) {
     if (isPromptEcho(stripped[i].trimStart())) {
       start = i + 1
+      // …AND PAST ITS WRAPPED REMAINDER. The echo is one logical line that
+      // Claude Code SOFT-wraps at word boundaries and indents under the caret:
+      //
+      //   ❯ Use the Agent tool to launch a general-purpose subagent IN THE
+      //     whose task is: run these EIGHT separate Bash calls one after
+      //     …
+      //
+      // Only the first physical row carries the `❯`, so `i + 1` alone left the
+      // continuation rows in the block and the card opened with a mid-sentence
+      // slice of the READER'S OWN PROMPT captioned "Live terminal · unconfirmed"
+      // (measured, cc 2.1.258, 2026-09-02). The wrap test at the bottom of this
+      // function cannot catch them either: it detects a HARD pty wrap by the row
+      // running to the pane edge, and a word-wrapped row stops short of it.
+      //
+      // The end of the echo is structural: every element Claude Code paints
+      // starts at column 0 (`●` prose, `✻` status, `❯`, a rule) and only a
+      // continuation is indented. So skip indented, non-empty rows — and stop at
+      // the first blank, which is the end of the echo in every capture.
+      while (start < cut && stripped[start].trim() !== '' && /^\s/.test(stripped[start])) {
+        start += 1
+      }
       break
     }
   }

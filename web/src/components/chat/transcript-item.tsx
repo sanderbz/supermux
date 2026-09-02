@@ -184,6 +184,10 @@ const SYSTEM_WORD: Record<string, string> = {
   // withdrawn" with no reason reads as a bug in this app.
   stalled: 'Waiting for the API',
   retracted: 'Withdrawn',
+  // cc 2.1.25x background agents. The word names WHO spoke, the row's own text
+  // carries Claude Code's summary of which agent it was and how it ended.
+  'background-agent': 'Background agent',
+  harness: 'Claude Code notice',
 }
 
 /**

@@ -30,6 +30,7 @@ import * as React from 'react'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
+import { transcriptFreshMs } from './wire-entries'
 import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
@@ -161,7 +162,22 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   const entries = backlog.entries
   const items = React.useMemo(() => toDisplayList(entries), [entries])
   const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0
-  const lastConfirmedMs = lastConfirmedTs * 1000
+  // THE PLANE'S CLOCK, NOT THE RENDERER'S — and DISPLAY-ONLY.
+  //
+  // `lastConfirmedTs` is the newest entry the surface DRAWS. The provisional
+  // pty card is gated on something different: when the transcript plane last
+  // confirmed ANYTHING, drawn or not (`transcriptFreshMs`, which owns the
+  // reasoning because it is the wire module's business, not this one's).
+  //
+  // It feeds `showProvisional` and its wake timer and NOTHING ELSE. The turn
+  // boundary below is deliberately untouched: `confirmedCaughtUp` still reads
+  // `lastAgentMs`, so nothing here can end a turn early. This file still knows
+  // nothing about which entries the wire module drops, which is the invariant
+  // its own pinned test exists to keep (see `wire-entries.ts` for what it is).
+  const lastConfirmedMs = React.useMemo(
+    () => transcriptFreshMs(tail.wire, lastConfirmedTs),
+    [tail.wire, lastConfirmedTs],
+  )
 
   // Turn tracking, SERVER clock domain. Anchor priority: the server's
   // last_send_at stamp (the dock/API send that started the turn — makes the
