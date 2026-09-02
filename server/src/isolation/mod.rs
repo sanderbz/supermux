@@ -35,6 +35,30 @@
 //! the only way to catch the `@system-service` block, since a plain runtime
 //! feature check would lie. It doubles as a deploy self-test: it flips
 //! `None → Full` the instant the `@sandbox` unit line lands, with no code change.
+//!
+//! ## The shared Claude home, and the one boundary that is left
+//!
+//! `~/.claude` is per-USER, not per-company. Granting it wholesale (as this
+//! module did until 2026-09-02) handed every confined company bot the whole
+//! box's Claude state: `projects/<every project>/*.jsonl` (6.1 GB of
+//! transcripts across 236 project dirs on the box where this was found),
+//! `history.jsonl` (every prompt ever typed), `file-history/`, `session-env/`,
+//! and write access to `settings.json` + `plugins/`, whose hooks OTHER sessions
+//! execute. The owner's own confined bot demonstrated it: *"648 files, zero
+//! blocked … the token came out of transcripts of supermux and home-supermux."*
+//!
+//! Landlock is an allow-list with no "except", so the fix is to enumerate:
+//! [`CLAUDE_HOME_RO`] (read-only) + [`AGENT_STATE_RW`] (writable tool state) +
+//! ONE per-session read-write grant for the session's own
+//! `projects/<encoded cwd>` dir ([`ConfinePlan::allow_claude_project`]).
+//!
+//! What is left shared, on purpose: `~/.claude/.credentials.json`, the Claude
+//! OAuth token. Company bots today authenticate as the ONE Claude account that
+//! owns the box, so the agent must be able to read it. The structural fix is a
+//! per-session Claude config dir — the `config_dir` column /
+//! `CLAUDE_CONFIG_DIR`, which the spawn path already grants read-write when a
+//! session has one; a session with its own `config_dir` sees a Claude home that
+//! is private to it, credentials included.
 
 use std::fmt;
 use std::io;
@@ -170,6 +194,114 @@ pub const DEV_RW_NODES: &[&str] = &[
     "/dev/shm",
 ];
 
+/// The writable `$HOME` state a confined agent gets: Claude Code's own runtime
+/// state plus the language/dev tool CACHES a bot needs to build anything —
+/// enumerated one by one, replacing the former blanket `~/.config` + `~/.cache` +
+/// `~/.local/state` read-write grant.
+///
+/// Measured 2026-09-02 on this box (LD_PRELOAD `open`/`mkdir`/`rename`
+/// interposition around a real `claude` boot + one prompt + one Bash tool call):
+/// the only writes Claude Code itself makes outside its config dir are
+/// `~/.local/state/claude/locks` and `~/.cache/claude/staging`. The rest of this
+/// list is the toolchain surface (`pip`, `uv`, `npm`/`pnpm`/`yarn`, `puppeteer`
+/// / `ms-playwright` for the browser connector, `fontconfig`, `go-build`, …) that
+/// the blanket `~/.cache` grant used to cover, kept working on purpose.
+///
+/// What the blanket grants covered and this list deliberately does NOT:
+/// `~/.config/gh` (the owner's GitHub token), `~/.config/gcloud`,
+/// `~/.config/mcp-email-server`, `~/.config/tailscale`, `~/.config/chromium` and
+/// `~/.cache/gh` — credential stores a company bot has no business touching.
+///
+/// The spawn path pre-creates these (see [`ConfinePlan::precreate_state_dirs`]):
+/// Landlock drops a rule whose path does not exist, and creating the dir later
+/// would need write access to `~/.cache` itself, which is exactly what this list
+/// replaces.
+pub const AGENT_STATE_RW: &[&str] = &[
+    ".local/state/claude",
+    ".local/state/pnpm",
+    ".cache/claude",
+    ".cache/claude-cli-nodejs",
+    ".cache/node",
+    ".cache/npm",
+    ".cache/pnpm",
+    ".cache/yarn",
+    ".cache/pip",
+    ".cache/uv",
+    ".cache/puppeteer",
+    ".cache/ms-playwright",
+    ".cache/fontconfig",
+    ".cache/go-build",
+    ".cache/zig",
+    ".cache/cargo-zigbuild",
+    ".cache/ffmpeg-static-nodejs",
+    ".config/configstore",
+    ".config/pip",
+    ".config/uv",
+    ".config/go",
+    ".config/procps",
+];
+
+/// The ENUMERATED read-only slice of the shared Claude home (and the two
+/// `~/.config` files a git-using agent reads), replacing the former blanket
+/// `~/.claude` READ+WRITE grant.
+///
+/// # The leak this closes
+///
+/// `SandboxSpec::for_company` used to grant `~/.claude` read+write wholesale.
+/// `~/.claude` is per-USER, not per-company, so every confined company bot could
+/// read — and rewrite — the whole box's Claude state. Reported 2026-09-02 by the
+/// owner's own confined bot: *"all Claude session transcripts of every project on
+/// this box under `~/.claude/projects/` were readable — 648 files, zero blocked …
+/// the token came out of transcripts of supermux and home-supermux"* (6.1 GB,
+/// 236 project dirs), plus `history.jsonl` (every prompt ever typed),
+/// `file-history/`, `session-env/` (other sessions' environments), `sessions/`,
+/// `paste-cache/`, `backups/` — and write access to `settings.json` and
+/// `plugins/`, whose hooks other sessions execute.
+///
+/// # What is on the list, and why
+///
+/// Landlock is an allow-list with no "except", so the fix is to enumerate. These
+/// are the paths a real confined Claude needs (measured as above; anything not
+/// measured stays denied):
+///
+/// * `.claude/settings.json` — the user settings file, read at boot. READ-ONLY:
+///   it carries `hooks`, which other (unconfined) sessions execute, so write
+///   access would be a cross-session code-execution vector.
+/// * `.claude/.credentials.json` — the Claude OAuth token. **The remaining
+///   boundary**: company bots today share ONE Claude account, so the agent that
+///   authenticates must read it. The real fix is a per-session `config_dir`
+///   (`CLAUDE_CONFIG_DIR`), already supported by the spawn path — see the module
+///   docs.
+/// * `.claude/CLAUDE.md`, `.claude/commands`, `.claude/plugins`, `.claude/cache`,
+///   `.claude/statsig` — user memory, slash commands, the plugin/skill cache and
+///   the release/statsig caches, all read at boot. READ-ONLY on purpose: plugin
+///   and command files are CODE other sessions run.
+/// * `.claude.json` — Claude Code's project/onboarding state file. READ-ONLY: it
+///   is rewritten by `rename(2)` from a temp file in `$HOME`, which the jail
+///   already denied (`$HOME` itself is not writable), so read is all it ever got.
+/// * `.config/git`, `.config/curlrc` — read by every `git`/`curl` the agent runs.
+///
+/// Everything else under `~/.claude` — `projects/` (including the parent: a bot
+/// must not even LIST which projects exist), `history.jsonl`, `file-history/`,
+/// `session-env/`, `sessions/`, `shell-snapshots/`, `tasks/`, `teams/`,
+/// `telemetry/`, `backups/`, `paste-cache/`, `downloads/`, `feedback/`,
+/// `plans/`, `jobs/`, `daemon/` — is DENIED. The session's own
+/// `projects/<encoded cwd>` dir is granted read+write per session by the spawn
+/// path ([`ConfinePlan::allow_claude_project`]).
+pub const CLAUDE_HOME_RO: &[&str] = &[
+    ".claude/settings.json",
+    ".claude/.credentials.json",
+    ".claude/CLAUDE.md",
+    ".claude/commands",
+    ".claude/plugins",
+    ".claude/cache",
+    ".claude/statsig",
+    ".claude.json",
+    ".config/git",
+    ".config/curlrc",
+    ".config/fontconfig",
+];
+
 impl SandboxSpec {
     /// Build the allow-list for a company session rooted at `root_dir`, with the
     /// service user's `home` supplying the toolchain / config paths.
@@ -180,10 +312,11 @@ impl SandboxSpec {
     /// DENIED (they are simply never listed).
     ///
     /// * `read_write_paths` — the company tree (workspace); `/tmp` + `$TMPDIR`;
-    ///   and the `$HOME` config/cache/state dirs the agent must write at boot
-    ///   (`~/.claude`, `~/.claude.json`, `~/.config`, `~/.cache`, `~/.local/state`).
-    ///   The spawn wiring appends the session's own spool/socket dir via
-    ///   [`allow_rw`](Self::allow_rw).
+    ///   and the NARROW slice of `$HOME` state a booting agent actually writes
+    ///   (`~/.local/state/claude`, `~/.cache/pip`, … — [`AGENT_STATE_RW`]) — see
+    ///   [`CLAUDE_HOME_RO`] for why the shared Claude home is no longer granted
+    ///   wholesale. The spawn wiring appends the session's own spool/socket dir
+    ///   and its OWN Claude project dir via [`allow_rw`](Self::allow_rw).
     /// * `read_exec_paths` — the whole standard system read/exec surface
     ///   (`/usr`, `/bin`, `/sbin`, `/lib{,32,64}`, `/etc`, `/proc`, `/sys`), the
     ///   pty-holder binary under us ([`current_exe`](std::env::current_exe) + its
@@ -207,7 +340,11 @@ impl SandboxSpec {
                 read_write_paths.push(tmp);
             }
         }
-        for w in [".claude", ".claude.json", ".config", ".cache", ".local/state"] {
+        // Claude's own writable runtime state that carries NOTHING from another
+        // project or company — measured (2026-09-02) as the only `$HOME` state a
+        // booting Claude Code writes outside its config dir: the update-staging
+        // dir and the lock dir.
+        for w in AGENT_STATE_RW {
             read_write_paths.push(home.join(w));
         }
         // ── RW: the handful of DEVICE NODES a terminal agent cannot boot
@@ -305,6 +442,18 @@ impl SandboxSpec {
         // grant is added by the SPAWN path (`ConfinePlan::allow_ro`), so one
         // session cannot read a sibling session's settings.
         for ro in [".supermux/connectors", ".supermux/bin", ".supermux/uploads"] {
+            push_ro_resolved(&mut read_exec_paths, home.join(ro));
+        }
+
+        // ── RO: the ENUMERATED slice of the shared Claude home. See
+        // [`CLAUDE_HOME_RO`] for the measurement and the threat it closes: this
+        // list replaces the former blanket `~/.claude` READ+WRITE grant, under
+        // which a confined company bot could read EVERY Claude transcript on the
+        // box (`~/.claude/projects/<every project>/*.jsonl`), every prompt ever
+        // typed (`history.jsonl`), and the tokens that appear in them. The
+        // session's OWN project dir is granted RW by the spawn path
+        // (`ConfinePlan::allow_claude_project`), never here.
+        for ro in CLAUDE_HOME_RO {
             push_ro_resolved(&mut read_exec_paths, home.join(ro));
         }
 
@@ -480,6 +629,48 @@ impl ConfinePlan {
     /// plan is moved into the child.
     pub fn allow_ro(&mut self, path: PathBuf) {
         self.spec.allow_ro(path);
+    }
+
+    /// Best-effort `mkdir -p` of the [`AGENT_STATE_RW`] dirs under `home`,
+    /// BEFORE the fork.
+    ///
+    /// Landlock silently drops a rule whose path does not exist, and a dir the
+    /// jail did not grant cannot be created from inside it (creating
+    /// `~/.cache/pip` needs write access to `~/.cache`, which this design
+    /// deliberately no longer grants). Without this, a fresh box would hand every
+    /// company bot a toolchain whose caches are un-creatable. Failures are
+    /// ignored: an absent path simply stays denied, exactly as if it were not on
+    /// the list.
+    pub fn precreate_state_dirs(&self, home: &Path) {
+        for d in AGENT_STATE_RW {
+            let _ = std::fs::create_dir_all(home.join(d));
+        }
+    }
+
+    /// Grant this session's OWN Claude project dir (`<config dir>/projects/
+    /// <encoded cwd>`) read+write — the one place under the shared Claude home a
+    /// confined company agent may write, and the counterpart to the enumerated
+    /// [`CLAUDE_HOME_RO`] list (which deliberately does not include `projects/`,
+    /// not even for reading: a bot must not be able to LIST which projects, i.e.
+    /// which of the owner's repos and which sibling companies, exist).
+    ///
+    /// The dir is CREATED here, in the parent, before the fork: Claude Code
+    /// `mkdir -p`s its own project dir at boot, and a jail that grants only the
+    /// leaf would have to allow `MakeDir` on `projects/` itself to let it — which
+    /// would re-open the parent. Pre-creating keeps the grant a leaf.
+    /// A creation failure is not fatal (the grant is still added; an absent path
+    /// is dropped by the backend) — the agent then behaves as it did before this
+    /// grant existed rather than failing to start.
+    pub fn allow_claude_project(&mut self, project_dir: PathBuf) {
+        if let Err(e) = std::fs::create_dir_all(&project_dir) {
+            tracing::warn!(
+                dir = %project_dir.display(),
+                error = %e,
+                "isolation: could not pre-create the session's Claude project dir; \
+                 the confined agent may not be able to write its transcript",
+            );
+        }
+        self.spec.allow_rw(project_dir);
     }
 
     /// Run INSIDE the forked child, post-fork / pre-exec.
@@ -861,6 +1052,97 @@ mod tests {
             .read_exec_paths
             .contains(&home.join(".supermux/auth_token")));
         assert!(!spec.read_write_paths.contains(&home.join(".supermux")));
+    }
+
+    #[test]
+    fn the_shared_claude_home_is_never_granted_wholesale() {
+        // THE regression guard for the reported leak: a confined company agent
+        // could read every Claude transcript on the box because `~/.claude` was
+        // on `read_write_paths` as a whole. Neither list may carry the shared
+        // Claude home, its `projects/` tree, `history.jsonl`, or the `$HOME`
+        // config/cache roots that hold the owner's other credentials.
+        let home = PathBuf::from("/home/supermux");
+        let spec = SandboxSpec::for_company(Path::new("/srv/companies/acme"), &home);
+        for denied in [
+            ".claude",
+            ".claude/projects",
+            ".claude/history.jsonl",
+            ".claude/file-history",
+            ".claude/session-env",
+            ".claude/shell-snapshots",
+            ".claude/backups",
+            ".config",
+            ".config/gh",
+            ".cache",
+            ".cache/gh",
+            ".local/state",
+        ] {
+            let p = home.join(denied);
+            assert!(
+                !spec.read_write_paths.contains(&p),
+                "~/{denied} must NOT be read-write: {:?}",
+                spec.read_write_paths,
+            );
+            assert!(
+                !spec.read_exec_paths.contains(&p),
+                "~/{denied} must NOT be readable: {:?}",
+                spec.read_exec_paths,
+            );
+        }
+        // …while the enumerated slice a booting Claude needs IS on the RO list,
+        // and the writable tool state IS on the RW list.
+        for ro in CLAUDE_HOME_RO {
+            assert!(
+                spec.read_exec_paths.contains(&home.join(ro)),
+                "~/{ro} must be read-only-granted: {:?}",
+                spec.read_exec_paths,
+            );
+            assert!(
+                !spec.read_write_paths.contains(&home.join(ro)),
+                "~/{ro} must NOT be writable (settings.json/plugins are code other \
+                 sessions run)",
+            );
+        }
+        for rw in AGENT_STATE_RW {
+            assert!(
+                spec.read_write_paths.contains(&home.join(rw)),
+                "~/{rw} must be read-write: {:?}",
+                spec.read_write_paths,
+            );
+        }
+    }
+
+    #[test]
+    fn the_own_claude_project_dir_is_the_only_writable_spot_under_projects() {
+        // The per-session grant the spawn path adds: exactly ONE dir under
+        // `~/.claude/projects`, created in the parent so the jail never needs
+        // MakeDir on `projects/` itself.
+        let base = std::env::temp_dir().join(format!(
+            "supermux-iso-proj-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let projects = base.join(".claude/projects");
+        let own = projects.join("-srv-companies-acme");
+        let mut plan = IsolationRuntime::from_mode(IsolationMode::BestEffort)
+            .plan_for(Path::new("/srv/companies/acme"), &base)
+            .expect("best-effort always yields a plan");
+        plan.allow_claude_project(own.clone());
+        assert!(own.is_dir(), "the grant pre-creates the project dir");
+        assert!(
+            plan.spec.read_write_paths.contains(&own),
+            "the session's own project dir is read-write: {:?}",
+            plan.spec.read_write_paths,
+        );
+        assert!(
+            !plan.spec.read_write_paths.contains(&projects)
+                && !plan.spec.read_exec_paths.contains(&projects),
+            "the projects/ PARENT is never granted — not even for listing",
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

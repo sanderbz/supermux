@@ -67,11 +67,34 @@ impl IsolationProvider for SeatbeltMacOS {
     }
 }
 
-/// Secret files a confined agent must never read. Kept in sync with
-/// [`SandboxSpec::for_company`]'s contract ("`~/.supermux/auth_token` stays
+/// Secret files a confined agent must never read (literal paths). Kept in sync
+/// with [`SandboxSpec::for_company`]'s contract ("`~/.supermux/auth_token` stays
 /// unreadable").
 fn secret_paths() -> Vec<PathBuf> {
-    vec![probe_home().join(".supermux/auth_token")]
+    let home = probe_home();
+    vec![
+        home.join(".supermux/auth_token"),
+        // Every prompt ever typed on this box.
+        home.join(".claude/history.jsonl"),
+    ]
+}
+
+/// Secret SUBTREES a confined agent must never read — the macOS counterpart of
+/// the Linux fix that stopped granting `~/.claude` wholesale. `projects/` holds
+/// every Claude transcript for every project on the box (the reported leak);
+/// `~/.config/gh` holds the owner's GitHub token. The session's OWN project dir
+/// is re-allowed afterwards, because it rides on the spec's `read_write_paths`
+/// (see [`build_profile`] — Seatbelt is last-match-wins).
+fn secret_subpaths() -> Vec<PathBuf> {
+    let home = probe_home();
+    vec![
+        home.join(".claude/projects"),
+        home.join(".claude/file-history"),
+        home.join(".claude/session-env"),
+        home.join(".claude/backups"),
+        home.join(".claude/paste-cache"),
+        home.join(".config/gh"),
+    ]
 }
 
 /// Escape a path for a Seatbelt SBPL string literal (`"…"`): backslash and
@@ -84,7 +107,13 @@ fn sbpl_escape(p: &Path) -> String {
 ///   1. `(allow default)` — the toolchain runs (this is why the level is Partial).
 ///   2. `(deny file-write*)` then re-allow writes under each company rw subpath —
 ///      net effect: writes only inside the company workspace/tmp/spool.
-///   3. `(deny file-read* (literal <secret>))` — secrets stay unreadable.
+///   3. `(deny file-read* …)` — secrets stay unreadable: `~/.supermux/auth_token`
+///      and `~/.claude/history.jsonl` as literals, plus the cross-project
+///      subtrees (`~/.claude/projects`, `file-history`, `session-env`,
+///      `backups`, `paste-cache`, and `~/.config/gh`).
+///   4. re-allow `file-read*` under each rw subpath — LAST, so the session's own
+///      Claude project dir (granted per session by the spawn path) survives the
+///      blanket `projects/` denial while a sibling's does not.
 fn build_profile(spec: &SandboxSpec) -> String {
     let mut s = String::from("(version 1)\n(allow default)\n");
 
@@ -94,9 +123,20 @@ fn build_profile(spec: &SandboxSpec) -> String {
         s.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
 
-    // (3) deny reading secrets.
+    // (3) deny reading secrets — literals, then the cross-project subtrees.
     for p in secret_paths() {
         s.push_str(&format!("(deny file-read* (literal \"{}\"))\n", sbpl_escape(&p)));
+    }
+    for p in secret_subpaths() {
+        s.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", sbpl_escape(&p)));
+    }
+
+    // (4) LAST — re-allow reads under the writable set. Seatbelt is
+    // last-match-wins, so this restores the session's OWN Claude project dir
+    // (granted RW per session by the spawn path) after the blanket
+    // `~/.claude/projects` denial above, without re-opening a sibling's.
+    for p in &spec.read_write_paths {
+        s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
 
     s

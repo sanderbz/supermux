@@ -2116,10 +2116,29 @@ async fn company_confinement(
         // are already on `SandboxSpec::for_company`'s list.
         p.allow_ro(home.join(".supermux/session-config").join(name));
         // A per-session Claude account dir (`CLAUDE_CONFIG_DIR`) is written at
-        // boot (credentials cache, statsig) — RW, same as the default `~/.claude`.
+        // boot (credentials cache, statsig) — RW. When a session HAS one, the
+        // whole Claude home it sees is already private to it, which is the real
+        // fix for the shared-`~/.claude` boundary below.
         if !s.config_dir.trim().is_empty() {
             p.allow_rw(std::path::PathBuf::from(s.config_dir.trim()));
         }
+        // THIS session's own Claude project dir — `<config dir>/projects/
+        // <encoded cwd>`, where Claude Code writes its transcript. It is the ONLY
+        // writable spot under the shared `~/.claude`: `SandboxSpec::for_company`
+        // grants an enumerated read-only slice of that home and does not grant
+        // `projects/` at all, so a confined company bot can neither read another
+        // project's transcripts nor even list which projects exist. Resolved with
+        // the SAME `project_dir_for` the reader side uses, so the grant and the
+        // file Claude actually writes can never drift apart.
+        p.allow_claude_project(crate::sessions::resumable::project_dir_for(
+            &s.config_dir,
+            &s.dir,
+        ));
+        // The enumerated dev/agent cache dirs are pre-created here too: Landlock
+        // drops a rule for a path that does not exist, and the jail no longer
+        // grants `~/.cache` itself, so a dir that is absent at spawn could never
+        // be created from inside.
+        p.precreate_state_dirs(&home);
     }
 
     // Surface the MEASURED level per session (BestEffort surfaces the measured
