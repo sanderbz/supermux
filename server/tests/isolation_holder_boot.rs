@@ -115,6 +115,12 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
         .join("projects")
         .join(format!("iso-e2e-sibling-{}", uuid::Uuid::new_v4()));
     let hist_probe = claude_home.join(format!("iso-e2e-history-{}.jsonl", uuid::Uuid::new_v4()));
+    // Claude Code creates `~/.claude/session-env/<id it picks itself>` per run
+    // and executes hooks/tools through it; denying the mkdir silently killed
+    // every hook of a confined bot (v0.6.16, live). The child must be able to
+    // create a fresh dir there.
+    let senv_probe = claude_home.join("session-env").join(format!("iso-e2e-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(claude_home.join("session-env")).expect("mk session-env");
     let gh_probe = home
         .join(".config")
         .join(format!("gh-iso-e2e-{}", uuid::Uuid::new_v4()));
@@ -185,6 +191,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
          /bin/ls {projects} > {c}/projectsls.out 2>&1; \
          /bin/cat {hist} > {c}/history.out 2>&1; \
          /bin/cat {gh}/hosts.yml > {c}/gh.out 2>&1; \
+         /bin/mkdir {senv} > {c}/senv.out 2>&1; \
          /bin/cat {settings} > {c}/settings.out 2>&1; \
          /bin/cat {cmdprobe} > {c}/cmdprobe.out 2>&1; \
          echo own-transcript > {ownproj}/probe.jsonl 2>{c}/ownwrite.err; \
@@ -199,6 +206,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
         sibproj = sib_proj.display(),
         projects = claude_home.join("projects").display(),
         hist = hist_probe.display(),
+        senv = senv_probe.display(),
         gh = gh_probe.display(),
         settings = claude_home.join("settings.json").display(),
         cmdprobe = cmd_probe.display(),
@@ -279,6 +287,12 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
              resolved target): {}",
             wrote(&company.join("resolv.out")),
         );
+        assert!(
+            senv_probe.is_dir(),
+            "a confined agent must be able to mkdir under ~/.claude/session-env (Claude \
+             Code runs its hooks through a per-session dir there): {}",
+            wrote(&company.join("senv.out")),
+        );
         let rootsecret = wrote(&company.join("rootsecret.out"));
         assert!(
             !rootsecret.contains("supermux root secret"),
@@ -352,6 +366,7 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let _ = std::fs::remove_dir_all(&sib_proj);
     let _ = std::fs::remove_dir_all(&gh_probe);
     let _ = std::fs::remove_file(&hist_probe);
+    let _ = std::fs::remove_dir(&senv_probe);
     let _ = std::fs::remove_file(&cmd_probe);
     let _ = std::fs::remove_dir_all(&own_proj);
 }

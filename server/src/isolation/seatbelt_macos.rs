@@ -90,7 +90,6 @@ fn secret_subpaths() -> Vec<PathBuf> {
     vec![
         home.join(".claude/projects"),
         home.join(".claude/file-history"),
-        home.join(".claude/session-env"),
         home.join(".claude/backups"),
         home.join(".claude/paste-cache"),
         home.join(".config/gh"),

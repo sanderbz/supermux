@@ -219,6 +219,18 @@ pub const DEV_RW_NODES: &[&str] = &[
 pub const AGENT_STATE_RW: &[&str] = &[
     ".local/state/claude",
     ".local/state/pnpm",
+    // Claude Code's PER-SESSION scratch under its home. Measured live after the
+    // enumeration shipped (v0.6.16): a confined bot's hooks failed with
+    // `EACCES: permission denied, mkdir ~/.claude/session-env/<session id>` —
+    // Claude creates that dir per session id it picks itself (unknown before
+    // spawn, so it cannot be pre-created), and runs hooks/tools through it.
+    // The four dirs hold empty per-session env dirs, shell-function snapshots
+    // (no secrets — measured), task/todo scratch: low value, needed for the
+    // hook lifeline supermux's status plane depends on.
+    ".claude/session-env",
+    ".claude/shell-snapshots",
+    ".claude/tasks",
+    ".claude/todos",
     ".cache/claude",
     ".cache/claude-cli-nodejs",
     ".cache/node",
