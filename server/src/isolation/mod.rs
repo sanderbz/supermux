@@ -231,6 +231,13 @@ pub const AGENT_STATE_RW: &[&str] = &[
     ".claude/shell-snapshots",
     ".claude/tasks",
     ".claude/todos",
+    // Claude Code REFRESHES its OAuth token and rewrites this file (tmp+rename
+    // in ~/.claude). Read-only, the refresh fails and Claude reports
+    // "Not logged in · Please run /login" on every confined bot — the owner's
+    // Reisposter looped on re-login for an afternoon (v0.6.16 → this). It is the
+    // one shared credential every bot on this account already reads; writing
+    // the rotated token back is the same trust, not a wider one.
+    ".claude/.credentials.json",
     ".cache/claude",
     ".cache/claude-cli-nodejs",
     ".cache/node",
@@ -302,7 +309,6 @@ pub const AGENT_STATE_RW: &[&str] = &[
 /// path ([`ConfinePlan::allow_claude_project`]).
 pub const CLAUDE_HOME_RO: &[&str] = &[
     ".claude/settings.json",
-    ".claude/.credentials.json",
     ".claude/CLAUDE.md",
     ".claude/commands",
     ".claude/plugins",
@@ -310,6 +316,9 @@ pub const CLAUDE_HOME_RO: &[&str] = &[
     ".claude/statsig",
     ".claude.json",
     ".config/git",
+    // `git` in the jail warned "unable to access ~/.gitconfig: Permission
+    // denied" on every command — identity + defaults live there; RO only.
+    ".gitconfig",
     ".config/curlrc",
     ".config/fontconfig",
 ];
