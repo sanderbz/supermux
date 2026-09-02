@@ -205,7 +205,8 @@ impl SessionConfig {
             }
 
             self.active = true;
-            self.mcp_servers.insert(g.connector_id.clone(), g.emit.clone());
+            self.mcp_servers
+                .insert(g.connector_id.clone(), with_remote_transport(g.emit.clone()));
             self.allow_rules
                 .push(Value::String(format!("mcp__{}__*", g.connector_id)));
             // Point each file-credential's env var at the materialized PATH (never
@@ -812,6 +813,31 @@ fn materialize_cred_file(
     let path = creds_dir.join(format!("{connector_id}-{}", f.field_key));
     std::fs::write(&path, f.content.as_bytes())?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+
+/// A hosted remote's launch entry MUST name its transport. Claude Code refuses a
+/// bare `{ "url": … }` at boot — verbatim, from a live pane (2.1.258):
+///
+/// ```text
+/// Warning: 1 MCP server skipped due to invalid config:
+///   - Skipped — MCP server "pmcp-inhouseseo" has a "url" but no "type";
+///     add "type": "http" (or "sse" / "ws") to this entry
+/// ```
+///
+/// …which silently disabled EVERY remote / OAuth catalog connector while the
+/// grant looked fine in the UI. Normalise at launch (not only in the catalog
+/// templates) so rows already installed without a type — the owner's
+/// `pmcp-inhouseseo` among them — heal on the next start. A declared `type`
+/// is never overwritten; a `command` entry (stdio) is left alone.
+pub fn with_remote_transport(mut emit: Value) -> Value {
+    if let Some(obj) = emit.as_object_mut() {
+        let has_url = obj.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty());
+        if has_url && obj.get("type").is_none() && obj.get("command").is_none() {
+            obj.insert("type".into(), Value::String("http".into()));
+        }
+    }
+    emit
 }
 
 #[cfg(test)]
@@ -1711,5 +1737,22 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
         assert_eq!(v["disableClaudeAiConnectors"], json!(true), "account-connector kill switch on");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn remote_emit_gets_the_http_transport_claude_code_requires() {
+        // A bare url (the shape every installed catalog row carried) → http.
+        let v = with_remote_transport(json!({ "url": "https://app.inhouseseo.ai/api/mcp" }));
+        assert_eq!(v["type"], json!("http"));
+        assert_eq!(v["url"], json!("https://app.inhouseseo.ai/api/mcp"));
+        // A declared transport is respected.
+        let v = with_remote_transport(json!({ "type": "sse", "url": "https://x/sse" }));
+        assert_eq!(v["type"], json!("sse"));
+        // stdio entries are untouched.
+        let v = with_remote_transport(json!({ "command": "npx", "args": ["-y", "pkg"] }));
+        assert!(v.get("type").is_none());
+        // An empty url is not a remote.
+        let v = with_remote_transport(json!({ "url": "" }));
+        assert!(v.get("type").is_none());
     }
 }
