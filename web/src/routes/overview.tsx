@@ -655,7 +655,7 @@ function DefaultOverview() {
         // text that no heading list will explain. It is hidden from AT rather
         // than promoted, because it is the copy, not the original.
         aria-hidden
-        className="glass safe-header pointer-events-none sticky top-0 z-30 flex items-center justify-center border-b border-hairline sm:pt-0"
+        className="glass safe-header sm-page-header pointer-events-none sticky top-0 flex items-center justify-center border-b border-hairline sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Overview</span>
       </motion.header>

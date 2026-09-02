@@ -566,7 +566,7 @@ function AgentForm({
           scroll body the fields use (DRY with the working sheets) while the body
           scrolls behind it; an opaque bg + top border read it as a footer.
           Labels shift per step (hire a colleague, not launch a job). */}
-      <div className="sticky bottom-0 z-10 flex gap-2 border-t border-border bg-background px-6 pb-6 pt-4">
+      <div className="sm-page-header sticky bottom-0 flex gap-2 border-t border-border bg-background px-6 pb-6 pt-4">
         {step === 'describe' ? (
           // Two buttons, one row at 390px: Cancel + one dominant primary. No
           // third "Skip & hire" (ambiguous — step 2 hasn't been seen; the

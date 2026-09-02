@@ -126,7 +126,7 @@ export function WorkflowsView({
       <div
         className={cn(
           'flex flex-col gap-3',
-          isPage ? 'sticky top-0 z-10 bg-background/80 px-4 pb-3 pt-4 backdrop-blur sm:px-6' : 'pb-2',
+          isPage ? 'sm-page-header sticky top-0 bg-background/80 px-4 pb-3 pt-4 backdrop-blur sm:px-6' : 'pb-2',
         )}
       >
         {isPage ? (
@@ -173,7 +173,7 @@ export function WorkflowsView({
         )}
       </div>
 
-      <div className={cn('min-h-0 flex-1 overflow-y-auto pt-3', isPage ? 'px-4 pb-10 sm:px-6' : 'pb-2')}>
+      <div className={cn('sm-page-scroll min-h-0 flex-1 overflow-y-auto pt-3', isPage ? 'px-4 pb-10 sm:px-6' : 'pb-2')}>
         {loading ? (
           <ListSkeleton />
         ) : failed ? (
