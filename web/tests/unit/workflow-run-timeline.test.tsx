@@ -33,7 +33,15 @@ import {
 import { STATUS_GLYPH } from '../../src/components/workflows/step-rail'
 import type { WorkflowRunDetail, WorkflowStepRow } from '../../src/lib/api/workflows'
 
-const now = Math.floor(Date.now() / 1000)
+// Anchored to NOON today, not the wall clock: the timeline groups by local
+// day, so a fixture at `Date.now() - 300` run in the first five minutes after
+// midnight lands on "Yesterday" and the "Today" assertion below flakes (seen
+// on CI at 00:01 UTC).
+const now = (() => {
+  const d = new Date()
+  d.setHours(12, 0, 0, 0)
+  return Math.floor(d.getTime() / 1000)
+})()
 
 const STEPS: WorkflowStepRow[] = [
   {
