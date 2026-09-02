@@ -699,19 +699,31 @@ fn harness_notice(line: &Map<String, Value>, text: &str) -> Option<(&'static str
         .get("origin")
         .and_then(Value::as_object)
         .and_then(|o| str_at(o, &["kind"]));
+    // AN ORIGIN THAT NAMES A SPEAKER IS NEVER PLUMBING, whatever else the line
+    // says. `human` is Claude Code stating a person typed it; `peer` is ANOTHER
+    // CLAUDE SESSION's message, which arrives as `Another Claude session sent a
+    // message:` + `<teammate-message>` blocks and is this app's whole bot-mode
+    // group chat (`wire-entries.ts` intercepts it as `teammate`/`coordination`
+    // rows before `classifyPrompt` ever runs). Observed on this host carrying
+    // `isMeta: true` and NO `promptSource` — so an arm that keyed on "any
+    // non-human origin" would have turned every teammate message into a grey
+    // notice. The allow-list is inverted for exactly that reason: only signals
+    // that positively mean HARNESS count.
+    if matches!(origin_kind, Some("human") | Some("peer")) {
+        return None;
+    }
     let system_source = str_at(line, &["promptSource", "prompt_source"]) == Some("system");
-    let injected = match origin_kind {
-        Some("human") => return None,
-        Some(_) => true,
-        None => system_source,
-    };
-    if !injected {
+    let task_notification = origin_kind == Some("task-notification")
+        || text.trim_start().starts_with("<task-notification");
+    if !system_source && !task_notification {
         return None;
     }
-    if crate::agents::delegate::wrapper_markup(text) {
+    // …and neither is a line that speaks FOR somebody: supermux's own
+    // authorship wrappers, and the cross-session envelope above.
+    if speaks_for_somebody(text) {
         return None;
     }
-    if origin_kind == Some("task-notification") || text.trim_start().starts_with("<task-notification") {
+    if task_notification {
         return Some(("agent_notification", task_notification_body(text)));
     }
     Some((
@@ -723,6 +735,29 @@ fn harness_notice(line: &Map<String, Value>, text: &str) -> Option<(&'static str
             "origin": origin_kind,
         }),
     ))
+}
+
+/// Does `text` carry an AUTHORSHIP claim — somebody's message, wrapped?
+///
+/// Two families, both of which outrank the harness bucket:
+///   · supermux's own `<supermux-delegation>` / `<supermux-human>` /
+///     `<supermux-schedule>` wrappers, which are the only thing standing between
+///     a colleague's name and a faceless row, and
+///   · Claude Code's cross-session envelope (`Another Claude session sent a
+///     message:` + `<teammate-message>` / `<cross-session-message>` blocks) —
+///     the transport this app's company group chat runs on.
+///
+/// `recall.rs::classify_user` reaches the same verdict by letting
+/// `classify_by_wrapper` outrank `promptSource: "system"`; this is that rule,
+/// stated for the live plane.
+fn speaks_for_somebody(text: &str) -> bool {
+    if crate::agents::delegate::wrapper_markup(text) {
+        return true;
+    }
+    let head = &text[..text.len().min(4096)];
+    head.contains("<teammate-message")
+        || head.contains("<cross-session-message")
+        || head.contains("Another Claude session sent a message")
 }
 
 /// The wire body of a background-agent completion notice.
@@ -1685,6 +1720,52 @@ mod tests {
             panic!("must parse")
         };
         assert_eq!(entries[0].kind, Kind::Prompt, "authorship wrappers stay prompts");
+    }
+
+    /// A CROSS-SESSION TEAMMATE MESSAGE IS SOMEBODY SPEAKING.
+    ///
+    /// Claude Code delivers another session's message as a user-role line with
+    /// `origin:{kind:"peer"}` and `isMeta:true` — and, on this host's corpus, NO
+    /// `promptSource` at all. It is the transport this app's company group chat
+    /// runs on: `wire-entries.ts` intercepts the envelope and renders
+    /// `teammate`/`coordination` rows from it. An arm that read "any non-human
+    /// origin is plumbing" would have turned every teammate message into a grey
+    /// harness notice — a whole feature, silently faceless. Pinned both ways:
+    /// by the origin, and by the envelope on its own.
+    #[test]
+    fn a_cross_session_teammate_message_is_never_a_harness_notice() {
+        for line in [
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u-peer",
+                "isMeta": true,
+                "origin": { "kind": "peer", "name": "keuze-agent" },
+                "message": {
+                    "role": "user",
+                    "content": "Another Claude session sent a message:\n<teammate-message teammate_id=\"keuze-agent\">{}</teammate-message>",
+                },
+            }),
+            // The same envelope, this time WITH the system stamp — the belt to
+            // the origin's braces.
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u-peer2",
+                "promptSource": "system",
+                "message": {
+                    "role": "user",
+                    "content": "Another Claude session sent a message:\n<teammate-message teammate_id=\"keuze-agent\">{}</teammate-message>",
+                },
+            }),
+        ] {
+            let ParsedLine::Entry(entries) = parse_line(&line.to_string(), 0) else {
+                panic!("must parse")
+            };
+            assert_eq!(
+                entries[0].kind,
+                Kind::Prompt,
+                "a teammate's message must reach the coordination arm intact",
+            );
+        }
     }
 
     /// A `promptSource: "system"` line with no recognised envelope is still not
