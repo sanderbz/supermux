@@ -586,9 +586,13 @@ function ThinkingDisclosure({
         data-testid="chat-thinking"
         data-static=""
       >
-        <span title={notSaved} aria-label={`${label}. ${notSaved}`}>
+        <span className="chat-thinking-pill-label" title={notSaved}>
           {label}
         </span>
+        {/* The reason the pill is inert, for assistive tech: a `title` is
+            mouse-only and `aria-label` on a generic span is ignored, so the
+            sentence rides as visually-hidden text instead. */}
+        <span className="sr-only">{notSaved}</span>
         {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </p>
     )

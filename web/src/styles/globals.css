@@ -682,7 +682,7 @@
   margin: 0;
   line-height: 1.4;
 }
-.chat-thinking-pill > span {
+.chat-thinking-pill > .chat-thinking-pill-label {
   display: inline-flex;
   align-items: center;
   border: 0.5px solid var(--sm-hairline-soft);

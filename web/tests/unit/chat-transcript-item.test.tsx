@@ -388,11 +388,13 @@ describe('thinking', () => {
     const out = text(html)
     expect(out).toContain('Thought for 12s')
     expect(html).not.toContain('<details')
-    expect(out).not.toContain('not saved')
+    // The sentence exists for assistive tech only (visually hidden), never
+    // inside the pill label itself.
+    expect(html).toMatch(/class="sr-only">[^<]*not saved/)
+    expect(html).not.toMatch(/chat-thinking-pill-label[^>]*>[^<]*not saved/)
     // The fact is preserved where a hover / screen reader finds it.
     expect(html).toMatch(/title="[^"]*not saved[^"]*"/)
-    expect(html).toMatch(/aria-label="[^"]*not saved[^"]*"/)
-  })
+      })
 
   test('the static pill is not interactive; a long block still discloses', () => {
     const pill = render([
