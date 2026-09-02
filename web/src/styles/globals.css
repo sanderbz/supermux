@@ -673,6 +673,27 @@
 .chat-thinking-summary::-webkit-details-marker {
   display: none;
 }
+/* The STATIC thinking pill: an empty block (Claude Code writes the thinking
+   entry with no body on this model family). Same chrome as the summary pill
+   above, minus everything that promises a click — no cursor, no hover, no
+   chevron — because there is nothing behind it to open. The "not saved" fact
+   lives in the span's title / aria-label, not in a body. */
+@utility chat-thinking-pill {
+  margin: 0;
+  line-height: 1.4;
+}
+.chat-thinking-pill > span {
+  display: inline-flex;
+  align-items: center;
+  border: 0.5px solid var(--sm-hairline-soft);
+  border-radius: 9999px;
+  background: var(--sm-fill-soft);
+  padding: 3px 10px;
+  font-size: 12.5px;
+  letter-spacing: -0.05px;
+  color: var(--sm-ink-2);
+  cursor: default;
+}
 /* The inline thinking SUMMARY (Fable 5 `display: summarized`): the narration
    line between two tool calls. Quiet ink, no chrome — it is context, not an
    answer, so it must never compete with the assistant bubble beneath it. */
