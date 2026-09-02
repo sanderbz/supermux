@@ -751,7 +751,7 @@ fn apply_payload(
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -762,7 +762,18 @@ fn apply_payload(
             // …and any pending ELICITATION: the form is raised mid-tool-call, so
             // the tool having finished proves the form is gone even if the
             // `ElicitationResult` leg never arrived.
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            //
+            // **The connect card is deliberately NOT in this list.** Every other
+            // ask here BLOCKS a tool call, so "the tool finished" resolves it.
+            // `connect` is the one that does not: it is allow-listed and
+            // marker-free precisely so it returns at once (parking it on Claude
+            // Code's terminal dialog left bots stuck for hours), which means its
+            // own PostToolUse lands milliseconds after the PreToolUse that raised
+            // the card. Clearing here gave the card a lifetime of one no-op tool
+            // call — the bot said "I sent you a connect card" and none ever
+            // rendered. It is the human who resolves this one, through the card's
+            // own dismiss/grant route.
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -864,8 +875,12 @@ fn apply_payload(
         // hook fresh within `SUBAGENT_LIVE_WINDOW`) rather than by this force-0 —
         // so a lost `SubagentStop` still cannot permanently suppress a finish.
         "stop" | "Stop" => {
+            // The connect card is NOT cleared here either (see the PostToolUse
+            // arm): the tool's own answer tells the bot to carry on meanwhile, so
+            // the turn ends within seconds of the ask while the human is still
+            // walking to their phone.
             let act = state.clear_activity(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -2550,15 +2565,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_connect_request_clears_when_the_call_moves_on() {
-        // No hook reports the credential outcome (it never touches this plane —
-        // the card POSTs it straight to the vault), so "something after it
-        // happened" IS the resolution: the tool finishing, the turn ending, the
-        // user moving on.
+    async fn the_connect_card_outlives_its_own_tool_call_and_the_turn() {
+        // THE PHANTOM CARD. The `connect` tool is deliberately allow-listed and
+        // marker-free so it does NOT park the bot (see `connect_ask`), which means
+        // its own `PostToolUse` lands milliseconds after the `PreToolUse` that
+        // raised the card — and the tool's own answer tells the bot to "carry on
+        // meanwhile", so the turn's `Stop` follows shortly after. While those two
+        // events cleared the ask, the card's entire lifetime was one no-op tool
+        // call: the bot truthfully reported "I sent you a connect card" and no
+        // human ever saw one. The card must survive both.
+        //
+        // This is the one ask on this plane that is NOT a blocked call: a
+        // permission dialog / elicitation / takeover all stall the tool, so "the
+        // tool finished" genuinely resolves them. `connect` asks the human to act
+        // in their OWN time, so only the human resolves it (the card's own
+        // dismiss/grant route, `sessions::connect_request_dismiss_handler`) or a
+        // new process does.
         for (event, payload) in [
             ("post_tool", r#"{"tool_name":"mcp__connect__connect"}"#),
             ("post_tool_failure", LIVE_POST_TOOL_FAILURE),
             ("stop", "{}"),
+        ] {
+            let (state, dir) = test_state().await;
+            let s = "worker-connect";
+            apply_payload(&state, s, "pre_tool", &p(LIVE_CONNECT), false);
+            assert!(
+                state.session_activity(s).and_then(|a| a.connect_request).is_some(),
+                "{event}: precondition — a connect ask is live"
+            );
+            apply_payload(&state, s, event, &p(payload), false);
+            assert!(
+                state.session_activity(s).and_then(|a| a.connect_request).is_some(),
+                "{event} must NOT clear the connect card — the human has not answered it yet"
+            );
+
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_connect_request_clears_when_the_process_or_the_human_moves_on() {
+        // What DOES resolve it: a new claude process (nothing carries over), the
+        // session ending, or the human typing again (they are demonstrably at the
+        // surface the card is on, and did something else).
+        for (event, payload) in [
             ("session_end", "{}"),
             ("user_prompt", "{}"),
             ("session_start", "{}"),

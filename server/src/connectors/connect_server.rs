@@ -125,6 +125,30 @@ fn how_to_for(auth_kind: &str, help_url: Option<&str>, help_text: Option<&str>) 
     }
 }
 
+/// **The truth about a BUILTIN connector**, or `None` for an ordinary card.
+///
+/// A builtin has no credential to collect, so `connect(<id>)` can never do
+/// anything useful for it — the note replaces the card claim with the act that
+/// actually grants access. Kept next to [`project_card`] so the snapshot and the
+/// tool's answer are one string, not two that drift.
+pub fn builtin_connect_note(id: &str) -> Option<&'static str> {
+    match id {
+        crate::connectors::browser::mcp::BROWSER_ID => Some(
+            "The Shared Browser is not connected with a card — the human grants it by lending you a \
+             TAB. If you have browser_* tools, call browser_list_tabs to see the tabs you may use. \
+             If you have no browser_* tools, ask the human to open supermux -> Browser, pick the \
+             tab they want you to work in, and lend it to you; you get the tools on your next \
+             restart. Do not try to drive the browser any other way.",
+        ),
+        crate::connectors::groupchat::GROUPCHAT_ID => Some(
+            "The company group chat is not connected with a card — every bot in a company already \
+             has it. If you have no group_chat tools, you are not in a company; ask the human to \
+             move you into one.",
+        ),
+        _ => None,
+    }
+}
+
 /// Project one merged store card down to the SECRET-FREE concierge shape. ONLY the
 /// nine concierge fields are copied — the card's `credentials` schema, `secret_ref`,
 /// tokens, `accounts`, and `provenance` are DROPPED (they never reach this).
@@ -169,6 +193,19 @@ fn project_card(card: &Value) -> Value {
     let how_to = how_to_for(auth_kind, help_url, help_text);
 
     let mut o = serde_json::Map::new();
+    // BUILTINS are not connect-card material. They carry no credential, so the
+    // card lane has nothing to ask for, and access to them is governed by a
+    // different act entirely (the Shared Browser: the human lending a TAB; the
+    // group chat: the bot being in a company). Left unmarked, they read to a bot
+    // exactly like any zero-setup card — `auth_kind: none`, `how_to: "No sign-in
+    // needed — just connect it."` — which is precisely the sentence that sent a
+    // bot chasing a browser connect card it could never be given. Mark them, and
+    // say what the human actually has to do instead; the embedded `connect` tool
+    // reads `connect_note` and answers with it rather than claiming a card.
+    if let Some(note) = builtin_connect_note(id) {
+        o.insert("builtin".into(), json!(true));
+        o.insert("connect_note".into(), json!(note));
+    }
     o.insert("id".into(), json!(id));
     o.insert("name".into(), json!(name));
     o.insert("description".into(), json!(description));
@@ -291,6 +328,54 @@ mod tests {
         // P2d — the second, NON-interactive discovery tool.
         assert!(SERVER_PY.contains("\"name\": \"list_connectors\""));
         assert!(SERVER_PY.contains("TOOLS = [CONNECT_TOOL, LIST_TOOL]"));
+    }
+
+    #[test]
+    fn a_builtin_is_marked_and_carries_the_truth_instead_of_a_card_promise() {
+        // The Shared Browser has no credential, so `auth.kind` is `none` — which,
+        // unmarked, projected to `how_to: "No sign-in needed — just connect it."`
+        // That sentence is what sent a bot to `connect('shared-browser')` and then
+        // to telling its human "I've sent you a connect card" for a card that can
+        // never exist. The projection must say what the human ACTUALLY does.
+        let card = json!({
+            "id": crate::connectors::browser::mcp::BROWSER_ID,
+            "display_name": "Shared Browser",
+            "description": "One real Chrome…",
+            "auth": { "kind": "none" },
+        });
+        let p = project_card(&card);
+        assert_eq!(p["builtin"], json!(true), "{p}");
+        let note = p["connect_note"].as_str().expect("a builtin carries its note");
+        assert!(note.contains("lending you a TAB"), "{note}");
+        assert!(note.contains("browser_list_tabs"), "{note}");
+
+        // The group chat is the other builtin, same rule.
+        let gc = project_card(&json!({
+            "id": crate::connectors::groupchat::GROUPCHAT_ID,
+            "auth": { "kind": "none" },
+        }));
+        assert_eq!(gc["builtin"], json!(true), "{gc}");
+
+        // An ORDINARY zero-setup card is untouched — this must not become a
+        // blanket gag on `auth_kind: none`.
+        let ordinary = project_card(&json!({ "id": "pmcp-filesystem", "auth": { "kind": "none" } }));
+        assert!(ordinary.get("builtin").is_none(), "{ordinary}");
+        assert!(ordinary.get("connect_note").is_none(), "{ordinary}");
+        assert_eq!(ordinary["how_to"], json!("No sign-in needed — just connect it."));
+    }
+
+    #[test]
+    fn the_embedded_connect_tool_refuses_to_claim_a_card_it_did_not_raise() {
+        // The three branches that keep the tool honest, pinned in the shipped
+        // file: a builtin answers with the server's note, an id that is in no
+        // catalog is not claimed at all, and only the real path sets `card_sent`.
+        assert!(SERVER_PY.contains("\"card_sent\": False"));
+        assert!(SERVER_PY.contains("\"card_sent\": True"));
+        assert!(SERVER_PY.contains("connect_note"));
+        assert!(
+            SERVER_PY.contains("There is no connector called"),
+            "an unknown id must be refused, not announced as a card"
+        );
     }
 
     #[test]
@@ -721,6 +806,109 @@ mod tests {
         // Never leaks a secret plane.
         assert!(!text.contains("secret_ref"), "no secret in list output: {text}");
         assert!(!text.contains("credentials"));
+
+        let _ = child.kill();
+        let _ = child.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// FUNCTIONAL, and the REPRODUCTION of the phantom card's second half: drive
+    /// the shipped server with a snapshot that contains the Shared Browser and
+    /// ask it to `connect('shared-browser')`. It must answer with the truth (a
+    /// tab, from the human, in the workspace) and NOT with "supermux has asked
+    /// the human to approve it in a card" — the sentence a bot faithfully
+    /// relayed to its owner for a card that never rendered and never could.
+    #[test]
+    fn live_connect_tells_the_truth_about_a_builtin_and_an_unknown_id() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+
+        if Command::new("python3").arg("--version").output().is_err() {
+            eprintln!("python3 not available — skipping live connect-honesty test");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("supermux-connectb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("server.py");
+        std::fs::write(&script, SERVER_PY).unwrap();
+        let catalog = dir.join("catalog.json");
+        // Exactly what `build_snapshot` -> `project_card` writes for the builtin.
+        let browser = project_card(&json!({
+            "id": crate::connectors::browser::mcp::BROWSER_ID,
+            "display_name": "Shared Browser",
+            "auth": { "kind": "none" },
+        }));
+        std::fs::write(
+            &catalog,
+            serde_json::to_vec_pretty(&json!({
+                "version": 1,
+                "scope": "hq",
+                "connectors": [
+                    browser,
+                    { "id": "pmcp-github", "name": "GitHub", "auth_kind": "api_key" }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut child = Command::new("python3")
+            .arg(&script)
+            .arg(&catalog)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn connect server");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut roundtrip = |req: Value| -> Value {
+            stdin.write_all((req.to_string() + "\n").as_bytes()).unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            serde_json::from_str(&line).unwrap()
+        };
+        let _ = roundtrip(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18" }
+        }));
+
+        let answer = |v: &Value| -> Value {
+            serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+
+        // 1. The builtin — the owner's exact case.
+        let b = answer(&roundtrip(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "connect", "arguments": { "service": "shared-browser" } }
+        })));
+        assert_eq!(b["card_sent"], json!(false), "no card was raised, so claim none: {b}");
+        let msg = b["message"].as_str().unwrap();
+        assert!(!msg.contains("asked the human to approve"), "the phantom claim is gone: {msg}");
+        assert!(msg.contains("lending you a TAB"), "says what the human actually does: {msg}");
+        assert!(msg.contains("browser_list_tabs"), "names the tool to check with: {msg}");
+
+        // 2. An id that is in no catalog — a guess, not a card.
+        let u = answer(&roundtrip(json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "connect", "arguments": { "service": "banana" } }
+        })));
+        assert_eq!(u["card_sent"], json!(false), "{u}");
+        assert!(
+            u["message"].as_str().unwrap().contains("no connector called 'banana'"),
+            "{u}"
+        );
+
+        // 3. A REAL card still claims the ask (and only the ask).
+        let g = answer(&roundtrip(json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": { "name": "connect", "arguments": { "service": "pmcp-github" } }
+        })));
+        assert_eq!(g["card_sent"], json!(true), "{g}");
+        assert!(g["message"].as_str().unwrap().contains("asked the human"), "{g}");
+        assert_eq!(g["connected"], json!(false), "the ask is never the outcome: {g}");
 
         let _ = child.kill();
         let _ = child.wait();

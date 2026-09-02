@@ -30,6 +30,25 @@ export interface TabGrant {
   /** SQLite integer bool — `0` is a grant that exists but is switched off. */
   enabled: number
   granted_at: number
+  /** Has a launch since the grant already bound the Shared Browser connector it
+   *  implies? Lending a tab now also grants that connector server-side, but a
+   *  connector only reaches a bot's toolset at LAUNCH — so a bot that was
+   *  already running when the tab was lent holds the grant and not the tools.
+   *  Server-computed with the SAME predicate the store's grant list uses.
+   *  Absent for a `*` / `@company:<id>` sentinel: those name no one process, so
+   *  there is no honest answer. */
+  applied?: boolean
+  /** Is a restart even meaningful — i.e. is that bot running right now? A
+   *  stopped bot binds the grant on its next start with nothing to press. */
+  running?: boolean
+}
+
+/** Does this grant name a bot that has the tab but cannot use it YET — the
+ *  grant landed while the bot was already running, so the `browser_*` tools
+ *  arrive at its next restart. The one state the workspace must not hide: it is
+ *  the whole difference between "lent" and "usable". */
+export function tabGrantNeedsRestart(g: TabGrant): boolean {
+  return g.enabled !== 0 && g.applied === false && g.running === true
 }
 
 /** One workspace tab, as `GET /api/browser/tabs` renders it. */
