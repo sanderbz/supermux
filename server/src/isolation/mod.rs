@@ -1080,8 +1080,9 @@ mod tests {
             ".claude/projects",
             ".claude/history.jsonl",
             ".claude/file-history",
-            ".claude/session-env",
-            ".claude/shell-snapshots",
+            // `session-env` / `shell-snapshots` are deliberately RW since the
+            // v0.6.17 hotfix (Claude runs its hooks through a per-run dir it
+            // names itself) — see AGENT_STATE_RW; they are NOT in this list.
             ".claude/backups",
             ".config",
             ".config/gh",
