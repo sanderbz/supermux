@@ -129,6 +129,11 @@ pub struct Config {
     /// PA bots are never touched. `best-effort` fails open (a loud warning) when
     /// isolation is unavailable; `off` is the escape hatch.
     pub isolation_mode: crate::isolation::IsolationMode,
+    /// Per-company widening of the company jail: `[[company_isolation]]` blocks
+    /// (`company = "<slug>"`, `read_only = [...]`, `read_write = [...]`). Absent
+    /// ⇒ every company gets the built-in allow-list only. See
+    /// [`crate::isolation::CompanyIsolation`] for the screening rules.
+    pub company_isolation: Vec<crate::isolation::CompanyIsolation>,
     /// P3a — the human identity plane (Google OIDC + cookie sessions).
     ///
     /// **Inert by default.** With no `google_client_id` and no `company_hosts`,
@@ -515,6 +520,9 @@ struct RawConfig {
     /// (`best-effort`), resolved by [`crate::isolation::IsolationMode::parse`].
     #[serde(default)]
     isolation_mode: Option<String>,
+    /// See [`Config::company_isolation`]. Absent ⇒ no per-company widening.
+    #[serde(default)]
+    company_isolation: Vec<crate::isolation::CompanyIsolation>,
     // ── P3a human identity plane (all optional; absent ⇒ inert) ──
     #[serde(default)]
     google_client_id: Option<String>,
@@ -649,6 +657,7 @@ pub fn load() -> Result<Config> {
                 .or(raw.isolation_mode)
                 .unwrap_or_default(),
         ),
+        company_isolation: raw.company_isolation,
         human_auth,
     })
 }
@@ -1036,5 +1045,37 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod company_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn company_isolation_blocks_parse_from_config_toml() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+[[company_isolation]]
+company = "canary"
+read_only = ["~/.ssh", "~/.config/gh"]
+
+[[company_isolation]]
+company = "reisposter"
+read_write = ["/srv/reisposter-uploads"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(raw.company_isolation.len(), 2);
+        assert_eq!(raw.company_isolation[0].company, "canary");
+        assert_eq!(raw.company_isolation[0].read_only, vec!["~/.ssh", "~/.config/gh"]);
+        assert!(raw.company_isolation[0].read_write.is_empty());
+        assert_eq!(raw.company_isolation[1].read_write, vec!["/srv/reisposter-uploads"]);
+    }
+
+    #[test]
+    fn absent_company_isolation_key_means_no_extras() {
+        let raw: RawConfig = toml::from_str("bind = \"127.0.0.1:1\"\n").unwrap();
+        assert!(raw.company_isolation.is_empty());
     }
 }

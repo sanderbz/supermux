@@ -324,6 +324,17 @@ If `tailscaled` is running on the target host, the installer auto-detects it and
 
 - **Bot Mode is a mode you enable**, not a separate product. The whole harness works with it off; you switch it on when you want companies and bots.
 - **Company isolation is best-effort, not a hard multi-tenant jail.** Separation is app-layer scoping plus the systemd sandbox (and best-effort Landlock where the kernel allows) — sandboxed isolation on a box you control, not fully isolated tenants. Don't host mutually-hostile companies on one instance.
+  The jail's allow-list is deliberately narrow (the company folder, `~/.claude`, `/tmp`, the toolchains). A bot that legitimately needs more — say a fleet-admin bot that must read the operator's `~/.ssh` and `~/.config/gh` — gets it per company, not by switching the sandbox off for everyone:
+
+  ```toml
+  # ~/.supermux/config.toml
+  [[company_isolation]]
+  company = "canary"                        # the company slug
+  read_only = ["~/.ssh", "~/.config/gh"]    # read (+exec) only
+  read_write = []                           # read + write
+  ```
+
+  Sibling companies keep the default list. Relative paths, `/`, `~` itself and anything under `~/.supermux` (auth token, DB, vault) are refused with a logged reason. A running bot picks the change up on its next (re)start.
 - **Letting outside humans into a company needs your own domain + OAuth.** Out of the box supermux is single-owner behind an auth token (and ideally Tailscale); external human access is your setup to add.
 - **It runs Claude Code.** Bot Mode is as capable — and as fallible — as the agent driving it. It does the things you could do at a keyboard, and it makes the mistakes an agent makes. Keep a human in the loop for anything that matters.
 - **Chat renders permission prompts; it can't answer them yet.** When Claude asks to run something, the card shows up in chat with the command and its options — and says out loud that you have to answer it in the terminal. The screenshot below is the real state, footnote and all.

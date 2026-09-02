@@ -2109,6 +2109,36 @@ async fn company_confinement(
     let mut plan = state
         .isolation
         .plan_for(std::path::Path::new(&company.root_dir), &home);
+    // `[[company_isolation]]` (config.toml): the operator's per-company widening
+    // of the jail — e.g. `~/.ssh` for a crawl-fleet admin bot. Scoped to THIS
+    // company's slug; unsafe entries are refused with a reason (never silently
+    // dropped) so a bot that still cannot read a path shows WHY in the log.
+    if let (Some(p), Some(extra)) = (plan.as_mut(), state.isolation.extras_for(&company.slug)) {
+        let resolved = extra.resolve(&home, &state.config.data_dir);
+        for (entry, why) in &resolved.rejected {
+            tracing::warn!(
+                session = name,
+                company = %company.slug,
+                entry = %entry,
+                "isolation: [[company_isolation]] entry refused — {why}",
+            );
+        }
+        if !resolved.read_only.is_empty() || !resolved.read_write.is_empty() {
+            tracing::info!(
+                session = name,
+                company = %company.slug,
+                read_only = ?resolved.read_only,
+                read_write = ?resolved.read_write,
+                "isolation: widening the company jail per [[company_isolation]]",
+            );
+        }
+        for path in resolved.read_only {
+            p.allow_ro(path);
+        }
+        for path in resolved.read_write {
+            p.allow_rw(path);
+        }
+    }
     if let Some(p) = plan.as_mut() {
         // THIS session's own launch config (`--settings`, the connect catalog) —
         // scoped to `<name>` so a confined agent cannot read a sibling session's
@@ -5082,6 +5112,7 @@ mod company_confinement_gate_tests {
             // The DEFAULT mode, so the `None` below can only come from the
             // company_id gate — never from `isolation_mode = off`.
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         }
@@ -5260,6 +5291,7 @@ mod build_env_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         }
@@ -6199,6 +6231,7 @@ mod link_liveness_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -6294,6 +6327,7 @@ mod stale_resume_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -6558,6 +6592,7 @@ mod write_runtime_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };

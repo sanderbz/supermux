@@ -888,6 +888,96 @@ fn run_confinement_self_test() -> bool {
 // IsolationRuntime — the per-process handle stored in AppState
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// One `[[company_isolation]]` block from `config.toml`: extra allow-list paths
+/// for the jail of ONE company (matched by `company` = the company slug).
+///
+/// ```toml
+/// [[company_isolation]]
+/// company = "canary"
+/// read_only = ["~/.ssh", "~/.config/gh"]   # read (+exec) only
+/// read_write = []                          # read + write
+/// ```
+///
+/// Why this exists: the built-in allow-list ([`SandboxSpec::for_company`]) is
+/// deliberately narrow (the company tree, `~/.claude`, `/tmp`, the toolchains),
+/// so a bot that legitimately needs e.g. the operator's `~/.ssh` (a crawl-fleet
+/// admin) had no way in short of `isolation_mode = off` for EVERY company. This
+/// widens the jail for one slug only; sibling companies still get the default
+/// list. Entries are resolved by [`resolve`](Self::resolve) at spawn time (with
+/// `~` expanded against the service user's home) and unsafe entries are refused.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct CompanyIsolation {
+    /// The company slug this block applies to (exact match, no case folding).
+    pub company: String,
+    /// Extra read(+exec)-only paths. `~/…` is expanded against `$HOME`.
+    #[serde(default)]
+    pub read_only: Vec<String>,
+    /// Extra read+write paths. `~/…` is expanded against `$HOME`.
+    #[serde(default)]
+    pub read_write: Vec<String>,
+}
+
+/// [`CompanyIsolation`] after `~` expansion + safety screening.
+#[derive(Debug, Default, PartialEq)]
+pub struct ResolvedCompanyIsolation {
+    pub read_only: Vec<PathBuf>,
+    pub read_write: Vec<PathBuf>,
+    /// `(entry as written, reason)` for every entry that was NOT granted.
+    pub rejected: Vec<(String, &'static str)>,
+}
+
+impl CompanyIsolation {
+    /// Expand and screen the configured entries.
+    ///
+    /// Refused (reported in `rejected`, never granted): empty entries; relative
+    /// paths (the jail matches absolute, resolved paths only); `/` and `$HOME`
+    /// themselves (either would hand the bot the whole box / the whole home and
+    /// void the jail); and anything at or under `data_dir` (`~/.supermux` — the
+    /// dashboard `auth_token`, the DB and the vault live there; they stay denied
+    /// by construction, see [`SandboxSpec::for_company`]).
+    pub fn resolve(&self, home: &Path, data_dir: &Path) -> ResolvedCompanyIsolation {
+        let mut out = ResolvedCompanyIsolation::default();
+        let screen = |raw: &str, out: &mut ResolvedCompanyIsolation| -> Option<PathBuf> {
+            let raw_t = raw.trim();
+            if raw_t.is_empty() {
+                out.rejected.push((raw.to_string(), "empty entry"));
+                return None;
+            }
+            let expanded = if raw_t == "~" {
+                home.to_path_buf()
+            } else if let Some(rest) = raw_t.strip_prefix("~/") {
+                home.join(rest)
+            } else {
+                PathBuf::from(raw_t)
+            };
+            if !expanded.is_absolute() {
+                out.rejected.push((raw.to_string(), "not an absolute path (or ~/…)"));
+                return None;
+            }
+            if expanded == Path::new("/") || expanded == home {
+                out.rejected.push((raw.to_string(), "would grant the whole filesystem / home"));
+                return None;
+            }
+            if expanded.starts_with(data_dir) {
+                out.rejected.push((raw.to_string(), "inside the supermux data dir (auth_token, DB, vault stay denied)"));
+                return None;
+            }
+            Some(expanded)
+        };
+        for raw in &self.read_only {
+            if let Some(p) = screen(raw, &mut out) {
+                out.read_only.push(p);
+            }
+        }
+        for raw in &self.read_write {
+            if let Some(p) = screen(raw, &mut out) {
+                out.read_write.push(p);
+            }
+        }
+        out
+    }
+}
+
 /// The process-wide isolation handle: the requested [`IsolationMode`], the
 /// startup [`ProbeResult`], and the active backend. Built once in
 /// `AppState::new`; consulted by the spawn path.
@@ -895,6 +985,9 @@ pub struct IsolationRuntime {
     mode: IsolationMode,
     probe: ProbeResult,
     provider: Arc<dyn IsolationProvider>,
+    /// Per-company extra allow-list blocks (`[[company_isolation]]`), looked up
+    /// by slug at spawn time via [`extras_for`](Self::extras_for).
+    company_extras: Vec<CompanyIsolation>,
     /// The startup self-test result: `true` when a confined child could actually
     /// BOOT + EXEC on this host with the real company allow-list. `false` disables
     /// company Landlock confinement for this boot (bots run unconfined) so a
@@ -914,7 +1007,20 @@ impl IsolationRuntime {
             probe,
             provider,
             confinement_usable,
+            company_extras: Vec::new(),
         }
+    }
+
+    /// Attach the `[[company_isolation]]` blocks from config (builder style).
+    pub fn with_company_extras(mut self, extras: Vec<CompanyIsolation>) -> Self {
+        self.company_extras = extras;
+        self
+    }
+
+    /// The extra allow-list block for `slug`, if the operator configured one.
+    /// Exact slug match: a block never leaks to a sibling company.
+    pub fn extras_for(&self, slug: &str) -> Option<&CompanyIsolation> {
+        self.company_extras.iter().find(|c| c.company == slug)
     }
 
     /// The requested policy.
@@ -1284,5 +1390,68 @@ mod tests {
         } else {
             assert!(strict.strict_refusal().is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod company_extras_tests {
+    use super::*;
+
+    fn home() -> PathBuf {
+        PathBuf::from("/home/u")
+    }
+    fn data_dir() -> PathBuf {
+        PathBuf::from("/home/u/.supermux")
+    }
+
+    #[test]
+    fn tilde_and_absolute_paths_resolve_into_ro_and_rw() {
+        let extra = CompanyIsolation {
+            company: "canary".into(),
+            read_only: vec!["~/.ssh".into(), "/srv/keys".into()],
+            read_write: vec!["~/.config/gh".into()],
+        };
+        let r = extra.resolve(&home(), &data_dir());
+        assert_eq!(r.read_only, vec![PathBuf::from("/home/u/.ssh"), PathBuf::from("/srv/keys")]);
+        assert_eq!(r.read_write, vec![PathBuf::from("/home/u/.config/gh")]);
+        assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    }
+
+    #[test]
+    fn dangerous_or_relative_entries_are_rejected_not_applied() {
+        let extra = CompanyIsolation {
+            company: "canary".into(),
+            read_only: vec![
+                "relative/path".into(),
+                "/".into(),
+                "~".into(),
+                "~/.supermux".into(),
+                "~/.supermux/auth_token".into(),
+                "".into(),
+            ],
+            read_write: vec!["/home/u/.supermux/data.db".into()],
+        };
+        let r = extra.resolve(&home(), &data_dir());
+        assert!(r.read_only.is_empty(), "{:?}", r.read_only);
+        assert!(r.read_write.is_empty(), "{:?}", r.read_write);
+        // Every bad entry is reported (so the operator sees WHY nothing was granted).
+        assert_eq!(r.rejected.len(), 7, "{:?}", r.rejected);
+    }
+
+    #[test]
+    fn runtime_looks_up_extras_by_exact_slug_only() {
+        let rt = IsolationRuntime::from_mode(IsolationMode::BestEffort).with_company_extras(vec![
+            CompanyIsolation {
+                company: "canary".into(),
+                read_only: vec!["~/.ssh".into()],
+                read_write: vec![],
+            },
+        ]);
+        assert!(rt.extras_for("canary").is_some());
+        // A sibling company gets NOTHING — the grant is scoped to one slug.
+        assert!(rt.extras_for("reisposter").is_none());
+        assert!(rt.extras_for("Canary").is_none(), "slugs are exact, no case folding");
+        // No config at all ⇒ no extras (the default runtime).
+        assert!(IsolationRuntime::from_mode(IsolationMode::BestEffort).extras_for("canary").is_none());
     }
 }

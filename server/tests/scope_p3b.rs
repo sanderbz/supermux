@@ -159,6 +159,7 @@ async fn fixture() -> Fixture {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: human_auth_cfg(),
     };
     let pool = db::init(&config).await.expect("db init");

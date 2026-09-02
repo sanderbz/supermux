@@ -802,6 +802,7 @@ impl AppState {
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
         // Capture the isolation policy before `config` is moved into the Arc.
         let isolation_mode = config.isolation_mode;
+        let company_isolation = config.company_isolation.clone();
         // Build the P3a human-auth runtime (flow store + Google verifier) before
         // `config` is moved into the Arc. The LIVE config is the file baseline
         // MERGED with any `companies_config.toml` companion the wizard wrote, so a
@@ -867,9 +868,10 @@ impl AppState {
             // honest measured level. On THIS box the systemd @system-service
             // filter blocks landlock_*, so the probe measures None and company
             // agents run UNCONFINED under BestEffort (fail-open).
-            isolation: Arc::new(crate::isolation::IsolationRuntime::from_mode(
-                isolation_mode,
-            )),
+            isolation: Arc::new(
+                crate::isolation::IsolationRuntime::from_mode(isolation_mode)
+                    .with_company_extras(company_isolation),
+            ),
             isolation_applied: Arc::new(DashMap::new()),
             human_auth,
             human_auth_config,
@@ -2364,6 +2366,7 @@ mod pending_edit_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
