@@ -115,6 +115,10 @@ export interface ConnectorAccount {
   last_error?: string | null
   /** The company that owns this account (P2b), `null` = HQ / global. */
   company_id?: number | null
+  /** How many tools this account's server listed in a REAL `tools/list`
+   *  (migration 0043). `null`/absent = never counted — render nothing rather than
+   *  borrowing a catalog blurb's number. */
+  tool_count?: number | null
   grant_level: GrantLevel
 }
 
@@ -202,7 +206,7 @@ export interface SessionConnector {
   running?: boolean
   account_ref?: string | null
   /** The account this grant feeds (status / health / identity), when any. */
-  account?: Pick<ConnectorAccount, 'id' | 'account_label' | 'status' | 'has_secret' | 'last_used_at' | 'health' | 'last_checked_at' | 'last_error'> | null
+  account?: Pick<ConnectorAccount, 'id' | 'account_label' | 'status' | 'has_secret' | 'last_used_at' | 'health' | 'last_checked_at' | 'last_error' | 'tool_count'> | null
 }
 
 /** The supermux connector manifest (the runtime/listing format). */
@@ -739,4 +743,88 @@ export function secretField(card: ConnectorCard): CredentialField | undefined {
 /** The non-secret fields (plain inputs — username, host, port …). */
 export function plainFields(card: ConnectorCard): CredentialField[] {
   return (card.credentials ?? []).filter((f) => !f.sensitive)
+}
+
+// ── the brokered sign-in's connection state, read from SERVER truth ───────────
+//
+// The bug this exists to kill: the store detail derived "connected" from React
+// state seeded at mount from the CURRENT SCOPE's grant set. A brokered sign-in
+// leaves the page entirely (a top-level redirect to the provider and back), so
+// that state is always gone on the return — and a grant made to ONE BOT is
+// invisible to the library scope's `*`/company sets anyway. The sheet therefore
+// re-rendered its INITIAL state after a sign-in the server had already completed,
+// and the owner signed in again. And again.
+//
+// The fix is to stop deriving it locally at all: the card carries its connected
+// accounts, so the state is a pure function of what the server says.
+
+export type OauthConnectionKey = 'not_connected' | 'connected' | 'needs_sign_in' | 'broken'
+
+export interface OauthConnection {
+  key: OauthConnectionKey
+  /** The headline: "Not connected" / "Connected as sander@acme.com — 32 tools". */
+  title: string
+  /** An honest second line when there is one (the probe's masked reason). */
+  detail?: string
+  tone: 'muted' | 'active' | 'warn' | 'error'
+  /** The account the state was derived from, for the account verbs. */
+  account: ConnectorAccount | null
+}
+
+/** "— 32 tools", or `''` when the server never counted them. Never invented. */
+function toolsSuffix(n: number | null | undefined): string {
+  if (typeof n !== 'number' || n <= 0) return ''
+  return ` — ${n} tool${n === 1 ? '' : 's'}`
+}
+
+/** The connection state of a connector, from the card's own accounts. Pure.
+ *
+ *  Honesty rules, same as `connectorStatus`: an `error` account is BROKEN, an
+ *  `expired`/`disconnected` one NEEDS SIGN-IN, and only a live account reads as
+ *  connected. A connector with no account at all is simply not connected. */
+export function oauthConnection(card: ConnectorCard): OauthConnection {
+  const accounts = card.accounts ?? []
+  const account = accounts.find((a) => a.status === 'active') ?? accounts[0] ?? null
+  if (!account) {
+    return { key: 'not_connected', title: 'Not connected', tone: 'muted', account: null }
+  }
+  if (account.health === 'error') {
+    return {
+      key: 'broken',
+      title: 'Sign-in stopped working',
+      detail: account.last_error ?? undefined,
+      tone: 'error',
+      account,
+    }
+  }
+  if (account.health === 'expired' || account.status === 'disconnected') {
+    return {
+      key: 'needs_sign_in',
+      title: 'Needs sign-in again',
+      detail: account.last_error ?? undefined,
+      tone: 'warn',
+      account,
+    }
+  }
+  const who = account.account_label ? `Connected as ${account.account_label}` : 'Connected'
+  return { key: 'connected', title: `${who}${toolsSuffix(account.tool_count)}`, tone: 'active', account }
+}
+
+/** The grant targets a connector currently has, as the sheet's target strings
+ *  (`*`, `@company:<id>`, bot slugs) — server truth for "who has this", so the
+ *  restart line survives the sign-in's full-page redirect. Pure. */
+export function consumerTargets(consumers: ConnectorConsumer[] | null | undefined): string[] {
+  const out: string[] = []
+  for (const c of consumers ?? []) {
+    const t =
+      c.scope === 'all'
+        ? ALL_AGENTS
+        : c.scope === 'company'
+          ? typeof c.company_id === 'number'
+            ? companyGrantKey(c.company_id)
+            : null
+          : (c.session_name ?? null)
+    if (t && !out.includes(t)) out.push(t)
+  }
+  return out
 }

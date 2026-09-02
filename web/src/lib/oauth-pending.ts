@@ -138,6 +138,20 @@ export const CONNECT_ERROR_COPY: Record<string, string> = {
   internal: 'Something broke on the server — see the log.',
 }
 
+/** The return landed WITHOUT the pending key — the sign-in was finished in a
+ *  different tab (or private-mode storage threw), so this document has nothing to
+ *  hand `complete`. Say that plainly and name the way out; never reset in silence,
+ *  which is what made a completed sign-in look like it had never happened. */
+export const PENDING_LOST_COPY =
+  'That sign-in finished in another tab — tap Sign in again here to finish it.'
+
+/** `complete` itself failed. The server's own reason when it gave one, and always
+ *  the way forward. */
+export function completeFailedCopy(reason?: string | null): string {
+  const why = (reason ?? '').trim()
+  return why ? `Couldn't finish the sign-in — ${why}. Try again.` : "Couldn't finish the sign-in — try again."
+}
+
 export function connectErrorCopy(code: string, name: string): string {
   const tpl = CONNECT_ERROR_COPY[code] ?? CONNECT_ERROR_COPY.state
   return tpl.replace('{name}', name)
@@ -206,7 +220,7 @@ export async function handleOauthReturn(search: string, deps: ReturnDeps): Promi
   }
   if (params.get('oauth_pending') !== '1') return { kind: 'none' }
   if (!pending) {
-    deps.toast('Sign-in finished outside supermux — tap Connect again from here.', 'error')
+    deps.toast(PENDING_LOST_COPY, 'error')
     return { kind: 'lost' }
   }
   clearPending(deps.store)
@@ -223,7 +237,7 @@ export async function handleOauthReturn(search: string, deps: ReturnDeps): Promi
     return { kind: 'connected', id: pending.id, target: r.target || pending.target, label: r.label, health: r.health?.status ?? null }
   } catch (e) {
     const msg = e instanceof Error ? e.message : ''
-    deps.toast(msg ? `Couldn't finish the sign-in — ${msg}` : "Couldn't finish the sign-in", 'error')
+    deps.toast(completeFailedCopy(msg), 'error')
     deps.invalidate(pending.target)
     return { kind: 'connect_failed', id: pending.id }
   }

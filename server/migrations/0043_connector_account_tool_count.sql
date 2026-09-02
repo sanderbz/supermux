@@ -1,0 +1,20 @@
+-- Persist how many tools a connected account's server actually listed
+-- (additive/nullable).
+--
+-- The brokered sign-in's finishing `complete` runs a REAL `tools/list` probe and
+-- returns the count in its response — but nothing stored it, so the count lived
+-- only in the returning tab's React state. A refresh (or opening the card from
+-- anywhere else) then had to fall back to a catalog blurb or show nothing, and
+-- the connected header could not honestly say "Connected as … — 32 tools" from
+-- server truth. That transience is the same class of bug as the sign-in that
+-- "came back to the initial state": the UI knew something the server had thrown
+-- away.
+--
+-- NULL = never counted (a pre-existing row, an IMAP/untestable probe, or a
+-- server that answered `initialize` but not `tools/list`). Never invented: the
+-- column is written only from a probe that really enumerated the tools, and a
+-- later probe that reaches no count LEAVES THE LAST ONE alone rather than
+-- blanking a true value. Non-secret (a small integer). No FK; plain nullable add
+-- applies cleanly under foreign_keys=ON.
+-- SHIPPED-IMMUTABLE: sqlx checksums migrations; never edit.
+ALTER TABLE connector_accounts ADD COLUMN tool_count INTEGER;

@@ -38,10 +38,12 @@ import { Check } from 'lucide-react'
 import {
   getConnector,
   grant as apiGrant,
+  oauthConnection,
   putCredential,
   toolCountLabel,
   type ConnectorCard,
 } from '../../../lib/api/connectors'
+import { RestartIfNeeded } from '../../roster/restart-to-apply'
 import type { ConnectRequestInfo } from '../../../lib/api/sessions'
 
 import { DialogShell } from './choice-card'
@@ -122,6 +124,13 @@ export function ConnectCard({
     }
   }, [card, fetchFailed, request.connector_id, name])
 
+  // The brokered-OAuth lane finishes OUTSIDE this component: the tab goes to the
+  // provider and comes back through a full-page redirect, so `added` is always
+  // null on the return. The card's own accounts are what survive — read them, and
+  // the card resolves to "Connected as …" instead of asking to connect again.
+  const isMcpOauth = effectiveCard?.auth?.kind === 'mcp_oauth'
+  const connected = !!effectiveCard && isMcpOauth && oauthConnection(effectiveCard).key === 'connected'
+
   const toolsLine = useMemo(() => {
     if (card) return toolCountLabel(card)
     const n = request.tool_count
@@ -159,11 +168,11 @@ export function ConnectCard({
   // "added"), so its internal seal result — the account label + the test leg —
   // survives. Only the DialogShell's question swaps to the "Added" confirmation.
   return (
-    <div data-testid="chat-connect-card" data-phase={added ? 'added' : 'proposed'}>
+    <div data-testid="chat-connect-card" data-phase={added || connected ? 'added' : 'proposed'}>
       <DialogShell
         eyebrow={<>Connector · {name}</>}
         question={
-          added ? (
+          added || connected ? (
             <span className="inline-flex items-center gap-2">
               <CheckMark />
               Added{toolsLine ? ` · ${toolsLine}` : ''}
@@ -196,6 +205,13 @@ export function ConnectCard({
               onDismiss={onDismiss}
               onSubmit={seal}
               onDone={(r) => setAdded(r)}
+              // The one-tap restart, right where the sign-in landed — and only
+              // when the SERVER says this bot is running on a launch that
+              // predates the grant. (Reached on the brokered lane only: the other
+              // lanes' chat "added" block renders no extra slot.)
+              renderAddedExtra={() => (
+                <RestartIfNeeded name={sessionName} connectorId={request.connector_id} />
+              )}
             />
           </Suspense>
         ) : (

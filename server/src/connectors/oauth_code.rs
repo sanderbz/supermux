@@ -1632,6 +1632,10 @@ pub async fn complete(
         connectors::account_set_health(&state.pool, &account_ref, health, stored, now)
             .await
             .map_err(db_err)?;
+        // The count this probe really enumerated, kept on the account (0043) so
+        // "Connected as … — N tools" is server truth on the next read instead of
+        // dying with this response's React state.
+        super::api::store_tool_count(&state, &account_ref, &outcome).await;
     }
     audit(
         &state,

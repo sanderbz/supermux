@@ -32,6 +32,12 @@ export function OauthReturnEffect() {
     handled.current = key
     const invalidate = (target?: string) => {
       void qc.invalidateQueries({ queryKey: CONNECTORS_KEY })
+      // The SINGLE-card read too (`GET /api/connectors/{id}`, key `['connector', id]`):
+      // it is what the store detail and the chat Connect card resolve "connected
+      // as whom" from, and it now carries the accounts. Leaving it cached was the
+      // last way the return could still paint a not-connected card over a
+      // connector the server had just connected.
+      void qc.invalidateQueries({ queryKey: ['connector'] })
       void qc.invalidateQueries({ queryKey: ['session-connectors'] })
       void qc.invalidateQueries({ queryKey: ['connector-grants'] })
       if (target) void qc.invalidateQueries({ queryKey: sessionConnectorsKey(target) })
