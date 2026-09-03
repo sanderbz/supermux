@@ -397,7 +397,7 @@ read_only = ["~/.ssh", "~/.config/gh"]    # read (+exec) only
 read_write = []                           # read + write
 ```
 
-Sibling companies keep the default list. Entries are checked on their real (canonical) path and refused with a logged reason when they are relative, contain `..`, do not exist yet, resolve through a symlink, are `/` or the home dir (or an ancestor of it), sit at/under/above the supermux data dir (`~/.supermux` by default: auth token, DB, vault), or point into another company's tree. `config.toml` is read once when supermux starts — restart the service after editing it; each company bot is then confined with the new list at its next (re)start.
+Sibling companies keep the default list. Entries are checked on their real (canonical) path and refused with a logged reason when they are relative, contain `..`, do not exist yet, resolve through a symlink, are `/` or the home dir (or an ancestor of it), sit at/under/above the supermux data dir (`~/.supermux` by default: auth token, DB, vault), or point into another company's tree (or the companies root itself). `config.toml` is read once when supermux starts — restart the service after editing it; each company bot is then confined with the new list at its next (re)start.
 
 ### Verify
 

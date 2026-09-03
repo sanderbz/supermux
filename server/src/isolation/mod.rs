@@ -101,7 +101,7 @@ impl IsolationMode {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "disabled" => IsolationMode::Off,
-            "strict" | "strictrequired" | "strict_required" | "required" => {
+            "strict" | "strictrequired" | "strict_required" | "strict-required" | "required" => {
                 IsolationMode::StrictRequired
             }
             _ => IsolationMode::BestEffort,
@@ -1200,6 +1200,7 @@ impl std::fmt::Debug for IsolationRuntime {
         f.debug_struct("IsolationRuntime")
             .field("mode", &self.mode)
             .field("probe", &self.probe)
+            .field("company_extras", &self.company_extras)
             .finish()
     }
 }
@@ -1220,6 +1221,13 @@ mod tests {
         );
         assert_eq!(
             IsolationMode::parse("strict_required"),
+            IsolationMode::StrictRequired
+        );
+        // The spelling the README's deploy guide uses — a config value that
+        // parsed as BestEffort here would silently downgrade fail-closed to
+        // fail-open.
+        assert_eq!(
+            IsolationMode::parse("strict-required"),
             IsolationMode::StrictRequired
         );
         assert_eq!(
@@ -1512,7 +1520,10 @@ mod company_extras_tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let base = std::env::temp_dir().join(format!(
+            // Canonical: on macOS `/var` is a symlink to `/private/var`, and
+            // absolute entries built from a symlinked base would trip the
+            // "resolves through a symlink" rule instead of the one under test.
+            let base = canonical_or(&std::env::temp_dir()).join(format!(
                 "supermux-company-extras-{tag}-{}-{nanos}",
                 std::process::id()
             ));
