@@ -7,8 +7,8 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, bot_memory, config, connectors, db, external_access, external_edit, http, sessions,
-    state, teams, workflows,
+    agents, bot_memory, config, connectors, db, external_access, external_edit, hook_cli, http,
+    sessions, state, teams, workflows,
 };
 
 #[tokio::main]
@@ -39,6 +39,20 @@ async fn main() -> anyhow::Result<()> {
             let argv: Vec<String> = std::env::args().skip(2).collect();
             if let Err(e) = bot_memory::run::run_save_cli(&argv) {
                 eprintln!("supermux-memory: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        // BOT→APP HOOK CLIs. `supermux-{message,notify,task,schedule}` are the
+        // same trick as `supermux-memory`: a NAMED wrapper the per-session
+        // settings overlay can pre-approve deterministically, instead of a
+        // `Bash(curl …)` line the permission classifier stops an unattended bot
+        // on. Dispatched here so the call stays lean — no DB, no listener — and
+        // resolves everything from the pane's `SUPERMUX_*` env.
+        Some("__hook-cli") => {
+            let argv: Vec<String> = std::env::args().skip(2).collect();
+            if let Err(e) = hook_cli::run(&argv).await {
+                eprintln!("{e}");
                 std::process::exit(1);
             }
             return Ok(());
@@ -100,6 +114,13 @@ async fn main() -> anyhow::Result<()> {
     // config-dir seam wires into a bot's `settings.json`/env. Idempotent; a
     // failure only degrades memory recall/save (logged), never the server.
     bot_memory::install_scripts(&config.data_dir);
+
+    // Install the four bot→app hook wrappers
+    // (`<data_dir>/bin/supermux-{message,notify,task,schedule}`) the same overlay
+    // allow-lists, so a bot messages a teammate / pings the human / reports on its
+    // card without a `curl` permission prompt. Idempotent; a failure only sends
+    // those skills back to their `curl` fallback (logged), never the server.
+    hook_cli::install_scripts(&config.data_dir);
 
     // Session survival across restarts/deploys. tmux keeps its control
     // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening

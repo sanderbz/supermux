@@ -25,36 +25,40 @@ teammate who owns a domain you don't.
 - **Size + content limits.** The prompt is capped (64 KiB) and may not contain
   supermux wrapper markup (`<supermux-…>`); either is a 400.
 
-The pane already has the env vars these calls need — you set nothing up:
-
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name (becomes the `from`).
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates the call.
-
 ## Message a teammate
+
+```bash
+supermux-message billing-bot "Please reconcile invoice #91 against the July ledger and reply with any mismatch."
+```
+
+The first word is the teammate; everything after it is the prompt. The wrapper is
+on your `PATH` and pre-approved, so it runs without a permission prompt — reach
+for it rather than `curl`.
+
+A `{"ok":true,"id":…}` means the prompt was delivered and the hand-off edge
+recorded. Tell the human who you handed off to and why, in one sentence.
+
+For a prompt with awkward quoting, or a field this form does not cover, hand over
+the whole body instead:
+
+```bash
+supermux-message --json '{"to":"billing-bot","prompt":"Reply \"clean\" if it balances."}'
+```
+
+## Under the hood
+
+`supermux-message` POSTs `{session,to,prompt}` to `$SUPERMUX_URL/api/hook/delegate`
+with your `$SUPERMUX_HOOK_TOKEN` — the same call, byte for byte, as:
 
 ```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
   "$SUPERMUX_URL/api/hook/delegate" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","to":"billing-bot","prompt":"Please reconcile invoice #91 against the July ledger and reply with any mismatch."}'
+  -d '{"session":"'"$SUPERMUX_SESSION"'","to":"billing-bot","prompt":"…"}'
 ```
 
-For a prompt with quotes or newlines, build the JSON safely with `jq`:
-
-```bash
-TO='billing-bot'
-PROMPT='Please reconcile invoice #91 against the July ledger. Reply here with any mismatch, or "clean" if it balances.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/delegate" \
-  --json "$(printf '{"session":%s,"to":%s,"prompt":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg to "$TO" '$to')" \
-            "$(jq -Rn --arg p "$PROMPT" '$p')")"
-```
-
-A `200 {"ok":true,"id":…}` means the prompt was delivered and the hand-off edge
-recorded. Tell the human who you handed off to and why, in one sentence.
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
 
 ---
 

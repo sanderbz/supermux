@@ -22,20 +22,14 @@ When you STOP, you are in exactly ONE of two situations. Always report which one
 
 Never end your turn silently — always report one of the two.
 
-Everything here is scoped to YOUR issue only. The pane already has the three env
-vars these calls need — you don't set anything up:
+Everything here is scoped to YOUR issue only. The server resolves "your issue" as
+the issue linked to `$SUPERMUX_SESSION` (the one you're doing). You can only ever
+touch that one card — a leaked token grants nothing else. Each call re-publishes
+the board so it shows up live for whoever is watching.
 
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name (identifies which issue is yours).
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates these calls.
-
-The server resolves "your issue" as the issue linked to `$SUPERMUX_SESSION`
-(the one you're doing). You can only ever touch that one card — a leaked token
-grants nothing else. Each call re-publishes the board so it shows up live for
-whoever is watching.
-
-Run the matching `curl` below. They use `-fsS` so a non-2xx response prints the
-error and fails loudly. The body's `session` MUST be `$SUPERMUX_SESSION`.
+Run the matching `supermux-task` line below. The wrapper is on your `PATH` and
+pre-approved, so it runs without a permission prompt; it prints the server's
+answer and fails loudly on a non-2xx.
 
 ---
 
@@ -45,9 +39,7 @@ Move your card to the Done lane. Use this ONLY when the work is complete and the
 acceptance criteria pass.
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/status" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","status":"done"}'
+supermux-task done
 ```
 
 ## needs-input — you are blocked, ask the human
@@ -57,20 +49,7 @@ posted on the card, and the human gets a push notification. They can reply
 straight from the board and you'll receive it as input.
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/needs-input" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","question":"<your question here>"}'
-```
-
-For multi-line / quote-heavy questions, build the JSON safely with `jq`:
-
-```bash
-Q='Should I drop the legacy column now, or keep it for one more release?'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/needs-input" \
-  --json "$(printf '{"session":%s,"question":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg q "$Q" '$q')")"
+supermux-task needs-input "Should I drop the legacy column now, or keep it for one more release?"
 ```
 
 ---
@@ -84,20 +63,7 @@ Append a comment to your card. Use it liberally: "ran the tests, 2 failing",
 "pushed the fix".
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/comment" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","body":"<your update here>"}'
-```
-
-Tip for multi-line / quote-heavy text, build the JSON safely with the body in a shell var:
-
-```bash
-BODY='Finished the migration. All board tests pass.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/comment" \
-  --json "$(printf '{"session":%s,"body":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg b "$BODY" '$b')")"
+supermux-task comment "Finished the migration. All board tests pass."
 ```
 
 ## check — tick (or untick) an acceptance item
@@ -105,41 +71,26 @@ curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
 Tick off an acceptance-criteria item by its numeric `item_id` (the card's
 checklist shows the ids). The item must belong to YOUR issue.
 
-Tick it done:
-
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/check" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","item_id":42,"done":true}'
-```
-
-Untick it (`"done":false`):
-
-```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/check" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","item_id":42,"done":false}'
+supermux-task check 42        # tick it done
+supermux-task check 42 off    # untick it
 ```
 
 ## link — attach a PR or commit
 
 Attach a pull-request URL or a commit SHA to your card so reviewers can jump
-straight to the work. `kind` is `"pr"` or `"commit"`; `label` is optional.
-
-Attach a PR:
+straight to the work. The kind is `pr` or `commit`; a label is optional.
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/link" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","kind":"pr","ref":"https://github.com/org/repo/pull/123","label":"fix"}'
+supermux-task link pr https://github.com/org/repo/pull/123 fix
+supermux-task link commit "$(git rev-parse HEAD)" impl
 ```
 
-Attach a commit:
+For text with awkward quoting, or a field these forms do not cover, hand over the
+whole body after the subcommand:
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/link" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","kind":"commit","ref":"'"$(git rev-parse HEAD)"'","label":"impl"}'
+supermux-task comment --json '{"body":"line one\nline two"}'
 ```
 
 ---
@@ -147,21 +98,34 @@ curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
 ## A good end-of-task flow
 
 ```bash
-# 1. note what you did
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/comment" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","body":"Implemented + tested. Opening PR."}'
+supermux-task comment "Implemented + tested. Opening PR."
+supermux-task link pr https://github.com/org/repo/pull/123
+supermux-task done
+```
 
-# 2. attach the PR
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/board/link" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","kind":"pr","ref":"https://github.com/org/repo/pull/123"}'
+## Under the hood
 
-# 3. mark it done (the task is complete and accepted)
+Each subcommand POSTs one JSON body to one board hook with your
+`$SUPERMUX_HOOK_TOKEN`, filling in `"session":"$SUPERMUX_SESSION"` for you:
+
+- `done` → `$SUPERMUX_URL/api/hook/board/status` with `{"status":"done"}`
+- `needs-input` → `$SUPERMUX_URL/api/hook/board/needs-input` with `{"question":"…"}`
+- `comment` → `$SUPERMUX_URL/api/hook/board/comment` with `{"body":"…"}`
+- `check` → `$SUPERMUX_URL/api/hook/board/check` with `{"item_id":42,"done":true}`
+- `link` → `$SUPERMUX_URL/api/hook/board/link` with `{"kind":"pr","ref":"…","label":"…"}`
+
+The raw form of the first one:
+
+```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
   "$SUPERMUX_URL/api/hook/board/status" \
   -d '{"session":"'"$SUPERMUX_SESSION"'","status":"done"}'
 ```
+
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
+
+---
 
 This command is managed by supermux and auto-installed — don't edit it by hand;
 your changes will be overwritten on the next boot.

@@ -31,12 +31,6 @@ the deploy"), or a reminder to yourself before you hand back.
   Surface it to the human. Do not retry the same call hoping for a different
   answer; the server is deterministic.
 
-The pane already has the three env vars these calls need — you set nothing up:
-
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name.
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates these calls.
-
 ## YOU do the parsing — the server does not
 
 The human will say "every weekday at 8" or "in twenty minutes". **You translate
@@ -91,37 +85,27 @@ watch"), not a restatement of the prompt.
 with enough context to act on cold: you will not remember this conversation.
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"Check whether the 08:00 deploy went green; if it did not, summarise the failure.","schedule_expr":"every weekday at 08:00"}'
+supermux-schedule "Deploy check" "every weekday at 08:00" "Check whether the 08:00 deploy went green; if it did not, summarise the failure."
 ```
 
-For prompts with quotes or newlines in them, build the JSON safely with `jq`:
-
-```bash
-TITLE='Nightly release watch'
-PROMPT='Check the release job. If it is red, read the last 50 lines of the log and say what broke.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  --json "$(printf '{"session":%s,"title":%s,"prompt":%s,"schedule_expr":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg t "$TITLE" '$t')" \
-            "$(jq -Rn --arg p "$PROMPT" '$p')" \
-            "$(jq -Rn --arg e 'daily at 21:00' '$e')")"
-```
+Three arguments in order: the title, the schedule expression, then the prompt.
+The wrapper is on your `PATH` and pre-approved, so it runs without a permission
+prompt — reach for it rather than `curl`.
 
 ### A one-shot follow-up
 
-For something that should happen once and then stop, use a relative expression
-and `done_action: "disable"` (which is the default — it is spelled out here so
-the intent is visible):
+For something that should happen once and then stop, use a relative expression:
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"CI follow-up","prompt":"Check whether the CI run on this branch finished, and report the result.","schedule_expr":"in 20m","done_action":"disable"}'
+supermux-schedule "CI follow-up" "in 20m" "Check whether the CI run on this branch finished, and report the result."
+```
+
+`done_action` defaults to `disable`, which turns the schedule off after it has
+run — the right answer for a one-shot. To set it (or any other field the three
+arguments do not cover) hand over the whole body:
+
+```bash
+supermux-schedule --json '{"title":"Nightly release watch","schedule_expr":"daily at 21:00","prompt":"Check the release job; if it is red, say what broke.","done_action":"notify"}'
 ```
 
 ### Pinging the human instead
@@ -144,6 +128,22 @@ first fire**, in one sentence, so they can correct you before it runs.
 To change or remove a schedule, the human does it from the Schedules sheet in
 the app (tap the `⏱` chip in the transcript). You cannot edit or delete
 schedules — including your own — and you should say that rather than trying.
+
+## Under the hood
+
+`supermux-schedule` POSTs `{session,title,schedule_expr,prompt}` to
+`$SUPERMUX_URL/api/hook/schedule/create` with your `$SUPERMUX_HOOK_TOKEN` — the
+same call as:
+
+```bash
+curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  "$SUPERMUX_URL/api/hook/schedule/create" \
+  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"…","schedule_expr":"every weekday at 08:00"}'
+```
+
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
 
 ---
 
