@@ -47,6 +47,7 @@ import { isRowMenuKey, requestRowMenu } from './row-menu-bus'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import type { AttentionKind } from '@/components/chat/ui/roster-row'
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 import { ActivityLine, BlockedBadge, ErrorBadge, UsageChip } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { ChatTailPreview } from './chat-tail-preview'
@@ -317,8 +318,12 @@ export function SessionTile({
       liveModeEnabled && fine && hoverPreview === 'live' && liveCapableEarly,
   })
 
+  // Opening a tile means "talk to this bot", so it goes to the bot's HOME
+  // thread (`lib/agent-href.ts`); the terminal stays one explicit menu item
+  // away. The name is encoded here — it never was, and a bot named with a
+  // slash or a space produced a URL that resolved to something else.
   const goFocus = React.useCallback(
-    () => navigateMorph(`/focus/${session.name}`),
+    () => navigateMorph(agentHref(session.name)),
     [navigateMorph, session.name],
   )
 

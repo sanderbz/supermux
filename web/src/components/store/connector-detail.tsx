@@ -32,6 +32,7 @@ import { useUI } from '@/stores/ui-store'
 import { useCompanies } from '@/hooks/use-companies'
 import { CompanyMark } from '@/components/roster/company-mark'
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 
 import { ConnectorIcon } from './connector-icon'
 import { EaseBadge, OfficialBadge } from './connector-card'
@@ -40,11 +41,16 @@ import { ConnectFlow, type ConnectFlowResult } from './connect-flow'
 import { ConnectInBotPicker } from './connect-in-bot-picker'
 import { EnableSigninSheet } from './enable-signin-sheet'
 
-/** The bot a `/focus/<bot>` (or `/team/<t>/<bot>`) route names — the "referring
- *  bot" a store deep-link preselects as the grant target. Pure. */
+/** The bot an `/agent/<bot>`, `/focus/<bot>` or `/team/<t>/<bot>` route names —
+ *  the "referring bot" a store deep-link preselects as the grant target.
+ *
+ *  `/agent/<bot>` is the address a bot's thread has now (`lib/agent-href.ts`),
+ *  and a store trip started from a thread must preselect that bot exactly as one
+ *  started from its terminal always did. Pure. */
 export function referringBot(path: string | null | undefined): string | null {
   if (!path) return null
-  const m = /^\/focus\/([^/?#]+)/.exec(path) ?? /^\/team\/[^/]+\/([^/?#]+)/.exec(path)
+  const m =
+    /^\/(?:agent|focus)\/([^/?#]+)/.exec(path) ?? /^\/team\/[^/]+\/([^/?#]+)/.exec(path)
   if (!m) return null
   try {
     return decodeURIComponent(m[1])
@@ -225,7 +231,7 @@ export function ConnectorDetail({
       // Close the store sheet and open the bot's chat — the pushed ConnectCard
       // shows there, live via the SSE delta or the next session poll.
       onDone()
-      navigate(`/focus/${encodeURIComponent(name)}`)
+      navigate(agentHref(name))
     } catch {
       setHandoffError(true)
       setHandoffBusy(null)

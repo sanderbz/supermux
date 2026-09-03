@@ -25,6 +25,7 @@ import { useCompanies } from '@/hooks/use-companies'
 import { CompanyMark, HqMark } from '@/components/roster/company-mark'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 import type { ConnectorCard as Card } from '@/lib/api/connectors'
 
 import type { BotChoice } from './connector-detail'
@@ -100,7 +101,7 @@ export function CreateYourOwnSheet({
     const text = composeConnectorTask({ request, notes, cards })
     await restSessionInput(name).submit(text)
     onOpenChange(false)
-    navigate(`/focus/${encodeURIComponent(name)}`)
+    navigate(agentHref(name))
   }
 
   const pickExisting = async (name: string) => {

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   LayoutGroup,
@@ -136,6 +136,26 @@ export function Overview() {
   // `?mock` seeding must run in BOTH skins — it lives here (not in DefaultOverview)
   // so the Grok roster gets the same dev fixtures the default board does.
   useDevMockSeed()
+  // `/agent/:name` renders THIS element (App.tsx) — under grok the roster
+  // consumes the name and opens the bot's thread. Off grok there is no roster
+  // and no thread pane, so the link would land on a board that does nothing with
+  // it: degrade to the surface the classic skin DOES have for one bot, its focus
+  // page. Same bot, one hop, no dead link for anyone who kept the old app.
+  //
+  // The board renders BEHIND the redirect deliberately. `<Navigate>` navigates
+  // from an effect, so it commits one frame first — and a bare `<Navigate>`
+  // commits a BLANK one, in the middle of the tile's view-transition morph.
+  // Keeping the board there makes that frame identical to the page the click
+  // came from.
+  const { name: agentParam } = useParams<{ name: string }>()
+  if (!grok && agentParam) {
+    return (
+      <>
+        <Navigate to={`/focus/${encodeURIComponent(agentParam)}`} replace />
+        <DefaultOverview />
+      </>
+    )
+  }
   if (grok) {
     return (
       <React.Suspense fallback={<div className="h-full" />}>

@@ -28,6 +28,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
+import { agentHref } from '@/lib/agent-href'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { MISC } from '@/brand/copy'
 import { markStateFor } from '@/lib/mark-status'
@@ -102,8 +103,10 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   const showAttention: boolean | AttentionKind =
     attention === true ? 'needs' : attention === false ? false : (rowAttention.dotKind ?? false)
 
+  // Same address the tile opens — the bot's home thread (`lib/agent-href.ts`),
+  // name-encoded, with the terminal one explicit menu item away.
   const goFocus = React.useCallback(
-    () => navigateMorph(`/focus/${session.name}`),
+    () => navigateMorph(agentHref(session.name)),
     [navigateMorph, session.name],
   )
 

@@ -59,11 +59,16 @@ describe('preselectGrant', () => {
     expect(preselectGrant({ isLibrary: false, activeCompany: null, referrer: 'folderwijzer', bots })).toEqual(none)
     expect(preselectGrant({ isLibrary: false, activeCompany: 3, referrer: null, bots })).toEqual(none)
   })
-  test('referringBot reads the focus and team routes', () => {
+  test('referringBot reads the agent, focus and team routes', () => {
+    // A store trip started from a bot's THREAD (`/agent/<bot>`) must preselect
+    // that bot exactly as one started from its terminal always did.
+    expect(referringBot('/agent/folderwijzer')).toBe('folderwijzer')
+    expect(referringBot('/agent/folder%20wijzer?x=1')).toBe('folder wijzer')
     expect(referringBot('/focus/folderwijzer')).toBe('folderwijzer')
     expect(referringBot('/focus/folder%20wijzer?x=1')).toBe('folder wijzer')
     expect(referringBot('/team/acme/bot-a')).toBe('bot-a')
     expect(referringBot('/store')).toBeNull()
+    expect(referringBot('/agent')).toBeNull()
     expect(referringBot(null)).toBeNull()
   })
 })
