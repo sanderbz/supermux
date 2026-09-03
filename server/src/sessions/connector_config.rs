@@ -507,6 +507,7 @@ impl SessionConfig {
         // fleet's messaging behaviour is the server's call, not a per-pane one.
         self.settings
             .insert("crossSessionInbound".to_string(), Value::String("accept".to_string()));
+
         let settings_path = self.settings_dir.join(SETTINGS_FILE);
         write_json_atomic(&settings_path, &Value::Object(self.settings)).await?;
         // Layer the overlay OVER ~/.claude via --settings (Claude Code merges it),

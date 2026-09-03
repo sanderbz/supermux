@@ -83,7 +83,8 @@ straight to the work. The kind is `pr` or `commit`; a label is optional.
 
 ```bash
 supermux-task link pr https://github.com/org/repo/pull/123 fix
-supermux-task link commit "$(git rev-parse HEAD)" impl
+SHA=$(git rev-parse HEAD)
+supermux-task link commit "$SHA" impl
 ```
 
 For text with awkward quoting, or a field these forms do not cover, hand over the

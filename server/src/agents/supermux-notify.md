@@ -27,10 +27,10 @@ finishes while they're away — not for routine progress (that's your board issu
 ## Send a notification
 
 ```bash
-supermux-notify "The 08:00 release went green." --title "Deploy done"
+supermux-notify --title "Deploy done" "The 08:00 release went green."
 ```
 
-Everything that is not `--title` is the body. Leave `--title` off and the
+A leading `--title <t>` sets the title; everything after it is the body. Leave `--title` off and the
 notification is titled with your session name, which is usually what the human
 wants to see on a lock screen. The wrapper is on your `PATH` and pre-approved, so
 it runs without a permission prompt — reach for it rather than `curl`.

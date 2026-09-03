@@ -32,8 +32,13 @@ use serde_json::{json, Map, Value};
 const HOOK_TOKEN_HEADER: &str = "X-Supermux-Hook-Token";
 
 /// Client-side cap on the one POST. Bounded so a wedged/unreachable server can
-/// never hang the pane the bot is thinking in.
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+/// never hang the pane the bot is thinking in — but generous, because a
+/// `supermux-message` to a STOPPED teammate makes the server wake that bot
+/// first (`deliver_delegation` → `wake_for_send`), and that boot path budgets
+/// well over half a minute (ready poll + background-session recovery). A cap
+/// under that budget turned a delivered message into an "error" the bot then
+/// re-sent — twice in the teammate's pane.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The wrapper names installed into `<data_dir>/bin`. ONE list: the installer
 /// writes these, [`crate::sessions::connector_config`] allow-lists these, and
@@ -104,21 +109,19 @@ fn plan_notify(argv: &[String], session: &str) -> Result<Call> {
     if let Some(body) = json_escape_hatch(argv, session)? {
         return Ok(Call { path: "/api/hook/notify", body });
     }
-    let mut title: Option<String> = None;
-    let mut words: Vec<&str> = Vec::new();
-    let mut it = argv.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--title" => {
-                title = Some(
-                    it.next()
-                        .ok_or_else(|| anyhow!("--title needs a value — {USAGE}"))?
-                        .clone(),
-                );
-            }
-            word => words.push(word),
-        }
-    }
+    // `--title` is recognised in the leading position only, so a message that
+    // mentions the flag stays a message.
+    let (title, words): (Option<String>, Vec<&str>) = match argv.first().map(String::as_str) {
+        Some("--title") => (
+            Some(
+                argv.get(1)
+                    .ok_or_else(|| anyhow!("--title needs a value — {USAGE}"))?
+                    .clone(),
+            ),
+            argv.iter().skip(2).map(String::as_str).collect(),
+        ),
+        _ => (None, argv.iter().map(String::as_str).collect()),
+    };
     if words.is_empty() {
         return Err(anyhow!("a message is required — {USAGE}"));
     }
@@ -237,9 +240,12 @@ fn plan_schedule(argv: &[String], session: &str) -> Result<Call> {
 /// the hook token binds it anyway, so a bot's own `session` field could only ever
 /// 401), or `None` when the caller used the positional form.
 fn json_escape_hatch(argv: &[String], session: &str) -> Result<Option<Value>> {
-    let Some(i) = argv.iter().position(|a| a == "--json") else {
+    // Leading position only: a prompt that merely MENTIONS `--json` ("explain
+    // the --json flag") must stay a prompt.
+    if argv.first().map(String::as_str) != Some("--json") {
         return Ok(None);
-    };
+    }
+    let i = 0;
     let raw = argv
         .get(i + 1)
         .ok_or_else(|| anyhow!("--json needs a JSON object"))?;
@@ -250,6 +256,23 @@ fn json_escape_hatch(argv: &[String], session: &str) -> Result<Option<Value>> {
     };
     obj.insert("session".to_string(), Value::String(session.to_string()));
     Ok(Some(Value::Object(obj)))
+}
+
+/// Whether `url` names this box's own loopback listener (`127.0.0.1`, `::1`,
+/// `localhost`) — the only case where a self-signed cert is acceptable.
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.trim_start_matches('[');
+    let host = host
+        .rsplit_once(':')
+        .filter(|(h, port)| !h.contains(':') || h.ends_with(']'))
+        .map(|(h, _)| h)
+        .unwrap_or(host)
+        .trim_end_matches(']');
+    matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
 /// Install (idempotently) one wrapper per [`WRAPPERS`] entry into
@@ -294,11 +317,13 @@ async fn run_inner(cmd: &str, argv: &[String]) -> Result<()> {
     let token = env_required("SUPERMUX_HOOK_TOKEN")?;
     let call = plan(cmd, argv, &session)?;
 
-    // Accept invalid certs: `SUPERMUX_URL` may be the https self-signed bind and
-    // this is the box calling its OWN listener — the connection never leaves the
-    // host. Same justification as the `$EDITOR` bridge.
+    // Accept a self-signed cert ONLY when the URL is this box's own loopback
+    // listener (the https self-signed bind) — the connection never leaves the
+    // host, so there is nothing to verify. A remote pane gets `SUPERMUX_URL`
+    // pointed at the Tailscale hostname or a reverse tunnel, and there the hook
+    // token rides a real network: verify like the `curl -fsS` this replaces did.
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(is_loopback_url(&url))
         .timeout(CLIENT_TIMEOUT)
         .build()
         .map_err(|e| anyhow!("building http client: {e}"))?;
@@ -361,10 +386,10 @@ mod tests {
             call.body,
             json!({ "session": "acme-a", "title": "acme-a", "body": "release is green" })
         );
-        // `--title` anywhere wins, and its value never leaks into the body.
+        // A leading `--title` wins, and its value never leaks into the body.
         let call = plan(
             "supermux-notify",
-            &args(&["release", "is", "green", "--title", "Deploy done"]),
+            &args(&["--title", "Deploy done", "release", "is", "green"]),
             "acme-a",
         )
         .unwrap();
@@ -488,4 +513,29 @@ mod tests {
         // A non-numeric acceptance id is refused rather than silently sent.
         assert!(plan("supermux-task", &args(&["check", "x"]), "acme-a").is_err());
     }
+
+    #[test]
+    fn flags_count_only_in_the_leading_position() {
+        let argv: Vec<String> = ["bob", "explain", "the", "--json", "flag"].iter().map(|s| s.to_string()).collect();
+        let c = plan("supermux-message", &argv, "me").unwrap();
+        assert_eq!(c.body["prompt"], "explain the --json flag");
+        let argv: Vec<String> = ["release", "went", "green,", "see", "--title"].iter().map(|s| s.to_string()).collect();
+        let c = plan("supermux-notify", &argv, "me").unwrap();
+        assert_eq!(c.body["body"], "release went green, see --title");
+        assert_eq!(c.body["title"], "me");
+        let argv: Vec<String> = ["--title", "Deploy", "went", "green"].iter().map(|s| s.to_string()).collect();
+        let c = plan("supermux-notify", &argv, "me").unwrap();
+        assert_eq!(c.body["title"], "Deploy");
+        assert_eq!(c.body["body"], "went green");
+    }
+
+    #[test]
+    fn self_signed_certs_are_tolerated_on_loopback_only() {
+        assert!(is_loopback_url("https://127.0.0.1:8824"));
+        assert!(is_loopback_url("http://localhost:8823/"));
+        assert!(is_loopback_url("https://[::1]:8824/api"));
+        assert!(!is_loopback_url("https://supermux-strato.taild681cb.ts.net"));
+        assert!(!is_loopback_url("http://100.84.2.102:8823"));
+    }
+
 }
