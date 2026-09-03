@@ -754,7 +754,13 @@ fn speaks_for_somebody(text: &str) -> bool {
     if crate::agents::delegate::wrapper_markup(text) {
         return true;
     }
-    let head = &text[..text.len().min(4096)];
+    // Only the head is scanned — a wrapper announces itself at the top — but the
+    // cut must land on a char boundary. Slicing at a raw byte offset panicked
+    // the moment byte 4096 fell inside a multi-byte char (an em dash in a long
+    // Dutch prompt, measured live 2026-09-03): the panic killed the tailer's
+    // blocking pass, the tailer restarted and hit the same line again, and the
+    // session's chat view sat on "loading" for good while the terminal worked.
+    let head = &text[..text.floor_char_boundary(4096)];
     head.contains("<teammate-message")
         || head.contains("<cross-session-message")
         || head.contains("Another Claude session sent a message")
@@ -1834,4 +1840,18 @@ mod tests {
         assert_eq!(entries[1].kind, Kind::Assistant);
         assert_eq!(entries[1].body["text"].as_str(), Some("and here is the answer"));
     }
+
+    #[test]
+    fn a_multibyte_char_straddling_the_head_cut_does_not_panic() {
+        // 4095 ASCII bytes, then an em dash (3 bytes: 4095..4098) — the exact
+        // shape that panicked `speaks_for_somebody` in production.
+        let mut text = "a".repeat(4095);
+        text.push('—');
+        text.push_str(" <teammate-message>late</teammate-message>");
+        assert!(!speaks_for_somebody(&text), "the marker sits past the 4 KiB head");
+        // …and a marker inside the head is still found.
+        let early = format!("<cross-session-message>{}", "é".repeat(3000));
+        assert!(speaks_for_somebody(&early));
+    }
+
 }
