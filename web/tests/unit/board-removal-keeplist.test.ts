@@ -111,10 +111,13 @@ describe('the shipped skill is byte-for-byte unchanged', () => {
     // The skill is installed to ~/.claude/commands/supermux-task.md and is the
     // contract every agent already knows. B2 does not touch it — not a word, not
     // a whitespace — and the hash is how that is enforced rather than promised.
+    // Re-pinned once, deliberately, when the skill switched from raw curl to the
+    // `supermux-task` wrapper (PR #190): the routes and the JSON shapes it
+    // documents are unchanged, only the recommended way to call them moved.
     const hash = createHash('sha256')
       .update(readFileSync(REPO + 'server/src/agents/supermux-task.md'))
       .digest('hex')
-    expect(hash).toBe('1aa20a43d4dca179b25afa2b27759cb6d48234cd1494777ff3e671fd030151e7')
+    expect(hash).toBe('55746021fdc36bf57f93d31eb10def1705bcd98884939aac67cc1f77ed4ef778')
   })
 
   test('and it is still compiled in and installed at boot', () => {
