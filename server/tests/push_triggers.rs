@@ -637,7 +637,7 @@ async fn the_preview_shows_the_live_dialog_and_the_badge() {
     );
     assert_eq!(
         v["data"]["payload"]["url"],
-        format!("/focus/{SESSION}#pending")
+        format!("/agent/{SESSION}")
     );
     assert_eq!(v["data"]["payload"]["renotify"], true);
     assert_eq!(
