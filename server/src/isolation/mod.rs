@@ -101,7 +101,7 @@ impl IsolationMode {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "disabled" => IsolationMode::Off,
-            "strict" | "strictrequired" | "strict_required" | "required" => {
+            "strict" | "strictrequired" | "strict_required" | "strict-required" | "required" => {
                 IsolationMode::StrictRequired
             }
             _ => IsolationMode::BestEffort,
@@ -175,6 +175,13 @@ pub struct SandboxSpec {
     pub read_write_paths: Vec<PathBuf>,
     /// Read + exec only (system libraries, interpreters, dev caches).
     pub read_exec_paths: Vec<PathBuf>,
+    /// The EXPLICIT read-only grants added after construction (a session's own
+    /// config dir, the operator's `[[company_isolation]] read_only` entries) —
+    /// always also present in `read_exec_paths`. Kept separately because the
+    /// Seatbelt backend is allow-by-default with a deny list for secrets and
+    /// therefore ignores `read_exec_paths`; it needs to know which reads to
+    /// re-allow ON TOP of its denies (`~/.config/gh` is on its secret list).
+    pub extra_read_paths: Vec<PathBuf>,
 }
 
 /// The device nodes a confined company agent is granted READ+WRITE.
@@ -520,6 +527,7 @@ impl SandboxSpec {
         Self {
             read_write_paths,
             read_exec_paths,
+            extra_read_paths: Vec::new(),
         }
     }
 
@@ -534,6 +542,7 @@ impl SandboxSpec {
     /// Rides `read_exec_paths` (read+execute): the extra execute bit on a config
     /// dir is harmless, and it keeps the backend's two-tier model intact.
     pub fn allow_ro(&mut self, path: PathBuf) {
+        self.extra_read_paths.push(path.clone());
         push_ro_resolved(&mut self.read_exec_paths, path);
     }
 }
@@ -662,6 +671,18 @@ impl ConfinePlan {
     /// plan is moved into the child.
     pub fn allow_ro(&mut self, path: PathBuf) {
         self.spec.allow_ro(path);
+    }
+
+    /// Apply an operator's screened `[[company_isolation]]` grants
+    /// ([`CompanyIsolation::resolve`]) to this plan — RO entries ride the
+    /// read(+exec) tier, RW entries the read+write tier. Both backends see them.
+    pub fn widen(&mut self, extras: &ResolvedCompanyIsolation) {
+        for path in &extras.read_only {
+            self.allow_ro(path.clone());
+        }
+        for path in &extras.read_write {
+            self.allow_rw(path.clone());
+        }
     }
 
     /// Best-effort `mkdir -p` of the [`AGENT_STATE_RW`] dirs under `home`,
@@ -888,6 +909,144 @@ fn run_confinement_self_test() -> bool {
 // IsolationRuntime — the per-process handle stored in AppState
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// One `[[company_isolation]]` block from `config.toml`: extra allow-list paths
+/// for the jail of ONE company (matched by `company` = the company slug).
+///
+/// ```toml
+/// [[company_isolation]]
+/// company = "canary"
+/// read_only = ["~/.ssh", "~/.config/gh"]   # read (+exec) only
+/// read_write = []                          # read + write
+/// ```
+///
+/// Why this exists: the built-in allow-list ([`SandboxSpec::for_company`]) is
+/// deliberately narrow (the company tree, `~/.claude`, `/tmp`, the toolchains),
+/// so a bot that legitimately needs e.g. the operator's `~/.ssh` (a crawl-fleet
+/// admin) had no way in short of `isolation_mode = off` for EVERY company. This
+/// widens the jail for one slug only; sibling companies still get the default
+/// list.
+///
+/// Lifecycle: the blocks are captured ONCE at supermux boot (`config.toml` is
+/// not re-read), and each block is resolved + screened per spawn by
+/// [`resolve`](Self::resolve) — so a config edit needs a supermux restart, and
+/// then takes effect for a bot at its next (re)start. Unknown keys are a load
+/// error on purpose (a misspelled `read_only` must not silently grant nothing).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanyIsolation {
+    /// The company slug this block applies to (exact match, no case folding).
+    pub company: String,
+    /// Extra read(+exec)-only paths. `~/…` is expanded against `$HOME`.
+    #[serde(default)]
+    pub read_only: Vec<String>,
+    /// Extra read+write paths. `~/…` is expanded against `$HOME`.
+    #[serde(default)]
+    pub read_write: Vec<String>,
+}
+
+/// [`CompanyIsolation`] after `~` expansion + safety screening. The paths are
+/// CANONICAL (what the kernel will actually attach the rule to).
+#[derive(Debug, Default, PartialEq)]
+pub struct ResolvedCompanyIsolation {
+    pub read_only: Vec<PathBuf>,
+    pub read_write: Vec<PathBuf>,
+    /// `(entry as written, reason)` for every entry that was NOT granted.
+    pub rejected: Vec<(String, &'static str)>,
+}
+
+impl CompanyIsolation {
+    /// Expand and screen the configured entries against the service user's
+    /// `home`, the supermux `data_dir` and THIS company's `company_root`.
+    ///
+    /// The screen runs on the CANONICAL path, because that is what the jail
+    /// grants: Landlock's `path_beneath_rules` opens each entry (following
+    /// symlinks and `..`) and attaches the rule to the resolved inode. Screening
+    /// the literal string would let `~/x/../.supermux` or a symlink into the
+    /// data dir through. Refused (reported in `rejected`, never granted):
+    ///
+    /// * empty entries; relative paths; entries containing `..`;
+    /// * entries that do not exist (Landlock silently drops absent paths — the
+    ///   operator must create the path first, and saying so is more honest);
+    /// * entries that resolve through a symlink (`canonicalize` ≠ the written
+    ///   path). This is the guard against a confined bot swapping a component
+    ///   under a tree it can write (its company root, `/tmp`, `~/.claude`) for a
+    ///   symlink to somewhere it must not read — the operator writes the real
+    ///   path, and a path that stops being real is refused at the next spawn;
+    /// * `/`, `$HOME`, or any ancestor of `$HOME` (each hands over the whole
+    ///   home);
+    /// * anything at, under or ABOVE `data_dir` (`~/.supermux` — the dashboard
+    ///   `auth_token`, the DB and the vault stay denied by construction);
+    /// * anything in a SIBLING company's tree, or the companies root itself
+    ///   (`company_root`'s parent) — separating companies is the jail's job.
+    pub fn resolve(&self, home: &Path, data_dir: &Path, company_root: &Path) -> ResolvedCompanyIsolation {
+        // `~` expands against the CANONICAL home so a symlinked home directory
+        // (`/home → /usr/home`) does not trip the symlink rule below.
+        let home = canonical_or(home);
+        let data_dir = canonical_or(data_dir);
+        let company_root = canonical_or(company_root);
+        let mut out = ResolvedCompanyIsolation::default();
+        for raw in &self.read_only {
+            match screen_entry(raw, &home, &data_dir, &company_root) {
+                Ok(p) => out.read_only.push(p),
+                Err(why) => out.rejected.push((raw.clone(), why)),
+            }
+        }
+        for raw in &self.read_write {
+            match screen_entry(raw, &home, &data_dir, &company_root) {
+                Ok(p) => out.read_write.push(p),
+                Err(why) => out.rejected.push((raw.clone(), why)),
+            }
+        }
+        out
+    }
+}
+
+/// `canonicalize`, falling back to the path as given when it cannot be resolved
+/// (an absent `data_dir` on a fresh install must still be screened lexically).
+fn canonical_or(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// The screening rule table for one `[[company_isolation]]` entry — see
+/// [`CompanyIsolation::resolve`] for the rationale of each rule. `Ok` carries
+/// the canonical path to grant; `Err` the reason it must not be.
+fn screen_entry(raw: &str, home: &Path, data_dir: &Path, company_root: &Path) -> Result<PathBuf, &'static str> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("empty entry");
+    }
+    let expanded = if raw == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    if !expanded.is_absolute() {
+        return Err("not an absolute path (or ~/…)");
+    }
+    if expanded.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("contains `..`");
+    }
+    let real = std::fs::canonicalize(&expanded)
+        .map_err(|_| "does not exist (create it first; the jail drops absent paths)")?;
+    if real != expanded {
+        return Err("resolves through a symlink; configure the real path instead");
+    }
+    if real == Path::new("/") || home.starts_with(&real) {
+        return Err("is `/`, the home dir, or an ancestor of it (would hand over the whole home)");
+    }
+    if real.starts_with(data_dir) || data_dir.starts_with(&real) {
+        return Err("at, under or above the supermux data dir (auth_token, DB, vault stay denied)");
+    }
+    if let Some(companies_root) = company_root.parent() {
+        if real.starts_with(companies_root) && !real.starts_with(company_root) {
+            return Err("inside another company's tree (or the companies root itself)");
+        }
+    }
+    Ok(real)
+}
+
 /// The process-wide isolation handle: the requested [`IsolationMode`], the
 /// startup [`ProbeResult`], and the active backend. Built once in
 /// `AppState::new`; consulted by the spawn path.
@@ -895,6 +1054,9 @@ pub struct IsolationRuntime {
     mode: IsolationMode,
     probe: ProbeResult,
     provider: Arc<dyn IsolationProvider>,
+    /// Per-company extra allow-list blocks (`[[company_isolation]]`), looked up
+    /// by slug at spawn time via [`extras_for`](Self::extras_for).
+    company_extras: Vec<CompanyIsolation>,
     /// The startup self-test result: `true` when a confined child could actually
     /// BOOT + EXEC on this host with the real company allow-list. `false` disables
     /// company Landlock confinement for this boot (bots run unconfined) so a
@@ -914,7 +1076,54 @@ impl IsolationRuntime {
             probe,
             provider,
             confinement_usable,
+            company_extras: Vec::new(),
         }
+    }
+
+    /// Attach the `[[company_isolation]]` blocks from config (builder style).
+    ///
+    /// Two blocks for the same slug are MERGED (their lists concatenated) with a
+    /// warning rather than the second one silently losing; a block that grants
+    /// nothing is warned about too (the usual cause is a misspelled list key,
+    /// which `deny_unknown_fields` already rejects at load — this catches an
+    /// empty list). Every block is logged once so an operator can see from the
+    /// journal what was loaded.
+    pub fn with_company_extras(mut self, extras: Vec<CompanyIsolation>) -> Self {
+        let mut merged: Vec<CompanyIsolation> = Vec::new();
+        for block in extras {
+            if block.read_only.is_empty() && block.read_write.is_empty() {
+                tracing::warn!(
+                    company = %block.company,
+                    "isolation: [[company_isolation]] block grants nothing — both `read_only` and `read_write` are empty",
+                );
+            }
+            if let Some(existing) = merged.iter_mut().find(|c| c.company == block.company) {
+                tracing::warn!(
+                    company = %block.company,
+                    "isolation: duplicate [[company_isolation]] block for this slug — merged into the first",
+                );
+                existing.read_only.extend(block.read_only);
+                existing.read_write.extend(block.read_write);
+            } else {
+                merged.push(block);
+            }
+        }
+        for block in &merged {
+            tracing::info!(
+                company = %block.company,
+                read_only = ?block.read_only,
+                read_write = ?block.read_write,
+                "isolation: [[company_isolation]] block loaded",
+            );
+        }
+        self.company_extras = merged;
+        self
+    }
+
+    /// The extra allow-list block for `slug`, if the operator configured one.
+    /// Exact slug match: a block never leaks to a sibling company.
+    pub fn extras_for(&self, slug: &str) -> Option<&CompanyIsolation> {
+        self.company_extras.iter().find(|c| c.company == slug)
     }
 
     /// The requested policy.
@@ -991,6 +1200,7 @@ impl std::fmt::Debug for IsolationRuntime {
         f.debug_struct("IsolationRuntime")
             .field("mode", &self.mode)
             .field("probe", &self.probe)
+            .field("company_extras", &self.company_extras)
             .finish()
     }
 }
@@ -1011,6 +1221,13 @@ mod tests {
         );
         assert_eq!(
             IsolationMode::parse("strict_required"),
+            IsolationMode::StrictRequired
+        );
+        // The spelling the README's deploy guide uses — a config value that
+        // parsed as BestEffort here would silently downgrade fail-closed to
+        // fail-open.
+        assert_eq!(
+            IsolationMode::parse("strict-required"),
             IsolationMode::StrictRequired
         );
         assert_eq!(
@@ -1284,5 +1501,181 @@ mod tests {
         } else {
             assert!(strict.strict_refusal().is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod company_extras_tests {
+    use super::*;
+
+    /// A throwaway tree: `<base>/home/u/{.ssh,.config/gh,.supermux,shared}` +
+    /// `<base>/companies/{canary/sub,other}` + a symlink `home/u/link -> .supermux`.
+    /// Real dirs, because `resolve` screens the CANONICAL path.
+    struct Tree {
+        base: PathBuf,
+    }
+    impl Tree {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            // Canonical: on macOS `/var` is a symlink to `/private/var`, and
+            // absolute entries built from a symlinked base would trip the
+            // "resolves through a symlink" rule instead of the one under test.
+            let base = canonical_or(&std::env::temp_dir()).join(format!(
+                "supermux-company-extras-{tag}-{}-{nanos}",
+                std::process::id()
+            ));
+            for d in [
+                "home/u/.ssh",
+                "home/u/.config/gh",
+                "home/u/.supermux",
+                "home/u/shared",
+                "companies/canary/sub",
+                "companies/other",
+            ] {
+                std::fs::create_dir_all(base.join(d)).unwrap();
+            }
+            std::fs::write(base.join("home/u/.supermux/auth_token"), b"secret").unwrap();
+            std::os::unix::fs::symlink(base.join("home/u/.supermux"), base.join("home/u/link")).unwrap();
+            Self { base }
+        }
+        fn home(&self) -> PathBuf {
+            self.base.join("home/u")
+        }
+        fn data_dir(&self) -> PathBuf {
+            self.base.join("home/u/.supermux")
+        }
+        fn root(&self) -> PathBuf {
+            self.base.join("companies/canary")
+        }
+        /// `HOME` in an entry is replaced by the tree's home path.
+        fn extra(&self, ro: &[&str], rw: &[&str]) -> CompanyIsolation {
+            let home = self.home().display().to_string();
+            let fix = |e: &&str| e.replace("HOME", &home);
+            CompanyIsolation {
+                company: "canary".into(),
+                read_only: ro.iter().map(fix).collect(),
+                read_write: rw.iter().map(fix).collect(),
+            }
+        }
+    }
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    fn tilde_and_absolute_entries_resolve_to_canonical_ro_and_rw() {
+        let t = Tree::new("ok");
+        let canon = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+        // The temp dir itself may be symlinked on some hosts, so compare
+        // canonical forms on both sides.
+        let r = t.extra(&["~/.ssh", "HOME/.config/gh"], &["~/shared"]).resolve(&t.home(), &t.data_dir(), &t.root());
+        assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+        assert_eq!(r.read_only, vec![canon(t.home().join(".ssh")), canon(t.home().join(".config/gh"))]);
+        assert_eq!(r.read_write, vec![canon(t.home().join("shared"))]);
+    }
+
+    #[test]
+    fn every_refusal_rule_fires_with_its_own_reason() {
+        let t = Tree::new("refuse");
+        let companies = t.base.join("companies").display().to_string();
+        let table: &[(&str, &str)] = &[
+            ("", "empty entry"),
+            ("relative/path", "not an absolute path"),
+            ("~/shared/../.supermux", "contains `..`"),
+            ("HOME/.ssh/..", "contains `..`"),
+            ("HOME/..", "contains `..`"),
+            ("~/does-not-exist", "does not exist"),
+            ("~/link", "resolves through a symlink"),
+            ("/", "is `/`, the home dir, or an ancestor"),
+            ("~", "is `/`, the home dir, or an ancestor"),
+            ("BASE", "is `/`, the home dir, or an ancestor"),
+            ("~/.supermux", "supermux data dir"),
+            ("~/.supermux/auth_token", "supermux data dir"),
+            ("COMPANIES/other", "another company's tree"),
+            ("COMPANIES", "another company's tree"),
+        ];
+        for (entry, reason) in table {
+            let entry = entry.replace("COMPANIES", &companies).replace("BASE", &t.base.display().to_string());
+            let r = t.extra(&[entry.as_str()], &[]).resolve(&t.home(), &t.data_dir(), &t.root());
+            assert!(r.read_only.is_empty(), "{entry:?} must not be granted: {:?}", r.read_only);
+            assert_eq!(r.rejected.len(), 1, "{entry:?}: {:?}", r.rejected);
+            assert!(
+                r.rejected[0].1.contains(reason),
+                "{entry:?}: expected reason containing {reason:?}, got {:?}",
+                r.rejected[0].1
+            );
+        }
+        // A path that is merely NEXT to the data dir (`.supermux2`) is fine —
+        // the data-dir rule is a path-component rule, not a string prefix.
+        std::fs::create_dir_all(t.home().join(".supermux2")).unwrap();
+        let r = t.extra(&["~/.supermux2"], &[]).resolve(&t.home(), &t.data_dir(), &t.root());
+        assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+        // The company's OWN subtree is allowed (redundant, but not dangerous).
+        let own = t.root().join("sub").display().to_string();
+        let r = t.extra(&[], &[own.as_str()]).resolve(&t.home(), &t.data_dir(), &t.root());
+        assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    }
+
+    #[test]
+    fn a_symlink_planted_after_the_fact_is_refused_at_the_next_spawn() {
+        // The TOCTOU the screen exists for: an entry that WAS a real dir is
+        // replaced (by a bot with write access to that tree) with a symlink to
+        // the data dir. Screening the canonical path refuses it next time.
+        let t = Tree::new("toctou");
+        let extra = t.extra(&["~/shared"], &[]);
+        assert!(extra.resolve(&t.home(), &t.data_dir(), &t.root()).rejected.is_empty());
+        std::fs::remove_dir(t.home().join("shared")).unwrap();
+        std::os::unix::fs::symlink(t.data_dir(), t.home().join("shared")).unwrap();
+        let r = extra.resolve(&t.home(), &t.data_dir(), &t.root());
+        assert!(r.read_only.is_empty());
+        assert!(r.rejected[0].1.contains("symlink"), "{:?}", r.rejected);
+    }
+
+    #[test]
+    fn runtime_looks_up_extras_by_exact_slug_only_and_merges_duplicates() {
+        let rt = IsolationRuntime::from_mode(IsolationMode::BestEffort).with_company_extras(vec![
+            CompanyIsolation { company: "canary".into(), read_only: vec!["~/.ssh".into()], read_write: vec![] },
+            CompanyIsolation { company: "canary".into(), read_only: vec![], read_write: vec!["~/shared".into()] },
+            CompanyIsolation { company: "empty".into(), read_only: vec![], read_write: vec![] },
+        ]);
+        let c = rt.extras_for("canary").expect("configured slug");
+        // Duplicate blocks for one slug are merged, not dropped.
+        assert_eq!(c.read_only, vec!["~/.ssh"]);
+        assert_eq!(c.read_write, vec!["~/shared"]);
+        assert!(rt.extras_for("empty").is_some());
+        // A sibling company gets NOTHING — the grant is scoped to one slug.
+        assert!(rt.extras_for("reisposter").is_none());
+        assert!(rt.extras_for("Canary").is_none(), "slugs are exact, no case folding");
+        // No config at all ⇒ no extras (the default runtime).
+        assert!(IsolationRuntime::from_mode(IsolationMode::BestEffort).extras_for("canary").is_none());
+    }
+
+    #[test]
+    fn widen_puts_ro_in_the_exec_tier_and_rw_in_the_write_tier_for_that_plan_only() {
+        let t = Tree::new("widen");
+        let rt = IsolationRuntime::from_mode(IsolationMode::BestEffort)
+            .with_company_extras(vec![t.extra(&["~/.ssh"], &["~/shared"])]);
+        let resolved = rt.extras_for("canary").unwrap().resolve(&t.home(), &t.data_dir(), &t.root());
+        let ssh = std::fs::canonicalize(t.home().join(".ssh")).unwrap();
+        let shared = std::fs::canonicalize(t.home().join("shared")).unwrap();
+
+        let mut plan = rt.plan_for(&t.root(), &t.home()).expect("BestEffort yields a plan");
+        plan.widen(&resolved);
+        assert!(plan.spec.read_exec_paths.contains(&ssh), "RO extra rides the read+exec tier");
+        assert!(plan.spec.extra_read_paths.contains(&ssh), "…and is recorded for the Seatbelt re-allow");
+        assert!(plan.spec.read_write_paths.contains(&shared), "RW extra rides the write tier");
+        assert!(!plan.spec.read_write_paths.contains(&ssh), "RO never becomes RW");
+
+        // A sibling company's plan (no block for its slug ⇒ nothing to widen)
+        // carries neither path.
+        let other = rt.plan_for(&t.base.join("companies/other"), &t.home()).unwrap();
+        assert!(rt.extras_for("other").is_none());
+        assert!(!other.spec.read_exec_paths.contains(&ssh));
+        assert!(!other.spec.read_write_paths.contains(&shared));
     }
 }

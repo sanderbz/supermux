@@ -47,6 +47,7 @@ async fn setup() -> (AppState, axum::Router, PathBuf) {
         push_sub: None,
         github_token: None,
         isolation_mode: Default::default(),
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
         swarm_reaper: Default::default(),
     };

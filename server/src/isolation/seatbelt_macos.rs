@@ -131,6 +131,15 @@ fn build_profile(spec: &SandboxSpec) -> String {
     for p in &spec.read_write_paths {
         s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
+    // (5) …and the EXPLICIT read-only grants (a session's own config dir, the
+    // operator's `[[company_isolation]] read_only` entries). The profile is
+    // allow-by-default, so the built-in `read_exec_paths` need nothing here —
+    // but an explicit RO grant may sit inside a denied secret subtree
+    // (`~/.config/gh` is on `secret_subpaths()`), and last-match-wins means it
+    // must be re-allowed AFTER the denies or the operator's block is a no-op.
+    for p in &spec.extra_read_paths {
+        s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
 
     s
 }
