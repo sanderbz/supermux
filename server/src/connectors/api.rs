@@ -76,11 +76,20 @@ pub(crate) fn card_categories(c: &connectors::Connector) -> Vec<String> {
 }
 
 /// The per-connector auth descriptor for a LOCAL (installed) row. Authoritative
-/// order: an explicit descriptor folded into `source_json` (an imported manifest
-/// that declared its lane) → the curated catalog's descriptor for this id (so an
-/// installed catalog card keeps its Lane even though the install didn't carry it)
-/// → a shape-derivation from the credential schema (identity+secret ⇒ `form`, a
+/// order: the LIVE curated catalog's descriptor for this id (a catalog card's lane
+/// and copy are the catalog's to own, never the install's) → an explicit descriptor
+/// folded into `source_json` (an imported manifest that declared its own lane) →
+/// a shape-derivation from the credential schema (identity+secret ⇒ `form`, a
 /// lone secret ⇒ `api_key`, nothing to seal ⇒ `none` — no fake sign-in).
+///
+/// The catalog leads on purpose. An install FREEZES the card's auth descriptor
+/// into `source_json`, so a row installed before the copy changed kept serving the
+/// old sentence forever — the owner who signed in through the brokered OAuth lane
+/// was still told to "approve the sign-in in the bot's own terminal", a flow that
+/// no longer exists. A curated id's descriptor is not user data; it is the
+/// catalog's, and the catalog is on disk in THIS build. Only a NON-curated id
+/// (an imported/agent-authored manifest, which really did declare its own lane)
+/// still reads its persisted descriptor.
 pub(crate) fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors::Connector) -> Value {
     // 0) P2a — a provider-backed, non-`mcp_oauth` connector upgrades to a
     //    supermux-driven device sign-in WHEN an OAuth app is registered for the
@@ -96,7 +105,14 @@ pub(crate) fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors:
             return super::oauth::oauth_device_descriptor(provider, &app.scopes);
         }
     }
-    // 1) An explicit, non-`unspecified` descriptor persisted with the manifest.
+    // 1) The LIVE curated catalog's descriptor. A curated card's lane AND its copy
+    //    belong to the catalog, so an installed row can never serve a frozen,
+    //    stale help_text (the "sign in in the bot's own terminal" ghost).
+    if let Some(auth) = catalog::curated_auth(&c.id) {
+        return auth;
+    }
+    // 2) An explicit, non-`unspecified` descriptor persisted with the manifest —
+    //    only for a NON-curated id, which genuinely declared its own lane.
     if let Some(auth) = serde_json::from_str::<Value>(&c.source_json)
         .ok()
         .and_then(|v| v.get("auth").cloned())
@@ -105,10 +121,6 @@ pub(crate) fn derive_auth(oauth_apps: &[OauthApp], scope: Scope, c: &connectors:
         if !kind.is_empty() && kind != "unspecified" {
             return auth;
         }
-    }
-    // 2) The curated catalog's descriptor (installed catalog card keeps its Lane).
-    if let Some(auth) = catalog::curated_auth(&c.id) {
-        return auth;
     }
     // 3) Derive from the credential schema.
     let creds: Vec<CredentialField> = serde_json::from_str(&c.credentials_json).unwrap_or_default();
@@ -281,7 +293,19 @@ pub async fn get_one(
     if let Some(c) = connectors::get(&state.pool, &id).await.map_err(db_err)? {
         let oauth_apps = state.oauth_apps.load();
         let scope = Scope::of(ctx.0.as_ref());
-        return Ok(Json(card(&oauth_apps, scope, &c)));
+        let mut v = card(&oauth_apps, scope, &c);
+        // The connected ACCOUNTS, exactly as the grid's `list` enriches them
+        // (company-scoped to what this caller may see). Without them this endpoint
+        // — the one the store detail sheet and the chat Connect card read a single
+        // connector from — could not tell "connected" from "never connected", so a
+        // finished brokered sign-in still rendered its INITIAL state and the owner
+        // signed in again, and again. The grid carried the truth; the single-card
+        // read dropped it.
+        let accts = accounts_json(&state, ctx.0.as_ref(), &c.id).await?;
+        if let Value::Object(ref mut o) = v {
+            o.insert("accounts".into(), Value::Array(accts));
+        }
+        return Ok(Json(v));
     }
     // Catalog-mirror fallback (curated ∪ last-good live), which already carries the
     // per-connector auth descriptor + Lane B/C paste schema.
@@ -343,6 +367,14 @@ async fn store_manifest(state: &AppState, mut manifest: Manifest) -> Result<Json
         if let Ok(a) = serde_json::to_value(&manifest.auth) {
             provenance["auth"] = a;
         }
+    }
+    // A CURATED id's descriptor is the catalog's, not the installer's — refresh the
+    // stored snapshot from the live catalog so an old row HEALS the moment it is
+    // re-upserted, instead of carrying a frozen help_text around forever. The read
+    // path already prefers the catalog ([`derive_auth`]); this keeps the persisted
+    // copy from drifting further and lying to anything that reads it directly.
+    if let Some(a) = catalog::curated_auth(&manifest.id) {
+        provenance["auth"] = a;
     }
     // Fold declared store-taxonomy tags so the card surfaces under the right chip.
     if !manifest.categories.is_empty() {
@@ -698,8 +730,26 @@ async fn probe_and_store(
         {
             tracing::warn!(connector = %connector.id, error = %e, "connector probe: could not store health");
         }
+        store_tool_count(state, account_ref, &outcome).await;
     }
     outcome
+}
+
+/// Persist the tool count a probe REALLY enumerated (0043), so "Connected as … —
+/// N tools" survives a reload instead of living in the returning tab's memory.
+///
+/// A probe that never reached `tools/list` writes nothing at all: the last true
+/// count stays, and a connector that has never been counted keeps `null` rather
+/// than borrowing a number from a catalog blurb.
+pub(crate) async fn store_tool_count(
+    state: &AppState,
+    account_ref: &str,
+    outcome: &super::health::ProbeOutcome,
+) {
+    let Some(n) = outcome.tool_count else { return };
+    if let Err(e) = connectors::account_set_tool_count(&state.pool, account_ref, i64::from(n)).await {
+        tracing::warn!(error = %e, "connector probe: could not store tool count");
+    }
 }
 
 // ── grants ────────────────────────────────────────────────────────────────────
@@ -868,6 +918,7 @@ pub async fn session_connectors(
                 "health": a.health,
                 "last_checked_at": a.last_checked_at,
                 "last_error": a.last_error,
+                "tool_count": a.tool_count,
             })),
             "card": c.as_ref().map(|c| card(&oauth_apps, scope, c)),
         }));
@@ -1053,6 +1104,7 @@ pub async fn test_account(
         )
         .await
         .map_err(db_err)?;
+        store_tool_count(&state, &account.id, &outcome).await;
     }
     audit(
         &state,
@@ -1157,6 +1209,10 @@ async fn accounts_json(
             "health": a.health,
             "last_checked_at": a.last_checked_at,
             "last_error": a.last_error,
+            // How many tools the account's server really listed (0043). `null` =
+            // never counted; the UI then says "Connected as …" with no count
+            // rather than borrowing a catalog blurb's number.
+            "tool_count": a.tool_count,
             "company_id": a.company_id,
             "grant_level": grant_level(&resolved),
         }));
@@ -1411,11 +1467,12 @@ mod tests {
     }
 
     #[test]
-    fn derive_auth_prefers_explicit_then_curated_then_shape() {
+    fn derive_auth_prefers_curated_then_explicit_then_shape() {
         // No OAuth apps registered ⇒ the P2a step-0 never fires; behaviour is the
-        // historical explicit→curated→shape chain.
+        // curated→explicit→shape chain.
         let no_apps: &[OauthApp] = &[];
-        // 1) An explicit descriptor folded into source_json wins outright.
+        // 1) An explicit descriptor folded into source_json wins for a NON-curated
+        //    id (an imported manifest that declared its own lane).
         let explicit = connector_row(
             "anything",
             "[]",
@@ -1447,6 +1504,46 @@ mod tests {
         assert_eq!(derive_auth(no_apps, Scope::All, &key_only)["kind"], json!("api_key"));
         let no_creds = connector_row("x-none", "[]", "{}");
         assert_eq!(derive_auth(no_apps, Scope::All, &no_creds)["kind"], json!("none"));
+    }
+
+    #[test]
+    fn a_curated_card_reads_its_copy_from_the_live_catalog_not_the_frozen_install() {
+        // The owner's bug: an mcp_oauth row installed BEFORE the copy changed kept
+        // serving the install-time snapshot, so the detail sheet still told him to
+        // "approve the sign-in in the bot's own terminal" — a flow that no longer
+        // exists — right after a browser sign-in that had already succeeded.
+        let stale = connector_row(
+            "pmcp-inhouseseo",
+            "[]",
+            &json!({
+                "imported": true,
+                "auth": {
+                    "kind": "mcp_oauth",
+                    "help_text": "Signs in the first time your bot uses it — approve the sign-in in the bot's own terminal.",
+                },
+            })
+            .to_string(),
+        );
+        let auth = derive_auth(&[], Scope::All, &stale);
+        assert_eq!(auth["kind"], json!("mcp_oauth"), "the lane is unchanged");
+        let help = auth["help_text"].as_str().unwrap_or_default();
+        assert!(!help.contains("terminal"), "the frozen terminal copy must not survive: {help}");
+        assert_eq!(help, catalog::curated_auth("pmcp-inhouseseo").unwrap()["help_text"]);
+    }
+
+    #[test]
+    fn a_non_curated_row_still_keeps_its_own_declared_descriptor() {
+        // The catalog only owns CURATED ids. An imported/agent-authored manifest
+        // that declared its lane is untouched by the healing rule above.
+        let mine = connector_row(
+            "my-own-thing",
+            "[]",
+            &json!({ "imported": true, "auth": { "kind": "api_key", "help_text": "Paste the key from our dashboard." } })
+                .to_string(),
+        );
+        let auth = derive_auth(&[], Scope::All, &mine);
+        assert_eq!(auth["kind"], json!("api_key"));
+        assert_eq!(auth["help_text"], json!("Paste the key from our dashboard."));
     }
 
     #[test]

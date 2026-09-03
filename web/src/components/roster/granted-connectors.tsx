@@ -5,7 +5,7 @@
 // the bot-scoped store sheet. A "Needs sign-in" chip deep-links straight to that
 // connector's sign-in flow.
 import * as React from 'react'
-import { AlertTriangle, Loader2, Plus, RotateCw } from 'lucide-react'
+import { AlertTriangle, Loader2, Plus } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import {
@@ -19,8 +19,6 @@ import {
 } from '@/lib/api/connectors'
 import { useSessionConnectors, useConnectorActions } from '@/stores/connectors-store'
 import { useSession } from '@/hooks/use-sessions'
-import { useRecovery } from '@/hooks/use-recovery'
-import { useArmedConfirm } from '@/hooks/use-armed-confirm'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { ConnectorIcon } from '@/components/store/connector-icon'
 import { GrantControl } from '@/components/store/grant-control'
@@ -37,62 +35,12 @@ const StoreView = React.lazy(() =>
   import('@/components/store/store-view').then((m) => ({ default: m.StoreView })),
 )
 
-/** A bot mid-turn (active/working) shouldn't lose its turn to an accidental
- *  restart — arm-confirm those; an idle bot restarts on the first tap. */
-function isMidTurn(status?: string): boolean {
-  return status === 'active' || status === 'working'
-}
-
-/**
- * The one-tap "Restart to apply" action — the button the restart HINT never had.
- * Reuses the atomic `restart` rung (`useRecovery`), the SAME lifecycle the header
- * actions menu drives, so the add-grant → restart → live loop closes in place.
- * Shared by the per-row hint here and the panel-level `RestartHint` in bot-panel.
- */
-export function RestartToApply({
-  name,
-  className,
-}: {
-  name: string
-  className?: string
-}) {
-  const { session } = useSession(name)
-  const { run, pending } = useRecovery()
-  const busy = pending === 'restart'
-  const midTurn = isMidTurn(session?.status)
-
-  const fire = React.useCallback(() => {
-    void run(name, 'restart').catch(() => {})
-  }, [run, name])
-  // Mid-turn asks first (arm-confirm); idle fires on the first press.
-  const confirm = useArmedConfirm({ onConfirm: fire })
-  const onClick = midTurn ? confirm.press : fire
-  const armed = midTurn && confirm.armed
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={busy}
-      data-vr="connector-restart"
-      aria-label={armed ? `Confirm restart of ${name}` : `Restart ${name} to apply`}
-      className={cn(
-        'inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60',
-        armed
-          ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
-          : 'bg-status-active/15 text-status-active-ink hover:bg-status-active/25',
-        className,
-      )}
-    >
-      {busy ? (
-        <Loader2 className="size-3.5 animate-spin" aria-hidden />
-      ) : (
-        <RotateCw className="size-3.5" aria-hidden />
-      )}
-      {busy ? 'Restarting…' : armed ? 'Restart now — loses this turn' : 'Restart to apply'}
-    </button>
-  )
-}
+// The one-tap restart affordance now lives in its own module (the in-chat
+// Connect card needs it too, and must not pull this whole Tools-tab surface —
+// and the store sheet it lazily references — into the transcript chunk).
+// Re-exported so every existing importer of this file is unaffected.
+import { RestartToApply, isMidTurn } from './restart-to-apply'
+export { RestartToApply, isMidTurn }
 
 export function GrantedConnectors({ name }: { name: string }) {
   const { data, isLoading, isError } = useSessionConnectors(name)

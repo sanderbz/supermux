@@ -16,6 +16,8 @@ import {
   ALL_AGENTS,
   companyGrantKey,
   connectorAuthKind,
+  consumerTargets,
+  oauthConnection,
   secretField,
   toolCountLabel,
   type ConnectorCard as Card,
@@ -23,8 +25,8 @@ import {
 import type { OauthProvider } from '@/lib/api/oauth'
 import { sessionsApi, displayLabel } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
-import { useConnectorActions, useSessionConnectors } from '@/stores/connectors-store'
-import { RestartToApply } from '@/components/roster/granted-connectors'
+import { useConnectorActions, useConnectorGrants } from '@/stores/connectors-store'
+import { RestartIfNeeded } from '@/components/roster/restart-to-apply'
 import { useOauthApps } from '@/hooks/use-oauth-apps'
 import { useUI } from '@/stores/ui-store'
 import { useCompanies } from '@/hooks/use-companies'
@@ -37,7 +39,6 @@ import { GrantControl, type GrantScope } from './grant-control'
 import { ConnectFlow, type ConnectFlowResult } from './connect-flow'
 import { ConnectInBotPicker } from './connect-in-bot-picker'
 import { EnableSigninSheet } from './enable-signin-sheet'
-import { OauthConnectButton } from './oauth-connect-button'
 
 /** The bot a `/focus/<bot>` (or `/team/<t>/<bot>`) route names — the "referring
  *  bot" a store deep-link preselects as the grant target. Pure. */
@@ -174,6 +175,18 @@ export function ConnectorDetail({
   const location = useLocation()
   const referrer = referringBot((location.state as { from?: string } | null)?.from ?? null)
   const isMcpOauthCard = card.auth?.kind === 'mcp_oauth'
+  // ── the brokered-OAuth lane reads SERVER truth, never this sheet's state ──
+  // The sign-in hands the tab to the provider and comes back through a full-page
+  // redirect, so nothing local survives it. `card.accounts` says whether it is
+  // connected (and as whom, with how many tools); `GET /{id}/grants` says WHO
+  // holds it — including a grant to a single bot, which the library scope's
+  // `*`/company sets cannot see and which therefore used to read as "not added".
+  const connection = oauthConnection(card)
+  const grantsQuery = useConnectorGrants(isMcpOauthCard && installed ? card.id : null)
+  const serverTargets = React.useMemo(
+    () => consumerTargets(grantsQuery.data),
+    [grantsQuery.data],
+  )
   const [selectedBots, setSelectedBots] = React.useState<Set<string>>(() => new Set())
   const [allAgents, setAllAgents] = React.useState(false)
   // The active company (roster scope) is a third library grant target — "All bots
@@ -189,7 +202,9 @@ export function ConnectorDetail({
   // bot's own `connect()` tool raises), then land in that bot's Focus chat where
   // the existing ConnectCard finishes the flow. Eligible bots are scoped to the
   // active space: HQ (no company) can reach every bot; a company reaches only its
-  // own. `mcp_oauth` (Lane D) has no key to paste, so this is its PRIMARY path.
+  // own. NOT offered on the brokered-OAuth lane: that sign-in finishes right
+  // here, in the browser, so a "finish it somewhere else" link was a second flow
+  // competing with the primary — and its own picker under the sheet's picker.
   const navigate = useNavigate()
   const eligibleBots: BotChoice[] = React.useMemo(
     () =>
@@ -404,21 +419,27 @@ export function ConnectorDetail({
         renderAddedExtra={() => (
           <>
             {isMcpOauth && connectedAccount && (
-              <OauthAccountActions
-                card={card}
-                account={connectedAccount}
-                target={addedTargets[0] ?? grantTarget ?? ALL_AGENTS}
-              />
+              <OauthAccountActions card={card} account={connectedAccount} />
             )}
-            <RestartTargets targets={addedTargets} bots={bots} connectorId={card.id} />
+            {/* Who to restart: what THIS open landed on, else what the server says
+                already holds the connector — so the "Restart <bot> to apply" line
+                is there after the sign-in's redirect, not only in the tab that
+                happened to make the grant. */}
+            <RestartTargets
+              targets={addedTargets.length > 0 ? addedTargets : serverTargets}
+              bots={bots}
+              connectorId={card.id}
+            />
           </>
         )}
       >
         {/* GRANT TO — the choose-who-gets-it step, library scope only. In a bot
             scope the sheet already carries the one target, so this is skipped.
-            A brokered-OAuth card shows it too (preselected, so its sign-in button
-            is never disabled on "choose who gets it first"). */}
-        {isLibrary && (
+            On the brokered-OAuth lane it is skipped once the connector is HELD
+            too: there is no choice left to make, and re-showing it is exactly
+            what made a completed sign-in read as a reset. (Granting a connected
+            account to more bots is the Installed tab's per-account control.) */}
+        {isLibrary && !(isMcpOauth && (connection.account || serverTargets.length > 0)) && (
           <GrantPicker
             bots={bots}
             selectedBots={selectedBots}
@@ -462,7 +483,7 @@ export function ConnectorDetail({
       {/* Connect in a bot — the store→chat handoff, the SECONDARY path on every
           lane (a subtle text link, never a competing second big button). For a
           brokered-OAuth card the primary is "Sign in with {name}" above. */}
-      {eligibleBots.length > 0 ? (
+      {eligibleBots.length > 0 && !isMcpOauth ? (
         <div className="flex flex-col gap-0.5">
           <button
             type="button"
@@ -489,8 +510,12 @@ export function ConnectorDetail({
         onPick={(name) => void runHandoff(name)}
       />
 
-      {/* grant control (once installed) */}
-      {(installed || added) && (
+      {/* grant control (once installed). NOT on the brokered-OAuth lane: its
+          "Grant to → This bot · All agents" segment was a SECOND picker stacked
+          under the first one, on the same sheet, disagreeing with it. That lane
+          has exactly one picker, above, and it disappears once the connector is
+          held. */}
+      {(installed || added) && !isMcpOauth && (
         <div className="rounded-2xl border border-border bg-card p-4">
           <GrantControl
             connectorId={card.id}
@@ -591,52 +616,23 @@ function RestartTargets({ targets, bots, connectorId }: { targets: string[]; bot
   )
 }
 
-/** One bot's server-computed restart state for `connectorId`: `!applied &&
- *  running` → the RestartToApply chip; applied → "Applied"; stopped → nothing. */
-function RestartIfNeeded({ name, label, connectorId }: { name: string; label: string; connectorId: string }) {
-  const { data } = useSessionConnectors(name)
-  const grant = (data ?? []).find((g) => g.connector_id === connectorId)
-  if (!grant || !grant.running) return null
-  if (grant.applied === false) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[12.5px] text-foreground/80">{label}</span>
-        <RestartToApply name={name} />
-      </div>
-    )
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[12px] text-status-ready-ink">
-      <Check className="size-3.5" aria-hidden />
-      {label} · applied
-    </span>
-  )
-}
-
-/** The brokered-OAuth account verbs in the added panel: Disconnect (keeps the
- *  sealed sign-in for a reconnect), and "Sign in again" when the account is
- *  expired / disconnected (re-seals the same vault row in place). */
+/** The brokered-OAuth account verb in the connected panel: Disconnect (keeps the
+ *  sealed sign-in for a one-tap reconnect).
+ *
+ *  "Sign in again" used to live here TOO, next to the lane's own sign-in button —
+ *  two buttons for one action on one sheet. The lane owns the sign-in on every
+ *  state now (it already knows whether the account is dead), so this is only the
+ *  verb the lane does not have. */
 function OauthAccountActions({
   card,
   account,
-  target,
 }: {
   card: Card
   account: NonNullable<Card['accounts']>[number]
-  target: string
 }) {
   const actions = useConnectorActions()
-  const dead = account.health === 'expired' || account.status === 'disconnected'
   return (
     <div className="flex flex-col gap-2">
-      {dead && (
-        <OauthConnectButton
-          card={card}
-          target={target}
-          returnTo={`/store/${encodeURIComponent(card.id)}`}
-          label={`Sign in again with ${card.display_name}`}
-        />
-      )}
       {account.status !== 'disconnected' && (
         <button
           type="button"

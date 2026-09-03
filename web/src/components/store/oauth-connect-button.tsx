@@ -37,6 +37,18 @@ export interface OauthConnectButtonProps {
   deps?: Partial<BeginDeps>
 }
 
+/** The sign-in primary's chrome, in the two surface treatments (chat pill / store
+ *  full-width). ONE definition: this button, the Lane A device primary and the
+ *  brokered lane's no-target button all wear it. Four literal copies of the same
+ *  forty-token class string is a maintenance trap — they had already drifted
+ *  (one hand-rolled `opacity-60` where the others used the `disabled:` variant).
+ *  It is byte-neutral in the bundle: gzip already deduplicated the repeats. */
+export function oauthPrimaryClass(chat?: boolean): string {
+  return chat
+    ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
+    : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60'
+}
+
 export function OauthConnectButton({
   card,
   target,
@@ -74,12 +86,7 @@ export function OauthConnectButton({
       disabled={disabled || busy}
       data-vr="connect-oauth"
       aria-label={label ?? `Sign in with ${card.display_name}`}
-      className={cn(
-        chat
-          ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
-          : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
-        className,
-      )}
+      className={cn(oauthPrimaryClass(chat), className)}
       style={
         chat
           ? { borderColor: 'color-mix(in oklab, var(--sm-accent) 40%, transparent)', borderWidth: '0.5px' }

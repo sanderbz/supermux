@@ -119,13 +119,16 @@ describe('handleOauthReturn', () => {
     expect(connectErrorCopy('bogus', 'X')).toBe("Couldn't verify the sign-in — try again.")
   })
 
-  test('oauth_pending with no pending key → "finished outside supermux"', async () => {
+  test('oauth_pending with no pending key names the tab AND the way out', async () => {
     const store = new MemoryStorage()
     const d = deps(store, new Error('must not complete'))
     const out = await handleOauthReturn('?oauth_pending=1', d.deps)
     expect(out).toEqual({ kind: 'lost' })
     expect(d.completes).toEqual([])
-    expect(d.toasts[0].message).toContain('finished outside supermux')
+    // "finished outside supermux — tap Connect again" was true but useless: it
+    // named no button the owner could see. Say where it finished and what to tap.
+    expect(d.toasts[0].message).toContain('another tab')
+    expect(d.toasts[0].message).toContain('Sign in again')
   })
 
   test('a failed complete reports and still refreshes', async () => {

@@ -98,6 +98,11 @@ pub struct Account {
     /// two identities keyed on it collapsed into one row and swapped tokens under
     /// the first one's grants. Non-secret; never returned by the accounts API.
     pub identity_key: Option<String>,
+    /// How many tools this account's MCP server listed in a REAL `tools/list`
+    /// (0043). `None` = never counted — a pre-0043 row, an untestable probe, or a
+    /// server that answered `initialize` but not `tools/list`. Never invented, and
+    /// a later probe that reaches no count leaves the last true value alone.
+    pub tool_count: Option<i64>,
 }
 
 /// A row of the `vault` table (opaque ciphertext — see [`crate::vault`]).
@@ -641,6 +646,20 @@ pub async fn account_set_health(
     .bind(id)
     .execute(pool)
     .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Stamp the tool count a REAL `tools/list` returned for this account (0043).
+///
+/// Only ever called with a count a probe actually enumerated, so the stored value
+/// is never invented. A probe that reached no count simply doesn't call this — the
+/// previous true count survives rather than being blanked to "unknown".
+pub async fn account_set_tool_count(pool: &SqlitePool, id: &str, tool_count: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE connector_accounts SET tool_count = ? WHERE id = ?")
+        .bind(tool_count)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
