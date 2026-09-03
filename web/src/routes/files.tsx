@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import {
@@ -560,7 +561,7 @@ export function Files() {
     // The canonical wire format, already pinned byte-identical to
     // `buildAttachmentPrompt` — do not re-derive it a third time.
     insertIntoComposer(session, attachmentSentence([t.path]))
-    navigate(`/focus/${encodeURIComponent(session)}`)
+    navigate(agentHref(session))
   }
 
   // ── space navigation ────────────────────────────────────────────────────

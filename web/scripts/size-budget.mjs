@@ -1381,7 +1381,7 @@ const BUDGET_ENTRY_JS = 164 * KB
 // branch parent had spent nearly all of it:
 //
 //   parent 8caae253, built the same way   461.52 KB  <- 0.48 KB of headroom
-//   this branch                           462.53 KB  <- +1.01 KB
+//   this branch                           462.49 KB  <- +0.97 KB
 //
 // What the +1.01 KB buys: a bot's home thread had NO URL, so nothing could link
 // to it and every "open this agent" link — including every push notification —
@@ -1396,7 +1396,7 @@ const BUDGET_ENTRY_JS = 164 * KB
 // 161.19 / 164 KB, +0.19 KB of import-map churn from re-rolling those hashes —
 // nothing here lands on the cold path.
 //
-// 462.53 x 1.02 = 471.7 -> 471. Deliberately NOT ceil(measured) = 463: the
+// 462.49 x 1.02 = 471.7 -> 471. Deliberately NOT ceil(measured) = 463: the
 // v0.6.1 note above records that exact mistake and its correction, because a
 // sub-KB ceiling on a gate every web PR shares red-lights the NEXT author with
 // a failure that says nothing about their branch — which is precisely what
