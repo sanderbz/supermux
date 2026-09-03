@@ -28,7 +28,6 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
-import { agentHref } from '@/lib/agent-href'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { MISC } from '@/brand/copy'
 import { markStateFor } from '@/lib/mark-status'
@@ -103,10 +102,11 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   const showAttention: boolean | AttentionKind =
     attention === true ? 'needs' : attention === false ? false : (rowAttention.dotKind ?? false)
 
-  // Same address the tile opens — the bot's home thread (`lib/agent-href.ts`),
-  // name-encoded, with the terminal one explicit menu item away.
+  // Same one-hop address the tile opens, and for the same reason: this row is
+  // classic-board-only, and routing an in-skin click through `/agent/<name>`
+  // would trade the tile→focus morph for a redirect. Name-encoded now.
   const goFocus = React.useCallback(
-    () => navigateMorph(agentHref(session.name)),
+    () => navigateMorph(`/focus/${encodeURIComponent(session.name)}`),
     [navigateMorph, session.name],
   )
 

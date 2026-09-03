@@ -37,6 +37,7 @@ interface PushSwInternals {
   }
   applyBadge: (count: unknown) => unknown
   pathOf: (url: string | undefined) => string
+  sessionOf: (url: string | undefined) => string | null
   staleSessionTags: (
     live: { tag?: string }[],
     keep: string[],
@@ -131,7 +132,7 @@ function payload(over: Record<string, unknown> = {}) {
   return {
     title: 'deploy-fix',
     body: 'Needs permission — ⚡ cargo check (Bash)',
-    url: '/focus/deploy-fix#pending',
+    url: '/agent/deploy-fix',
     tier: 'attention',
     session: 'deploy-fix',
     badge: 1,
@@ -143,12 +144,36 @@ function payload(over: Record<string, unknown> = {}) {
 }
 
 describe('decideDisplay', () => {
-  test('suppresses only when the user is looking at THIS session', () => {
+  test('suppresses only when the user is looking at THIS bot', () => {
+    // The payload always names `/agent/<name>` now, and NOTHING rests there —
+    // the roster consumes the doorway and replaces it. The phone (and the
+    // classic skin) rests on `/focus/<name>`, which is the same bot, so it
+    // suppresses; the doorway itself must too, in case a window is caught
+    // mid-hop.
     const { sw } = loadServiceWorker()
-    const watching: WindowClient[] = [
+    const onFocus: WindowClient[] = [
       { url: `${ORIGIN}/focus/deploy-fix`, visibilityState: 'visible' },
     ]
-    expect(sw.decideDisplay(payload(), watching).show).toBe(false)
+    expect(sw.decideDisplay(payload(), onFocus).show).toBe(false)
+    const onDoorway: WindowClient[] = [
+      { url: `${ORIGIN}/agent/deploy-fix`, focused: true },
+    ]
+    expect(sw.decideDisplay(payload(), onDoorway).show).toBe(false)
+    expect(sw.sessionOf(`${ORIGIN}/focus/deploy-fix`)).toBe('deploy-fix')
+    expect(sw.sessionOf(`${ORIGIN}/`)).toBe(null)
+  })
+
+  test('a payload that names no session still compares PLACES', () => {
+    // The scheduler lane (`PushPayload::simple`) omits `session` entirely, so
+    // the path is all there is — and a client on a bot must not swallow it.
+    const { sw } = loadServiceWorker()
+    const board = payload({ url: '/board', session: undefined, tag: 'board' })
+    expect(sw.decideDisplay(board, [{ url: `${ORIGIN}/board`, focused: true }]).show).toBe(
+      false,
+    )
+    expect(
+      sw.decideDisplay(board, [{ url: `${ORIGIN}/focus/deploy-fix`, focused: true }]).show,
+    ).toBe(true)
   })
 
   test('a visible window on a DIFFERENT session no longer swallows the banner', () => {
@@ -177,17 +202,18 @@ describe('decideDisplay', () => {
     expect(sw.decideDisplay(payload(), undefined as never).show).toBe(true)
   })
 
-  test('the #pending fragment does not make it a different place', () => {
+  test('a fragment does not make it a different place', () => {
     // The fragment tells the app where to scroll once it is there; it is not
     // part of "which session am I looking at".
     const { sw } = loadServiceWorker()
     const watching: WindowClient[] = [
-      { url: `${ORIGIN}/focus/deploy-fix`, focused: true },
+      { url: `${ORIGIN}/agent/deploy-fix#pending`, focused: true },
     ]
-    expect(sw.decideDisplay(payload({ url: '/focus/deploy-fix#pending' }), watching).show).toBe(
+    expect(sw.decideDisplay(payload({ url: '/agent/deploy-fix#pending' }), watching).show).toBe(
       false,
     )
     expect(sw.pathOf('/focus/deploy-fix#pending')).toBe('/focus/deploy-fix')
+    expect(sw.sessionOf('/agent/deploy-fix#pending')).toBe('deploy-fix')
   })
 
   test('a malformed client url is ignored rather than throwing', () => {

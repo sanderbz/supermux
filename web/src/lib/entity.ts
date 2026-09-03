@@ -1,13 +1,14 @@
 // The things a picker can offer, and where each of them goes (fase B3 T2.1).
 // ─────────────────────────────────────────────────────────────────────────────
-// PURE, IMPORT-FREE, ROUTER-FREE. It takes plain data and returns plain data —
+// PURE AND ROUTER-FREE, with ONE runtime import (`lib/agent-href`, itself pure
+// and import-free — better than a second copy of a route string here, the same
+// trade `workflow-href.ts` makes). It takes plain data and returns plain data —
 // the shape `components/session-schedules/schedule-href.ts` already proved for
 // one entity kind, generalised to nine rather than competed with. Three reasons
 // it has to stay that way:
 //
-//   1. The `bun test` runner resolves no `@/` aliases and mounts no DOM, and
-//      "where does an issue go" is exactly the kind of decision that should be
-//      assertable without either.
+//   1. The `bun test` runner mounts no DOM, and "where does an issue go" is
+//      exactly the kind of decision that should be assertable without one.
 //   2. The picker is a LAZY chunk that fetches nothing. A module that imported
 //      react-router would drag the router into it, and a module that imported
 //      the API client measurably hoists that client into a third chunk (+0.5 KB
@@ -25,9 +26,11 @@
 // presses Enter — a dead row that looks identical to a live one. Making the
 // three arms a discriminated union means `tsc` refuses it instead.
 
-// TYPE-ONLY. Erased at build, so this module still has no runtime import — the
-// point of the header comment above, and the reason a lucide icon can be named
-// here without lucide being on this file's import path.
+import { agentHref } from '@/lib/agent-href'
+
+// TYPE-ONLY. Erased at build, so react is not on this module's import path —
+// the point of the header comment above, and the reason a lucide icon can be
+// named here without lucide being on it either.
 import type { ComponentType, ReactNode } from 'react'
 
 /** An icon component, structurally — any lucide glyph satisfies it, and so does
@@ -110,12 +113,17 @@ export type EntityTarget = { to: string } | { run: () => void } | null
  * The destinations are deliberately written down in one place because three of
  * them are NOT stable and two are actively surprising:
  *
+ *   • A SESSION goes to its home THREAD (`lib/agent-href.ts`) — picking a bot
+ *     means talking to it. `/focus/<name>` stays the explicit terminal escape
+ *     hatch, one item down the row's own menu.
  *   • An ISSUE has no route. B2 removed the Board page and put issues where
  *     the work is — inside the session detail panel and the team card
  *     (`components/issues/issue-surface.tsx`, mounted at
  *     `focus-mode/session-info-panel.tsx:276` and `team/team-card.tsx:152`).
  *     So "go to this issue" means "go to the session that owns it", and the
- *     issue's own id is not addressable yet. When B2's successor gives it a
+ *     issue's own id is not addressable yet — and that panel is a FOCUS
+ *     surface, which is why an issue keeps `/focus/` while a session above no
+ *     longer does. When B2's successor gives it a
  *     surface, this function changes and the palette, the picker and the chip
  *     renderer all follow.
  *   • SCHEDULES and HOSTS have no routes either — B1 folded both into Settings
@@ -130,7 +138,7 @@ export function resolveEntityTarget(row: EntityRow): EntityTarget {
   const slug = row.slug
   switch (row.kind) {
     case 'session':
-      return { to: `/focus/${encodeURIComponent(slug)}` }
+      return { to: agentHref(slug) }
     case 'file':
       return { to: `/files?path=${encodeURIComponent(slug)}` }
     // An issue's address is the session that owns it (see above). `slug` is

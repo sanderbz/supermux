@@ -40,6 +40,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
+import { agentHref } from '../../lib/agent-href'
 
 import type { HarnessEvent } from '../../lib/api/harness'
 import { sessionsApi, type PermissionRequestInfo, type QuestionRequestInfo, type SessionMode } from '../../lib/api/sessions'
@@ -376,8 +377,11 @@ export function LiveLayer({
           request={session.connect_request}
           sessionName={name}
           // A supermux-brokered remote MCP (`mcp_oauth`) signs in from THIS
-          // card: same-tab hop to the provider, back to this chat.
-          oauthReturnTo={`/focus/${encodeURIComponent(name)}`}
+          // card: same-tab hop to the provider, back to this bot's THREAD.
+          // The return is a cold load carrying no router state — exactly what
+          // `/agent/<name>` exists for, and where the sibling entry point
+          // (`roster/granted-connectors`) already comes back to.
+          oauthReturnTo={agentHref(name)}
           onDismiss={() => void sessionsApi.dismissConnectRequest(name).catch(() => {})}
         />
       ) : session?.elicitation ? (

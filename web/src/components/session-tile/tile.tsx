@@ -47,7 +47,6 @@ import { isRowMenuKey, requestRowMenu } from './row-menu-bus'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import type { AttentionKind } from '@/components/chat/ui/roster-row'
 import { cn } from '@/lib/utils'
-import { agentHref } from '@/lib/agent-href'
 import { ActivityLine, BlockedBadge, ErrorBadge, UsageChip } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { ChatTailPreview } from './chat-tail-preview'
@@ -318,12 +317,16 @@ export function SessionTile({
       liveModeEnabled && fine && hoverPreview === 'live' && liveCapableEarly,
   })
 
-  // Opening a tile means "talk to this bot", so it goes to the bot's HOME
-  // thread (`lib/agent-href.ts`); the terminal stays one explicit menu item
-  // away. The name is encoded here — it never was, and a bot named with a
-  // slash or a space produced a URL that resolved to something else.
+  // ONE hop, on purpose. This tile renders only on the classic board, the skin
+  // where `/agent/<name>` is DEFINED to mean `/focus/<name>` (routes/overview),
+  // so going through the doorway would buy nothing and cost the signature
+  // morph: the doorway's `<Navigate>` fires from a passive effect, after the
+  // view transition has already captured its "new" state — the board again —
+  // so the tile morphs onto itself and the terminal hard-cuts in behind it.
+  // The name IS encoded now; it never was, and a bot named with a slash or a
+  // space produced a URL that resolved to something else.
   const goFocus = React.useCallback(
-    () => navigateMorph(agentHref(session.name)),
+    () => navigateMorph(`/focus/${encodeURIComponent(session.name)}`),
     [navigateMorph, session.name],
   )
 

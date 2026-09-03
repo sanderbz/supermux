@@ -663,7 +663,7 @@ export default function GrokRoster() {
   const isMember = useIsMember()
   const { sessions: allSessions, isLoading: sessionsLoading, isError: sessionsError } =
     useSessions()
-  const { teams } = useTeams()
+  const { teams, isLoading: teamsLoading } = useTeams()
   const attention = useAttentionContext()
   const openArchived = useArchivedSheet((s) => s.openSheet)
   const setNewSessionAction = useNewSessionAction((s) => s.setAction)
@@ -1167,17 +1167,35 @@ export default function GrokRoster() {
     // gets reported as deleted (the mistake `useCompanyScope` and the restore
     // each had to learn). An ERROR is "we don't know yet" too — the URL stays,
     // so a recovered fetch still resolves it.
-    if (sessionsLoading || sessionsError) return
+    //
+    // And wait for TEAMS, the second list the lead branch below reads: a lead is
+    // not in `sessions` (`splitTeamLeads` pulls it out), so latching a
+    // `{kind:'bot'}` selection against a teams list still in flight empties the
+    // pane the moment that list lands, and the latch means no second chance.
+    // Only its LOADING half: a failed teams fetch leaves `teams` empty, which is
+    // exactly the list the rail is rendering, so the bot branch is then right —
+    // waiting on the error instead would strand every deep link, leads or not,
+    // for as long as `/api/teams` is down.
+    if (sessionsLoading || sessionsError || teamsLoading) return
     agentLinkSeen.current = true
-    deepLinkSeen.current = true
     const target = resolveAgentDeepLink(agentParam, allSessions, activeCompany)
     if (target.kind === 'unknown') {
       // Land on home and SAY SO — a silent roster leaves the follower wondering
       // whether the link worked and they are looking at the wrong bot.
+      // `deepLinkSeen` stays DOWN: a dead link opens nothing, so there is no
+      // thread for it to protect, and raising it would cost the follower "open
+      // where I left off" as well — two losses for one broken link.
       toast({ message: TOAST.noSuchBot(agentParam), tone: 'error' })
       navigate('/', { replace: true })
       return
     }
+    // This link owns the launch. Say so in BOTH scopes: the ref the restore
+    // below reads on this mount, and the module-level claim that survives the
+    // phone's hop off this component — otherwise walking back to the roster
+    // boots a fresh mount that still counts as a cold start and throws the
+    // reader into yesterday's bot.
+    deepLinkSeen.current = true
+    void claimConversationRestore()
     // SCOPE FIRST. Switching the company re-homes the open pane (the
     // render-phase reconcile above), so a selection made before the switch would
     // be thrown away as out-of-scope in the very next render.
@@ -1200,7 +1218,7 @@ export default function GrokRoster() {
     setPaneView('thread')
     navigate('/', { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentParam, sessionsLoading, sessionsError, allSessions])
+  }, [agentParam, sessionsLoading, sessionsError, teamsLoading, allSessions])
 
   // A dismissed team has no pane left to show.
   const clearSelection = React.useCallback(() => setSelected(null), [])
@@ -1277,6 +1295,11 @@ export default function GrokRoster() {
   const [isColdStart] = React.useState(() => isColdStartMount(location.pathname))
   React.useEffect(() => {
     if (!isColdStart || conversationRestoreClaimed()) return
+    // HOLD while an unconsumed `/agent/<name>` is still on the URL. That effect
+    // waits for lists this one does not, so without this the restore could win
+    // the race and — on a phone, where it NAVIGATES — carry the reader off to
+    // yesterday's bot before the link they actually followed was ever read.
+    if (agentParam && !agentLinkSeen.current) return
     // Judge "that bot is gone" only against RESOLVED data. An empty list that
     // has not landed yet is not an empty roster — deciding against it is how a
     // perfectly live thread gets silently dropped (the same mistake the company
@@ -1320,6 +1343,7 @@ export default function GrokRoster() {
     setPaneView('thread')
   }, [
     activeCompany,
+    agentParam,
     channelExists,
     companiesError,
     companiesLoading,

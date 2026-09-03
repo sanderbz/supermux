@@ -144,9 +144,15 @@ export function Overview() {
   //
   // The board renders BEHIND the redirect deliberately. `<Navigate>` navigates
   // from an effect, so it commits one frame first — and a bare `<Navigate>`
-  // commits a BLANK one, in the middle of the tile's view-transition morph.
+  // commits a BLANK one, in the middle of a caller's view-transition.
   // Keeping the board there makes that frame identical to the page the click
   // came from.
+  //
+  // The board's own tile and row do NOT come through here: they hop straight to
+  // `/focus/<name>` in ONE navigation, because a redirect lands outside the view
+  // transition and costs them the tile→focus-header morph. This branch is for
+  // links arriving from ELSEWHERE — a push tap, a pasted URL, the palette — where
+  // there is no morph to lose.
   const { name: agentParam } = useParams<{ name: string }>()
   if (!grok && agentParam) {
     return (
