@@ -661,6 +661,10 @@ mod tests {
         ] {
             assert!(md.contains(ep), "template must wrap {ep}");
         }
+        // The PRE-APPROVED wrapper is what the doc teaches first — the raw curl
+        // is the fallback note at the end. `Bash(curl …)` is what the permission
+        // classifier stops an unattended bot on; `supermux-task` is allow-listed.
+        assert!(md.contains("supermux-task done"), "must teach the wrapper");
         // The two terminal actions are both shown.
         assert!(md.contains("\"status\":\"done\""), "must show the done curl");
         assert!(md.contains("\"question\""), "must show the needs-input curl");

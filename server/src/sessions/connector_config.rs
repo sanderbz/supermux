@@ -382,6 +382,38 @@ impl SessionConfig {
         );
     }
 
+    /// Pre-approve the four bot→app hook wrappers
+    /// (`supermux-{message,notify,task,schedule}`, installed by
+    /// [`crate::hook_cli::install_scripts`]) — the same deterministic-grant trade
+    /// the `supermux-memory` rules above make, for the same reason.
+    ///
+    /// Those capabilities used to be reachable only as `Bash(curl …)`, which the
+    /// auto-mode permission classifier reviews and regularly stops on; in an
+    /// unattended pane that dialog is never answered, so a bot's message to a
+    /// teammate simply never left. An explicit `allow` rule skips the classifier
+    /// entirely. It grants NO new authority: each wrapper POSTs the same body to
+    /// the same `/api/hook/*` route the skill's `curl` did, with the same
+    /// per-session hook token — which already authorized those routes — and the
+    /// server-side scope gates (own pane, own issue, same company) are untouched.
+    ///
+    /// BOTH prefix forms per wrapper, exactly as in `apply_memory`: which of
+    /// `Bash(cmd *)` / `Bash(cmd:*)` a given Claude Code build matches is not
+    /// something the server can know, and a duplicate allow entry is inert.
+    ///
+    /// Applied by `finish` to EVERY active launch (like the kill switch), not
+    /// only to memory bots: any session that gets the overlay also holds a hook
+    /// token, and these are exactly the calls it is expected to make.
+    fn apply_hook_cli_grants(&mut self) {
+        for name in crate::hook_cli::WRAPPERS {
+            for rule in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                let entry = Value::String(rule);
+                if !self.allow_rules.contains(&entry) {
+                    self.allow_rules.push(entry);
+                }
+            }
+        }
+    }
+
     /// Point the recall hook at this session's pre-rendered SessionStart
     /// capability briefing (fase C). The briefing text is built server-side (it
     /// needs the DB for the company + peer roster) and written to `path` by
@@ -435,7 +467,12 @@ impl SessionConfig {
                 .insert("enableAllProjectMcpServers".to_string(), Value::Bool(false));
         }
 
-        // Write the merged allow list once (connector globs + connect + memory).
+        // Every active launch may call the bot→app hooks, so their wrappers are
+        // pre-approved here — BEFORE the allow list is written below.
+        self.apply_hook_cli_grants();
+
+        // Write the merged allow list once (connector globs + connect + memory +
+        // the hook-CLI wrappers).
         if !self.allow_rules.is_empty() {
             let perms = self
                 .settings
@@ -448,6 +485,29 @@ impl SessionConfig {
 
         // Every active launch gets the kill switch, decoupled from grants.
         self.apply_account_connector_killswitch();
+
+        // CROSS-SESSION MESSAGES ARRIVE, they do not queue behind a dialog.
+        // Claude Code's cross-session messaging (`SendMessage` over a per-session
+        // socket, ≥ 2.1.224) decides per message from the two sessions'
+        // permission-mode CLASS whenever no `crossSessionInbound` value applies: a
+        // receiver that bypasses permissions HOLDS every message for approval
+        // unless the sender bypasses too, and a receiver in auto/manual mode holds
+        // messages from a bypassing sender. This fleet deliberately mixes modes
+        // (some bots launch `--permission-mode bypassPermissions`, most run the
+        // default auto), so bot→bot messages hit that heuristic and sat unanswered
+        // in an unattended pane. Setting it explicitly takes the guess away.
+        //
+        // It is not a permission bypass: `accept` decides only that the message is
+        // DELIVERED into the session. Whatever it then asks the receiver to do is
+        // still gated by that session's own permission rules — this overlay's
+        // `permissions.allow` included.
+        //
+        // `--settings` overrides the user-settings value, so a bot's `/config`
+        // row for this setting disappears while it runs. That is by design: the
+        // fleet's messaging behaviour is the server's call, not a per-pane one.
+        self.settings
+            .insert("crossSessionInbound".to_string(), Value::String("accept".to_string()));
+
         let settings_path = self.settings_dir.join(SETTINGS_FILE);
         write_json_atomic(&settings_path, &Value::Object(self.settings)).await?;
         // Layer the overlay OVER ~/.claude via --settings (Claude Code merges it),
@@ -1913,6 +1973,12 @@ mod tests {
         // unanswered permission prompt.
         assert!(allow.contains(&json!("Bash(supermux-memory *)")), "memory grant merged: {allow:?}");
         assert!(allow.contains(&json!("Bash(supermux-memory:*)")), "prefix-form grant merged: {allow:?}");
+        // …and so do the four bot→app hook wrappers, in both prefix forms.
+        for name in crate::hook_cli::WRAPPERS {
+            for form in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                assert!(allow.contains(&json!(form)), "{form} granted: {allow:?}");
+            }
+        }
         // Connector kill switch survives the memory merge.
         assert_eq!(v["disableClaudeAiConnectors"], json!(true));
         // Recall hooks fire on both context-injecting events.
@@ -1946,6 +2012,31 @@ mod tests {
         assert_eq!(fin.env.get("ENABLE_CLAUDEAI_MCP_SERVERS").map(String::as_str), Some("false"));
         let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
         assert_eq!(v["disableClaudeAiConnectors"], json!(true), "account-connector kill switch on");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// EVERY overlay says cross-session messages are accepted, and grants the four
+    /// hook wrappers — a connector-only bot (no memory) included. Without the
+    /// explicit `crossSessionInbound`, Claude Code falls back to comparing the two
+    /// sessions' permission-mode classes, and this fleet mixes them, so a
+    /// teammate's message sat waiting for an approval nobody was in the pane to
+    /// give. The wrapper grants are the same story one layer down (a `curl` the
+    /// classifier stops on).
+    #[tokio::test]
+    async fn every_overlay_accepts_cross_session_messages_and_grants_the_hook_wrappers() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "connector-only");
+        cfg.apply_connectors(&[resolved("github", None)]);
+        let fin = cfg.finish().await.unwrap().expect("active");
+        let overlay = settings_flag(&fin).expect("overlay rides --settings");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
+        assert_eq!(v["crossSessionInbound"], json!("accept"));
+        let allow = v["permissions"]["allow"].as_array().unwrap();
+        for name in crate::hook_cli::WRAPPERS {
+            for form in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                assert!(allow.contains(&json!(form)), "{form} granted: {allow:?}");
+            }
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -21,6 +21,7 @@ pub mod external_access;
 pub mod external_edit;
 pub mod extract;
 pub mod files;
+pub mod hook_cli;
 pub mod hooks;
 pub mod hosts;
 pub mod http;
