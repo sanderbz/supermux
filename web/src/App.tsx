@@ -326,6 +326,15 @@ export default function App() {
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />
+                {/* `/agent/:name` — the ADDRESS of a bot's home thread, and the
+                    canonical "open this agent" link everywhere in the app (see
+                    `lib/agent-href.ts`). It renders the SAME <Overview /> element
+                    as `/` on purpose: same component type at the same position in
+                    the tree, so React reconciles instead of remounting, and the
+                    roster keeps the selection it just made from the name while it
+                    replaces the URL with `/`. The shell treats the path as home
+                    too (layout.tsx). `/focus/:name` below stays the terminal. */}
+                <Route path="/agent/:name" element={<Overview />} />
                 {/* `/focus` (no `:name`) — the desktop SideNav Focus item
                     points here. Resolves to the last-active session, falling
                     back to the first live session, then overview. */}

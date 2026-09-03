@@ -79,6 +79,7 @@ import { useRendererState } from '@/components/chat/use-renderer-pref'
 import { prefFor, type RendererPref } from '@/components/chat/renderer-pref'
 import { onRowMenuRequest } from './row-menu-bus'
 import { sessionTitle, type ApiSession } from '@/lib/api'
+import { agentHref } from '@/lib/agent-href'
 import { useUI } from '@/stores/ui-store'
 
 // Lazy so the move-bot sheet (+ its CompanyPicker) never lands on the roster's
@@ -535,7 +536,7 @@ export function SessionActionsMenu({
         autoEditName={renameOpen}
         onNavigate={(name) => {
           setInfoOpen(false)
-          navigateMorph(`/focus/${name}`)
+          navigateMorph(agentHref(name))
         }}
       />
     </>

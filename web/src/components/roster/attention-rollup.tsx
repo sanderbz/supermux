@@ -22,7 +22,7 @@
  * So the whole cluster is now ONE control (`aria-haspopup="dialog"`) and its tap
  * opens `<AttentionPickerSheet>` — a proper list of EXACTLY the sessions counted
  * in "needs you: N", each row naming what it needs and routing to THAT session's
- * focus. The pile is the glance; the sheet is the choice. No tap is ever random.
+ * own thread. The pile is the glance; the sheet is the choice. No tap is ever random.
  *
  * Motion is B0's facepile morph (§11.9): the pile is a still cluster now (the
  * per-member hover-expand belonged to a per-member target that no longer
@@ -33,6 +33,7 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import { usePin } from '@/hooks/use-roster-marks'
 import { displayLabel } from '@/lib/api/sessions'
@@ -75,10 +76,12 @@ export interface RollupTarget {
  * `choice` and `attention` kinds are decided HERE, honestly, and both currently
  * navigate to the session with a hash the surface can adopt without a second
  * decision being made later. An unknown hash is inert, so this degrades to
- * "opens the session" rather than to a broken link.
+ * "opens the session" rather than to a broken link — which is exactly what the
+ * move to `/agent/<name>` (the bot's home thread) leans on: the hash still
+ * names a demand no surface answers yet, and still costs nothing.
  */
 export function rollupTarget(s: AttentionSession): RollupTarget {
-  const base = `/focus/${encodeURIComponent(s.name)}`
+  const base = agentHref(s.name)
   if (s.permission_request) return { kind: 'attention', href: `${base}#attention` }
   // An MCP server is holding this session open on a typed form.
   if (s.elicitation) return { kind: 'attention', href: `${base}#attention` }

@@ -8,6 +8,7 @@ import * as React from 'react'
 import { AlertTriangle, Loader2, Plus } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { agentHref } from '@/lib/agent-href'
 import {
   companyGrantKey,
   connectorAuthKind,
@@ -200,7 +201,7 @@ function ConnectorRow({
   const [busy, setBusy] = React.useState(false)
   const signInHere = () => {
     if (isMcpOauth) {
-      void actions.signIn(grant.connector_id, botName, `/focus/${encodeURIComponent(botName)}`)
+      void actions.signIn(grant.connector_id, botName, agentHref(botName))
     } else {
       onSignIn()
     }

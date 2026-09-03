@@ -121,16 +121,20 @@ describe('resolveEntityTarget is the one indirection', () => {
     expect(ran).toBe(true)
   })
 
-  test('a session goes to its focus route, encoded', () => {
+  test('a session goes to its home THREAD, encoded', () => {
+    // Picking a bot means "talk to it", so the row opens the thread; the
+    // terminal (`/focus/`) stays the explicit escape hatch off the row's menu.
     expect(
       resolveEntityTarget({ id: 's', kind: 'session', label: 'a', slug: 'my sess' }),
-    ).toEqual({ to: '/focus/my%20sess' })
+    ).toEqual({ to: '/agent/my%20sess' })
   })
 
   test('an ISSUE goes to the session that owns it — it has no route of its own', () => {
     // B2 removed the Board page and put issues inside session detail and the
-    // team card. If that ever changes, it changes HERE, and the palette, the
-    // picker and the chip renderer all follow.
+    // team card. That panel is a FOCUS surface, which is why this one keeps
+    // `/focus/` while a session row above no longer does — deliberate, not a
+    // half-finished rename. If that ever changes, it changes HERE, and the
+    // palette, the picker and the chip renderer all follow.
     expect(
       resolveEntityTarget({ id: 'i', kind: 'issue', label: 'bug', slug: 'patch' }),
     ).toEqual({ to: '/focus/patch' })

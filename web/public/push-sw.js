@@ -51,7 +51,7 @@
  * The old rule suppressed on any visible same-origin window, which meant a user
  * reading session A never heard that session B was blocked — and then dropped
  * the payload into a void, because no in-app listener existed. Both halves are
- * fixed: suppression is now scoped to the exact target, and the payload is
+ * fixed: suppression is now scoped to the exact BOT, and the payload is
  * always handed to open windows so the app can surface it in-app.
  *
  * Pure: takes the client list rather than reaching for `clients`, so it is
@@ -62,10 +62,21 @@
  * @returns {{show: boolean, reason: string}}
  */
 function decideDisplay(payload, windowClients) {
-  const target = pathOf(payload && payload.url)
+  const p = payload || {}
+  const target = pathOf(p.url)
+  // A session payload names ONE bot, and that bot has two addresses: the
+  // payload's `/agent/<name>` doorway and the `/focus/<name>` terminal a phone
+  // (and the classic skin) actually rests on — the doorway replaces itself the
+  // instant the roster consumes it, so nothing ever SITS at the payload's own
+  // path. Comparing paths therefore answers "no" to a reader staring at the very
+  // thread that is buzzing. Ask which BOT instead, and fall back to the path for
+  // the sessionless lanes (the scheduler's `PushPayload::simple`), where a
+  // client that names no session must never count as a match.
+  const session = typeof p.session === 'string' && p.session ? p.session : null
   const looking = (windowClients || []).some((c) => {
     if (!c || !c.url) return false
     if (c.focused !== true && c.visibilityState !== 'visible') return false
+    if (session) return sessionOf(c.url) === session
     return pathOf(c.url) === target
   })
   return looking
@@ -73,9 +84,25 @@ function decideDisplay(payload, windowClients) {
     : { show: true, reason: 'not-viewing' }
 }
 
+/** The session an `/agent/<name>` or `/focus/<name>` URL is about, else null.
+ *  The mirror of `push-bridge.ts::sessionFromPath` — duplicated for the same
+ *  reason `SESSION_TAG_PREFIX` is: no build step transforms this file, so it
+ *  cannot import. Goes through `pathOf` first, because a window client's url is
+ *  absolute. */
+function sessionOf(url) {
+  const m = /^\/(?:agent|focus)\/([^/?#]+)/.exec(pathOf(url))
+  if (!m) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    // A half-typed escape is not a name, but it still compares equal to itself.
+    return m[1]
+  }
+}
+
 /** Path component of a URL, absolute or relative, ignoring query + fragment.
- *  `/focus/x#pending` and `/focus/x` are the same PLACE — the fragment only
- *  tells the app where to scroll once it is there. */
+ *  A fragment only tells the app where to scroll once it is there, so
+ *  `/agent/x#anything` and `/agent/x` are the same PLACE. */
 function pathOf(url) {
   if (!url) return '/'
   try {
@@ -141,7 +168,14 @@ function applyBadge(count) {
 
 // Exposed for the unit tests (and harmless in production — the SW global is
 // not reachable from a page).
-self.__pushSw = { decideDisplay, notificationOptions, applyBadge, pathOf, staleSessionTags }
+self.__pushSw = {
+  decideDisplay,
+  notificationOptions,
+  applyBadge,
+  pathOf,
+  sessionOf,
+  staleSessionTags,
+}
 
 // ── push ─────────────────────────────────────────────────────────────────────
 self.addEventListener('push', (event) => {
@@ -187,7 +221,7 @@ self.addEventListener('push', (event) => {
 // ── notificationclick: focus an open tab or open the deep-link ───────────────
 //
 // On tap we focus an already-open supermux tab and navigate it to the target
-// (`/focus/<session>`, with `#pending` when something is waiting on an answer);
+// (`/agent/<session>`, the bot's thread — every tier lands on the same place);
 // if none is open we open a fresh window there. The whole slot for that session
 // is then cleared: after a tap, the lock screen and the app must agree.
 self.addEventListener('notificationclick', (event) => {

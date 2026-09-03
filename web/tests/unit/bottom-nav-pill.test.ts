@@ -116,6 +116,17 @@ describe('activeNavIndex — the one source of pill truth (== aria-current)', ()
     expect(at('/focus/session-a')).toBe(-1)
     expect(at('/team/acme')).toBe(-1)
   })
+
+  test('`/agent/<name>` parks under Home — it IS home, wearing an address', () => {
+    // The bot-thread doorway renders the same Overview element and is replaced
+    // with `/` once the roster consumes the name; the pill must not blink away
+    // to nowhere while that happens.
+    expect(at('/agent/session-a')).toBe(0)
+    expect(at('/agent/deploy%20fix')).toBe(0)
+    // …but the boundary still holds: `/agent` alone is not the doorway.
+    expect(at('/agent')).toBe(-1)
+    expect(at('/agents/x')).toBe(-1)
+  })
 })
 
 describe('the strand — and its fix', () => {

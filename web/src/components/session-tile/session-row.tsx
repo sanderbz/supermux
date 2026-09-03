@@ -102,8 +102,11 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   const showAttention: boolean | AttentionKind =
     attention === true ? 'needs' : attention === false ? false : (rowAttention.dotKind ?? false)
 
+  // Same one-hop address the tile opens, and for the same reason: this row is
+  // classic-board-only, and routing an in-skin click through `/agent/<name>`
+  // would trade the tile→focus morph for a redirect. Name-encoded now.
   const goFocus = React.useCallback(
-    () => navigateMorph(`/focus/${session.name}`),
+    () => navigateMorph(`/focus/${encodeURIComponent(session.name)}`),
     [navigateMorph, session.name],
   )
 

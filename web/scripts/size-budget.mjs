@@ -1375,8 +1375,37 @@ const BUDGET_ENTRY_JS = 164 * KB
 // the hero path.
 // This counter's documented policy is measured x 1.02, NOT ceil(measured) — see
 // the 2026-08-17 note above: 466.07 x 1.02 = 475.4 -> 476.
-const BUDGET_APP_JS = 476 * KB// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
-// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
+//
+// RATCHETED 476 -> 478 by the agent deep link (rebased onto the uploads ratchet) (`feat/agent-deep-link`). The
+// envelope is the real story again — 462 was itself a x1.02 bump, and the
+// branch parent had spent nearly all of it:
+//
+//   parent 8caae253, built the same way   461.52 KB  <- 0.48 KB of headroom
+//   this branch                           462.49 KB  <- +0.97 KB
+//
+// What the +1.01 KB buys: a bot's home thread had NO URL, so nothing could link
+// to it and every "open this agent" link — including every push notification —
+// landed in the full-screen terminal, in whatever company scope you happened to
+// be browsing. `lib/agent-href.ts` is that address (`/agent/<name>`), its
+// resolver, and the roster effect that consumes it once and switches the scope.
+// It is its own 0.21 KB chunk, imported by ten LAZY chunks; `grok-roster`
+// carries the consume-once effect and its unknown-name toast (9.46 KB), and the
+// rest is content-hash churn spread over the chunks those two touch.
+//
+// The gate that actually guards first paint is UNMOVED in substance and green:
+// 161.19 / 164 KB, +0.19 KB of import-map churn from re-rolling those hashes —
+// nothing here lands on the cold path.
+//
+// 462.49 x 1.02 = 471.7 -> 471. Deliberately NOT ceil(measured) = 463: the
+// v0.6.1 note above records that exact mistake and its correction, because a
+// sub-KB ceiling on a gate every web PR shares red-lights the NEXT author with
+// a failure that says nothing about their branch — which is precisely what
+// happened to this one.
+// Re-measured after the rebase onto the uploads ratchet (oauth return + uploads
+// + this branch, one build on this box): 468.78 KB. Policy: 468.78 x 1.02 =
+// 478.2 -> 478.
+const BUDGET_APP_JS = 478 * KB
+// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:
 //   +0.91 KB  `browser` (15.25 → 16.16), the lazily-imported workspace route.

@@ -215,7 +215,7 @@ describe('runs are grouped by day and legible at a glance', () => {
     const html = render(
       <RunTimeline runs={RUNS} steps={STEPS} session="scout" expandAll />,
     )
-    expect(html).toContain('/focus/scout')
+    expect(html).toContain('/agent/scout')
     expect(html).toContain('Open the thread here')
     // …and the expanded node shows the plain delivered line and how it ended.
     expect(html).toContain('Draft the summary of this week')

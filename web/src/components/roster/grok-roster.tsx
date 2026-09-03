@@ -26,7 +26,7 @@
  * the working-only breathe all come from `<SessionFace>` (WS4) for free.
  */
 import * as React from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -108,6 +108,8 @@ import { MemberAvatar } from '@/components/roster/member-avatar'
 import { useIsMember } from '@/stores/viewer-store'
 import { useUpdateBadge } from '@/hooks/use-update-badge'
 import { agentHueVars } from '@/lib/grok-agent-hue'
+import { resolveAgentDeepLink } from '@/lib/agent-href'
+import { TOAST } from '@/brand/copy'
 import { characterFromSeed } from '@/brand/marks'
 import { useTheme } from '@/components/theme-provider'
 
@@ -661,7 +663,7 @@ export default function GrokRoster() {
   const isMember = useIsMember()
   const { sessions: allSessions, isLoading: sessionsLoading, isError: sessionsError } =
     useSessions()
-  const { teams } = useTeams()
+  const { teams, isLoading: teamsLoading } = useTeams()
   const attention = useAttentionContext()
   const openArchived = useArchivedSheet((s) => s.openSheet)
   const setNewSessionAction = useNewSessionAction((s) => s.setAction)
@@ -1131,6 +1133,93 @@ export default function GrokRoster() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deepLinkChannel])
 
+  // ── `/agent/<name>` — a BOT'S THREAD, addressed ────────────────────────────
+  // The same doorway shape as the channel link above, for the same reason: a
+  // link has to be able to name a conversation. The bot's name arrives as a
+  // ROUTE param (`lib/agent-href.ts`) rather than router state, because this one
+  // must survive a cold load from a push notification, an OAuth return or a
+  // pasted URL — none of which carry state.
+  //
+  // Read AS-IS: react-router already decoded the param, and decoding a second
+  // time would corrupt a bot whose name contains a literal `%`.
+  //
+  // Consumed ONCE per visit, latched on its own ref: the effect keeps running as
+  // the queries resolve, and it must act exactly once. The latch CLEARS when the
+  // param goes away (the replace below), so following a second link — even to
+  // the same bot — works; it is a per-visit guard, not a per-page-load one.
+  //
+  // It also raises `deepLinkSeen`, the flag the restore below reads as "an
+  // explicit link owns this surface", so the persisted conversation cannot
+  // overwrite the very thread the user just followed. This effect is declared
+  // BEFORE the restore, so on the commit where the queries resolve it latches
+  // first.
+  const { toast } = useToast()
+  const { name: agentParam } = useParams<{ name: string }>()
+  const agentLinkSeen = React.useRef(false)
+  React.useEffect(() => {
+    if (!agentParam) {
+      agentLinkSeen.current = false
+      return
+    }
+    if (agentLinkSeen.current) return
+    // WAIT for the roster. An empty list that has not landed yet is not an empty
+    // roster, and "that bot is gone" decided against it is how a live thread
+    // gets reported as deleted (the mistake `useCompanyScope` and the restore
+    // each had to learn). An ERROR is "we don't know yet" too — the URL stays,
+    // so a recovered fetch still resolves it.
+    //
+    // And wait for TEAMS, the second list the lead branch below reads: a lead is
+    // not in `sessions` (`splitTeamLeads` pulls it out), so latching a
+    // `{kind:'bot'}` selection against a teams list still in flight empties the
+    // pane the moment that list lands, and the latch means no second chance.
+    // Only its LOADING half: a failed teams fetch leaves `teams` empty, which is
+    // exactly the list the rail is rendering, so the bot branch is then right —
+    // waiting on the error instead would strand every deep link, leads or not,
+    // for as long as `/api/teams` is down.
+    if (sessionsLoading || sessionsError || teamsLoading) return
+    agentLinkSeen.current = true
+    const target = resolveAgentDeepLink(agentParam, allSessions, activeCompany)
+    if (target.kind === 'unknown') {
+      // Land on home and SAY SO — a silent roster leaves the follower wondering
+      // whether the link worked and they are looking at the wrong bot.
+      // `deepLinkSeen` stays DOWN: a dead link opens nothing, so there is no
+      // thread for it to protect, and raising it would cost the follower "open
+      // where I left off" as well — two losses for one broken link.
+      toast({ message: TOAST.noSuchBot(agentParam), tone: 'error' })
+      navigate('/', { replace: true })
+      return
+    }
+    // This link owns the launch. Say so in BOTH scopes: the ref the restore
+    // below reads on this mount, and the module-level claim that survives the
+    // phone's hop off this component — otherwise walking back to the roster
+    // boots a fresh mount that still counts as a cold start and throws the
+    // reader into yesterday's bot.
+    deepLinkSeen.current = true
+    void claimConversationRestore()
+    // SCOPE FIRST. Switching the company re-homes the open pane (the
+    // render-phase reconcile above), so a selection made before the switch would
+    // be thrown away as out-of-scope in the very next render.
+    if (target.kind === 'switch') setActiveCompany(target.company)
+    if (isPhone) {
+      // The phone has NO pane (`.gr-pane` is `display:none` under 768px) — its
+      // thread surface is the focus route, which renders the chat for a
+      // chat-eligible bot. Same hop a row tap makes; `replace` so the consumed
+      // doorway leaves no history entry to walk back into.
+      navigate(`/focus/${encodeURIComponent(target.name)}`, { replace: true })
+      return
+    }
+    // A TEAM LEAD is not in `sessions` (`splitTeamLeads` pulls leads out so a
+    // lead never renders twice) and the pane reaches its thread through the
+    // TEAM, so a `{kind:'bot'}` selection for a lead would resolve to nothing.
+    const team = teams.find((t) => t.lead_supermux_session === target.name)
+    setSelected(
+      team ? { kind: 'team', team: team.team_name } : { kind: 'bot', name: target.name },
+    )
+    setPaneView('thread')
+    navigate('/', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentParam, sessionsLoading, sessionsError, teamsLoading, allSessions])
+
   // A dismissed team has no pane left to show.
   const clearSelection = React.useCallback(() => setSelected(null), [])
   // DESKTOP: the pane swaps in place — no /focus hop, no second shell. The rail
@@ -1206,6 +1295,11 @@ export default function GrokRoster() {
   const [isColdStart] = React.useState(() => isColdStartMount(location.pathname))
   React.useEffect(() => {
     if (!isColdStart || conversationRestoreClaimed()) return
+    // HOLD while an unconsumed `/agent/<name>` is still on the URL. That effect
+    // waits for lists this one does not, so without this the restore could win
+    // the race and — on a phone, where it NAVIGATES — carry the reader off to
+    // yesterday's bot before the link they actually followed was ever read.
+    if (agentParam && !agentLinkSeen.current) return
     // Judge "that bot is gone" only against RESOLVED data. An empty list that
     // has not landed yet is not an empty roster — deciding against it is how a
     // perfectly live thread gets silently dropped (the same mistake the company
@@ -1249,6 +1343,7 @@ export default function GrokRoster() {
     setPaneView('thread')
   }, [
     activeCompany,
+    agentParam,
     channelExists,
     companiesError,
     companiesLoading,

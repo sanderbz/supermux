@@ -329,10 +329,12 @@ app-JS budget had 0.21 KB of headroom when this landed.
    live one, so the compiler is the only place to catch it.
 
 **Where a row goes** is `resolveEntityTarget`'s decision, in one function, for
-every consumer. Three of its answers are not obvious: an **issue** has no route
-(B2 put issues inside session detail and the team card, so it navigates to the
-session that owns it), and **schedules** and **hosts** are Settings anchors
-because B1 folded both routes away.
+every consumer. Four of its answers are not obvious: a **session** goes to its
+home thread (`/agent/<name>`) because picking a bot means talking to it, while
+an **issue** — which has no route of its own, since B2 put issues inside session
+detail and the team card — navigates to `/focus/` on the session that owns it,
+because that panel is a focus surface. **Schedules** and **hosts** are Settings
+anchors because B1 folded both routes away.
 
 **Bench**: `/dev/pickers` (DEV-only, lazy) — both anchors × all nine kinds ×
 `{desktop, phone}` × empty/loading/40-row-overflow, in both themes. Contracts

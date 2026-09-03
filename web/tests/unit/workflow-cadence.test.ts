@@ -147,6 +147,8 @@ describe('every route lives in one module', () => {
   })
 
   test('"open the thread" goes to the BOT’s pane — a run has no surface of its own', () => {
-    expect(botThreadHref('scout')).toBe('/focus/scout')
+    // The pane is on HOME, so the link is the home address, not the terminal.
+    expect(botThreadHref('scout')).toBe('/agent/scout')
+    expect(botThreadHref('a/b')).toBe('/agent/a%2Fb')
   })
 })
