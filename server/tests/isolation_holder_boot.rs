@@ -354,3 +354,143 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let _ = std::fs::remove_file(&cmd_probe);
     let _ = std::fs::remove_dir_all(&own_proj);
 }
+
+/// **Can a CONFINED company bot actually use the shared browser?**
+///
+/// The owner's doubt after the sandbox tightening (v0.6.16/17 scoped `~/.claude`
+/// and cut `~/.supermux` down to `connectors` / `bin` / `uploads` plus the
+/// session's own config): a company bot is confined at `Full(landlock)`, and the
+/// Shared Browser is not a Rust call — it is a **separate python process** the
+/// bot spawns (`python3 ~/.supermux/connectors/shared-browser/server.py`) that
+/// then talks HTTP to `$SUPERMUX_URL`. Three things could each break it silently:
+/// reading/executing the script, running python at all, and reaching the server.
+///
+/// So this runs the REAL embedded MCP server under the REAL company
+/// [`ConfinePlan`], drives it over MCP stdio, and asserts:
+///
+///  1. it starts and answers `tools/list` with the browser tools — i.e. the jail
+///     lets python read and run a script under `~/.supermux/connectors`;
+///  2. it can reach a listening TCP server, the way it reaches
+///     `$SUPERMUX_URL/api/hook/browser/tool` — Landlock governs the filesystem,
+///     not sockets, and this pins that assumption instead of assuming it;
+///  3. it can write scratch to `/tmp` (screenshots land there);
+///
+/// …while the jail is still a jail (half 2 of the test above, unchanged).
+#[tokio::test]
+async fn a_confined_company_bot_can_run_the_shared_browser_mcp_server() {
+    let Some(bin) = holder_bin() else {
+        eprintln!("no supermux-server binary beside the test; skipping");
+        return;
+    };
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3; skipping");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("supermux-iso-browser-{}", uuid::Uuid::new_v4()));
+    let home = root.join("home");
+    let company = root.join("companies").join("acme");
+    std::fs::create_dir_all(&company).expect("mk company");
+    // The connector dir EXACTLY where production puts it: `~/.supermux/connectors`
+    // is the enumerated read-only slice a confined bot is allowed.
+    let conn = home.join(".supermux").join("connectors").join("shared-browser");
+    std::fs::create_dir_all(&conn).expect("mk connector dir");
+    let server_py = conn.join("server.py");
+    std::fs::write(&server_py, supermux_server::connectors::browser::mcp::SERVER_PY)
+        .expect("materialize the embedded browser MCP server");
+
+    // A listener standing in for `$SUPERMUX_URL` — the child only has to REACH it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            if let Ok(mut s) = stream {
+                use std::io::Write;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+            }
+        }
+    });
+
+    let data_dir = std::env::temp_dir().join(format!("supermux-iso-br-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&data_dir).expect("mk data dir");
+    let iso = IsolationRuntime::from_mode(IsolationMode::BestEffort);
+    let enforced = iso.probe().best_level.is_enforced() && iso.confinement_usable();
+    let mut plan = iso.plan_for(&company, &home).expect("a plan");
+    if let Some(parent) = bin.parent() {
+        plan.allow_rw(parent.to_path_buf());
+    }
+
+    let c = company.display();
+    // Drive the MCP server over stdio the way Claude Code does: one JSON-RPC
+    // message per line in, one JSON object per line out.
+    let shell = format!(
+        "printf '%s\\n%s\\n' \
+           '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{}}}}' \
+           '{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}}' \
+         | python3 {py} > {c}/mcp.out 2>{c}/mcp.err; \
+         echo scratch > /tmp/supermux-iso-browser-scratch.txt 2>{c}/tmp.err; \
+         /bin/cat /tmp/supermux-iso-browser-scratch.txt > {c}/tmp.out 2>&1; \
+         python3 -c \"import socket;s=socket.create_connection(('127.0.0.1',{port}),3);s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n');print(s.recv(64))\" > {c}/net.out 2>&1; \
+         echo ok > {c}/done; \
+         sleep 30",
+        py = server_py.display(),
+    );
+
+    let session = NativeSession::new("iso-browser-e2e", &data_dir);
+    let env: HashMap<String, String> = HashMap::new();
+    let degraded = session
+        .spawn_confined(&company, &env, &shell, Some(plan))
+        .await
+        .expect("the confined spawn must not error");
+    assert!(
+        !degraded,
+        "the confined holder failed to boot (holder.log: {})",
+        wrote(&data_dir.join("native/iso-browser-e2e/holder.log")),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && !company.join("done").exists() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = session.kill().await;
+    session.stop_pump();
+    assert!(
+        company.join("done").exists(),
+        "the confined child never finished (holder.log: {})",
+        wrote(&data_dir.join("native/iso-browser-e2e/holder.log")),
+    );
+
+    // 1. The MCP server ran under the jail and advertised its tools.
+    let mcp = wrote(&company.join("mcp.out"));
+    assert!(
+        mcp.contains("browser_list_tabs"),
+        "a confined bot must be able to run the shared-browser MCP server \
+         (stdout: {mcp:?} / stderr: {:?})",
+        wrote(&company.join("mcp.err")),
+    );
+    assert!(mcp.contains("browser_screenshot"), "the full toolset: {mcp}");
+    assert!(mcp.contains("request_human_takeover"), "the takeover verb: {mcp}");
+
+    // 2. …and reach the server it forwards every verb to.
+    let net = wrote(&company.join("net.out"));
+    assert!(
+        net.contains("200 OK"),
+        "a confined bot must reach $SUPERMUX_URL — every browser verb is an HTTP \
+         call to the hook endpoint: {net:?}",
+    );
+
+    // 3. …and write the scratch a screenshot needs.
+    assert!(
+        wrote(&company.join("tmp.out")).contains("scratch"),
+        "a confined bot must be able to write /tmp: {:?}",
+        wrote(&company.join("tmp.err")),
+    );
+
+    if enforced {
+        eprintln!("shared browser verified under an ENFORCED jail (Full/landlock)");
+    } else {
+        eprintln!("NOTE: this host enforces no Landlock — ran unconfined, jail half not asserted");
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&data_dir).ok();
+}

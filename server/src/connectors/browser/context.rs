@@ -96,6 +96,87 @@ const NAV_READ_BUDGET: Duration = Duration::from_secs(5);
 /// anything larger is dropped rather than relayed.
 const MAX_FAVICON_BYTES: usize = 96 * 1024;
 
+/// **The no-passkeys shim**, injected into every frame before any page script.
+///
+/// See [`AgentContext::disable_passkeys`] for WHY. In one line: a CDP-driven
+/// Chrome on a server has no platform authenticator, so a WebAuthn ceremony
+/// never resolves and the sign-in hangs for the agent AND for the human on
+/// takeover. This makes the browser answer honestly (`false` to both
+/// availability probes, so providers offer the password path) and fail fast
+/// (`NotAllowedError` — the same error a user cancelling the OS prompt raises,
+/// which every provider already handles) if a ceremony starts anyway.
+///
+/// Defensive by construction: the whole body is wrapped so that a browser
+/// missing any of these APIs is left untouched rather than throwing into the
+/// page, and a `get()` with no `publicKey` (password / federated / OTP autofill)
+/// is delegated to the real implementation.
+const NO_PASSKEYS_JS: &str = r#"
+(() => {
+  const define = (obj, name, value) => {
+    try {
+      Object.defineProperty(obj, name, {
+        value, writable: true, configurable: true, enumerable: false,
+      });
+      return true;
+    } catch (e) { return false; }
+  };
+  try {
+    const deny = () => Promise.reject(
+      new DOMException(
+        'This browser has no authenticator available. Use a password or a verification code instead.',
+        'NotAllowedError',
+      ),
+    );
+    if (window.PublicKeyCredential) {
+      // Feature detection FIRST: a provider that asks gets the honest `false`
+      // and offers the password path, so the ceremony never begins.
+      define(PublicKeyCredential, 'isUserVerifyingPlatformAuthenticatorAvailable',
+        () => Promise.resolve(false));
+      define(PublicKeyCredential, 'isConditionalMediationAvailable',
+        () => Promise.resolve(false));
+      define(PublicKeyCredential, 'isPasskeyPlatformAuthenticatorAvailable',
+        () => Promise.resolve(false));
+    }
+    const creds = navigator.credentials;
+    if (creds) {
+      // Bind through the PROTOTYPE, not the instance: `navigator.credentials`
+      // may hand back a fresh wrapper, and an own-property assignment on one
+      // instance would then not be the object the page calls.
+      const proto = Object.getPrototypeOf(creds) || creds;
+      const realGet = proto.get && proto.get.bind(creds);
+      const realCreate = proto.create && proto.create.bind(creds);
+      // Only WebAuthn is refused. A password / federated / OTP request carries no
+      // `publicKey` and must keep working, or we would break ordinary autofill.
+      const guard = (real) => {
+        const fn = function (options) {
+          if (options && options.publicKey) return deny();
+          return real ? real(options) : deny();
+        };
+        // A tag the integration test reads: "the browser refused" and "WE
+        // refused" must never be confusable, and on an origin where Chrome
+        // refuses WebAuthn on its own they look identical without this.
+        fn.__supermuxNoPasskeys = true;
+        return fn;
+      };
+      for (const target of [proto, creds]) {
+        define(target, 'get', guard(realGet));
+        define(target, 'create', guard(realCreate));
+      }
+    }
+    // A marker the integration test reads, so "the shim is installed" and "the
+    // browser happens to behave" can never be confused for one another.
+    define(window, '__supermuxNoPasskeys', {
+      creds: !!navigator.credentials,
+      getIsShim: !!(navigator.credentials
+        && navigator.credentials.get
+        && navigator.credentials.get.__supermuxNoPasskeys),
+    });
+  } catch (e) {
+    define(window, '__supermuxNoPasskeys', {error: String(e && e.message)});
+  }
+})();
+"#;
+
 /// Events that mean **the page moved**, for the bounded wait after a history
 /// step. `Page.loadEventFired` is the strong signal, but a back/forward restored
 /// from Chrome's back-forward cache never fires it — the document was never
@@ -898,11 +979,87 @@ impl AgentContext {
         // Domains we need events + evaluation from.
         me.session_call("Page.enable", json!({})).await?;
         me.session_call("Runtime.enable", json!({})).await?;
+        // Passkeys are a dead end in this browser — say so at the API, once, for
+        // every frame, before any page script runs. See [`NO_PASSKEYS_JS`].
+        me.disable_passkeys().await;
         // `--window-size` is a browser-wide default; the viewport is per-target
         // (gotcha #11), so pin it here.
         me.session_call("Emulation.setDeviceMetricsOverride", me.metrics.cdp_params())
             .await?;
+        // …and only NOW go where the caller asked, so the real document is the
+        // first one the page-setup script above has ever covered.
         Ok(me)
+    }
+
+    /// **Turn the passkey ceremony off at the API** for every frame of this page.
+    ///
+    /// Measured: a Google sign-in in the shared browser reaches *"Verifying it's
+    /// you — complete sign-in using your passkey"* and **hangs there forever**.
+    /// A WebAuthn ceremony needs a platform authenticator (Touch ID, Windows
+    /// Hello, a phone) that a headless-shell-less, CDP-driven Chrome on a server
+    /// simply does not have; `navigator.credentials.get()` returns a promise
+    /// nobody will ever settle. The page blocks, "Try another way" is dead, and
+    /// it is dead for the HUMAN on takeover too — so the tab cannot be signed in
+    /// at all, by anyone, which is the worst failure mode a shared browser has.
+    ///
+    /// The fix is to stop pretending. Two halves, both needed:
+    ///
+    ///   * **advertise no authenticator** — `isUserVerifyingPlatformAuthenticator\
+    ///     Available()` and `isConditionalMediationAvailable()` resolve `false`,
+    ///     which is the honest answer and is what providers feature-detect on.
+    ///     Google reads it and offers the password path INSTEAD of a passkey, so
+    ///     the good case is that the ceremony never starts;
+    ///   * **fail fast if one starts anyway** — `credentials.get`/`create` reject
+    ///     with a `NotAllowedError` `DOMException`, the exact error a real user
+    ///     cancelling the OS prompt produces. Every provider already has a
+    ///     fallback path for it, so the page degrades to password/code in
+    ///     milliseconds instead of hanging.
+    ///
+    /// `NotAllowedError` is chosen deliberately over throwing something novel: a
+    /// bespoke error is an unhandled rejection on the site's happy path, and an
+    /// unhandled rejection hangs the flow just as thoroughly as the promise did.
+    ///
+    /// Non-WebAuthn credentials still work — the shim delegates any `get()` that
+    /// carries no `publicKey` (password / federated / OTP) to the real
+    /// implementation, so autofill and one-tap sign-ins are untouched.
+    ///
+    /// `Page.addScriptToEvaluateOnNewDocument` runs it before ANY page script in
+    /// every frame including cross-origin iframes (the IdP is usually one), which
+    /// is why this is not an `evaluate` after navigation. Best-effort: a Chrome
+    /// that rejects the command leaves the page exactly as it is today, so this
+    /// can never fail a launch.
+    async fn disable_passkeys(&self) {
+        // Registered for every document this page loads FROM NOW ON, in every
+        // frame including the cross-origin iframe an IdP usually lives in.
+        if let Err(e) = self
+            .session_call(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": NO_PASSKEYS_JS }),
+            )
+            .await
+        {
+            tracing::warn!(
+                session = %self.session,
+                error = %e,
+                "browser: could not disable passkeys on this page; a WebAuthn prompt may hang"
+            );
+        }
+        // …and once, now, for the document the target was CREATED with.
+        // `Target.createTarget {url}` starts loading before we can attach, so the
+        // very first document is the one the registration above cannot reach
+        // (measured: the probe page reported no shim at all and
+        // `credentials.get()` hung). Opening the target blank and navigating
+        // afterwards would close that gap perfectly, but it pushes a history
+        // entry the human sees as a live Back button on a fresh tab, and
+        // resetting it races the commit — so this is the honest trade: the first
+        // document is covered best-effort here, every navigation after it is
+        // covered unconditionally above, and a sign-in flow is always the latter.
+        let _ = self
+            .session_call(
+                "Runtime.evaluate",
+                json!({ "expression": NO_PASSKEYS_JS, "returnByValue": true }),
+            )
+            .await;
     }
 
     // ── identity ────────────────────────────────────────────────────────────
@@ -1953,6 +2110,32 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// The no-passkeys shim, pinned as source. The behaviour is proven against a
+    /// real chrome in `api::tests::real_chrome_passkeys_fail_fast_…`; this is the
+    /// cheap guard that the contract's load-bearing pieces cannot be edited away.
+    #[test]
+    fn the_no_passkeys_shim_denies_webauthn_and_spares_everything_else() {
+        // `NotAllowedError` specifically: it is what a human cancelling the OS
+        // prompt raises, so every provider already has a fallback for it. A
+        // bespoke error would be an unhandled rejection — which hangs the flow
+        // just as thoroughly as the promise this replaces.
+        assert!(NO_PASSKEYS_JS.contains("'NotAllowedError'"));
+        // Feature detection answers honestly, so the good case is that the
+        // ceremony never starts and the provider offers the password path.
+        assert!(NO_PASSKEYS_JS.contains("isUserVerifyingPlatformAuthenticatorAvailable"));
+        assert!(NO_PASSKEYS_JS.contains("isConditionalMediationAvailable"));
+        // Only WebAuthn is refused: a get()/create() with no `publicKey` is
+        // password / federated / OTP autofill and must still reach the real impl.
+        assert!(NO_PASSKEYS_JS.contains("options.publicKey"));
+        assert!(NO_PASSKEYS_JS.contains("real(options)"), "non-WebAuthn calls reach the real impl");
+        assert!(NO_PASSKEYS_JS.contains("proto.get.bind(creds)"));
+        assert!(NO_PASSKEYS_JS.contains("proto.create.bind(creds)"));
+        // The tag the real-chrome test uses to tell OUR refusal from Chrome's.
+        assert!(NO_PASSKEYS_JS.contains("fn.__supermuxNoPasskeys = true"));
+        // Never throw into the page.
+        assert!(NO_PASSKEYS_JS.contains("catch (e)"));
     }
 
     #[test]

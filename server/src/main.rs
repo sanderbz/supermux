@@ -241,6 +241,12 @@ async fn main() -> anyhow::Result<()> {
     // Seeding the row starts NO browser: chrome is spawned lazily, and only by a
     // granted session's first tool call.
     connectors::browser::mcp::seed(&state).await;
+    // …and, once, every bot the human has ALREADY lent a tab gets the connector
+    // grant that wires its `browser_*` tools. Lending does this at grant time
+    // now; this is for the rows written before it did, whose bots are the ones
+    // sitting in the broken state (a tab in the DB, no browser tools in their
+    // launch). Idempotent — a steady-state boot writes nothing.
+    connectors::browser::mcp::backfill_tab_grants(&state).await;
     // The built-in Company Group Chat connector card (kind `builtin_groupchat`).
     // Seeding the row grants nothing: a bot reaches the channel only through its
     // company's `@company:<id>` grant, written when group chat is enabled.

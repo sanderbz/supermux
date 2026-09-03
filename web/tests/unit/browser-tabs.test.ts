@@ -28,6 +28,7 @@ import {
   displayUrl,
   grantCandidates,
   mayGrantAll,
+  tabGrantNeedsRestart,
   deleteTab,
   granteeLabel,
   grantTab,
@@ -43,6 +44,7 @@ import {
   tabHost,
   tabState,
   type BrowserTab,
+  type TabGrant,
 } from '../../src/lib/api/browser'
 import {
   TakeoverSocket,
@@ -557,5 +559,61 @@ describe('company containment shapes the OPTIONS, not just the outcome', () => {
     expect(src).toContain('companyOverride={company}')
     expect(src).toContain('allowAll={mayGrantAll(tab)}')
     expect(src).toContain('grantCandidates')
+  })
+})
+
+/* ── lent ≠ usable ───────────────────────────────────────────────────────────
+ *
+ * The bug this section pins, measured live: the human lent a bot a tab, the bot
+ * had no `browser_*` tools at all, and — with nothing on this surface saying so
+ * — it improvised, then told its owner it had sent him a connect card that did
+ * not exist. Lending a tab now grants the Shared Browser connector with it, but
+ * a connector reaches a bot's toolset only at LAUNCH. So there is a real,
+ * temporary in-between state, and the workspace has to name it rather than draw
+ * a lend that silently does nothing.
+ */
+describe('a tab grant that has not reached the running bot yet', () => {
+  const g = (over: Partial<TabGrant> = {}): TabGrant => ({
+    tab_id: 'tb_a',
+    grantee: 'folderwijzer',
+    enabled: 1,
+    granted_at: 10,
+    ...over,
+  })
+
+  test('a grant made while the bot is running needs a restart', () => {
+    expect(tabGrantNeedsRestart(g({ applied: false, running: true }))).toBe(true)
+  })
+
+  test('a bot that has restarted since is done — no nag', () => {
+    expect(tabGrantNeedsRestart(g({ applied: true, running: true }))).toBe(false)
+  })
+
+  test('a STOPPED bot is not asked to restart — it binds on its next start', () => {
+    // Drawing "Restart to apply" over a stopped bot is a button with nothing to
+    // press: the grant is already waiting for the launch that has to happen anyway.
+    expect(tabGrantNeedsRestart(g({ applied: false, running: false }))).toBe(false)
+  })
+
+  test('a `*` / company sentinel names no process, so it claims nothing', () => {
+    // The server omits both fields for a sentinel (no one launch to compare
+    // against). `undefined` must read as "no claim", never as "not applied".
+    expect(tabGrantNeedsRestart(g({ grantee: '*' }))).toBe(false)
+    expect(tabGrantNeedsRestart(g({ grantee: '@company:4' }))).toBe(false)
+  })
+
+  test('a switched-off grant is not a pending one', () => {
+    expect(tabGrantNeedsRestart(g({ enabled: 0, applied: false, running: true }))).toBe(false)
+  })
+
+  test('the sheet says it in words AND gives the one tap that fixes it', () => {
+    const src = readFileSync(
+      new URL('../../src/components/browser/tab-grant-sheet.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(src).toContain('tabGrantNeedsRestart(g)')
+    // Reuses the store's existing restart rung rather than growing a second one.
+    expect(src).toContain('<RestartToApply name={g.grantee} />')
+    expect(src).toContain('running without the browser tools')
   })
 })

@@ -935,7 +935,7 @@ pub(crate) fn grant_applied(last_started: i64, granted_at: i64, sealed_at: i64) 
 
 /// `(last_started, running)` for a session name; a sentinel (`*`/`@company:`) or
 /// a missing row is `(0, false)`.
-async fn session_launch_facts(state: &AppState, name: &str) -> (i64, bool) {
+pub(crate) async fn session_launch_facts(state: &AppState, name: &str) -> (i64, bool) {
     let Ok(Some(s)) = crate::db::sessions::get(&state.pool, name).await else { return (0, false) };
     let running = match crate::db::sessions::runtime(&state.pool, name).await {
         Ok(Some(r)) => matches!(r.last_status.as_str(), "active" | "waiting" | "idle" | "starting"),

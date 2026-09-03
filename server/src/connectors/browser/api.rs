@@ -91,9 +91,7 @@ pub fn router_for(state: AppState) -> Router {
 /// One tab, as the workspace UI reads it. `live` is the transient half — a tab
 /// with no live target is *dehydrated*, not lost.
 async fn tab_json(state: &AppState, row: &db_tabs::TabRow, live: &[String]) -> Value {
-    let grants = db_tabs::grants_for_tab(&state.pool, &row.id)
-        .await
-        .unwrap_or_default();
+    let grants = grants_json(state, &row.id).await;
     json!({
         "id": row.id,
         "title": row.title,
@@ -116,6 +114,131 @@ async fn tab_json(state: &AppState, row: &db_tabs::TabRow, live: &[String]) -> V
         "created_at": row.created_at,
         "last_used_at": row.last_used_at,
     })
+}
+
+/// **A tab's grants, each with the honest answer to "can that bot use it yet?"**
+///
+/// A tab grant now carries the `shared-browser` connector grant with it (see
+/// [`grant_handler`]) — but a connector grant only reaches a bot's toolset at
+/// LAUNCH (`sessions::connector_config::assemble` bakes the MCP server into the
+/// child's `--mcp-config`), so a bot that was already running when the tab was
+/// lent has the row and not the tools. Rather than let the human guess, every
+/// grant row carries the two facts the store's own grant list uses:
+///
+///   * `applied` — has a launch since the grant already bound it
+///     ([`crate::connectors::api::grant_applied`], the SAME predicate the store
+///     uses, so the two surfaces can never disagree);
+///   * `running` — is a restart even meaningful (a stopped bot binds on its next
+///     start, so telling the human to restart it would be noise).
+///
+/// Both are omitted for a `*` / `@company:<id>` sentinel: those name no single
+/// process, so there is no one launch to compare against and no honest answer.
+async fn grants_json(state: &AppState, tab_id: &str) -> Vec<Value> {
+    let grants = db_tabs::grants_for_tab(&state.pool, tab_id)
+        .await
+        .unwrap_or_default();
+    let mut out = Vec::with_capacity(grants.len());
+    for g in &grants {
+        let mut o = json!({
+            "tab_id": g.tab_id,
+            "grantee": g.grantee,
+            "enabled": g.enabled,
+            "granted_at": g.granted_at,
+        });
+        if !is_sentinel(&g.grantee) {
+            let (last_started, running) =
+                crate::connectors::api::session_launch_facts(state, &g.grantee).await;
+            // The BROWSER grant's own timestamp is what a launch has to beat —
+            // the tab row can be older (a re-lend of a tab the bot already had).
+            let granted_at = browser_grant_at(state, &g.grantee).await.unwrap_or(g.granted_at);
+            let applied = crate::connectors::api::grant_applied(last_started, granted_at, 0);
+            o["applied"] = json!(applied);
+            o["running"] = json!(running);
+        }
+        out.push(o);
+    }
+    out
+}
+
+/// Is this grantee one of the two broadcast sentinels rather than a real bot?
+fn is_sentinel(grantee: &str) -> bool {
+    grantee == db_connectors::ALL_AGENTS || grantee.starts_with(db_connectors::COMPANY_PREFIX)
+}
+
+/// When was this session's `shared-browser` connector grant made? `None` when it
+/// holds none (which, after [`grant_handler`], means the tab grant predates this
+/// fix or was written by a direct DB edit).
+async fn browser_grant_at(state: &AppState, session: &str) -> Option<i64> {
+    db_connectors::grants_for_session(&state.pool, session)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|g| g.connector_id == super::mcp::BROWSER_ID && g.enabled != 0)
+        .map(|g| g.granted_at)
+}
+
+/// **Lending a tab lends the browser.** Ensure `grantee` also holds the enabled
+/// `shared-browser` connector grant, so the bot actually gets `browser_*` tools
+/// at its next launch.
+///
+/// Before this, the two grants were entirely orthogonal: `browser_tab_grants`
+/// said WHICH tab, `session_connectors` said WHETHER the bot has a browser at
+/// all — and the workspace UI only ever wrote the first. A bot lent a tab had no
+/// `browser_*` tools whatsoever (`tools.rs` refuses even `list_tabs` without the
+/// connector grant), so it could not so much as discover the tab it had been
+/// given, and improvised instead. The owner's rule is the simple one: a tab
+/// grant IS access.
+///
+/// Deliberately ADDITIVE and one-directional — [`revoke_handler`] does NOT strip
+/// the connector back off. The human may have granted the Shared Browser from
+/// the store on purpose, and un-granting a store card as a side effect of
+/// un-lending one tab would be a destructive surprise. Losing the last tab
+/// already costs the bot every tab verb (`has_tab_grant` fails closed); all it
+/// keeps is its own throwaway browser, which is what an ungranted-tab bot with a
+/// store grant has always had.
+///
+/// `Some(changed)` once the grantee provably holds the enabled connector grant
+/// (`changed = true` when this call is what made it so, i.e. a running bot needs
+/// a restart before the tools appear); `None` when the grant could not be
+/// written at all, so no surface may claim the bot got the browser.
+async fn lend_the_browser(state: &AppState, grantee: &str) -> Option<bool> {
+    // `session_connectors.connector_id` has an FK onto `connectors(id)`, so the
+    // builtin's row must exist before a grant can. It is seeded at boot — but a
+    // boot whose seed failed (an unwritable data dir, say) would turn every tab
+    // lend into a silent no-grant, which is the exact failure mode this function
+    // exists to end. Seeding is idempotent and best-effort, so re-run it once
+    // rather than depend on a boot we cannot see from here.
+    if matches!(db_connectors::get(&state.pool, super::mcp::BROWSER_ID).await, Ok(None)) {
+        super::mcp::seed(state).await;
+    }
+    match db_connectors::ensure_enabled(&state.pool, grantee, super::mcp::BROWSER_ID).await {
+        Ok(changed) => {
+            if changed {
+                crate::db::audit::log(
+                    &state.pool,
+                    "user",
+                    "connector.grant",
+                    super::mcp::BROWSER_ID,
+                    json!({ "session": grantee, "enabled": true, "via": "tab_grant" }),
+                )
+                .await
+                .ok();
+                tracing::info!(
+                    target = %grantee,
+                    connector = super::mcp::BROWSER_ID,
+                    "tab grant implied the shared-browser connector grant"
+                );
+            }
+            Some(changed)
+        }
+        Err(e) => {
+            // Never fail the tab grant over this: the tab row is the human's
+            // decision and it landed. The response's `browser_granted:false` is
+            // what tells the surface not to claim the bot got the browser.
+            tracing::warn!(error = %e, target = %grantee, "could not imply the shared-browser grant from a tab grant");
+            None
+        }
+    }
 }
 
 /// `GET /api/browser/tabs` — **every** tab. The human owns the browser and sees
@@ -629,8 +752,7 @@ async fn grants_handler(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let _ = load(&state, &id).await?;
-    let grants = db_tabs::grants_for_tab(&state.pool, &id).await?;
-    Ok(Json(json!({ "grants": grants })))
+    Ok(Json(json!({ "grants": grants_json(&state, &id).await })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -677,8 +799,28 @@ async fn grant_handler(
     )
     .await
     .ok();
-    let grants = db_tabs::grants_for_tab(&state.pool, &id).await?;
-    Ok(Json(json!({ "granted": true, "grants": grants })))
+    // **Tab grant == access.** Lending a tab also lends the Shared Browser
+    // connector, so the bot gets `browser_*` tools at its next launch instead of
+    // holding a tab it cannot even see. Only on an ENABLING grant: writing
+    // `enabled:false` is the human switching a lend OFF.
+    let lent = if body.enabled { lend_the_browser(&state, grantee).await } else { None };
+    // A restart is only a real ask of a bot that is RUNNING right now: a stopped
+    // one binds the fresh grant on its next start, so claiming it needs a restart
+    // would be a button with nothing to press. A sentinel names no one process.
+    let needs_restart = lent == Some(true)
+        && !is_sentinel(grantee)
+        && crate::connectors::api::session_launch_facts(&state, grantee).await.1;
+    Ok(Json(json!({
+        "granted": true,
+        // Two DIFFERENT claims, never merged: the connector grant exists now
+        // (`browser_granted`), and a bot that is running right now has not picked
+        // it up yet (`needs_restart`). A `false` on the first is a real failure to
+        // report; a `false` on the second can equally mean "it already had it" or
+        // "it is stopped anyway".
+        "browser_granted": lent.is_some(),
+        "needs_restart": needs_restart,
+        "grants": grants_json(&state, &id).await,
+    })))
 }
 
 async fn revoke_handler(
@@ -696,10 +838,10 @@ async fn revoke_handler(
     )
     .await
     .ok();
-    let grants = db_tabs::grants_for_tab(&state.pool, &id).await?;
     // `revoked:false` is the store's honesty rule: nothing was there to revoke,
-    // so do not draw a control that claims otherwise.
-    Ok(Json(json!({ "revoked": removed, "grants": grants })))
+    // so do not draw a control that claims otherwise. The `shared-browser`
+    // connector grant is deliberately NOT stripped here — see `lend_the_browser`.
+    Ok(Json(json!({ "revoked": removed, "grants": grants_json(&state, &id).await })))
 }
 
 /// Load a tab or 404. The human surface DOES distinguish missing from
@@ -785,6 +927,169 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The regression this whole change exists for.** The human lends a tab;
+    /// the bot must actually get the browser. Before, `browser_tab_grants` and
+    /// `session_connectors` were orthogonal: the tab row landed, the connector
+    /// grant did not, so the bot got NO `browser_*` tools at all — `tools.rs`
+    /// refuses even `list_tabs` without the connector grant, so it could not
+    /// discover the tab it had just been given. Measured live: a bot with a tab
+    /// grant and no `shared-browser` row, improvising against the HTTP API.
+    #[tokio::test]
+    async fn lending_a_tab_also_lends_the_shared_browser_connector() {
+        let (state, dir) = test_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "folderwijzer", "/tmp", "claude")
+            .await
+            .unwrap();
+        let (_, tab) = send(
+            &state,
+            "POST",
+            "/api/browser/tabs",
+            json!({ "url": "https://search.google.com/search-console/" }),
+        )
+        .await;
+        let id = tab["id"].as_str().unwrap().to_string();
+
+        // Precondition: no browser grant anywhere.
+        assert!(
+            db_connectors::grants_for_session(&state.pool, "folderwijzer")
+                .await
+                .unwrap()
+                .is_empty(),
+            "precondition: the bot holds no connector grants"
+        );
+
+        let (st, v) = send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/grant"),
+            json!({ "grantee": "folderwijzer" }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["browser_granted"], json!(true), "{v}");
+
+        let grants = db_connectors::grants_for_session(&state.pool, "folderwijzer")
+            .await
+            .unwrap();
+        assert!(
+            grants
+                .iter()
+                .any(|g| g.connector_id == super::super::mcp::BROWSER_ID && g.enabled != 0),
+            "lending a tab must lend the browser: {grants:?}"
+        );
+
+        // …and the launch seam agrees: this session now WANTS the browser server.
+        let cfg = crate::sessions::connector_config::assemble(&state, "folderwijzer")
+            .await
+            .expect("assemble")
+            .expect("an active config");
+        let inline = cfg
+            .launch_flags
+            .iter()
+            .find(|f| f.contains("mcpServers"))
+            .expect("an inline --mcp-config");
+        let parsed: Value = serde_json::from_str(inline).unwrap();
+        assert!(
+            parsed["mcpServers"]
+                .get(super::super::mcp::SERVER_KEY)
+                .is_some(),
+            "the assembled launch must carry the browser MCP server: {parsed}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A tab lent to a bot that has NOT restarted since is reported honestly:
+    /// the grant is real, the tools are not there yet, and the surface is told
+    /// which of the two it is looking at.
+    #[tokio::test]
+    async fn a_fresh_tab_grant_reports_the_restart_a_running_bot_still_needs() {
+        let (state, dir) = test_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "bot", "/tmp", "claude")
+            .await
+            .unwrap();
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": "https://a.test/" })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+
+        // The bot is RUNNING — that is what makes a restart a real ask.
+        crate::db::sessions::ensure_runtime(&state.pool, "bot", "tok").await.unwrap();
+        crate::db::sessions::set_last_status(&state.pool, "bot", "active").await.unwrap();
+
+        let (_, v) = send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/grant"),
+            json!({ "grantee": "bot" }),
+        )
+        .await;
+        assert_eq!(v["needs_restart"], json!(true), "a brand-new grant is unapplied: {v}");
+        let g = v["grants"].as_array().unwrap();
+        assert_eq!(g[0]["applied"], json!(false), "{v}");
+        assert_eq!(g[0]["running"], json!(true), "{v}");
+
+        // Re-lending the SAME tab must not re-stamp the grant and manufacture a
+        // second "restart to apply" for a bot that already picked it up.
+        sqlx::query("UPDATE sessions SET last_started = ? WHERE name = 'bot'")
+            .bind(chrono::Utc::now().timestamp() + 60)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let (_, v) = send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/grant"),
+            json!({ "grantee": "bot" }),
+        )
+        .await;
+        assert_eq!(v["needs_restart"], json!(false), "already applied: {v}");
+        assert_eq!(v["grants"].as_array().unwrap()[0]["applied"], json!(true), "{v}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Un-lending a tab does NOT un-grant the store card. The human may have
+    /// granted the Shared Browser deliberately, and silently revoking a store
+    /// grant as a side effect of one tab is a destructive surprise. Tab access
+    /// is still gone — `has_tab_grant` fails closed on the missing tab row.
+    #[tokio::test]
+    async fn revoking_a_tab_leaves_the_store_grant_alone() {
+        let (state, dir) = test_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "bot", "/tmp", "claude")
+            .await
+            .unwrap();
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": "https://a.test/" })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+        send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/grant"),
+            json!({ "grantee": "bot" }),
+        )
+        .await;
+        let (st, v) = send(
+            &state,
+            "DELETE",
+            &format!("/api/browser/tabs/{id}/grant/bot"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["revoked"], json!(true), "{v}");
+        assert!(
+            db_connectors::grants_for_session(&state.pool, "bot")
+                .await
+                .unwrap()
+                .iter()
+                .any(|g| g.connector_id == super::super::mcp::BROWSER_ID),
+            "the store grant survives an un-lend"
+        );
+        assert!(
+            !super::super::tools::has_tab_grant(&state, "bot", &id).await,
+            "…but the tab itself is gone"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -893,6 +1198,54 @@ mod tests {
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let body = if req.contains("GET /two") {
                         "<title>Second</title><body>second-page</body>"
+                    } else if req.contains("GET /passkey") {
+                        // A WebAuthn probe page. `window.__pk` is filled in by the
+                        // time `load` fires, so the test can just read it: what the
+                        // two availability probes answered, and — the part that
+                        // matters — whether a real ceremony REJECTS instead of
+                        // hanging, with which error name, and how fast.
+                        r#"<title>Passkey probe</title><body>probe</body><script>
+window.__pk = {done:false};
+window.__pk.marker = window.__supermuxNoPasskeys || null;
+window.__pk.getIsShim = !!(navigator.credentials && navigator.credentials.get
+  && navigator.credentials.get.__supermuxNoPasskeys);
+window.__pk.createIsShim = !!(navigator.credentials && navigator.credentials.create
+  && navigator.credentials.create.__supermuxNoPasskeys);
+(async () => {
+  const t0 = performance.now();
+  const o = window.__pk;
+  try {
+    o.uvpaa = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch (e) { o.uvpaa = 'threw:' + e.name; }
+  try {
+    o.cond = await PublicKeyCredential.isConditionalMediationAvailable();
+  } catch (e) { o.cond = 'threw:' + e.name; }
+  try {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: new Uint8Array(32),
+        timeout: 60000,
+        userVerification: 'required',
+      },
+    });
+    o.get = 'RESOLVED';
+  } catch (e) { o.get = e.name; o.getMsgRaw = String(e.message || ''); }
+  try {
+    await navigator.credentials.create({
+      publicKey: {
+        challenge: new Uint8Array(32),
+        rp: {name: 'probe'},
+        user: {id: new Uint8Array(16), name: 'a', displayName: 'a'},
+        pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      },
+    });
+    o.create = 'RESOLVED';
+  } catch (e) { o.create = e.name; }
+  o.getMsg = o.getMsgRaw || '';
+  o.ms = performance.now() - t0;
+  o.done = true;
+})();
+</script>"#
                     } else {
                         "<title>Landing</title><body>landing-page</body>"
                     };
@@ -907,6 +1260,85 @@ mod tests {
             }
         });
         (port, handle)
+    }
+
+    /// **Passkeys must fail fast, not hang.** Measured live: a Google sign-in in
+    /// the shared browser stops at *"Verifying it's you — complete sign-in using
+    /// your passkey"* and never moves. There is no platform authenticator on a
+    /// server, so `navigator.credentials.get()` returns a promise that nobody
+    /// will ever settle — and it is dead for the HUMAN on takeover too, so the
+    /// tab cannot be signed in by anyone.
+    ///
+    /// This drives a REAL chrome against a probe page and pins the contract:
+    /// both availability probes answer `false` (so a provider offers the password
+    /// path and the ceremony never starts), and a ceremony that starts anyway
+    /// rejects with `NotAllowedError` — the same error a human cancelling the OS
+    /// prompt raises, which every provider already has a fallback for — in
+    /// milliseconds rather than never.
+    ///
+    /// Run with `cargo test -- --ignored real_chrome_passkeys`.
+    #[tokio::test]
+    #[ignore = "spawns a real chrome; run with --ignored on a box that has the pinned binary"]
+    async fn real_chrome_passkeys_fail_fast_instead_of_hanging_the_sign_in() {
+        let (state, dir) = test_state().await;
+        if !state.browser.config().executable.exists() {
+            eprintln!("SKIP: no chrome at {}", state.browser.config().executable.display());
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let (port, _server) = page_server();
+        // Open on the landing page and NAVIGATE to the probe: a sign-in is always
+        // reached by a navigation, and that is the path
+        // `addScriptToEvaluateOnNewDocument` covers unconditionally (the document
+        // a target is CREATED with is covered best-effort — see
+        // `AgentContext::disable_passkeys`).
+        let landing = format!("http://localhost:{port}/");
+        let probe_url = format!("http://localhost:{port}/passkey");
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": landing })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+        let (st, v) = send(
+            &state,
+            "POST",
+            &format!("/api/browser/tabs/{id}/navigate"),
+            json!({ "url": probe_url }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+
+        // The probe is async; poll its own `done` flag rather than sleeping a
+        // guessed interval. A HANG is the failure this test exists to catch, so
+        // the budget is deliberately short — the real bug never finishes at all.
+        let page = wake_tab_by_id(&state, &id).await.expect("a live tab");
+        let mut probe = Value::Null;
+        for _ in 0..40 {
+            probe = page.page().evaluate("window.__pk || {}").await.unwrap_or(Value::Null);
+            if probe.get("done").and_then(Value::as_bool) == Some(true) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        eprintln!("passkey probe: {probe}");
+        assert_eq!(
+            probe.get("done").and_then(Value::as_bool),
+            Some(true),
+            "the WebAuthn probes must SETTLE — an unsettled promise IS the bug: {probe}"
+        );
+        assert_eq!(
+            probe["getIsShim"], json!(true),
+            "credentials.get must BE our shim — otherwise a refusal proves nothing: {probe}"
+        );
+        assert_eq!(probe["createIsShim"], json!(true), "{probe}");
+        assert_eq!(probe["uvpaa"], json!(false), "advertise no platform authenticator: {probe}");
+        assert_eq!(probe["cond"], json!(false), "no conditional mediation either: {probe}");
+        assert_eq!(
+            probe["get"], json!("NotAllowedError"),
+            "a ceremony must reject with the error providers already fall back on: {probe}"
+        );
+        assert_eq!(probe["create"], json!("NotAllowedError"), "{probe}");
+        let ms = probe["ms"].as_f64().unwrap_or(f64::MAX);
+        assert!(ms < 1000.0, "it must fail FAST, took {ms}ms: {probe}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The page verbs answer `404` for a row that is not there — and, like every

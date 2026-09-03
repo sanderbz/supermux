@@ -291,6 +291,52 @@ pub async fn grant(
     Ok(())
 }
 
+/// **Ensure `session_name` holds an ENABLED grant of `connector_id`** — the
+/// idempotent "make sure this is on" primitive, as opposed to [`grant`]'s "set
+/// it to this".
+///
+/// Returns `true` only when this call actually CHANGED something (the grant was
+/// absent, or present but disabled). A caller uses that to decide whether the
+/// bot needs a restart to pick the connector up — an already-enabled grant was
+/// already bound at the session's last launch, so re-stamping `granted_at` there
+/// would manufacture a false "Restart to apply".
+///
+/// Where the grant IS (re)made, `granted_at` is refreshed to now, which is what
+/// makes [`crate::connectors::api::grant_applied`] read it as not-yet-applied
+/// until the session restarts. `secret_ref` is left alone: this is for
+/// credential-free builtins (the Shared Browser), never a secret-bearing card.
+pub async fn ensure_enabled(
+    pool: &SqlitePool,
+    session_name: &str,
+    connector_id: &str,
+) -> sqlx::Result<bool> {
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT enabled FROM session_connectors WHERE session_name = ? AND connector_id = ?",
+    )
+    .bind(session_name)
+    .bind(connector_id)
+    .fetch_optional(pool)
+    .await?;
+    if existing == Some(1) {
+        return Ok(false);
+    }
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO session_connectors
+            (session_name, connector_id, secret_ref, enabled, granted_at)
+         VALUES (?, ?, NULL, 1, ?)
+         ON CONFLICT(session_name, connector_id) DO UPDATE SET
+            enabled = 1,
+            granted_at = excluded.granted_at",
+    )
+    .bind(session_name)
+    .bind(connector_id)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(true)
+}
+
 /// Account-aware [`grant`]: same idempotent upsert, but also pins which
 /// [`Account`] the grant uses (`account_ref`). Used by the connect / add-account /
 /// reconnect paths; the plain [`grant`] leaves `account_ref` untouched (a re-grant

@@ -1751,6 +1751,12 @@ impl AppState {
     pub fn set_permission_request(&self, name: &str, ask: PermissionAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.permission = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
@@ -1789,6 +1795,12 @@ impl AppState {
     pub fn set_elicitation(&self, name: &str, ask: ElicitationAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.elicitation = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
@@ -1826,6 +1838,12 @@ impl AppState {
     pub fn set_question_request(&self, name: &str, ask: QuestionAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.question_request = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
