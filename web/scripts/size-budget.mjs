@@ -1340,8 +1340,42 @@ const BUDGET_ENTRY_JS = 164 * KB
 //              one action — net of DELETING the old lane, the duplicate "Sign in
 //              again" button and the second grant control it replaces.
 // Policy: 461.88 x 1.02 = 471.1 -> 471.
-const BUDGET_APP_JS = 471 * KB
-// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
+//
+// Rebased onto that ratchet: the base now carries the oauth-return +0.21 KB, so
+// 466.07 measured here becomes ~466.3 on the merged main — x 1.02 = 475.6 -> 476
+// still holds; re-measured after the rebase (see the release gate).
+// RATCHETED 462 -> 476 by chunked, resumable uploads (`feat/large-resumable-uploads`).
+// The measurement, both halves built the same way in the same worktree:
+//
+//   origin/main (e9870fd5)   entry 161.05   app 461.62   files chunk 14.18
+//   this branch              entry 161.05   app 466.07   files chunk 18.61
+//                            ─────────────  ───────────  ────────────────
+//                                    0.00        +4.45            +4.43
+//
+// Read the three columns together: the app total moved +4.45 KB and the LAZY
+// `files-*` chunk moved +4.43 KB. Within rounding, ALL of it is the files
+// route's own chunk — the upload manager (`lib/upload/manager`), the pure
+// protocol module (`lib/upload/protocol`: chunk ranges, the sliding rate
+// window, backoff, the reload manifest, the tray's copy) and the tray
+// component. `grep` finds none of those symbols in `index-*.js`.
+//
+// The ENTRY gate — the one that guards first paint — did NOT move to make room
+// for anything: 161.05 -> 161.05, byte-identical, and green at 98% of 164 —
+// `grep` finds zero upload symbols in `index-*.js`. A first-time visitor who never opens
+// Files downloads not one byte of this feature.
+//
+// The bytes bought: uploads up to 10 GB that survive a dropped connection, a
+// closed laptop lid and a server restart, with a real progress bar, a live
+// speed, an ETA, per-file cancel/retry and the server's own sentence on
+// failure. The replaced path was one buffered multipart POST capped at 200 MB
+// with no progress at all. Cheaper placements were considered and rejected: the
+// pure module cannot fold into the component without losing the unit tests that
+// pin the range/resume arithmetic (the part where an off-by-one costs someone a
+// 9 GB file), and it cannot live in `lib/api/files` because that module IS on
+// the hero path.
+// This counter's documented policy is measured x 1.02, NOT ceil(measured) — see
+// the 2026-08-17 note above: 466.07 x 1.02 = 475.4 -> 476.
+const BUDGET_APP_JS = 476 * KB// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
 // keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:

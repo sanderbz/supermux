@@ -9,7 +9,12 @@
 //! | GET    | `/api/file`                | type-aware read                      |
 //! | PUT    | `/api/file`                | write a text file (whitelisted ext)  |
 //! | GET    | `/api/file/raw`            | byte stream w/ Range + ETag          |
-//! | POST   | `/api/fs/upload`           | multipart upload (200 MB cap)        |
+//! | POST   | `/api/fs/upload`           | multipart upload (200 MB cap, buffered) |
+//! | POST   | `/api/fs/uploads`          | init a CHUNKED, RESUMABLE upload (≤ 10 GB) |
+//! | GET    | `/api/fs/uploads/{id}`     | bytes received so far (the resume point) |
+//! | PATCH  | `/api/fs/uploads/{id}`     | append one streamed chunk            |
+//! | POST   | `/api/fs/uploads/{id}/complete` | verify + atomic rename into place |
+//! | DELETE | `/api/fs/uploads/{id}`     | cancel + cleanup                     |
 //! | DELETE | `/api/fs/delete`           | delete a file or directory           |
 //! | POST   | `/api/fs/mkdir`            | create a directory (parents incl.)   |
 //! | POST   | `/api/fs/rename`           | rename === move a file or directory  |
@@ -26,6 +31,7 @@
 pub mod path_safe;
 pub mod range;
 pub mod transport;
+pub mod uploads;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,6 +111,10 @@ pub fn router_for() -> Router<AppState> {
         // isn't a git repo — teammates each need their own git worktree per the
         // official Agent Teams doc). Hidden entries are filtered.
         .route("/api/projects/repos", get(projects_repos))
+        // The chunked/resumable upload surface. Merged rather than inlined so
+        // the raised body limit stays scoped to ITS `PATCH` route and cannot
+        // leak onto anything here.
+        .merge(uploads::routes())
 }
 
 // ──────────────────────────── query/body shapes ────────────────────────────
