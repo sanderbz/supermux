@@ -708,9 +708,18 @@ fn apply_payload(
             // terminal permission dialog), so it returns while the human answers
             // here. The credential never touches this plane — the card POSTs it
             // straight to the vault.
+            // …but not for a builtin (`shared-browser`, `group-chat`) or an id no
+            // catalog knows: the tool itself answers those with `card_sent: false`
+            // and a note, so a card here would be a card for nothing — and since
+            // the card now outlives the call, a WRONG card, not an invisible one.
             let connect = match connect_ask::parse(payload) {
-                Some(ask) => state.set_connect_request(session, ask),
-                None => false,
+                Some(ask)
+                    if crate::connectors::connect_server::builtin_connect_note(&ask.connector_id)
+                        .is_none() =>
+                {
+                    state.set_connect_request(session, ask)
+                }
+                Some(_) | None => false,
             };
             // The Shared Browser connector's `request_human_takeover(reason)`
             // affordance. Unlike `connect` above, this one DOES keep the
@@ -2602,6 +2611,39 @@ mod tests {
             state.pool.close().await;
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    #[tokio::test]
+    async fn a_blocking_ask_after_a_connect_ask_is_the_card_that_renders() {
+        // Review of #183: the card now outlives its own tool call, but the chat
+        // draws one card at a time with connect FIRST. A permission dialog the
+        // bot is actually parked on must therefore retire the connect card, or
+        // the human stares at a connect card while the bot waits on an invisible
+        // prompt.
+        let (state, _dir) = test_state().await;
+        let s = "worker-connect-then-perm";
+        apply_payload(&state, s, "pre_tool", &p(LIVE_CONNECT), false);
+        assert!(state.session_activity(s).and_then(|a| a.connect_request).is_some());
+        apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST), false);
+        let act = state.session_activity(s).expect("activity");
+        assert!(act.permission.is_some(), "the permission ask landed");
+        assert!(act.connect_request.is_none(), "…and the connect card yielded to it");
+    }
+
+    #[tokio::test]
+    async fn a_builtin_connect_raises_no_card() {
+        // `connect("shared-browser")` answers with a note and `card_sent: false`;
+        // raising a card for it (or for an id no catalog knows) would, now that
+        // the card persists, leave a WRONG card in the chat instead of an
+        // invisible one.
+        let (state, _dir) = test_state().await;
+        let s = "worker-builtin";
+        let payload = LIVE_CONNECT.replace("pmcp-notion", "shared-browser");
+        apply_payload(&state, s, "pre_tool", &p(&payload), false);
+        assert!(
+            state.session_activity(s).and_then(|a| a.connect_request).is_none(),
+            "a builtin connect raises no connect card"
+        );
     }
 
     #[tokio::test]
