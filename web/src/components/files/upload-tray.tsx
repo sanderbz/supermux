@@ -78,10 +78,15 @@ export function UploadTray() {
         data-testid="upload-tray"
         className={cn(
           'glass fixed z-40 border border-hairline shadow-lg',
-          // Phone: a full-width sheet clear of the tab bar. Desktop: a docked
-          // card in the corner, never wider than a third of the viewport.
-          'inset-x-0 bottom-0 rounded-t-xl pb-safe',
-          'md:inset-x-auto md:bottom-4 md:right-4 md:w-96 md:rounded-xl md:pb-0',
+          // Phone: a full-width sheet parked ABOVE the tab bar. The shell's
+          // mobile tab bar is an in-flow row (min-h-14 + the safe-area pad,
+          // layout.tsx), not a fixed bar, so `bottom-0` would sit on top of
+          // primary navigation for the whole upload — measured in review. The
+          // nav already owns the safe-area inset, so the sheet does not add it.
+          // Desktop: a docked card in the corner, never wider than a third of
+          // the viewport.
+          'inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] rounded-t-xl',
+          'md:inset-x-auto md:bottom-4 md:right-4 md:w-96 md:rounded-xl',
         )}
       >
         <button

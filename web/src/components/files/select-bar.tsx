@@ -1,6 +1,7 @@
 // The multi-select BOTTOM ACTION BAR.
 //
-// The only fixed-bottom surface in Files, and it carries the safe-area pad
+// A fixed-bottom surface in Files (the upload tray is the other, parked above
+// the phone tab bar), and it carries the safe-area pad
 // itself (`pb-safe`) — the home-indicator lesson every bottom-anchored surface
 // in this app has already learned. The list above gets `pb-24` while select
 // mode is on so the last row is never trapped underneath it, and the

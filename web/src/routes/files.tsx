@@ -761,7 +761,9 @@ export function Files() {
                 'min-h-0 flex-1 overflow-y-auto',
                 // The bottom bar is fixed, so the last row would otherwise be
                 // trapped under it on a phone.
-                selectMode && 'pb-24',
+                // Room for whichever fixed-bottom surface is up: the select
+                // bar, or the upload tray while uploads are listed.
+                (selectMode || uploadItems.length > 0) && 'pb-24',
               )}
             >
               {sessionResolving || listing.isLoading ? (
