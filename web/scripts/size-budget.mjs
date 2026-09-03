@@ -1376,7 +1376,7 @@ const BUDGET_ENTRY_JS = 164 * KB
 // This counter's documented policy is measured x 1.02, NOT ceil(measured) — see
 // the 2026-08-17 note above: 466.07 x 1.02 = 475.4 -> 476.
 //
-// RATCHETED 476 -> 477 by the agent deep link (rebased onto the uploads ratchet) (`feat/agent-deep-link`). The
+// RATCHETED 476 -> 478 by the agent deep link (rebased onto the uploads ratchet) (`feat/agent-deep-link`). The
 // envelope is the real story again — 462 was itself a x1.02 bump, and the
 // branch parent had spent nearly all of it:
 //
@@ -1401,9 +1401,10 @@ const BUDGET_ENTRY_JS = 164 * KB
 // sub-KB ceiling on a gate every web PR shares red-lights the NEXT author with
 // a failure that says nothing about their branch — which is precisely what
 // happened to this one.
-// Rebased onto 476: 466.07 + 0.21 (oauth return) + 0.97 (this branch) ~= 467.3 KB,
-// x 1.02 = 476.6 -> 477. Re-measured after the rebase, see the release gate.
-const BUDGET_APP_JS = 477 * KB
+// Re-measured after the rebase onto the uploads ratchet (oauth return + uploads
+// + this branch, one build on this box): 468.78 KB. Policy: 468.78 x 1.02 =
+// 478.2 -> 478.
+const BUDGET_APP_JS = 478 * KB
 // RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:
