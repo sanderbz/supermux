@@ -74,8 +74,8 @@ function decideDisplay(payload, windowClients) {
 }
 
 /** Path component of a URL, absolute or relative, ignoring query + fragment.
- *  `/focus/x#pending` and `/focus/x` are the same PLACE — the fragment only
- *  tells the app where to scroll once it is there. */
+ *  A fragment only tells the app where to scroll once it is there, so
+ *  `/agent/x#anything` and `/agent/x` are the same PLACE. */
 function pathOf(url) {
   if (!url) return '/'
   try {
@@ -187,7 +187,7 @@ self.addEventListener('push', (event) => {
 // ── notificationclick: focus an open tab or open the deep-link ───────────────
 //
 // On tap we focus an already-open supermux tab and navigate it to the target
-// (`/focus/<session>`, with `#pending` when something is waiting on an answer);
+// (`/agent/<session>`, the bot's thread — every tier lands on the same place);
 // if none is open we open a fresh window there. The whole slot for that session
 // is then cleared: after a tap, the lock screen and the app must agree.
 self.addEventListener('notificationclick', (event) => {

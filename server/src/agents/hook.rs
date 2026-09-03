@@ -9,7 +9,7 @@
 //! ## `POST /api/hook/notify` — ping THIS bot's human
 //!
 //! Body `{ session, title, body }`. The token authenticates `session`; the push
-//! goes to the dashboard owner and deep-links to `/focus/<session>`. A bot may
+//! goes to the dashboard owner and deep-links to the bot's thread. A bot may
 //! notify ONLY about its own pane (the token binds the session — presenting
 //! another session's name with your token 401s), the title/body are length-capped
 //! and sanitised (they land in a web-push payload as data, never as markup), and
@@ -181,7 +181,7 @@ async fn notify_handler(
     // is the bot's own words — never a secret, and never logged here.
     {
         let state = state.clone();
-        let url = format!("/focus/{session}");
+        let url = crate::notify::agent_url(&session);
         tokio::spawn(async move {
             let _ = crate::push::send_push_for(
                 &state,

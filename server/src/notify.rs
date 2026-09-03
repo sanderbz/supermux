@@ -401,6 +401,22 @@ pub fn tag_for(session: &str) -> String {
     format!("session:{session}")
 }
 
+/// Where "open this agent" goes — the bot's HOME THREAD, not the terminal.
+///
+/// The mirror of `web/src/lib/agent-href.ts::agentHref`, and the only place
+/// the server spells that route: a push, a board question and a bot's own "I
+/// need you" ping all mean the same "open this agent", so they must all land
+/// on the same surface. `/focus/<name>` stays the explicit terminal escape
+/// hatch, reached from the roster kebab and the team card — never from a
+/// notification.
+///
+/// The name goes in verbatim: a session slug is `^[A-Za-z0-9_.-]+$`
+/// (`sessions::NAME_RE`), a set `encodeURIComponent` leaves untouched, so a
+/// plain `format!` IS the web helper's encoding for every name that can exist.
+pub fn agent_url(name: &str) -> String {
+    format!("/agent/{name}")
+}
+
 // ── the pure copy module ────────────────────────────────────────────────────
 
 /// Everything [`compose`] is allowed to look at. Assembled by the impure shell;
@@ -457,13 +473,11 @@ pub fn compose(ev: &NotifEvent, ctx: &ComposeCtx) -> PushPayload {
         ctx.display_name.clone()
     };
     let body = compose_body(ev, ctx);
-    // Needs-attention lands ON the thing that needs answering; the calm tiers
-    // land on the conversation.
-    let url = if matches!(tier, Tier::Attention) {
-        format!("/focus/{}#pending", ctx.name)
-    } else {
-        format!("/focus/{}", ctx.name)
-    };
+    // Every tier lands on the same place: the bot's thread. Attention used to
+    // append `#pending` to scroll the terminal to the waiting dialog — the home
+    // thread has no such anchor to scroll to, it RENDERS the pending permission
+    // card itself, so the fragment would name nothing and is gone.
+    let url = agent_url(&ctx.name);
     PushPayload {
         title,
         body,
@@ -1020,6 +1034,18 @@ mod tests {
     }
 
     #[test]
+    /// The deep link is the bot's HOME THREAD, in one place, for every producer
+    /// — the board hook and a bot's own "I need you" ping call this same helper.
+    /// It mirrors `web/src/lib/agent-href.ts::agentHref`; a rename on either
+    /// side has to break one of the two.
+    fn the_deep_link_is_the_thread_not_the_terminal() {
+        assert_eq!(agent_url("deploy-fix"), "/agent/deploy-fix");
+        // A slug is `^[A-Za-z0-9_.-]+$`, so nothing here needs escaping — this
+        // pins that the whole charset survives the format verbatim.
+        assert_eq!(agent_url("Bot_9.x-2"), "/agent/Bot_9.x-2");
+    }
+
+    #[test]
     fn permission_body_is_the_dialog_summary_and_tool() {
         let mut c = ctx();
         c.permission = Some(ask("Bash", "⚡ run the test suite", Some("default")));
@@ -1027,7 +1053,7 @@ mod tests {
         assert_eq!(p.title, "deploy-fix");
         assert_eq!(p.body, "Needs permission — ⚡ run the test suite (Bash)");
         assert_eq!(p.tier, Tier::Attention);
-        assert_eq!(p.url, "/focus/deploy-fix#pending");
+        assert_eq!(p.url, "/agent/deploy-fix");
         assert_eq!(p.tag, "session:deploy-fix");
         assert!(p.renotify, "a blocking state may buzz again");
     }
@@ -1047,7 +1073,7 @@ mod tests {
         );
         assert_eq!(p.body, "Needs input — the MCP server “deploy-bot”");
         assert_eq!(p.tier, Tier::Attention);
-        assert_eq!(p.url, "/focus/deploy-fix#pending");
+        assert_eq!(p.url, "/agent/deploy-fix");
         // A nameless server cannot happen (the parser refuses one) — and if it
         // ever did, the banner still says something true.
         assert_eq!(
@@ -1084,10 +1110,7 @@ mod tests {
         c.permission = Some(ask("ExitPlanMode", "🛠 ExitPlanMode", Some("plan")));
         let p = compose(&NotifEvent::PermissionAsked, &c);
         assert_eq!(p.body, "Plan ready for approval.");
-        assert_eq!(
-            p.url, "/focus/deploy-fix#pending",
-            "tap lands on the plan card"
-        );
+        assert_eq!(p.url, "/agent/deploy-fix", "tap lands on the thread showing the plan card");
     }
 
     #[test]
@@ -1193,10 +1216,7 @@ mod tests {
         let p = compose(&NotifEvent::TurnFinished, &c);
         assert_eq!(p.body, "Done — all 34 tests pass, PR #61 is up for review.");
         assert_eq!(p.tier, Tier::Unread);
-        assert_eq!(
-            p.url, "/focus/deploy-fix",
-            "a calm tier does not deep-link to a dialog"
-        );
+        assert_eq!(p.url, "/agent/deploy-fix", "every tier lands on the same thread");
         assert!(!p.renotify, "a replacing finish updates silently");
     }
 
@@ -1338,7 +1358,7 @@ mod tests {
             "no `agent {{name}}` prefix survives"
         );
         // The URL still uses the immutable slug.
-        assert_eq!(p.url, "/focus/deploy-fix-7");
+        assert_eq!(p.url, "/agent/deploy-fix-7");
         assert_eq!(p.tag, "session:deploy-fix-7");
 
         // Pre-0019 edge: an empty display_name falls back to the slug.
@@ -1489,7 +1509,7 @@ mod tests {
         let v = serde_json::to_value(compose(&NotifEvent::PermissionAsked, &c)).unwrap();
         assert_eq!(v["title"], "deploy-fix");
         assert_eq!(v["body"], "Needs permission — ⚡ cargo check (Bash)");
-        assert_eq!(v["url"], "/focus/deploy-fix#pending");
+        assert_eq!(v["url"], "/agent/deploy-fix");
         assert_eq!(v["tier"], "attention");
         assert_eq!(v["session"], "deploy-fix");
         assert_eq!(v["badge"], 2);

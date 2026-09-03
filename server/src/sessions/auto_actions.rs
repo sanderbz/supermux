@@ -2120,7 +2120,7 @@ pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
             // Other categories are not produced by maybe_push_on_transition.
             _ => return,
         };
-        let url = format!("/focus/{task_name}");
+        let url = crate::notify::agent_url(&task_name);
         // B5/T1.4 — the payload shape. The tier is derived from the category
         // rather than hard-coded: `AgentFinished` is the calm review-when-you-can
         // tier, the other two genuinely interrupt. Passing the session lets the
