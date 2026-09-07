@@ -16,8 +16,12 @@
 //! implements the honest, robust target the authors specified: **allow-default
 //! with two targeted denials** —
 //!   * **deny cross-company writes** — writes are re-restricted to the company
-//!     `read_write_paths` (workspace + `/tmp`/`$TMPDIR` + spool), so a bot cannot
-//!     write a sibling company tree; and
+//!     `read_write_paths` (workspace + `/tmp`/`$TMPDIR` + spool + the shared
+//!     provider homes `~/.claude` and `~/.codex`), so a bot cannot write a
+//!     sibling company tree. Both provider homes ride on `read_write_paths`, so
+//!     this backend inherits the codex-boot fix (`~/.codex` holds codex's SQLite
+//!     state runtime + its rotating `auth.json`) for free — there is nothing
+//!     provider-specific to keep in sync here; and
 //!   * **deny reading secrets** — `~/.supermux/auth_token` is unreadable.
 //! That is a real jail for the two threats that matter here, so it reports
 //! [`IsolationLevel::Partial`] — never a `Full` it does not enforce.

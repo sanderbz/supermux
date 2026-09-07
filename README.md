@@ -385,7 +385,7 @@ Exact host match only (no wildcards). Restart the service after editing.
 
 ### Company isolation
 
-Company bots run in an OS jail (Landlock on Linux, Seatbelt on macOS) whose allow-list is deliberately narrow: the company folder, `~/.claude`, `/tmp` and the toolchains. `isolation_mode` in `config.toml` sets the policy — `best-effort` (default, fails open with a warning where the kernel cannot enforce), `strict-required` (refuse to start a company bot unless the jail is enforced) or `off`.
+Company bots run in an OS jail (Landlock on Linux, Seatbelt on macOS) whose allow-list is deliberately narrow: the company folder, the agent homes `~/.claude` and `~/.codex` (each provider keeps its credentials, lock files and state there, and rotates its token by renaming into that dir), `/tmp` and the toolchains. `isolation_mode` in `config.toml` sets the policy — `best-effort` (default, fails open with a warning where the kernel cannot enforce), `strict-required` (refuse to start a company bot unless the jail is enforced) or `off`.
 
 A bot that legitimately needs more — a fleet-admin bot that must read the operator's `~/.ssh` and `~/.config/gh` — gets it per company, not by switching the jail off for everyone:
 
