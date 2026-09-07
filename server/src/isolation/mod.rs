@@ -340,11 +340,15 @@ impl SandboxSpec {
     /// DENIED (they are simply never listed).
     ///
     /// * `read_write_paths` — the company tree (workspace); `/tmp` + `$TMPDIR`;
-    ///   and the NARROW slice of `$HOME` state a booting agent actually writes
-    ///   (`~/.local/state/claude`, `~/.cache/pip`, … — [`AGENT_STATE_RW`]) — see
-    ///   [`CLAUDE_HOME_RO`] for why the shared Claude home is no longer granted
-    ///   wholesale. The spawn wiring appends the session's own spool/socket dir
-    ///   and its OWN Claude project dir via [`allow_rw`](Self::allow_rw).
+    ///   the two shared AGENT HOMES, whole (`~/.claude` and `~/.codex` — each
+    ///   provider rotates its OAuth token by renaming a temp file INTO its home
+    ///   and keeps lock/scratch/SQLite state beside it, and Landlock has no
+    ///   "except"; see the inline notes on both pushes, and [`CLAUDE_HOME_RO`]
+    ///   for the narrower grant this replaced and why it was reverted); and the
+    ///   narrow slice of other `$HOME` state a booting agent writes
+    ///   (`~/.local/state/claude`, `~/.cache/pip`, … — [`AGENT_STATE_RW`]). The
+    ///   spawn wiring appends the session's own spool/socket dir and its OWN
+    ///   Claude project dir via [`allow_rw`](Self::allow_rw).
     /// * `read_exec_paths` — the whole standard system read/exec surface
     ///   (`/usr`, `/bin`, `/sbin`, `/lib{,32,64}`, `/etc`, `/proc`, `/sys`), the
     ///   pty-holder binary under us ([`current_exe`](std::env::current_exe) + its
@@ -384,6 +388,47 @@ impl SandboxSpec {
         // separation belongs to a per-session `config_dir` (CLAUDE_CONFIG_DIR),
         // not to the jail.
         read_write_paths.push(home.join(".claude"));
+        // THE SHARED CODEX HOME, WHOLE — read+write, for exactly the reason
+        // `~/.claude` above is. `~/.codex` was on the RO+exec list only (it is
+        // named there as the codex standalone PACKAGE tree, so the binary can be
+        // exec'd through `~/.local/bin/codex`), which is enough to RUN codex and
+        // not remotely enough to BOOT it: codex-cli opens a SQLite state runtime
+        // in that dir at startup and dies before its first prompt —
+        //
+        //   ERROR: failed to initialize sqlite local db at ~/.codex/state_5.sqlite:
+        //   … (code: 1544) attempt to write a readonly database
+        //
+        // …after which the pty falls back to the bare login shell. Measured live
+        // (2026-09-07, codex-cli 0.151.0): EVERY company-bound codex session died
+        // this way (`sphere`/keuzenl, `reisposter-codex`/reisposter) while codex
+        // sessions outside a company — which are never confined — ran fine.
+        //
+        // Granted as the WHOLE dir, not file-by-file, for the same two reasons
+        // the `~/.claude` grant was widened back in v0.6.19: codex rotates its
+        // OAuth token by writing a temp file INTO `~/.codex` and renaming it over
+        // `auth.json` (a per-file grant cannot survive a rename into the dir), and
+        // its writable state is a moving target that a per-file list would silently
+        // break on every codex release — `state_5.sqlite`, `logs_2.sqlite`,
+        // `queue_1.sqlite`, `memories_1.sqlite`, `goals_1.sqlite`,
+        // `thread_history_1.sqlite` (each with `-wal`/`-shm` siblings),
+        // `history.jsonl`, `sessions/`, `log/`, `cache/`, `tmp/`,
+        // `thread-writer-locks/`, `mcp-oauth-locks/`. Landlock has no "except".
+        //
+        // The trade-off is the SAME one the owner already accepted for `~/.claude`
+        // and is recorded here so it is not rediscovered: the codex account is
+        // shared across every bot on this box, so this grant also exposes
+        // `~/.codex/sessions` + `history.jsonl` (every codex transcript on the box)
+        // across companies. The per-company separation belongs to a per-session
+        // codex home (`CODEX_HOME`), not to the jail — the same shape as
+        // `CLAUDE_CONFIG_DIR`, and the honest fix if that boundary must hold.
+        //
+        // Unconditional, not provider-gated, because it MUST match `~/.claude`:
+        // a claude bot that shells out to `codex exec` (and a codex bot that
+        // shells out to `claude -p`) is ordinary usage here, and a provider gate
+        // would resurrect this exact crash one subprocess deeper. `.codex` stays
+        // on the RO+exec list too — harmless, both backends union the grants, and
+        // the entry there documents the exec-through-symlink dependency.
+        read_write_paths.push(home.join(".codex"));
         for w in AGENT_STATE_RW {
             read_write_paths.push(home.join(w));
         }
@@ -1287,8 +1332,12 @@ mod tests {
                 spec.read_exec_paths
             );
         }
-        // Provider trees are RO, never RW (their writable state lives elsewhere).
-        for p in [".codex", "node-local"] {
+        // The pure BINARY trees are RO, never RW (their writable state lives
+        // elsewhere). `.codex` is deliberately NOT in this list any more: it is
+        // both the codex package tree AND codex's writable state home, so it is
+        // RO+exec (above) *and* RW — see
+        // `the_codex_home_is_writable_so_a_confined_codex_session_can_boot`.
+        for p in ["node-local", ".local/share/claude"] {
             assert!(
                 !spec.read_write_paths.contains(&home.join(p)),
                 "{p} must NOT be RW"
@@ -1301,6 +1350,48 @@ mod tests {
         assert!(!spec
             .read_exec_paths
             .contains(&home.join(".supermux/auth_token")));
+        assert!(!spec.read_write_paths.contains(&home.join(".supermux")));
+    }
+
+    #[test]
+    fn the_codex_home_is_writable_so_a_confined_codex_session_can_boot() {
+        // REGRESSION (measured live 2026-09-07, codex-cli 0.151.0): `~/.codex`
+        // was RO+exec only, so every company-bound codex session died at boot
+        // with `failed to initialize sqlite local db at ~/.codex/state_5.sqlite
+        // … (code: 1544) attempt to write a readonly database` and dropped to
+        // the bare login shell, while un-confined codex sessions ran fine.
+        //
+        // Codex keeps its SQLite state runtime, its transcript spool and its
+        // rotating OAuth token in that ONE dir, so it must be RW — exactly like
+        // `~/.claude`, and for the same rename-into-the-dir reason.
+        let home = PathBuf::from("/home/supermux");
+        let spec = SandboxSpec::for_company(Path::new("/srv/companies/acme"), &home);
+
+        assert!(
+            spec.read_write_paths.contains(&home.join(".codex")),
+            "~/.codex must be RW or a confined codex session cannot boot: {:?}",
+            spec.read_write_paths
+        );
+        // …and it stays RO+exec too, so codex is still EXECUTABLE through the
+        // `~/.local/bin/codex` symlink into the standalone package tree. Both
+        // backends union the grants (Landlock: two rules on one path; Seatbelt:
+        // allow-by-default reads + the re-allow pass over `read_write_paths`).
+        assert!(
+            spec.read_exec_paths.contains(&home.join(".codex")),
+            "~/.codex must stay RO+exec for the codex binary: {:?}",
+            spec.read_exec_paths
+        );
+        // Parity with the provider home that already worked: whatever tier
+        // `~/.claude` is in, `~/.codex` is in too. A provider gate here would
+        // resurrect the crash for a claude bot that shells out to `codex exec`.
+        assert_eq!(
+            spec.read_write_paths.contains(&home.join(".claude")),
+            spec.read_write_paths.contains(&home.join(".codex")),
+            "the two provider homes must share the same write tier"
+        );
+        // The grant is scoped to the codex home — it must not have widened $HOME
+        // itself (which would hand a confined bot ~/.supermux/auth_token).
+        assert!(!spec.read_write_paths.contains(&home));
         assert!(!spec.read_write_paths.contains(&home.join(".supermux")));
     }
 
