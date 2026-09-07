@@ -292,15 +292,21 @@ async fn ineligible_session_is_refused() {
     let _g = ENV_LOCK.lock().await;
     let h = spawn_harness().await;
 
-    // A non-Claude provider.
-    make_session(&h, "chat-codex", "codex", None).await;
-    // A remote session (real hosts row — `host_id` is an enforced FK).
+    // A provider that writes no transcript at all. (Codex is NOT here any
+    // more: it is served in its own rollout dialect — see
+    // `sessions::chat::codex` — so the only provider refusal left is a
+    // provider with nothing to tail.)
+    make_session(&h, "chat-shell", "shell", None).await;
+    // A remote session (real hosts row — `host_id` is an enforced FK). Refused
+    // for EVERY provider, including the newly-eligible codex: a remote
+    // session's transcript is on the remote box.
     let host = db::hosts::create(&h.state.pool, "box", "user@box", None)
         .await
         .expect("host");
     make_session(&h, "chat-remote", "claude", Some(host.id)).await;
+    make_session(&h, "chat-remote-codex", "codex", Some(host.id)).await;
     // …and a session that does not exist at all.
-    for name in ["chat-codex", "chat-remote", "chat-ghost"] {
+    for name in ["chat-shell", "chat-remote", "chat-remote-codex", "chat-ghost"] {
         let mut ws = connect_authed(h.addr, name).await;
         assert_eq!(
             read_close_code(&mut ws, Duration::from_secs(4)).await,
@@ -311,7 +317,9 @@ async fn ineligible_session_is_refused() {
     }
 
     // The REST backlog routes are gated by the same guard.
-    let (status, _) = get(&h.app, "/api/sessions/chat-codex/chat/history").await;
+    let (status, _) = get(&h.app, "/api/sessions/chat-shell/chat/history").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = get(&h.app, "/api/sessions/chat-remote-codex/chat/history").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = get(&h.app, "/api/sessions/chat-remote/chat/entry/u1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
