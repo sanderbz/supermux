@@ -9,11 +9,18 @@ import {
 describe('chat renderer flag', () => {
   const claude = { provider: 'claude', host_id: null }
 
-  test('eligibility: local claude only (master plan Track A v1 guard)', () => {
+  test('eligibility: local claude or codex, never remote', () => {
     expect(chatEligible(claude)).toBe(true)
+    // Codex is served in its own rollout dialect (server: chat/codex.rs), so it
+    // is eligible too — pragmatically rendered, with an explicit "open the
+    // terminal" row for anything the mapping does not cover.
+    expect(chatEligible({ provider: 'codex', host_id: null })).toBe(true)
+    // A provider with no transcript at all stays out.
     expect(chatEligible({ provider: 'shell', host_id: null })).toBe(false)
-    expect(chatEligible({ provider: 'codex', host_id: null })).toBe(false)
+    // A remote session's transcript is on the remote box — refused for EVERY
+    // provider, which is the half of this guard that never moved.
     expect(chatEligible({ provider: 'claude', host_id: 3 })).toBe(false)
+    expect(chatEligible({ provider: 'codex', host_id: 3 })).toBe(false)
     // host_id undefined (older payloads) counts as local.
     expect(chatEligible({ provider: 'claude' })).toBe(true)
   })

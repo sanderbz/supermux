@@ -109,10 +109,21 @@ pub const SEED_WARMUP: Duration = Duration::from_millis(1_500);
 /// `SessionStart` used to repoint the LEAD's `cc_conversation_id` at the
 /// teammate's transcript. That is fixed at the source by the pane-attributed
 /// adoption guard in [`crate::hooks::track_conversation_pointer`] (S2), which is
-/// what makes serving a lead here safe. Remote (`host_id`) and non-Claude
-/// refusals are unchanged.
+/// what makes serving a lead here safe.
+///
+/// # Codex
+///
+/// Codex is eligible too, in its own dialect ([`super::codex`]): it writes an
+/// append-only rollout JSONL that the same byte cursor tails and the same wire
+/// carries. The rendering is deliberately PRAGMATIC, not Claude-fidelity —
+/// prompts, replies, reasoning and shell runs map onto the existing kinds, and
+/// anything unmodelled becomes `Kind::Unknown`, which the renderer draws as a
+/// visible "open the terminal" row rather than a gap.
+///
+/// `host_id` is still refused for every provider: a remote session's transcript
+/// is on the remote box, and nothing here can read it.
 pub fn chat_eligible(provider: &str, host_id: Option<i64>) -> bool {
-    provider == "claude" && host_id.is_none()
+    matches!(provider, "claude" | "codex") && host_id.is_none()
 }
 
 /// Load `name`'s row and refuse anything the chat data plane does not serve.
@@ -1120,12 +1131,15 @@ mod tests {
 
     #[test]
     fn chat_eligibility_matches_the_client_guard() {
-        // web/src/components/chat/flag.ts: `provider === 'claude' && host_id ==
-        // null`. The client guard hides the UI; THIS one is what makes it a
-        // guard — a hand-rolled socket cannot tail a codex session or a remote
-        // host's transcript.
+        // web/src/components/chat/flag.ts: `(provider === 'claude' || provider
+        // === 'codex') && host_id == null`. The client guard hides the UI; THIS
+        // one is what makes it a guard — a hand-rolled socket cannot tail a
+        // remote host's transcript or a provider with no transcript at all.
         assert!(chat_eligible("claude", None));
-        assert!(!chat_eligible("codex", None), "provider must be claude");
+        assert!(
+            chat_eligible("codex", None),
+            "codex has its own rollout dialect (chat::codex) and is served too"
+        );
         // A legacy row carrying a provider supermux no longer ships must be
         // handled as "not eligible", never as an unknown that falls through.
         assert!(!chat_eligible("a-retired-provider", None));
@@ -1141,7 +1155,7 @@ mod tests {
     /// the parameter is gone entirely, so no team shape can refuse — while the
     /// two refusals that are about the DATA PLANE (not the team model) stay.
     #[test]
-    fn a_team_lead_is_chat_eligible_but_codex_and_remote_still_are_not() {
+    fn a_team_lead_is_chat_eligible_but_a_remote_one_still_is_not() {
         // The lead of a real, multi-member team: eligible. Its own
         // `<project>/<cc_conversation_id>.jsonl` is exactly the file the tailer
         // already serves; the pointer is kept honest by the pane-attributed
@@ -1150,8 +1164,11 @@ mod tests {
             chat_eligible("claude", None),
             "a team lead must be a first-class bot thread (S1)"
         );
-        // …and lifting the refusal must not lift the other two.
-        assert!(!chat_eligible("codex", None), "a codex lead has no Claude transcript");
+        // …and lifting the refusal must not lift the ones that are about the
+        // data plane. Codex is now served in its own dialect; a remote session
+        // still is not, whatever its provider.
+        assert!(chat_eligible("codex", None));
+        assert!(!chat_eligible("codex", Some(7)));
         assert!(
             !chat_eligible("claude", Some(7)),
             "a remote lead's transcript lives on the remote box"

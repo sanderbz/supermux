@@ -35,6 +35,7 @@
 //!   thing in the chat data plane that writes to the user's own Claude config.
 
 pub mod agent_error;
+pub mod codex;
 pub mod model;
 pub mod parser;
 pub mod statusline;

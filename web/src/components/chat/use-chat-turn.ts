@@ -158,7 +158,11 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // never touches — an older page cannot change the turn anchor, the supersede
   // gate or the confirmed clock. Memoised inside the hook, so `toDisplayList`
   // is not recomputed on the 1s live-layer tick.
-  const backlog = useChatBacklog(name, tail)
+  // Codex's dialect is mapped pragmatically (prompts, replies, reasoning, shell
+  // runs) and honestly nothing more, so anything it does beyond that must be
+  // SHOWN as an "open the terminal" row rather than silently dropped the way
+  // Claude's known chrome kinds are.
+  const backlog = useChatBacklog(name, tail, session?.provider === 'codex')
   const entries = backlog.entries
   const items = React.useMemo(() => toDisplayList(entries), [entries])
   const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0

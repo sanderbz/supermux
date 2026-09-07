@@ -142,7 +142,14 @@ const emptyFor = (name: string, epoch: number): Backlog => ({
   pages: 0,
 })
 
-export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
+export function useChatBacklog(
+  name: string,
+  tail: ChatWireView,
+  /** Draw a row for entries the renderer has no mapping for, instead of
+   *  dropping them. On for providers mapped pragmatically (Codex) — see
+   *  `toChatEntries`. */
+  surfaceUnmapped = false,
+): ChatBacklog {
   const epoch = tail.resyncCount
   const [stored, setStored] = React.useState<Backlog>(() => emptyFor(name, epoch))
   const state =
@@ -162,8 +169,8 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // One adaptation, over one list. `toChatEntries` reads oldest-first (it folds
   // each `tool_result` into the receipt above it), and answers newest-first.
   const entries = React.useMemo(
-    () => toChatEntries(merged.slice().reverse()),
-    [merged],
+    () => toChatEntries(merged.slice().reverse(), { surfaceUnmapped }),
+    [merged, surfaceUnmapped],
   )
 
   // The conversation the server stamped into its own cursor. Everything this

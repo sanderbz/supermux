@@ -62,7 +62,7 @@ use serde::Serialize;
 use tokio::sync::{watch, Notify};
 
 use super::model::ChatEntry;
-use super::parser::parse_stream;
+use super::parser::{parse_stream_with, Dialect};
 use crate::sessions::resumable;
 use crate::state::AppState;
 
@@ -307,6 +307,10 @@ fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
 #[derive(Debug)]
 struct FileCursor {
     path: PathBuf,
+    /// Which transcript FORMAT this file is in. Carried per cursor rather than
+    /// per tailer because it belongs to the FILE — and because a cursor is the
+    /// only thing that ever calls the parser.
+    dialect: Dialect,
     offset: u64,
     /// How far back from EOF this cursor was allowed to seed. Kept so a
     /// rotation re-seeds under the SAME bound instead of falling back to 0.
@@ -317,11 +321,11 @@ impl FileCursor {
     /// A cursor over `path` seeded at most `budget` bytes back from EOF.
     /// Returns the cursor and how much of `budget` it actually consumed, so a
     /// cursor SET can share one total budget.
-    fn seeded(path: PathBuf, budget: u64) -> (Self, u64) {
+    fn seeded(path: PathBuf, dialect: Dialect, budget: u64) -> (Self, u64) {
         let offset = seed_offset(&path, budget);
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let spent = len.saturating_sub(offset);
-        (Self { path, offset, seed_budget: budget }, spent)
+        (Self { path, dialect, offset, seed_budget: budget }, spent)
     }
 
     /// Read everything appended since `offset`. Returns the entries and whether
@@ -353,7 +357,7 @@ impl FileCursor {
         if f.seek(SeekFrom::Start(self.offset)).is_err() {
             return (Vec::new(), restarted);
         }
-        let (entries, next) = parse_stream(BufReader::new(f), self.offset);
+        let (entries, next) = parse_stream_with(self.dialect, BufReader::new(f), self.offset);
         self.offset = next;
         (entries, restarted)
     }
@@ -453,6 +457,8 @@ pub struct TailPoll {
 pub struct Tailer {
     project_dir: PathBuf,
     conversation_id: String,
+    /// The dialect every cursor of this tailer opens in.
+    dialect: Dialect,
     main: FileCursor,
     /// agent id → its own cursor. `BTreeMap` so a poll's output order is stable.
     subagents: BTreeMap<String, FileCursor>,
@@ -463,12 +469,26 @@ pub struct Tailer {
 
 impl Tailer {
     pub fn new(project_dir: impl Into<PathBuf>, conversation_id: &str) -> Self {
+        Self::new_in(project_dir, conversation_id, Dialect::Claude)
+    }
+
+    /// [`Tailer::new`] over a transcript in an explicit dialect. A Codex rollout
+    /// is a different FORMAT in a different place, but it is still one
+    /// append-only JSONL, so it reuses this whole byte-cursor machinery — the
+    /// caller only has to hand it the right `(dir, stem)` (see
+    /// [`super::codex::locate`]) and the right dialect.
+    pub fn new_in(
+        project_dir: impl Into<PathBuf>,
+        conversation_id: &str,
+        dialect: Dialect,
+    ) -> Self {
         let project_dir = project_dir.into();
         let path = transcript_path(&project_dir, conversation_id);
         let mut t = Self {
             project_dir,
             conversation_id: conversation_id.to_string(),
-            main: FileCursor { path: path.clone(), offset: 0, seed_budget: 0 },
+            dialect,
+            main: FileCursor { path: path.clone(), dialect, offset: 0, seed_budget: 0 },
             subagents: BTreeMap::new(),
             pending_resync: false,
             cold_budget: COLD_SEED_TOTAL_BYTES,
@@ -487,7 +507,7 @@ impl Tailer {
     /// main entries LAST so the newest-biased ring and seed window keep them (a
     /// reserved seed the ring then evicts is no seed at all).
     fn open_cold_main(&mut self, path: PathBuf) -> FileCursor {
-        let (cursor, _spent) = FileCursor::seeded(path, COLD_SEED_BYTES);
+        let (cursor, _spent) = FileCursor::seeded(path, self.dialect, COLD_SEED_BYTES);
         cursor
     }
 
@@ -508,7 +528,7 @@ impl Tailer {
         } else {
             COLD_SEED_BYTES.min(self.cold_budget)
         };
-        let (cursor, spent) = FileCursor::seeded(path, budget);
+        let (cursor, spent) = FileCursor::seeded(path, self.dialect, budget);
         self.cold_budget = self.cold_budget.saturating_sub(spent);
         cursor
     }
@@ -931,16 +951,36 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
                 continue;
             }
         };
-        if row.provider != "claude" || row.host_id.is_some() {
+        if !super::ws::chat_eligible(&row.provider, row.host_id) {
             break TailState::Stopped {
                 reason: "chat is unavailable for this session",
                 retry: false,
             };
         }
 
-        let project = resumable::project_dir_for(&row.config_dir, &row.dir);
-        let conv = row.cc_conversation_id.clone();
-        let rebuilt = rebuild(&mut core, &project, &conv);
+        let dialect = Dialect::for_provider(&row.provider);
+        // WHERE the transcript is, per dialect. Both answers are a
+        // `(dir, stem)` pair that `transcript_path` joins into `<dir>/<stem>.jsonl`,
+        // so everything below — the cursor, the watcher, the rebuild test — is
+        // shared and never learns which agent wrote the file.
+        let located = match dialect {
+            Dialect::Claude => Some((
+                resumable::project_dir_for(&row.config_dir, &row.dir),
+                row.cc_conversation_id.clone(),
+            )),
+            // Codex keeps no project index and nothing has ever written
+            // `codex_session_id`, so the rollout is found by cwd. It does not
+            // exist until codex has actually started a thread, which is why a
+            // miss RETRIES instead of ending the task: a session opened before
+            // its first prompt would otherwise have its chat closed for good.
+            Dialect::Codex => super::codex::locate(&row.dir),
+        };
+        let Some((project, conv)) = located else {
+            tracing::debug!(session = %name, "chat tailer: no codex rollout for this cwd yet");
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        };
+        let rebuilt = rebuild(&mut core, &project, &conv, dialect);
 
         // Arm/re-arm the directory watcher (best effort; the poll runs anyway).
         if watcher.as_ref().map(|(p, _)| p.as_path()) != Some(project.as_path()) {
@@ -959,7 +999,10 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // Filesystem work happens off the async worker: a re-seed can read a
         // whole seed window from disk.
         let taken = core.take().expect("core was just set");
-        let want_siblings = running && hooks_live && hook_fresh;
+        // Subagent transcripts are a Claude Code concept (`subagents/agent-*.jsonl`
+        // next to the main file); a Codex rollout has no siblings to scan.
+        let want_siblings =
+            dialect == Dialect::Claude && running && hooks_live && hook_fresh;
         let pass = tokio::task::spawn_blocking(move || blocking_pass(taken, want_siblings)).await;
         // The blocking pool is gone (shutdown), or the pass panicked. Either
         // way this task is done — say so, loudly, instead of leaving every
@@ -1060,14 +1103,22 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
 /// session delete). A fresh cursor set starts at byte 0, so without the resync a
 /// restarted tailer would publish every entry the previous one already
 /// published, and the seed would show the whole conversation twice.
-fn rebuild(core: &mut Option<Tailer>, project: &Path, conversation_id: &str) -> bool {
+fn rebuild(
+    core: &mut Option<Tailer>,
+    project: &Path,
+    conversation_id: &str,
+    dialect: Dialect,
+) -> bool {
     match core.as_mut() {
-        // Same project dir: only a moved pointer changes anything, and it is the
-        // one adoption path (hook-carried id, never a guessed sibling).
-        Some(t) if t.project_dir() == project => t.retarget(conversation_id),
+        // Same project dir AND dialect: only a moved pointer changes anything,
+        // and it is the one adoption path (hook-carried id, never a guessed
+        // sibling).
+        Some(t) if t.project_dir() == project && t.dialect == dialect => {
+            t.retarget(conversation_id)
+        }
         // First pass of this task, or the session's cwd moved under us.
         _ => {
-            *core = Some(Tailer::new(project, conversation_id));
+            *core = Some(Tailer::new_in(project, conversation_id, dialect));
             true
         }
     }
@@ -1744,7 +1795,7 @@ mod tests {
         assert!(off == 0 || raw[off as usize - 1] == b'\n', "the fallback offset must be a line start");
 
         // Draining from that offset yields the giant final line as a visible entry.
-        let (mut cursor, _spent) = FileCursor::seeded(f.clone(), COLD_SEED_BYTES);
+        let (mut cursor, _spent) = FileCursor::seeded(f.clone(), Dialect::Claude, COLD_SEED_BYTES);
         let (entries, _restarted) = cursor.drain();
         assert!(!entries.is_empty(), "the over-budget final line must seed a visible entry");
         assert_eq!(entries.last().unwrap().uuid, "uBIG", "…and it is that final line");
@@ -2080,7 +2131,7 @@ mod tests {
         let store = ChatStore::new();
 
         let mut task1: Option<Tailer> = None;
-        assert!(rebuild(&mut task1, &dir, "conv-a"));
+        assert!(rebuild(&mut task1, &dir, "conv-a", Dialect::Claude));
         store.reset();
         store.publish(task1.as_mut().unwrap().poll().entries);
         assert_eq!(store.attach().ring.len(), 2);
@@ -2088,7 +2139,7 @@ mod tests {
         // …the last lease drops, the task exits, the store stays. A new attach:
         let mut task2: Option<Tailer> = None;
         assert!(
-            rebuild(&mut task2, &dir, "conv-a"),
+            rebuild(&mut task2, &dir, "conv-a", Dialect::Claude),
             "a cold cursor over a warm ring MUST resync, or the seed doubles"
         );
         store.reset();
@@ -2105,11 +2156,11 @@ mod tests {
         let dir = tmp_project("rebuild");
         let other = tmp_project("rebuild-moved");
         let mut core: Option<Tailer> = None;
-        assert!(rebuild(&mut core, &dir, "conv-a"), "the first build is a resync");
-        assert!(!rebuild(&mut core, &dir, "conv-a"), "an unchanged pointer must not churn");
-        assert!(rebuild(&mut core, &dir, "conv-b"), "a moved pointer re-seeds");
+        assert!(rebuild(&mut core, &dir, "conv-a", Dialect::Claude), "the first build is a resync");
+        assert!(!rebuild(&mut core, &dir, "conv-a", Dialect::Claude), "an unchanged pointer must not churn");
+        assert!(rebuild(&mut core, &dir, "conv-b", Dialect::Claude), "a moved pointer re-seeds");
         assert_eq!(core.as_ref().unwrap().conversation_id(), "conv-b");
-        assert!(rebuild(&mut core, &other, "conv-b"), "a moved cwd is a fresh cursor set");
+        assert!(rebuild(&mut core, &other, "conv-b", Dialect::Claude), "a moved cwd is a fresh cursor set");
         assert_eq!(core.as_ref().unwrap().project_dir(), other.as_path());
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(other);

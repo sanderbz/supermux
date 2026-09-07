@@ -34,8 +34,10 @@ import {
 import {
   classifyPrompt,
   sanitiseText,
+  SYSTEM_ROW_BADGES,
   toChatEntries,
   toolLine,
+  UNMAPPED_TEXT,
   transcriptFreshMs,
   truncatedUuids,
 } from '../../src/components/chat/wire-entries'
@@ -303,6 +305,56 @@ function block(over: Partial<WireEntry> & { uuid: string; kind: WireEntry['kind'
     ...over,
   }
 }
+
+describe('entries this view cannot draw (Codex pragmatic dialect)', () => {
+  // Codex is served in a dialect that maps prompts, replies, reasoning and
+  // shell runs — and honestly nothing else. Everything it does BEYOND that
+  // arrives as `unknown`, and the contract is that the user is TOLD, not shown
+  // a gap. `surfaceUnmapped` is on exactly for such a provider.
+  const odd = block({ uuid: 'u1', kind: 'unknown', label: 'turn_aborted', body: { reason: 'x' } })
+
+  test('an unmapped entry is dropped for Claude, as it always was', () => {
+    // The calm view is unchanged for the provider it was tuned for: these
+    // shapes are known chrome (`ai-title`, `agent-name`, …), not events worth a
+    // row, and surfacing them would add noise to every Claude conversation.
+    expect(toChatEntries([odd])).toHaveLength(0)
+    expect(toChatEntries([odd], {})).toHaveLength(0)
+  })
+
+  test('…and becomes a visible "open the terminal" row when surfaced', () => {
+    const [row] = toChatEntries([odd], { surfaceUnmapped: true })
+    expect(row).toBeDefined()
+    expect(row.text).toBe(UNMAPPED_TEXT)
+    expect(row.text).toContain('open the terminal')
+    // The source event's own type name rides along as the detail line, so the
+    // row is diagnosable without being cryptic.
+    expect(row.reply).toBe('Codex event: turn_aborted')
+    expect(row.uuid).toBe('u1')
+  })
+
+  test('the row rides a badge grouping draws in the SYSTEM voice', () => {
+    // `kind` becomes `ChatItem.badge`; `grouping.ts::SYSTEM_BADGES` spreads in
+    // `SYSTEM_ROW_BADGES`, so listing it there is what stops the row being
+    // drawn as the user's own speech bubble.
+    const [row] = toChatEntries([odd], { surfaceUnmapped: true })
+    expect(row.kind).toBe('unmapped')
+    expect(SYSTEM_ROW_BADGES as readonly string[]).toContain('unmapped')
+  })
+
+  test('a mapped Codex turn still renders as ordinary chat, not as a fallback', () => {
+    // The fallback must not swallow the kinds the dialect DOES map — those are
+    // the ones that make chat mode worth having.
+    const entries = toChatEntries(
+      [
+        block({ uuid: 'p1', kind: 'prompt', body: { text: 'ship it' } }),
+        block({ uuid: 'a1', kind: 'assistant', body: { text: 'done' } }),
+      ],
+      { surfaceUnmapped: true },
+    )
+    expect(entries.map((e) => e.kind).sort()).toEqual(['assistant', 'prompt'])
+    expect(entries.every((e) => e.text !== UNMAPPED_TEXT)).toBe(true)
+  })
+})
 
 describe('the adapter', () => {
   test('a tool_result folds into the receipt it answers, never its own row', () => {
