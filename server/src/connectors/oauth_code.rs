@@ -516,6 +516,14 @@ pub fn clamp_scope(s: Option<String>) -> Option<String> {
     Some(s)
 }
 
+/// The card's own `auth.scopes` (manifest `AuthDescriptor::scopes`) joined and
+/// clamped, or `None` when the card declares none.
+pub fn declared_scope(card: &Value) -> Option<String> {
+    let list = card.get("auth")?.get("scopes")?.as_array()?;
+    let joined = list.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    clamp_scope(Some(joined))
+}
+
 /// What discovery resolved for an MCP url.
 #[derive(Debug, Clone)]
 pub struct Discovered {
@@ -618,15 +626,21 @@ pub async fn discover(mcp_url: &str, policy: &UrlPolicy) -> Result<Discovered, D
     if b.status.is_redirection() {
         return Err(DiscoverError::Redirect);
     }
-    if b.status.is_success() {
-        return Err(DiscoverError::NoAuthRequired);
-    }
-    let www = b
-        .headers
-        .get(header::WWW_AUTHENTICATE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_www_authenticate)
-        .unwrap_or_default();
+    // A server that answers an anonymous `initialize` with 2xx may still be
+    // OAuth-protected at the tool level — Google's hosted Gmail MCP does exactly
+    // that (200 on initialize, PRM published under
+    // `/.well-known/oauth-protected-resource/<path>`). Only a server that ALSO
+    // publishes no protected-resource metadata is truly open.
+    let open_initialize = b.status.is_success();
+    let www = if open_initialize {
+        Default::default()
+    } else {
+        b.headers
+            .get(header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_www_authenticate)
+            .unwrap_or_default()
+    };
 
     // Candidate PRM urls: the challenge's `resource_metadata` (same host only),
     // then the RFC 9728 §3.1 well-known locations.
@@ -670,7 +684,11 @@ pub async fn discover(mcp_url: &str, policy: &UrlPolicy) -> Result<Discovered, D
             Err(e) => last_err = e,
         }
     }
-    let prm = prm.ok_or(last_err)?;
+    let prm = match prm {
+        Some(p) => p,
+        None if open_initialize => return Err(DiscoverError::NoAuthRequired),
+        None => return Err(last_err),
+    };
     if !resource_matches(&prm.resource, &mcp) {
         return Err(DiscoverError::ResourceMismatch);
     }
@@ -1192,6 +1210,14 @@ pub async fn start(
         }
     })?;
 
+    // 4b. an owner-declared scope list on the card replaces the server's
+    // advertised one: Google's Gmail PRM advertises full-mailbox scopes while a
+    // support bot only needs read + drafts. Only used when the card declares it.
+    let mut disc = disc;
+    if let Some(s) = declared_scope(&card) {
+        disc.scope = Some(s);
+    }
+
     // 5. client id (cached DCR).
     let client = client_for(&state, &disc.as_meta, &redirect_uri, disc.scope.as_deref(), &policy)
         .await
@@ -1242,6 +1268,13 @@ pub async fn start(
         q.append_pair("resource", &disc.resource);
         if let Some(s) = &disc.scope {
             q.append_pair("scope", s);
+        }
+        // Google only hands out a refresh token when asked for one explicitly;
+        // without it the sealed grant dies after an hour and every launch would
+        // need a fresh sign-in.
+        if disc.issuer.trim_end_matches('/') == "https://accounts.google.com" {
+            q.append_pair("access_type", "offline");
+            q.append_pair("prompt", "consent");
         }
     }
     audit(
@@ -2518,6 +2551,10 @@ mod tests {
         assert_eq!(clamp_scope(Some(" a b ".into())).as_deref(), Some("a b"));
         assert_eq!(clamp_scope(Some("bad\nscope".into())), None);
         assert_eq!(clamp_scope(Some("x".repeat(600))), None);
+        let card = json!({ "auth": { "kind": "mcp_oauth", "scopes": [" a ", "", "b"] } });
+        assert_eq!(declared_scope(&card).as_deref(), Some("a b"));
+        assert_eq!(declared_scope(&json!({ "auth": { "kind": "mcp_oauth" } })), None);
+        assert_eq!(declared_scope(&json!({ "auth": { "kind": "mcp_oauth", "scopes": [] } })), None);
         assert_eq!(clamp_label("a\u{0}b\u{7}c"), "abc");
         assert_eq!(clamp_label(&"y".repeat(200)).len(), 120);
     }
@@ -2543,6 +2580,45 @@ mod tests {
         assert!(!is_remote_oauth(&stdio, &p));
         let private = json!({ "auth": { "kind": "mcp_oauth" }, "emit": { "url": "http://127.0.0.1:1/mcp" } });
         assert!(!is_remote_oauth(&private, &p));
+    }
+
+    // ── open initialize: PRM still counts, no PRM means truly open ─────────────
+
+    #[tokio::test]
+    async fn open_initialize_with_prm_is_still_protected() {
+        // Google's hosted Gmail MCP answers an anonymous initialize with 200 and
+        // publishes its PRM under the path-inserted well-known URL.
+        let app = axum::Router::new()
+            .route("/mcp", post(|| async { ([(header::CONTENT_TYPE, "application/json")], json!({ "jsonrpc": "2.0", "id": 1, "result": {} }).to_string()) }))
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        json!({ "resource": "http://127.0.0.1:1/mcp", "authorization_servers": ["https://as.example"] }).to_string(),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let p = UrlPolicy { allow_loopback_http: true };
+        let r = discover(&format!("http://127.0.0.1:{port}/mcp"), &p).await;
+        // The PRM was found and read (its resource names another port, so the
+        // walk stops there) — the open initialize did NOT short-circuit.
+        assert_eq!(r.unwrap_err(), DiscoverError::ResourceMismatch);
+    }
+
+    #[tokio::test]
+    async fn open_initialize_without_prm_is_open() {
+        let app = axum::Router::new()
+            .route("/mcp", post(|| async { ([(header::CONTENT_TYPE, "application/json")], json!({ "jsonrpc": "2.0", "id": 1, "result": {} }).to_string()) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let p = UrlPolicy { allow_loopback_http: true };
+        let r = discover(&format!("http://127.0.0.1:{port}/mcp"), &p).await;
+        assert_eq!(r.unwrap_err(), DiscoverError::NoAuthRequired);
     }
 
     // ── redirect: a 302 from the MCP endpoint is never followed ────────────────
