@@ -59,7 +59,46 @@ const TOP_LEVEL_TYPES: &[&str] = &[
 ];
 
 /// Parse one physical line. `offset` is the byte offset of the line START.
+/// Which transcript FORMAT a reader is looking at.
+///
+/// The chat pipeline is provider-neutral below this point: the byte cursor, the
+/// oversize/partial-line/malformed rules, the ring, the wire cap and the whole
+/// React tree all move `ChatEntry`s and never learn which agent wrote the file.
+/// A dialect is therefore exactly one function — line object → entries — and
+/// adding one costs nothing downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    /// Claude Code's project transcript (`<project>/<conversation>.jsonl`).
+    #[default]
+    Claude,
+    /// A Codex rollout (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) —
+    /// see [`super::codex`].
+    Codex,
+}
+
+impl Dialect {
+    /// The dialect a session's transcript is written in.
+    pub fn for_provider(provider: &str) -> Self {
+        match provider {
+            "codex" => Self::Codex,
+            _ => Self::Claude,
+        }
+    }
+
+    fn entries(self, obj: &Map<String, Value>, offset: u64) -> Vec<ChatEntry> {
+        match self {
+            Self::Claude => entries_from_object(obj, offset),
+            Self::Codex => super::codex::entries_from_object(obj, offset),
+        }
+    }
+}
+
 pub fn parse_line(line: &str, offset: u64) -> ParsedLine {
+    parse_line_with(Dialect::Claude, line, offset)
+}
+
+/// [`parse_line`] in an explicit dialect.
+pub fn parse_line_with(dialect: Dialect, line: &str, offset: u64) -> ParsedLine {
     if line.trim().is_empty() {
         return ParsedLine::Skip;
     }
@@ -73,7 +112,7 @@ pub fn parse_line(line: &str, offset: u64) -> ParsedLine {
     let Some(obj) = v.as_object() else {
         return ParsedLine::Malformed("top-level JSON value is not an object".to_string());
     };
-    ParsedLine::Entry(entries_from_object(obj, offset))
+    ParsedLine::Entry(dialect.entries(obj, offset))
 }
 
 /// Read whole lines from `reader`, which must already be positioned at
@@ -83,8 +122,19 @@ pub fn parse_line(line: &str, offset: u64) -> ParsedLine {
 /// with ordinary buffered writes, so a poll can land mid-line and the next one
 /// must re-read it whole.
 pub fn parse_stream<R: BufRead>(reader: R, from_offset: u64) -> (Vec<ChatEntry>, u64) {
+    parse_stream_with(Dialect::Claude, reader, from_offset)
+}
+
+/// [`parse_stream`] in an explicit dialect. Every byte-level rule above —
+/// the partial trailing line, the oversize discard, the malformed placeholder,
+/// the cursor arithmetic — is shared; only the line->entries mapping differs.
+pub fn parse_stream_with<R: BufRead>(
+    dialect: Dialect,
+    reader: R,
+    from_offset: u64,
+) -> (Vec<ChatEntry>, u64) {
     let mut out = Vec::new();
-    let next = parse_scan(reader, from_offset, |e| {
+    let next = parse_scan_with(dialect, reader, from_offset, |e| {
         out.push(e);
         true
     });
@@ -100,6 +150,16 @@ pub fn parse_stream<R: BufRead>(reader: R, from_offset: u64) -> (Vec<ChatEntry>,
 /// cap — cost ~45 ms and ~32 MB per request, once per truncated entry a
 /// renderer resolves.
 pub fn parse_scan<R: BufRead>(
+    reader: R,
+    from_offset: u64,
+    sink: impl FnMut(ChatEntry) -> bool,
+) -> u64 {
+    parse_scan_with(Dialect::Claude, reader, from_offset, sink)
+}
+
+/// [`parse_scan`] in an explicit dialect.
+pub fn parse_scan_with<R: BufRead>(
+    dialect: Dialect,
     mut reader: R,
     from_offset: u64,
     mut sink: impl FnMut(ChatEntry) -> bool,
@@ -166,7 +226,7 @@ pub fn parse_scan<R: BufRead>(
         }
         let text = String::from_utf8_lossy(&buf[..end]);
         let mut stop = false;
-        match parse_line(&text, offset) {
+        match parse_line_with(dialect, &text, offset) {
             ParsedLine::Entry(list) => {
                 for e in list {
                     if !sink(e) {
@@ -1058,7 +1118,7 @@ fn scan_field(line: &str, key: &str) -> Option<String> {
 
 /// First non-empty string value among `keys`. Key-list, not `serde(alias)`:
 /// see the module header (both casings co-occur on one object).
-fn str_at<'a>(o: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+pub(super) fn str_at<'a>(o: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|k| o.get(*k).and_then(Value::as_str))
         .filter(|s| !s.is_empty())
@@ -1080,7 +1140,7 @@ fn text_body(b: &Value, key: &str) -> Value {
 
 /// CC's `timestamp` (RFC3339) → epoch **ms**. Missing/unparseable → 0.
 /// This is CC's clock, not arrival time — see [`ChatEntry::ts_ms`].
-fn parse_ts_ms(raw: Option<&str>) -> i64 {
+pub(super) fn parse_ts_ms(raw: Option<&str>) -> i64 {
     raw.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.timestamp_millis())
         .unwrap_or(0)

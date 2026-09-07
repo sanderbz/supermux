@@ -556,6 +556,11 @@ export const SYSTEM_ROW_BADGES = [
   'background-agent',
   // Any other harness-injected user line (`promptSource: "system"`).
   'harness',
+  // AN ENTRY THIS VIEW CANNOT DRAW. Only ever produced for a provider whose
+  // dialect is mapped pragmatically rather than exhaustively (Codex): the row
+  // says so and points at the terminal, instead of leaving a hole where
+  // something happened. See `UNMAPPED_TEXT`.
+  'unmapped',
 ] as const
 
 function num(body: unknown, key: string): number | undefined {
@@ -910,7 +915,17 @@ export function transcriptFreshMs(
  * exactly that reason. See [`isSubagent`] for the A6 decision that made this
  * deliberate rather than accidental.
  */
-export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
+/** What an entry this renderer has no mapping for says on screen. Deliberately
+ *  about the VIEW's limits, not the session's — nothing went wrong, the chat
+ *  just cannot draw this one. */
+export const UNMAPPED_TEXT =
+  "Codex did something the chat view can't show yet — open the terminal."
+
+export function toChatEntries(
+  wire: readonly WireEntry[],
+  opts: { surfaceUnmapped?: boolean } = {},
+): ChatEntry[] {
+  const surfaceUnmapped = opts.surfaceUnmapped ?? false
   const out: ChatEntry[] = []
   // tool_use_id → index in `out`, so a later `tool_result` folds into its
   // receipt instead of becoming a row of its own.
@@ -1184,8 +1199,27 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       continue
     }
 
-    // attachment / system / compact_boundary / queue / mode / subagent /
-    // unknown: not part of the A1 calm view.
+    // NOT PART OF THE CALM VIEW: attachment / queue / mode / unknown.
+    //
+    // For Claude these are deliberate omissions — the shapes are known, and
+    // known to be chrome. For a provider whose dialect is mapped PRAGMATICALLY
+    // (Codex: prompts, replies, reasoning and shell runs, and honestly nothing
+    // more), the same silence is a lie: something happened in the session and
+    // the view showed a gap. `surfaceUnmapped` turns that gap into a row that
+    // says so and points at the terminal, which is the whole contract for
+    // second-tier providers.
+    if (surfaceUnmapped) {
+      out.push({
+        uuid: w.uuid,
+        ts: toSeconds(w.ts_ms),
+        text: UNMAPPED_TEXT,
+        kind: 'unmapped',
+        // The wire label is the source event's own type name
+        // (`turn_aborted`, `mcp_tool_call_end`, …). Shown as the detail line so
+        // the row is diagnosable without being cryptic.
+        reply: w.label ? `Codex event: ${w.label}` : undefined,
+      })
+    }
   }
 
   out.reverse()
