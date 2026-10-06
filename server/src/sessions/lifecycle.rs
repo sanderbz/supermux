@@ -1870,7 +1870,7 @@ async fn deliver_prompt(
         .map(|c| agent_busy(&c))
         .unwrap_or(false);
 
-    rt.send_text(prompt).await?;
+    type_for_submit(rt, provider, prompt).await?;
     submit_gap(rt).await;
     rt.send_key("Enter").await?;
 
@@ -2036,6 +2036,33 @@ async fn submit_gap(rt: &dyn SessionRuntime) {
 /// same text-then-Enter gap every other site gets.
 pub(super) async fn submit_gap_for(rt: &dyn SessionRuntime) {
     submit_gap(rt).await;
+}
+
+/// Does `provider`'s composer need its input as ONE bracketed paste for the
+/// following Enter to submit?
+///
+/// Codex does. Raw text reaches it as a stream of keystrokes, which it ingests
+/// slower than we write them, and its paste-burst heuristic turns an Enter that
+/// arrives right behind burst characters into a composer NEWLINE. Because the
+/// Enter waits in its input queue directly after the last character, the
+/// wall-clock gap does not help: measured 2026-10-06 against codex 0.160.1 with
+/// a 1155-character message, 0 of 9 submits at gaps from 50 ms to 2 s, against 3
+/// of 3 with a bracketed paste and the usual 50 ms. Long delegations and chat
+/// sends sat unsent in the composer. Claude keeps the raw path it has always
+/// had, which it submits reliably.
+pub(crate) fn submits_as_paste(provider: &str) -> bool {
+    provider == "codex"
+}
+
+/// Type `text` into the composer in the form [`submits_as_paste`] says this
+/// provider will submit. The caller still applies [`submit_gap`] and presses Enter.
+async fn type_for_submit(rt: &dyn SessionRuntime, provider: &str, text: &str) -> Result<(), AppError> {
+    if submits_as_paste(provider) {
+        rt.paste(text, true).await?;
+    } else {
+        rt.send_text(text).await?;
+    }
+    Ok(())
 }
 
 async fn require_session(state: &AppState, name: &str) -> Result<Session, AppError> {
@@ -3318,10 +3345,11 @@ pub async fn send_harness_text(
     // whenever the current screen was — correctly — a bare prompt.) On an
     // unreadable row we default to guarding (agent-shaped, fail safe); the row
     // exists here (`exists_active` passed above), so that branch is unreachable.
-    let is_agent = db::sessions::get(&state.pool, name)
+    let provider = db::sessions::get(&state.pool, name)
         .await?
-        .map(|s| s.provider != "shell")
-        .unwrap_or(true);
+        .map(|s| s.provider)
+        .unwrap_or_default();
+    let is_agent = provider != "shell";
     if !woke && is_agent {
         // NATIVE AUTHORITATIVE refuse. `tpgid == pid` proves the pty is at a BARE
         // SHELL (the login shell is the foreground process group — no agent is
@@ -3364,7 +3392,7 @@ pub async fn send_harness_text(
         }
     }
 
-    rt.send_text(text).await?;
+    type_for_submit(rt.as_ref(), &provider, text).await?;
     // Backend-declared gap between the text and its submit (see `submit_gap`).
     submit_gap(rt.as_ref()).await;
     rt.send_key("Enter").await?;
@@ -6687,6 +6715,8 @@ mod write_runtime_tests {
         text_calls: AtomicUsize,
         key_calls: AtomicUsize,
         capture_calls: AtomicUsize,
+        /// Bracketed pastes (`paste(_, true)`), the way codex input is typed.
+        bracketed_paste_calls: AtomicUsize,
     }
 
     impl StubRuntime {
@@ -6699,6 +6729,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                bracketed_paste_calls: AtomicUsize::new(0),
             })
         }
         /// A runtime whose `capture_plain` always fails — exercises the send
@@ -6712,6 +6743,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                bracketed_paste_calls: AtomicUsize::new(0),
             })
         }
         /// A native-shaped runtime that reports it is sitting at a BARE SHELL
@@ -6726,6 +6758,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                bracketed_paste_calls: AtomicUsize::new(0),
             })
         }
         /// A pane that shows each of `screens` in turn, then holds the last one.
@@ -6764,7 +6797,10 @@ mod write_runtime_tests {
             self.key_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
+        async fn paste(&self, _t: &str, bracketed: bool) -> anyhow::Result<()> {
+            if bracketed {
+                self.bracketed_paste_calls.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(())
         }
         async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
@@ -6901,6 +6937,37 @@ mod write_runtime_tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A send to CODEX goes in as one bracketed paste, then Enter. Typed as raw
+    /// keystrokes, codex's paste-burst heuristic turned the trailing Enter into a
+    /// composer newline and long messages sat unsent (see `submits_as_paste`).
+    #[tokio::test]
+    async fn a_send_to_codex_is_one_bracketed_paste_then_enter() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "cx", "/tmp", "codex")
+            .await
+            .unwrap();
+        let rt = StubRuntime::parked_at("› Ask Codex to do anything\n  GPT-6 xhigh · /tmp");
+        state.session_runtimes.insert("cx".to_string(), rt.clone());
+
+        send_harness_text(&state, "cx", "a long\nmulti-line message", None, None)
+            .await
+            .expect("a ready codex composer must accept the send");
+
+        assert_eq!(rt.bracketed_paste_calls.load(Ordering::SeqCst), 1, "one bracketed paste");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0, "never raw keystrokes");
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "then exactly one Enter");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_codex_submits_as_a_paste() {
+        assert!(submits_as_paste("codex"));
+        assert!(!submits_as_paste("claude"));
+        assert!(!submits_as_paste("shell"));
     }
 
     /// The guard is SCREEN-CONDITIONAL, not a blanket block: the SAME already-awake
