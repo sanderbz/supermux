@@ -3,7 +3,7 @@
   const STYLE='__CONTENT_CSS__';
   const safeUrl='__SAFE_URL__';
   const brandSvg='__BRAND_SVG__';
-  const isMac=/Mac|iPhone|iPad/.test(navigator.userAgentData?.platform||navigator.platform||navigator.userAgent);
+  const isMac=/Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform||navigator.platform||navigator.userAgent);
   const modifierLabel=isMac?'⌘':'Ctrl+';
   const shortcut=key=>modifierLabel+key;
   const modifierPressed=e=>isMac?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey;

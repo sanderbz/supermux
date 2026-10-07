@@ -1,15 +1,15 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFile} from 'node:fs/promises';import {webcrypto} from 'node:crypto';
 import {JSDOM} from '../../web/node_modules/jsdom/lib/api.js';
 const script=await readFile(new URL('../dist/content.js',import.meta.url),'utf8');
-for(const [platform,modifier,other] of [['MacIntel','metaKey','ctrlKey'],['Win32','ctrlKey','metaKey']])test(`modified modes preserve closed-shadow and website text editing on ${platform}`,async()=>{
+for(const [platform,hint,modifier,other] of [['MacIntel',null,'metaKey','ctrlKey'],['MacIntel','macOS','metaKey','ctrlKey'],['Win32',null,'ctrlKey','metaKey'],['Win32','Windows','ctrlKey','metaKey']])test(`modified modes preserve closed-shadow and website text editing on ${hint||platform}${hint?' client hints':''}`,async()=>{
  const dom=new JSDOM('<!doctype html><h1>Homepage</h1><input id="website"><div contenteditable="true" id="editable"><span>Website text</span></div><div id="closed"></div>',{url:'https://voltlogger.com',runScripts:'outside-only',pretendToBeVisual:true});
- const w=dom.window;let shadow;Object.defineProperty(w.navigator,'platform',{value:platform});Object.defineProperty(w,'crypto',{value:webcrypto});w.CSS={escape:s=>s};w.chrome={runtime:{id:'test',sendMessage:async m=>({ok:true,data:m.type==='draft.load'?{connection:{paired:false}}:true}),onMessage:{addListener(){}}}};
+ const w=dom.window;let shadow;Object.defineProperty(w.navigator,'platform',{value:platform});if(hint)Object.defineProperty(w.navigator,'userAgentData',{value:{platform:hint}});Object.defineProperty(w,'crypto',{value:webcrypto});w.CSS={escape:s=>s};w.chrome={runtime:{id:'test',sendMessage:async m=>({ok:true,data:m.type==='draft.load'?{connection:{paired:false}}:true}),onMessage:{addListener(){}}}};
  const attach=w.Element.prototype.attachShadow;w.Element.prototype.attachShadow=function(options){const result=attach.call(this,options);if(this.hasAttribute('data-supermux-overlay'))shadow=result;return result;};
  w.Element.prototype.getBoundingClientRect=()=>({x:100,y:100,left:100,top:100,right:300,bottom:180,width:200,height:80});
  w.eval(script);await new Promise(r=>setTimeout(r,20));assert.equal(w.document.querySelector('[data-supermux-overlay]').shadowRoot,null);
  const key=(target,k,extra={})=>{const e=new w.KeyboardEvent('keydown',{key:k,bubbles:true,composed:true,cancelable:true,...extra});target.dispatchEvent(e);return e;};
  const current=()=>shadow.querySelector('.tool.active')?.dataset.mode;
- assert.match(shadow.querySelector('[data-mode="draw"]').title,platform==='MacIntel'?/⌘D/:/Ctrl\+D/);
+ assert.match(shadow.querySelector('[data-mode="draw"]').title,modifier==='metaKey'?/⌘D/:/Ctrl\+D/);
  for(const k of ['p','d','r'])assert.equal(key(w.document,k).defaultPrevented,false);assert.equal(current(),'element');
  assert.equal(key(w.document,'d',{[other]:true}).defaultPrevented,false);assert.equal(current(),'element');
  assert.equal(key(w.document,'d',{[modifier]:true}).defaultPrevented,true);assert.equal(current(),'draw');
