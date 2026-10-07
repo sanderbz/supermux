@@ -160,7 +160,7 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
         <div className="flex gap-2">
           <input id={inputId} data-testid="browser-pair-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{4}" maxLength={4} placeholder="0000" value={code} disabled={pairing || remote}
             onChange={event => setCode(event.target.value.replace(/\D/g, '').slice(0, 4))}
-            className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 font-mono text-[20px] tracking-[.35em] text-foreground outline-none placeholder:text-muted-foreground/35 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
+            className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 font-mono text-[20px] tracking-[.35em] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
           <button type="submit" disabled={code.length !== 4 || pairing || remote} className="flex min-h-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 text-[12px] font-medium text-primary-foreground transition-opacity disabled:opacity-40">{pairing && <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />}{pairing ? 'Pairing…' : 'Pair'}</button>
         </div>
       </form> : <p className="text-[11px] leading-relaxed text-muted-foreground">{viewer.kind === 'pending' ? 'Checking your access…' : 'Sign in to pair a website with this agent.'}</p>}
