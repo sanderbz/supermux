@@ -255,8 +255,8 @@ impl SessionRuntime for PickerStub {
         self.key_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
-        Ok(())
+    async fn paste(&self, t: &str, _b: bool) -> anyhow::Result<()> {
+        self.send_text(t).await
     }
     async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
         Ok(())
@@ -391,7 +391,7 @@ async fn delegate_into_an_open_picker_records_no_edge() {
 const ASK_QUESTION: &str = include_str!("fixtures/pty/ask-user-question.txt");
 
 /// An idle Claude composer — the one screen that admits.
-const COMPOSER: &str = "\n\n❯ Try \"fix tests\"\n  ? for shortcuts\n  ⏵⏵ auto mode on\n";
+const COMPOSER: &str = "\n\n❯ \n  ? for shortcuts\n  ⏵⏵ auto mode on\n";
 
 /// A resume picker with a long conversation list: `Resume a conversation` has
 /// scrolled off the top of the capture, so the TITLE check cannot see it. Its
