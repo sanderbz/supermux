@@ -145,7 +145,8 @@ jobs:
       # cargo build) and it sits IN FRONT of all four e2e shards, so it is 4.6
       # min of the PR's 10-minute budget spent before a single test starts. The
       # thing the shards need is one 25 MB executable, and that executable is a
-      # pure function of the server sources + the lockfile + the toolchain file.
+      # pure function of the server sources + the lockfile + the toolchain file
+      # + the embedded browser-extension ZIP served by the download endpoint.
       # So key a cache on exactly those and skip cargo entirely on a hit: a PR
       # that touches only `web/` or `.github/` pays seconds instead of minutes.
       #
@@ -155,7 +156,7 @@ jobs:
       - name: Cache key inputs
         id: bin-key
         run: |
-          echo "hash=${{ runner.os }}-e2e-bin-${{ hashFiles('server/src/**', 'server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/migrations/**', 'server/rust-toolchain.toml') }}" >> "$GITHUB_OUTPUT"
+          echo "hash=${{ runner.os }}-e2e-bin-${{ hashFiles('server/src/**', 'server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/migrations/**', 'server/rust-toolchain.toml', 'extension/releases/supermux-browser-extension.zip') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         id: bin-cache
         with:
