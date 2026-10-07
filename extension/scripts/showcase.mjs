@@ -125,8 +125,47 @@ try{
   assert.ok(Math.abs(maskPixel.height-maskPixel.width*960/1440)<=2,'capture preserves viewport dimensions or proportional downsampling');
   assert.deepEqual(maskPixel.pixel,[34,45,36,255],'production capture masks the private input');
   await until(async()=>assert.equal(await overlay(root=>[...root.querySelectorAll('.capture img,.note-row img')].every(i=>i.complete&&i.naturalWidth>0)),true),'preview images loaded');
+  assert.equal(await overlay(root=>!!root.querySelector('.bar-message')),false,'review has one overall message field');
+  assert.match(await overlay(root=>root.querySelector('.review-btn').textContent),/Edit notes/);
+  await clickOverlay('[data-image="numbered"]');
+  assert.equal(await overlay(root=>root.activeElement.dataset.action),'image-close');
+  assert.equal(await overlay(root=>root.querySelector('.image-viewer-stage img').getAttribute('src')),draft.snapshot.preview);
+  await page.keyboard.press('Shift+Tab');assert.equal(await overlay(root=>root.activeElement===root.querySelector('.image-viewer-stage')),true);
+  await page.keyboard.press('Tab');assert.equal(await overlay(root=>root.activeElement.dataset.action),'image-close');
+  await clickOverlay('[data-image-view="clean"]');
+  assert.equal(await overlay(root=>root.querySelector('.image-viewer-stage img').getAttribute('src')),'data:image/png;base64,'+draft.snapshot.screenshot.data_base64);
+  assert.equal(await overlay(root=>getComputedStyle(root.querySelector('.image-viewer')).animationName),'none','image switches preserve a settled dialog');
+  await clickOverlay('[data-action="image-size"]');
+  await until(async()=>assert.equal(await overlay(root=>{const image=root.querySelector('.image-viewer-stage img');return image.complete&&image.naturalWidth>0&&Math.abs(image.getBoundingClientRect().width-image.naturalWidth)<1;}),true,'actual size uses original pixels'),'decoded actual-size image and settled viewer');
+  // Capture while the viewer is open: its entire layer must disappear, while
+  // production privacy masks stay visible. Respect Chrome's capture rate limit.
+  await new Promise(resolve=>setTimeout(resolve,550));
+  const tabId=await worker.evaluate(async url=>(await chrome.tabs.query({url}))[0].id,page.url());
+  const prepared=await worker.evaluate(id=>chrome.tabs.sendMessage(id,{type:'capture.prepare'}),tabId);
+  let whileViewing;
+  try{
+    assert.equal(await overlay(root=>getComputedStyle(root.querySelector('.image-viewer-layer')).visibility),'hidden');
+    whileViewing=await worker.evaluate(async({id,metadata})=>{const tab=await chrome.tabs.get(id);const image=await chrome.tabs.captureVisibleTab(tab.windowId,{format:'png'});if(!await chrome.tabs.sendMessage(id,{type:'capture.validate',viewport:metadata.viewport,nonce:metadata.nonce}))throw new Error('Viewer capture moved');return image;},{id:tabId,metadata:prepared});
+  }finally{await worker.evaluate(id=>chrome.tabs.sendMessage(id,{type:'capture.restore'}),tabId);}
+  const viewingPixels=await overlay(async(_root,{data,x,y})=>{const image=new Image();image.src=data;await image.decode();const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);return {mask:[...ctx.getImageData(Math.floor(x),Math.floor(y),1,1).data],corner:[...ctx.getImageData(15,15,1,1).data]};},{data:whileViewing,x:email.x+email.width/2,y:email.y+email.height/2});
+  assert.deepEqual(viewingPixels.mask,[34,45,36,255],'viewer capture preserves privacy masking');
+  assert.deepEqual(viewingPixels.corner,[245,246,239,255],'viewer backdrop is excluded from capture');
+  await page.keyboard.press('Escape');
+  assert.equal(await overlay(root=>root.activeElement.dataset.image),'numbered');
+  assert.equal(await overlay(root=>root.querySelector('.message').value),draft.message);
+  await clickOverlay('[data-image="crop"]');
+  assert.equal(await overlay(root=>root.querySelector('#sm-image-title').textContent),'Note 1');
+  assert.equal(await overlay(root=>root.querySelector('.image-viewer-stage img').getAttribute('src')),'data:image/png;base64,'+draft.snapshot.crops[0].data_base64);
+  await page.setViewportSize({width:390,height:844});await page.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await overlay(root=>{const r=root.querySelector('[data-action="image-close"]').getBoundingClientRect();return r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;}),true,'narrow viewer close stays reachable');
+  assert.equal(await overlay(root=>getComputedStyle(root.querySelector('.image-viewer')).animationName),'none');
+  await page.screenshot({path:'/private/tmp/supermux-feedback-viewer-narrow.png'});
+  await page.keyboard.press('Escape');assert.equal(await overlay(root=>root.activeElement.dataset.image),'crop');
+  await page.setViewportSize({width:1440,height:960});await page.emulateMedia({reducedMotion:'no-preference'});
+  assert.deepEqual((await savedDraft()).snapshot,draft.snapshot,'inspection preserves frozen pixels and capture provenance');
   const output=fileURLToPath(new URL('../../docs/screenshots/browser-feedback.png',import.meta.url));
   await mkdir(fileURLToPath(new URL('../../docs/screenshots/',import.meta.url)),{recursive:true});
+  await overlay(root=>root.activeElement?.blur());
   await page.mouse.move(30,920);
   await until(async()=>{
     assert.equal(await overlay(async root=>{
@@ -138,7 +177,7 @@ try{
     }),true);
   },'fonts and finite review animations settled');
   await page.screenshot({path:output});
-  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, and verified privacy mask. No feedback submitted.`);
+  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, verified privacy mask, frozen image viewer, focus/Escape, actual pixels, and narrow/reduced-motion layout. No feedback submitted.`);
 }finally{
   await context?.close();if(server)await new Promise(resolve=>server.close(resolve));
   await rm(profile,{recursive:true,force:true});
