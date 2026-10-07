@@ -1735,8 +1735,9 @@ mod tests {
             self.keys.lock().unwrap().push(k.to_string());
             Ok(())
         }
-        async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
-            Ok(())
+        async fn paste(&self, t: &str, _b: bool) -> anyhow::Result<()> {
+            // Record both input paths: agent delivery uses bracketed paste.
+            self.send_text(t).await
         }
         async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
             Ok(())
