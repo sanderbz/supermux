@@ -39,6 +39,7 @@ pub mod codex;
 pub mod model;
 pub mod parser;
 pub mod statusline;
+pub mod source;
 pub mod store;
 pub mod tailer;
 pub mod ws;

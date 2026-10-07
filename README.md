@@ -304,6 +304,8 @@ sudo bash install.sh
 
 **Codex**: the New session panel keeps Claude as its default and offers OpenAI's Codex CLI alongside it. Its first start installs the official CLI (user-scoped) if needed and opens the login flow right in the terminal; later starts reuse that login. It gets the launch flags that keep its output readable in a supermux tile, and it feeds the same status detection — the tile knows when Codex is working, waiting on an approval, or done, just like Claude.
 
+**Chat and scrollback**: Claude Code and Codex use their own transcripts consistently for live messages, older pages, and expanded tool output. Codex follows the running agent's conversation, keeping concurrent agents in the same repository separate. Scrolling up pauses automatic following; older pages and expanding content preserve your reading position. Use the jump-to-latest button to follow new replies again. Reconnecting preserves older pages from the same conversation and discards responses from a previous conversation.
+
 **After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
 
 ### Other paths

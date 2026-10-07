@@ -52,6 +52,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -63,7 +64,6 @@ use tokio::sync::{watch, Notify};
 
 use super::model::ChatEntry;
 use super::parser::{parse_stream_with, Dialect};
-use crate::sessions::resumable;
 use crate::state::AppState;
 
 /// Slow safety re-scan cadence. FSEvents can be dropped and an editor-less
@@ -306,6 +306,7 @@ fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
 /// One watched file and how far into it we have already published.
 #[derive(Debug)]
 struct FileCursor {
+    identity: Option<(u64, u64)>,
     path: PathBuf,
     /// Which transcript FORMAT this file is in. Carried per cursor rather than
     /// per tailer because it belongs to the FILE — and because a cursor is the
@@ -325,7 +326,16 @@ impl FileCursor {
         let offset = seed_offset(&path, budget);
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let spent = len.saturating_sub(offset);
-        (Self { path, dialect, offset, seed_budget: budget }, spent)
+        (
+            Self {
+                identity: std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino())),
+                path,
+                dialect,
+                offset,
+                seed_budget: budget,
+            },
+            spent,
+        )
     }
 
     /// Read everything appended since `offset`. Returns the entries and whether
@@ -340,7 +350,11 @@ impl FileCursor {
         };
         let len = meta.len();
         let mut restarted = false;
-        if len < self.offset {
+        if len < self.offset
+            || self
+                .identity
+                .is_some_and(|id| id != (meta.dev(), meta.ino()))
+        {
             // Backstop for a file that shrank between `Tailer::any_shrank` and
             // here. Re-seed under the same bound a cold cursor gets — never
             // byte 0, which on a large rotated file is the flood this cap
@@ -348,6 +362,7 @@ impl FileCursor {
             self.offset = seed_offset(&self.path, self.seed_budget);
             restarted = true;
         }
+        self.identity = Some((meta.dev(), meta.ino()));
         if len == self.offset {
             return (Vec::new(), restarted);
         }
@@ -488,7 +503,13 @@ impl Tailer {
             project_dir,
             conversation_id: conversation_id.to_string(),
             dialect,
-            main: FileCursor { path: path.clone(), dialect, offset: 0, seed_budget: 0 },
+            main: FileCursor {
+                identity: std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino())),
+                path: path.clone(),
+                dialect,
+                offset: 0,
+                seed_budget: 0,
+            },
             subagents: BTreeMap::new(),
             pending_resync: false,
             cold_budget: COLD_SEED_TOTAL_BYTES,
@@ -666,7 +687,9 @@ impl Tailer {
         std::iter::once(&self.main)
             .chain(self.subagents.values())
             .any(|c| {
-                std::fs::metadata(&c.path).is_ok_and(|m| m.len() < c.offset)
+                std::fs::metadata(&c.path).is_ok_and(|m| {
+                    m.len() < c.offset || c.identity.is_some_and(|id| id != (m.dev(), m.ino()))
+                })
             })
     }
 
@@ -963,23 +986,27 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // `(dir, stem)` pair that `transcript_path` joins into `<dir>/<stem>.jsonl`,
         // so everything below — the cursor, the watcher, the rebuild test — is
         // shared and never learns which agent wrote the file.
-        let located = match dialect {
-            Dialect::Claude => Some((
-                resumable::project_dir_for(&row.config_dir, &row.dir),
-                row.cc_conversation_id.clone(),
-            )),
-            // Codex keeps no project index and nothing has ever written
-            // `codex_session_id`, so the rollout is found by cwd. It does not
-            // exist until codex has actually started a thread, which is why a
-            // miss RETRIES instead of ending the task: a session opened before
-            // its first prompt would otherwise have its chat closed for good.
-            Dialect::Codex => super::codex::locate(&row.dir),
-        };
-        let Some((project, conv)) = located else {
-            tracing::debug!(session = %name, "chat tailer: no codex rollout for this cwd yet");
+        let located = super::source::for_session(&state, &row, true).await;
+        let Some(source) = located else {
+            let next = TailStatus {
+                state: TailState::Reconnecting {
+                    reason: NO_TRANSCRIPT_REASON,
+                },
+                resync_epoch,
+            };
+            handle.status.send_if_modified(|old| {
+                if *old == next {
+                    false
+                } else {
+                    *old = next;
+                    true
+                }
+            });
             tokio::time::sleep(POLL_INTERVAL).await;
             continue;
         };
+        let project = source.project.clone();
+        let conv = source.conversation_id.clone();
         let rebuilt = rebuild(&mut core, &project, &conv, dialect);
 
         // Arm/re-arm the directory watcher (best effort; the poll runs anyway).
@@ -1013,18 +1040,6 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         };
         core = Some(returned);
 
-        if rebuilt || pass.resync {
-            // The ring holds what the PREVIOUS cursor set published: another
-            // conversation after a retarget, or a second copy of this one when a
-            // fresh task re-reads the file from byte 0. Clearing it (seq stays
-            // monotonic) is what makes "resync" mean "re-seed" rather than
-            // "splice" or "double".
-            if store.reset() {
-                // An already-empty ring means the client has nothing to drop, so
-                // a cold first attach never spends an epoch on a no-op.
-                resync_epoch += 1;
-            }
-        }
         // A drained sidechain line is proof a background subagent wrote THIS
         // poll: stamp the ground-truth liveness the status classifier + roster
         // read via `AppState::subagents_live`. This survives the main `Stop`, so a
@@ -1042,22 +1057,42 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         if pass.subagent_appended && !pass.resync && !rebuilt {
             state.mark_subagent_active(&name);
         }
-        store.publish_sealed(pass.entries);
+        if store.publish_source(
+            source,
+            pass.entries,
+            rebuilt || pass.resync,
+            core.as_ref().map(|c| c.main.offset).unwrap_or(0),
+        ) {
+            resync_epoch += 1;
+        }
 
-        let state_now = classify_pointer(PointerInputs {
-            pointer_path_exists: !conv.is_empty() && pass.pointer_exists,
-            pointer_mtime_ms: pass.pointer_mtime_ms,
-            newest_sibling_mtime_ms: pass.newest_sibling_mtime_ms,
-            hooks_live,
-            last_hook_ms: last_hook,
-            session_running: running,
-            session_crashed: crashed,
-            // `sessions.last_started` is stored in SECONDS.
-            session_last_started_ms: row.last_started.saturating_mul(1_000),
-            server_start_ms: state.server_start_ms,
-            now_ms,
-        });
-        let status = TailStatus { state: state_now, resync_epoch };
+        let state_now = if dialect == Dialect::Codex && pass.pointer_exists {
+            if crashed {
+                TailState::Reconnecting {
+                    reason: "the session's terminal died",
+                }
+            } else {
+                TailState::Live
+            }
+        } else {
+            classify_pointer(PointerInputs {
+                pointer_path_exists: !conv.is_empty() && pass.pointer_exists,
+                pointer_mtime_ms: pass.pointer_mtime_ms,
+                newest_sibling_mtime_ms: pass.newest_sibling_mtime_ms,
+                hooks_live,
+                last_hook_ms: last_hook,
+                session_running: running,
+                session_crashed: crashed,
+                // `sessions.last_started` is stored in SECONDS.
+                session_last_started_ms: row.last_started.saturating_mul(1_000),
+                server_start_ms: state.server_start_ms,
+                now_ms,
+            })
+        };
+        let status = TailStatus {
+            state: state_now,
+            resync_epoch,
+        };
         handle.status.send_if_modified(|cur| {
             let changed = *cur != status;
             *cur = status;
@@ -1243,6 +1278,31 @@ fn arm_fs_watcher(project: &Path, wake: Arc<Notify>) -> Option<notify::Recommend
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atomic_file_replacement_resets_even_when_length_does_not_shrink() {
+        use super::*;
+        let dir = std::env::temp_dir().join(format!("chat-replace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("conversation.jsonl");
+        let line = |uuid, text| {
+            serde_json::json!({"type":"user","uuid":uuid,"message":{"content":text}}).to_string()
+                + "\n"
+        };
+        std::fs::write(&path, line("old", "old")).unwrap();
+        let mut tail = Tailer::new(&dir, "conversation");
+        assert_eq!(tail.poll().entries[0].uuid, "old");
+        let replacement = dir.join("replacement.jsonl");
+        std::fs::write(
+            &replacement,
+            line("replacement", "a longer new conversation"),
+        )
+        .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let pass = tail.poll();
+        assert!(pass.resync);
+        assert_eq!(pass.entries[0].uuid, "replacement");
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use super::*;
     use crate::sessions::status::Status;
     use std::io::Write;
@@ -2009,9 +2069,15 @@ mod tests {
             .collect();
         assert_eq!(real.len(), 3, "fixture: tool_use, tool_result, notification");
 
-        let unknown = r#"{"type":"atis-latch","atis":"","sessionId":"s1"}"#.to_string();
-        append(&f, &[real[0].clone(), real[1].clone(), unknown, real[2].clone()]);
-        let sub = dir.join("conv-a").join("subagents").join("agent-a1b2c3d4e5f60718a.jsonl");
+        let unknown = r#"{"type":"future-state-marker","sessionId":"s1"}"#.to_string();
+        append(
+            &f,
+            &[real[0].clone(), real[1].clone(), unknown, real[2].clone()],
+        );
+        let sub = dir
+            .join("conv-a")
+            .join("subagents")
+            .join("agent-a1b2c3d4e5f60718a.jsonl");
         append(&sub, &[sidechain_line("s1", None)]);
 
         let mut t = Tailer::new(&dir, "conv-a");

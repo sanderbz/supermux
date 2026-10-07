@@ -1236,11 +1236,12 @@ mod tests {
             libc::SIGWINCH,
             0,
             -1,
-            libc::SIGRTMIN(),
             9999,
         ] {
             assert!(!SIGNAL_ALLOWLIST.contains(&sig), "{sig} must be refused");
         }
+        #[cfg(target_os = "linux")]
+        assert!(!SIGNAL_ALLOWLIST.contains(&libc::SIGRTMIN()));
     }
 
     #[test]

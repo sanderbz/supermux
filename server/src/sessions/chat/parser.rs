@@ -262,6 +262,9 @@ pub fn parse_scan_with<R: BufRead>(
 
 fn entries_from_object(obj: &Map<String, Value>, offset: u64) -> Vec<ChatEntry> {
     let ty = str_at(obj, &["type"]).unwrap_or("");
+    if housekeeping(obj, ty) {
+        return Vec::new();
+    }
     let base = Header::read(obj, offset);
 
     let mut entries = match ty {
@@ -280,8 +283,7 @@ fn entries_from_object(obj: &Map<String, Value>, offset: u64) -> Vec<ChatEntry> 
             json_of(obj, &["permissionMode", "permission_mode"]),
             str_at(obj, &["permissionMode", "permission_mode"]),
         )],
-        // agent-name / agent-setting / bridge-session / ai-title / file-history-*
-        // / anything a future patch release invents. Kept whole, never dropped.
+        // Anything outside the explicit housekeeping allowlist stays addressable.
         _ => vec![base.entry(Kind::Unknown, Value::Object(obj.clone()), Some(ty))],
     };
     if entries.is_empty() {
@@ -289,6 +291,78 @@ fn entries_from_object(obj: &Map<String, Value>, offset: u64) -> Vec<ChatEntry> 
         entries.push(base.entry(Kind::Unknown, Value::Null, Some(ty)));
     }
     entries
+}
+
+/// Only verified housekeeping envelopes are skipped. Hook failures can be
+/// nested and need not carry a top-level `level`; never hide their diagnostics.
+fn housekeeping(obj: &Map<String, Value>, ty: &str) -> bool {
+    const METADATA: &[&str] = &[
+        "custom-title",
+        "agent-name",
+        "agent-setting",
+        "ai-title",
+        "atis-latch",
+        "last-prompt",
+        "bridge-session",
+        "file-history-snapshot",
+        "file-history-update",
+        "cost-state",
+        "artifact-ledger",
+    ];
+    let candidate = METADATA.contains(&ty)
+        || (ty == "attachment"
+            && matches!(
+                obj.get("attachment")
+                    .and_then(|a| a.get("type"))
+                    .and_then(Value::as_str),
+                Some("total_tokens_reminder" | "hook_success")
+            ))
+        || (ty == "system"
+            && matches!(
+                str_at(obj, &["subtype"]),
+                Some("turn_duration" | "stop_hook_summary" | "hook_success")
+            ));
+    candidate
+        && !obj
+            .iter()
+            .any(|(key, value)| hook_field_problem(key, value, 0))
+}
+
+fn hook_field_problem(key: &str, value: &Value, depth: usize) -> bool {
+    match key {
+        "level" => value
+            .as_str()
+            .is_some_and(|s| matches!(s, "error" | "warning" | "warn")),
+        "error" | "hookErrors" | "errors" | "stderr" | "content" | "hookAdditionalContext" => {
+            match value {
+                Value::Null => false,
+                Value::Bool(flag) => *flag,
+                Value::String(text) => !text.trim().is_empty(),
+                Value::Array(values) => !values.is_empty(),
+                Value::Object(values) => !values.is_empty(),
+                _ => true,
+            }
+        }
+        "hasOutput" | "preventedContinuation" => value.as_bool() == Some(true),
+        "exitCode" | "exit_code" => value.as_i64().is_some_and(|code| code != 0),
+        "status" => value
+            .as_str()
+            .is_some_and(|s| matches!(s, "failed" | "error" | "warning")),
+        _ => hook_problem(value, depth + 1),
+    }
+}
+
+fn hook_problem(value: &Value, depth: usize) -> bool {
+    if depth > 16 {
+        return true;
+    }
+    match value {
+        Value::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| hook_field_problem(key, value, depth)),
+        Value::Array(values) => values.iter().any(|v| hook_problem(v, depth + 1)),
+        _ => false,
+    }
 }
 
 /// Shared per-line header. Extracted once, cloned per block.
@@ -1148,6 +1222,54 @@ pub(super) fn parse_ts_ms(raw: Option<&str>) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn housekeeping_does_not_evict_conversation_but_warnings_survive() {
+        use super::*;
+        let mut transcript = String::from(
+            "{\"type\":\"user\",\"uuid\":\"start\",\"message\":{\"content\":\"hello\"}}\n",
+        );
+        for _ in 0..700 {
+            transcript.push_str("{\"type\":\"custom-title\",\"title\":\"unchanged\"}\n{\"type\":\"system\",\"subtype\":\"hook_success\"}\n{\"type\":\"attachment\",\"attachment\":{\"type\":\"total_tokens_reminder\"}}\n");
+        }
+        transcript.push_str("{\"type\":\"assistant\",\"uuid\":\"end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n");
+        let (entries, next) = parse_stream(std::io::Cursor::new(transcript.as_bytes()), 0);
+        assert_eq!(
+            entries.iter().map(|e| e.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["start", "end"]
+        );
+        assert_eq!(next, transcript.len() as u64);
+        let ParsedLine::Entry(warning) = parse_line(
+            r#"{"type":"system","subtype":"hook_success","level":"warning","content":"review required"}"#,
+            0,
+        ) else {
+            panic!()
+        };
+        assert_eq!(warning.len(), 1);
+        assert_eq!(warning[0].body["level"], "warning");
+    }
+
+    #[test]
+    fn successful_hook_attachments_are_quiet_but_nested_errors_remain() {
+        use super::*;
+        let quiet = r#"{"type":"attachment","attachment":{"type":"hook_success","stdout":"","stderr":"","exitCode":0}}"#;
+        let ParsedLine::Entry(entries) = parse_line(quiet, 0) else {
+            panic!()
+        };
+        assert!(entries.is_empty());
+        for line in [
+            r#"{"type":"system","subtype":"stop_hook_summary","hookErrors":["hook failed"]}"#,
+            r#"{"type":"attachment","attachment":{"type":"hook_success","stderr":"review required","exitCode":1}}"#,
+        ] {
+            let ParsedLine::Entry(entries) = parse_line(line, 0) else {
+                panic!()
+            };
+            assert_eq!(
+                entries.len(),
+                1,
+                "hook diagnostics must survive without a top-level level"
+            );
+        }
+    }
     use super::*;
     use std::path::PathBuf;
 
@@ -1299,12 +1421,10 @@ mod tests {
 
     #[test]
     fn unknown_top_level_types_are_kept_as_unknown_not_dropped() {
-        // agent-name / agent-setting / bridge-session / ai-title are REAL (corpus-counted).
+        // Unmodeled content and actions remain visible/addressable.
         for t in [
-            "agent-name",
-            "agent-setting",
-            "bridge-session",
-            "ai-title",
+            "security-warning",
+            "interactive-approval",
             "some-future-type",
         ] {
             let l = format!(r#"{{"type":"{t}","uuid":"x","timestamp":"2026-01-01T00:00:00Z"}}"#);

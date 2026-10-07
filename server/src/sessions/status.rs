@@ -861,11 +861,12 @@ impl StatusDetector {
         //   waiting → a `› N.` selector / "Press enter to confirm" → Waiting
         //   else    → Idle (positively — see below)
         if self.provider == "codex" {
-            if CODEX_ACTIVE_BANK.is_match(capture) {
-                return Status::Active;
-            }
+            // Approval selectors may retain the busy footer underneath them.
             if CODEX_WAITING_BANK.is_match(capture) {
                 return Status::Waiting;
+            }
+            if CODEX_ACTIVE_BANK.is_match(capture) {
+                return Status::Active;
             }
             // Codex ALWAYS shows `esc to interrupt` while a turn runs, so the
             // ABSENCE of it (with no selector) is a reliable REST signal → Idle.
@@ -1159,6 +1160,29 @@ static IDLE_BANK: Lazy<Regex> =
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_approval_preempts_a_remaining_busy_footer() {
+        use super::*;
+        let mut detector = StatusDetector::for_provider("codex");
+        assert_eq!(
+            detector.detect(
+                "Do you want to run this command?\n› 1. Yes\n◦ Working (3s • esc to interrupt)",
+                Instant::now(),
+                TurnState::default(),
+                false
+            ),
+            Status::Waiting
+        );
+        assert_eq!(
+            detector.detect(
+                "◦ Working (4s • esc to interrupt)",
+                Instant::now(),
+                TurnState::default(),
+                false
+            ),
+            Status::Active
+        );
+    }
     use super::*;
 
     /// A heartbeat in the neutral band (1.5s–30s): neither `Active` nor the idle

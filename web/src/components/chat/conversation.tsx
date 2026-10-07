@@ -682,8 +682,8 @@ export function ChatConversation({
             <ChatLoadingSkeleton />
           ) : noItemsYet ? null : (
             nodes.map((node) => (
+              <div key={node.key} data-chat-anchor={node.key} className="flow-root">
               <TranscriptItem
-                key={node.key}
                 node={node}
                 name={name}
                 surface={phone ? 'phone' : 'desktop'}
@@ -697,6 +697,7 @@ export function ChatConversation({
                 onOpenSchedule={onOpenSchedule}
                 onOpenTerminal={onOpenTerminal}
               />
+              </div>
             ))
           )}
 
