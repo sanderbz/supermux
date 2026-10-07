@@ -178,40 +178,6 @@ async fn hook_handler(
     // the flag is set well before the user can type.
     state.mark_hooks_live(&body.session);
 
-    // Fold the turn-state signal in for the events the detector
-    // cares about (Notification→Waiting, turn-start→Active, …). Unknown
-    // event kinds (e.g. SessionStart/SessionEnd/StopFailure) have NO HookEvent
-    // variant and are skipped here — they are handled by the activity/lifecycle
-    // dispatch below, NOT by the turn state machine.
-    if let Some(event) = HookEvent::from_event_str(&body.event) {
-        // An `idle_prompt` notification is Claude Code's POST-TURN idle ping
-        // ("Claude is waiting for your input"), fired while the session sits at its
-        // empty `❯` prompt — NOT a needs-you signal (only `permission_prompt` /
-        // `agent_needs_input` are; the activity dispatch below keeps that
-        // distinction for `waiting_message`). Folding it into the turn machine as a
-        // generic Notification lets it read `Waiting` — the roster's red "needs
-        // you" — whenever the turn's own `Stop` hook was missed/raced (hooks run
-        // `--max-time 1`), so `turn_end` never advanced past `turn_start` and
-        // `TurnState::classify`'s `turn_already_ended` guard cannot fire. Record it
-        // as a turn END instead: an idle_prompt PROVES the turn is over, so the
-        // machine settles straight to Idle without ever passing through Active
-        // (unlike merely dropping it). `record_hook` only folds into `TurnState`
-        // — no notification, DB write or SSE — so the remap has no collateral.
-        let event = if matches!(event, HookEvent::Notification)
-            && body
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("notification_type").or_else(|| p.get("notificationType")))
-                .and_then(Value::as_str)
-                == Some("idle_prompt")
-        {
-            HookEvent::Stop
-        } else {
-            event
-        };
-        state.record_hook(&body.session, event);
-    }
-
     // ── live activity + error + lifecycle from the PAYLOAD ──────────
     // Parse leniently (every field optional); a missing/odd/truncated payload
     // parses to the empty default and is a no-op rather than a 400.
@@ -226,17 +192,11 @@ async fn hook_handler(
     // running under the same pane token? Decided ONCE per POST (the predicate is
     // read twice below).
     //
-    // Gated on the EVENT as well as on `agent_type`, and both halves matter.
-    // `foreign_agent` is consumed in exactly three places — the lifecycle gate
-    // and the `user_prompt` arm inside `apply_payload`, and the pointer gate
-    // below — all of which are `is_lifecycle_event` or `is_pointer_event`. The
-    // `agent_type` half alone would NOT keep this off the hot path: since the
-    // per-agent rows landed, every child tool hook (`pre_tool`, `post_tool`,
-    // `subagent_*`) carries an `agent_type` beside its `agent_id` — that is what
-    // `touch_agent_row` reads — so a subagent-heavy turn would pay an extra
-    // indexed SELECT per tool call on a `--max-time 1` request, for a value
-    // those events can never consume.
-    let foreign_agent = if (is_lifecycle_event(&body.event) || is_pointer_event(&body.event))
+    // Only lifecycle/pointer/failure events consume the teammate predicate.
+    // Keep the indexed conversation lookup off high-volume child tool hooks.
+    let foreign_agent = if (is_lifecycle_event(&body.event)
+        || is_pointer_event(&body.event)
+        || is_stop_failure(&body.event))
         && has_agent_type(&raw_payload)
     {
         let tracked = db::sessions::cc_conversation_id(&state.pool, &body.session)
@@ -248,7 +208,38 @@ async fn hook_handler(
         false
     };
 
-    apply_payload(&state, &body.session, &body.event, &raw_payload, foreign_agent);
+    // Child failures do not end the main turn. The direct child identifier is
+    // authoritative; named main agents may also carry agent_type, so that field
+    // alone is insufficient (the tracked conversation disambiguates teammates).
+    let child_failure = is_stop_failure(&body.event)
+        && (foreign_agent || payload_str(&raw_payload, "agent_id").is_some());
+    if !child_failure {
+        if let Some(event) = HookEvent::from_event_str(&body.event) {
+            // The post-turn idle ping proves the turn ended, including when its
+            // Stop hook was missed. A permission notification remains a generic
+            // Notification; it must not resolve a direct PermissionRequest.
+            let event = if event == HookEvent::Notification
+                && raw_payload
+                    .get("notification_type")
+                    .or_else(|| raw_payload.get("notificationType"))
+                    .and_then(Value::as_str)
+                    == Some("idle_prompt")
+            {
+                HookEvent::Stop
+            } else {
+                event
+            };
+            state.record_hook(&body.session, event);
+        }
+    }
+
+    apply_payload(
+        &state,
+        &body.session,
+        &body.event,
+        &raw_payload,
+        foreign_agent,
+    );
 
     // A live agent file-write becomes a `files` SSE frame, so a file a bot
     // wrote seconds ago appears in the Files surface without a reload. Only the
@@ -667,6 +658,10 @@ fn apply_payload(
         return;
     }
 
+    if is_stop_failure(event) && (foreign_agent || payload_str(raw, "agent_id").is_some()) {
+        return;
+    }
+
     let changed = match event {
         // A tool call started → set the live activity label (`✎ tile.tsx`, …).
         // A payload with no tool name yields no label → leave activity as-is.
@@ -1006,7 +1001,12 @@ fn apply_payload(
         // error badge (also clear the now-irrelevant activity).
         "stop_failure" | "StopFailure" => {
             let (etype, msg) = activity::error_info(payload);
-            let cleared = state.clear_activity(session);
+            let cleared = state.clear_activity(session)
+                | state.clear_permission_request(session)
+                | state.clear_elicitation(session)
+                | state.clear_browser_takeover(session)
+                | state.clear_question_request(session)
+                | state.clear_waiting_message(session);
             // TRIGGER 5 (B5/T1.5) — error. Raised with the agent's own error
             // text, before `set_error` moves it into the state.
             notify::notify_event(
@@ -1038,6 +1038,10 @@ fn apply_payload(
     if changed {
         broadcast_activity_delta(state, session);
     }
+}
+
+fn is_stop_failure(event: &str) -> bool {
+    matches!(event, "stop_failure" | "StopFailure")
 }
 
 /// True when `event` is one of Claude's session LIFECYCLE events (the ones whose

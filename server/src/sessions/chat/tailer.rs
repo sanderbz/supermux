@@ -1163,7 +1163,15 @@ fn rebuild(
 /// state machine records into the server-ms domain the guard compares in.
 fn last_hook_ms(state: &AppState, name: &str, now_ms: i64) -> Option<i64> {
     let t = state.turn_state(name);
-    let newest = [t.user_prompt, t.pre_tool, t.post_tool, t.stop, t.subagent_stop, t.notification]
+    let newest = [
+        t.user_prompt,
+        t.pre_tool,
+        t.post_tool,
+        t.stop,
+        t.subagent_stop,
+        t.notification,
+        t.permission_request,
+    ]
     .into_iter()
     .flatten()
     .max()?;

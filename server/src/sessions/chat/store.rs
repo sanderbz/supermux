@@ -208,6 +208,9 @@ impl ChatStore {
         }
         let mut g = self.lock();
         for mut w in sealed {
+            if let Some(source) = &g.source {
+                w.set_source(g.source_generation, &source.conversation_id);
+            }
             w.set_seq(g.next_seq);
             g.next_seq += 1;
             g.ring.push_back(w.clone());
@@ -254,7 +257,7 @@ impl ChatStore {
     }
 
     /// File appends can wake the tailer every150ms; process discovery remains
-    /// at most once per normal2s poll per session, shared with REST readers.
+    /// at most once per normal2s poll per session. REST discovery stays fresh.
     pub fn claim_owner_probe(&self, dir: &str, started: i64, saved_id: &str) -> bool {
         let mut inner = self.lock();
         if inner.owner_probe.as_ref().is_some_and(|(d, s, id, at)| {
@@ -447,6 +450,22 @@ mod tests {
             conversation_id: id.into(),
             dialect: super::super::parser::Dialect::Codex,
         }
+    }
+
+    #[test]
+    fn direct_publisher_keeps_attached_source_identity() {
+        use super::*;
+        let store = ChatStore::new();
+        store.publish_source(source("current"), Vec::new(), false, 0);
+        let mut attached = store.attach();
+        store.publish(vec![ChatEntry::test_text("direct", "entry")]);
+        let live = attached.rx.try_recv().unwrap();
+        assert_eq!(live.conversation_id(), Some("current"));
+        assert_eq!(live.source_generation(), attached.source_generation);
+        assert_eq!(live.seq(), attached.high_water);
+        let fresh = store.attach();
+        assert_eq!(fresh.ring[0].conversation_id(), Some("current"));
+        assert_eq!(fresh.ring[0].source_generation(), fresh.source_generation);
     }
 
     #[test]
