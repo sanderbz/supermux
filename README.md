@@ -39,6 +39,10 @@ If you've seen xAI's Grok bots — always-on AI teammates that get their own com
 
 ## Point to a website change
 
+<!-- browser-feedback-showcase -->
+![Supermux browser feedback in Chrome: numbered notes, privacy masking, and readable crops](docs/screenshots/browser-feedback.png)
+<!-- /browser-feedback-showcase -->
+
 The **Feedback Chrome Extension** sends the page detail you mean directly to your Claude Code or Codex agent. Click its toolbar icon, pick an element, circle a detail, or select an area, then add notes and review the masked screenshot before sending. Your agent receives a numbered overview, readable crops, and the exact page and DOM context. Notes follow page and nested scrolling; offscreen notes keep their saved crop and original capture coordinates.
 
 Each feedback includes a clean overview and a matching numbered overview, plus crops taken from the original capture at up to 1400 × 1000 pixels so your agent can read the detail. Saved crops retain their capture time, viewport, and note geometry after scrolling; pins follow both the page and nested containers. The toolbar and settings use Supermux’s canonical blue chevron branding.
