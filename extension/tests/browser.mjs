@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import assert from 'node:assert/strict';
+import {assertEditorGeometry} from './helpers/geometry.mjs';
 
 const fixture=`<!doctype html><title>Feedback scrolling fixture</title><style>
 html{scroll-behavior:auto}body{margin:0;min-height:2800px;font:16px system-ui;background:#f7f8f4;color:#263326}
@@ -73,7 +74,7 @@ try {
     rectangles:[...root.querySelectorAll('.scene rect.annotation-outline')].map(el=>({x:+el.getAttribute('x'),y:+el.getAttribute('y'),width:+el.getAttribute('width'),height:+el.getAttribute('height')})),
     strokes:[...root.querySelectorAll('.scene polyline.stroke')].map(el=>(el.getAttribute('points')||'').trim().split(/\s+/).filter(Boolean).map(p=>{const [x,y]=p.split(',').map(Number);return{x,y};})),
     pins:[...root.querySelectorAll('button.pin')].map(el=>{const r=el.getBoundingClientRect();return{number:+el.textContent,id:el.dataset.pin,selected:el.classList.contains('selected'),x:r.x+r.width/2,y:r.y+r.height/2,visible:r.width>0&&r.height>0&&getComputedStyle(el).visibility!=='hidden'};}),
-    editor:root.querySelector('.editor')?{label:root.querySelector('.element-label').textContent,x:root.querySelector('.editor').getBoundingClientRect().x,y:root.querySelector('.editor').getBoundingClientRect().y}:null,
+    editor:root.querySelector('.editor')?{label:root.querySelector('.element-label').textContent,x:root.querySelector('.editor').getBoundingClientRect().x,y:root.querySelector('.editor').getBoundingClientRect().y,animating:root.querySelector('.editor').getAnimations().some(a=>Number.isFinite(a.effect?.getComputedTiming().endTime)&&a.playState!=='finished'&&a.playState!=='idle')}:null,
   }));
   async function until(check,label) {
     const end=Date.now()+5000;let last;
@@ -82,17 +83,19 @@ try {
   }
   function near(actual,expected,label){assert.ok(Math.abs(actual-expected)<=1.5,`${label}: expected ${expected}, got ${actual}`);}
   const nativeRect=selector=>page.locator(selector).evaluate(el=>{const r=el.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};});
-  async function rectangleAndPin(number,expected,label,selected=false) {
+  async function rectangleAndPin(number,expected,label,selected=false,editorLabel=null) {
     return until(async()=>{
       const state=await readOverlay(),rect=state.rectangles.find(r=>Math.abs(r.x-expected.x)<1.5&&Math.abs(r.y-expected.y)<1.5);
       assert.ok(rect,`${label}: missing SVG rectangle; actual=${JSON.stringify(state.rectangles)}`);
       near(rect.width,expected.width,`${label} width`);near(rect.height,expected.height,`${label} height`);
       const pin=state.pins.find(p=>p.number===number);assert.ok(pin?.visible,`${label}: pin ${number} visible`);
       near(pin.x,expected.x+expected.width,`${label} pin x`);near(pin.y,expected.y,`${label} pin y`);
-      if(selected)assert.equal(pin.selected,true,`${label}: DOM note stays selected`);return state;
+      if(selected)assert.equal(pin.selected,true,`${label}: DOM note stays selected`);
+      if(editorLabel)assertEditorGeometry(state,{number,labelContains:editorLabel,x:expected.x+expected.width+17,y:expected.y+12,label:'selected editor follows nested'});
+      return state;
     },label);
   }
-  const elementAndPin=async(number,selector,label)=>rectangleAndPin(number,await nativeRect(selector),label,true);
+  const elementAndPin=async(number,selector,label,editorLabel=null)=>rectangleAndPin(number,await nativeRect(selector),label,true,editorLabel);
   async function clickTool(mode) {
     const point=await overlay((root,mode)=>{const r=root.querySelector(`[data-mode="${mode}"]`).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};},mode);
     await page.mouse.click(point.x,point.y);
@@ -127,8 +130,7 @@ try {
   await pageScroll(120);const before=await nativeRect('#nested');await elementAndPin(2,'#nested','nested element follows page');
   await containerScroll(80,45);const after=await nativeRect('#nested');
   near(after.y,before.y-80,'fixture overflow really scrolled vertically');near(after.x,before.x-45,'fixture overflow really scrolled horizontally');
-  state=await elementAndPin(2,'#nested','nested nonbubbling scroll repaints selection');assert.ok(state.editor.label.includes('Nested scroll target'));
-  near(state.editor.x,after.x+after.width+17,'selected editor follows nested x');near(state.editor.y,after.y+12,'selected editor follows nested y');
+  state=await elementAndPin(2,'#nested','nested nonbubbling scroll repaints selection','Nested scroll target');
   await containerScroll(0);await pageScroll(0);await elementAndPin(2,'#nested','nested element restored');await closeEditor();
 
   await page.locator('#fixed').click();const fixed=await nativeRect('#fixed');await elementAndPin(3,'#fixed','fixed element');

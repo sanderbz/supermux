@@ -128,6 +128,15 @@ try{
   const output=fileURLToPath(new URL('../../docs/screenshots/browser-feedback.png',import.meta.url));
   await mkdir(fileURLToPath(new URL('../../docs/screenshots/',import.meta.url)),{recursive:true});
   await page.mouse.move(30,920);
+  await until(async()=>{
+    assert.equal(await overlay(async root=>{
+      await document.fonts.ready;
+      const animations=[...root.querySelectorAll('*')].flatMap(el=>el.getAnimations()).filter(a=>Number.isFinite(a.effect?.getComputedTiming().endTime)&&a.playState!=='finished'&&a.playState!=='idle');
+      await Promise.all(animations.map(a=>a.finished.catch(()=>{})));
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      return [...root.querySelectorAll('*')].every(el=>el.getAnimations().every(a=>!Number.isFinite(a.effect?.getComputedTiming().endTime)||a.playState==='finished'||a.playState==='idle'));
+    }),true);
+  },'fonts and finite review animations settled');
   await page.screenshot({path:output});
   console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, and verified privacy mask. No feedback submitted.`);
 }finally{
