@@ -55,6 +55,7 @@ import { ComposerShell } from './composer-shell'
 import type { ChatItem } from './entries'
 import { buildTranscript } from './grouping'
 import { SessionHeaderPill, type HeaderWorkflow } from './header-pill'
+import { BrowserPairingButton } from '../browser-feedback/browser-pairing'
 import { LiveLayer } from './live-layer'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem, type ScheduleRef } from './transcript-item'
@@ -536,7 +537,7 @@ export function ChatConversation({
           pin={pin}
           surface={phone ? 'phone' : 'desktop'}
           leading={headerLeading}
-          trailing={headerTrailing}
+          trailing={<div className="flex shrink-0 items-center gap-1"><BrowserPairingButton session={name} label={session?.display_name || name} compact={phone} provider={session?.provider} remote={session?.host_id != null} />{headerTrailing}</div>}
           connection={headerStatus}
           // The name opens the bot's details when the shell gives us a door
           // (mobile chat); on the desktop seam it is omitted and the name stays

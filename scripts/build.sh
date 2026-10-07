@@ -95,6 +95,9 @@ WEB_INPUTS_HASH=""
 # Inputs vite cares about: src + public assets + entry HTML + every config that
 # influences output. tailwind config name varies by version (tailwind.config.{js,ts}).
 WEB_INPUT_PATHS=(
+  extension/src
+  extension/scripts
+  extension/package.json
   web/src
   web/public
   web/index.html

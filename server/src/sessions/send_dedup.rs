@@ -32,7 +32,7 @@ const MAX_PER_SESSION: usize = 128;
 /// Per-session `send_id → delivered-at` ledger.
 #[derive(Default)]
 pub struct SendDedup {
-    inner: Mutex<HashMap<String, Vec<(String, Instant)>>>,
+    inner: Mutex<HashMap<String, Vec<(String, Instant, bool)>>>,
 }
 
 impl SendDedup {
@@ -43,8 +43,8 @@ impl SendDedup {
         let mut g = self.inner.lock().unwrap();
         match g.get_mut(name) {
             Some(v) => {
-                v.retain(|(_, t)| now.duration_since(*t) < TTL);
-                v.iter().any(|(id, _)| id == send_id)
+                v.retain(|(_, t, _)| now.duration_since(*t) < TTL);
+                v.iter().any(|(id, _, delivered)| id == send_id && *delivered)
             }
             None => false,
         }
@@ -53,12 +53,34 @@ impl SendDedup {
     /// Record a `send_id` as delivered to `name`. Idempotent, TTL-pruned, and
     /// capped (oldest dropped first).
     pub fn record(&self, name: &str, send_id: &str) {
+        self.record_outcome(name, send_id, true);
+    }
+
+    /// Reserve input before the first possible write. An uncertain retry must
+    /// return the same manual-recovery refusal, never type the payload again.
+    pub fn record_uncertain(&self, name: &str, send_id: &str) {
+        self.record_outcome(name, send_id, false);
+    }
+
+    pub fn uncertain(&self, name: &str, send_id: &str) -> bool {
+        let now = Instant::now();
+        let mut g = self.inner.lock().unwrap();
+        g.get_mut(name).is_some_and(|v| {
+            v.retain(|(_, t, _)| now.duration_since(*t) < TTL);
+            v.iter().any(|(id, _, delivered)| id == send_id && !*delivered)
+        })
+    }
+
+    fn record_outcome(&self, name: &str, send_id: &str, delivered: bool) {
         let now = Instant::now();
         let mut g = self.inner.lock().unwrap();
         let v = g.entry(name.to_string()).or_default();
-        v.retain(|(_, t)| now.duration_since(*t) < TTL);
-        if v.iter().all(|(id, _)| id != send_id) {
-            v.push((send_id.to_string(), now));
+        v.retain(|(_, t, _)| now.duration_since(*t) < TTL);
+        if let Some((_, at, outcome)) = v.iter_mut().find(|(id, _, _)| id == send_id) {
+            *at = now;
+            *outcome = delivered;
+        } else {
+            v.push((send_id.to_string(), now, delivered));
         }
         if v.len() > MAX_PER_SESSION {
             let drop = v.len() - MAX_PER_SESSION;

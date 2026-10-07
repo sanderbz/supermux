@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "build:perf": "tsc -b && vite build && node scripts/size-budget.mjs",
+    "build": "node ../extension/scripts/build.mjs && tsc -b && vite build",
+    "build:perf": "node ../extension/scripts/build.mjs && tsc -b && vite build && node scripts/size-budget.mjs",
     "perf:size": "node scripts/size-budget.mjs",
     "lint": "eslint .",
     "lint:gate": "node scripts/lint-gate.mjs",

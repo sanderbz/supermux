@@ -48,6 +48,7 @@
  * sheet; the pane's outer chrome reuses the roster's existing `.gr-pane` surface.
  */
 import * as React from 'react'
+import { BrowserFeedbackCard, supportsBrowserFeedback } from '../browser-feedback/browser-pairing'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
@@ -1150,6 +1151,7 @@ function SetupTab({
   const memory = session?.memory ?? ''
   return (
     <div className="flex flex-col gap-6">
+      {supportsBrowserFeedback(session?.provider) && <BrowserFeedbackCard key={name} session={name} label={session?.display_name || name} remote={session?.host_id != null} />}
       <Group>
         <RoleField name={name} session={session} />
         <Field label="Launch model" hint={LAUNCH_MODEL_HINT}>

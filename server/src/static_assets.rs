@@ -56,6 +56,12 @@ use crate::state::AppState;
 #[folder = "static/"]
 struct Assets;
 
+// Keep the tracked extension independent of web/static refreshes. Both debug
+// and deployed binaries contain the ZIP; no filesystem lookup is needed.
+const BROWSER_EXTENSION_ZIP: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"), "/../extension/releases/supermux-browser-extension.zip"
+));
+
 /// The git sha of the EMBEDDED frontend bundle, read at runtime from the
 /// `version.json` that `web/vite.config.ts` stamps into `web/dist` (the SAME sha
 /// baked into the bundle's `__APP_BUILD_SHA__`). This is the client-reload
@@ -82,9 +88,20 @@ fn parse_frontend_sha(bytes: &[u8]) -> Option<String> {
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/downloads/supermux-browser-extension.zip", get(download_browser_extension))
         .fallback(get(asset_or_index))
         .layer(compression())
         .with_state(state)
+}
+
+async fn download_browser_extension() -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"supermux-browser-extension.zip\"")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONTENT_LENGTH, BROWSER_EXTENSION_ZIP.len().to_string())
+        .body(Body::from(BROWSER_EXTENSION_ZIP))
+        .unwrap()
 }
 
 /// Wire compression for the embedded bundle.
@@ -422,6 +439,28 @@ fn cache_control(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{cache_control, parse_frontend_sha};
+
+    #[tokio::test]
+    async fn browser_extension_download_is_public_zip_attachment() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let (state, dir) = state_with(true).await;
+        let response = crate::http::router(state.clone()).oneshot(
+            axum::http::Request::builder()
+                .uri("/downloads/supermux-browser-extension.zip")
+                .body(axum::body::Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/zip");
+        assert_eq!(response.headers()["content-disposition"], "attachment; filename=\"supermux-browser-extension.zip\"");
+        assert_eq!(response.headers()["cache-control"], "no-cache");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), super::BROWSER_EXTENSION_ZIP);
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        assert!(bytes.windows(13).any(|part| part == b"manifest.json"));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     // ── frontend-sha parse (the client-reload freshness signal) ────────────────
 
