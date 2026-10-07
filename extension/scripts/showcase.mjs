@@ -159,7 +159,7 @@ try{
   await page.setViewportSize({width:390,height:844});await page.emulateMedia({reducedMotion:'reduce'});
   assert.equal(await overlay(root=>{const r=root.querySelector('[data-action="image-close"]').getBoundingClientRect();return r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;}),true,'narrow viewer close stays reachable');
   assert.equal(await overlay(root=>getComputedStyle(root.querySelector('.image-viewer')).animationName),'none');
-  await page.screenshot({path:'/private/tmp/supermux-feedback-viewer-narrow.png'});
+  await page.screenshot({path:join(tmpdir(),'supermux-feedback-viewer-narrow.png')});
   await page.keyboard.press('Escape');assert.equal(await overlay(root=>root.activeElement.dataset.image),'crop');
   await page.setViewportSize({width:1440,height:960});await page.emulateMedia({reducedMotion:'no-preference'});
   assert.deepEqual((await savedDraft()).snapshot,draft.snapshot,'inspection preserves frozen pixels and capture provenance');
