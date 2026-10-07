@@ -86,7 +86,7 @@ pub async fn for_session(
             });
         }
         if let Ok(rt) = state.runtime_for(&row.name).await {
-            if let Some(group) = crate::sessions::swarm::lead_pid_of(rt.as_ref()).await {
+            if let Some(group) = foreground_group(rt.as_ref()).await {
                 if let Some(paths) = process_rollouts(group).await {
                     let dir = row.dir.clone();
                     let owned = tokio::task::spawn_blocking(move || {
@@ -131,6 +131,37 @@ fn owner_probe_allowed(
     throttle: bool,
 ) -> bool {
     !throttle || store.is_none_or(|store| store.claim_owner_probe(dir, started, saved_id))
+}
+
+/// The shared runtime foreground helper reads Linux /proc. Keep this macOS
+/// lookup local to transcript ownership: it must not change signal/reaper logic.
+async fn foreground_group(rt: &dyn crate::sessions::runtime::SessionRuntime) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        let shell = rt.pane_pid().await.ok().flatten()?;
+        let mut command = tokio::process::Command::new("/bin/ps");
+        command
+            .args(["-o", "tpgid=", "-p", &shell.to_string()])
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(2), command.output())
+            .await
+            .ok()?
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        foreground_from_ps(&String::from_utf8_lossy(&output.stdout), shell)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        crate::sessions::swarm::lead_pid_of(rt).await
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn foreground_from_ps(output: &str, shell: u32) -> Option<u32> {
+    let foreground: u32 = output.trim().parse().ok()?;
+    (foreground > 0 && foreground != shell).then_some(foreground)
 }
 
 async fn process_rollouts(group: u32) -> Option<Vec<PathBuf>> {
@@ -238,6 +269,16 @@ fn owned_pids(snapshot: &str, foreground: u32) -> Option<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn macos_foreground_metadata_resolves_agent_and_rejects_idle_or_missing_tty() {
+        // Observed native shell209 has TPGID306; its daemon411 has no TTY.
+        assert_eq!(foreground_from_ps("  306\n", 209), Some(306));
+        assert_eq!(foreground_from_ps("209\n", 209), None);
+        for output in ["0\n", "-1\n", "", "invalid", "306\n411\n"] {
+            assert_eq!(foreground_from_ps(output, 209), None, "{output:?}");
+        }
+    }
+
     #[test]
     fn rest_discovery_cannot_consume_the_tailers_adoption_probe() {
         let store = super::super::store::ChatStore::new();
