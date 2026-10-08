@@ -13,6 +13,10 @@
 //!                                                        └ DriveLock ┘   ← the gate
 //! ```
 //!
+//! Connected-tab tools branch after identity verification and use the active
+//! extension lease and pairing authority. The following gates apply to legacy
+//! server-owned browser tools.
+//!
 //! # Four gates, in order
 //!
 //! 1. **Identity.** The `X-Supermux-Hook-Token` header is constant-time compared
@@ -120,6 +124,22 @@ async fn tool_handler(
     crate::hooks::verify_hook_token(&state, &body.session, &headers).await?;
     if !crate::sessions::valid_name(&body.session) {
         return Err(AppError::BadRequest("invalid session name".into()));
+    }
+    // Extension bindings are their own explicit authority. This branch must
+    // precede legacy connector grants and lazy headless-browser creation.
+    if matches!(
+        body.tool.as_str(),
+        "extension_list" | "actions" | "cancel_actions"
+    ) {
+        let result = if body.tool == "extension_list" {
+            crate::browser_feedback::control::list(&state, &body.session).await?
+        } else if body.tool == "cancel_actions" {
+            crate::browser_feedback::control::cancel_actions(&state, &body.session, &body.args)
+                .await?
+        } else {
+            crate::browser_feedback::control::actions(&state, &body.session, &body.args).await?
+        };
+        return Ok(Json(json!({"ok":true,"result":result})));
     }
     // 2. Grant: no browser access, no browser — and no chrome spawned.
     //

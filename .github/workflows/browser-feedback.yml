@@ -40,6 +40,8 @@ jobs:
           npm test
       - name: Verify production Chromium geometry
         run: node extension/tests/browser.mjs
+      - name: Verify connected Chrome browser control
+        run: node extension/tests/control-browser.mjs
       - name: Photograph actual Chrome capture and review
         run: node extension/scripts/showcase.mjs
       - uses: actions/upload-artifact@v7
@@ -48,6 +50,7 @@ jobs:
           name: browser-feedback-showcase
           path: |
             docs/screenshots/browser-feedback.png
+            docs/screenshots/browser-control.png
             extension/preview-overlay.png
           if-no-files-found: warn
           retention-days: 14

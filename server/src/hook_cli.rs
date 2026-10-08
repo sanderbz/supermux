@@ -43,11 +43,12 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(180);
 /// The wrapper names installed into `<data_dir>/bin`. ONE list: the installer
 /// writes these, [`crate::sessions::connector_config`] allow-lists these, and
 /// [`plan`] dispatches on these — so a fifth wrapper cannot be half-added.
-pub const WRAPPERS: [&str; 4] = [
+pub const WRAPPERS: [&str; 5] = [
     "supermux-message",
     "supermux-notify",
     "supermux-task",
     "supermux-schedule",
+    "supermux-browser",
 ];
 
 /// One resolved call: which hook endpoint, and the exact JSON body to POST.
@@ -73,11 +74,27 @@ pub fn plan(cmd: &str, argv: &[String], session: &str) -> Result<Call> {
         "supermux-notify" => plan_notify(argv, session),
         "supermux-task" => plan_task(argv, session),
         "supermux-schedule" => plan_schedule(argv, session),
+        "supermux-browser" => plan_browser(argv, session),
         other => Err(anyhow!(
             "unknown command '{other}' (expected one of: {})",
             WRAPPERS.join(", ")
         )),
     }
+}
+
+fn plan_browser(argv: &[String], session: &str) -> Result<Call> {
+    if argv == ["list"] {
+        return Ok(Call {
+            path: "/api/hook/browser/tool",
+            body: json!({"session":session,"tool":"extension_list","args":{}}),
+        });
+    }
+    let mut args = json_escape_hatch(argv, session)?.ok_or_else(|| anyhow!("{}", "usage: supermux-browser list | --json '{\"target\":\"…\",\"steps\":[{\"action\":\"snapshot\"}]}'"))?;
+    args.as_object_mut().unwrap().remove("session");
+    Ok(Call {
+        path: "/api/hook/browser/tool",
+        body: json!({"session":session,"tool":"actions","args":args}),
+    })
 }
 
 /// `supermux-message <teammate> <prompt…>` → `/api/hook/delegate`.
@@ -311,11 +328,26 @@ pub async fn run(argv: &[String]) -> Result<()> {
         .map_err(|e| anyhow!("{cmd}: {e}"))
 }
 
+/// Private per-invocation identity; callers cannot choose a different batch's
+/// cancellation id through the CLI's JSON escape hatch.
+fn prepare_browser_cancel(call: &mut Call) -> Result<Call> {
+    let target = call.body["args"]["target"]
+        .as_str()
+        .ok_or_else(|| anyhow!("browser target is required"))?
+        .to_owned();
+    let request_id = format!("cli_{}", uuid::Uuid::new_v4().simple());
+    call.body["args"]["request_id"] = json!(request_id);
+    Ok(Call {
+        path: call.path,
+        body: json!({"session":call.body["session"],"tool":"cancel_actions","args":{"target":target,"request_id":request_id}}),
+    })
+}
+
 async fn run_inner(cmd: &str, argv: &[String]) -> Result<()> {
     let url = env_required("SUPERMUX_URL")?;
     let session = env_required("SUPERMUX_SESSION")?;
     let token = env_required("SUPERMUX_HOOK_TOKEN")?;
-    let call = plan(cmd, argv, &session)?;
+    let mut call = plan(cmd, argv, &session)?;
 
     // Accept a self-signed cert ONLY when the URL is this box's own loopback
     // listener (the https self-signed bind) — the connection never leaves the
@@ -327,21 +359,105 @@ async fn run_inner(cmd: &str, argv: &[String]) -> Result<()> {
         .timeout(CLIENT_TIMEOUT)
         .build()
         .map_err(|e| anyhow!("building http client: {e}"))?;
-    let res = client
-        .post(format!("{}{}", url.trim_end_matches('/'), call.path))
-        .header(HOOK_TOKEN_HEADER, &token)
-        .json(&call.body)
-        .send()
-        .await
-        .map_err(|e| anyhow!("POST {}: {e}", call.path))?;
-    let status = res.status();
-    let text = res.text().await.unwrap_or_default();
+    let cancel = if cmd == "supermux-browser" && call.body["tool"] == "actions" {
+        Some(prepare_browser_cancel(&mut call)?)
+    } else {
+        None
+    };
+    let request = async {
+        let res = client
+            .post(format!("{}{}", url.trim_end_matches('/'), call.path))
+            .header(HOOK_TOKEN_HEADER, &token)
+            .json(&call.body)
+            .send()
+            .await
+            .map_err(|e| {
+                if cancel.is_some() {
+                    anyhow!(
+                        "browser batch outcome may be unknown; inspect before trying again: {e}"
+                    )
+                } else {
+                    anyhow!("POST {}: {e}", call.path)
+                }
+            })?;
+        let status = res.status();
+        let text=res.text().await.map_err(|e| if cancel.is_some() {anyhow!("browser response was lost; outcome may be unknown; inspect before trying again: {e}")} else {anyhow!("reading hook response: {e}")})?;
+        Ok::<_, anyhow::Error>((status, text))
+    };
+    let (status, text) = if let Some(cancel) = &cancel {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = request => result?,
+            _ = async { tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} } } => {
+                let _ = client.post(format!("{}{}",url.trim_end_matches('/'),cancel.path))
+                    .header(HOOK_TOKEN_HEADER,&token).json(&cancel.body).timeout(Duration::from_secs(5)).send().await;
+                return Err(anyhow!("browser batch interrupted; its outcome may be unknown; inspect the page before trying again"));
+            }
+        }
+    } else {
+        request.await?
+    };
     if !status.is_success() {
         // The hook endpoints answer a refusal with a readable sentence; hand it
         // back verbatim so the agent can act on it instead of retrying blind.
         return Err(anyhow!("{status} from {} — {text}", call.path));
     }
-    println!("{text}");
+    if cmd == "supermux-browser" {
+        let mut value: Value = serde_json::from_str(&text)?;
+        save_browser_images(&mut value, &std::env::temp_dir())?;
+        println!("{}", value);
+        if value["result"]["ok"] == false {
+            return Err(anyhow!(
+                "browser batch did not complete; inspect its result before retrying"
+            ));
+        }
+    } else {
+        println!("{text}");
+    }
+    Ok(())
+}
+
+/// CLI screenshots become private local files instead of base64 in agent text.
+fn save_browser_images(value: &mut Value, root: &Path) -> Result<()> {
+    use base64::Engine;
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                save_browser_images(item, root)?;
+            }
+        }
+        Value::Object(object) => {
+            if let Some(data) = object.get("data_base64").and_then(Value::as_str) {
+                if object.get("mime").and_then(Value::as_str) == Some("image/png") {
+                    if data.len() > 6 * 1024 * 1024 {
+                        return Err(anyhow!("browser screenshot is too large"));
+                    }
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+                    if bytes.len() > 4 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                        return Err(anyhow!("invalid browser screenshot"));
+                    }
+                    let dir = root.join(format!("supermux-browser-{}", uuid::Uuid::new_v4()));
+                    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+                    let path = dir.join("screenshot.png");
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&path)?;
+                    file.write_all(&bytes)?;
+                    object.remove("data_base64");
+                    object.insert("path".into(), json!(path));
+                }
+            }
+            for item in object.values_mut() {
+                save_browser_images(item, root)?;
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -361,6 +477,79 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn browser_interrupt_cancels_only_the_private_invocation_and_scoped_target() {
+        let mut call = plan(
+            "supermux-browser",
+            &[
+                "--json".into(),
+                r#"{"target":"bct_owned","request_id":"not_trusted","steps":[{"action":"click"}]}"#
+                    .into(),
+            ],
+            "agent",
+        )
+        .unwrap();
+        let cancel = prepare_browser_cancel(&mut call).unwrap();
+        assert_eq!(cancel.path, "/api/hook/browser/tool");
+        assert_eq!(cancel.body["session"], "agent");
+        assert_eq!(cancel.body["tool"], "cancel_actions");
+        assert_eq!(cancel.body["args"]["target"], "bct_owned");
+        assert_eq!(
+            cancel.body["args"]["request_id"],
+            call.body["args"]["request_id"]
+        );
+        assert!(cancel.body["args"]["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("cli_"));
+        assert_ne!(cancel.body["args"]["request_id"], "not_trusted");
+        assert_eq!(call.body["tool"], "actions");
+    }
+
+    #[test]
+    fn browser_cli_stamps_identity_and_writes_screenshots_as_private_files() {
+        use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
+        let list = plan("supermux-browser", &args(&["list"]), "alpha").unwrap();
+        assert_eq!(
+            list.body,
+            json!({"session":"alpha","tool":"extension_list","args":{}})
+        );
+        let call = plan(
+            "supermux-browser",
+            &args(&[
+                "--json",
+                r#"{"session":"victim","target":"bct_live","steps":[{"action":"snapshot"}]}"#,
+            ]),
+            "alpha",
+        )
+        .unwrap();
+        assert_eq!(call.body["session"], "alpha");
+        assert!(call.body["args"].get("session").is_none());
+        let dir =
+            std::env::temp_dir().join(format!("supermux-browser-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfixture";
+        let mut reply = json!({"result":{"ok":true,"results":[{"mime":"image/png","data_base64":base64::engine::general_purpose::STANDARD.encode(png)}]}});
+        save_browser_images(&mut reply, &dir).unwrap();
+        assert!(reply["result"]["results"][0].get("data_base64").is_none());
+        let path = Path::new(reply["result"]["results"][0]["path"].as_str().unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), png);
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

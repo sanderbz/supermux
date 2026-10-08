@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(protected_router(state.clone()))
         .merge(crate::browser_feedback::public_router_for(state.clone()))
+        .merge(crate::browser_feedback::control::router_for(state.clone()))
         // PUBLIC (no auth): `/api/health` plus the board iCal feed.
         .merge(board::public_router_for(state.clone()))
         // WS pty stream — NO bearer layer; auth is in-band first-frame.

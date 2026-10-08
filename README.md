@@ -49,6 +49,14 @@ Open the screenshot or any crop to inspect it at full size before sending, and s
 
 Open an agent’s **Settings → Feedback Chrome Extension** to download the ZIP, follow the install guide, and pair a website with a four-digit code. Each website can connect to a different agent. Install in desktop Chrome, then pair or manage connections from either desktop or your phone. The ZIP also lives at `/downloads/supermux-browser-extension.zip` on your Supermux server. [Installation, privacy, and delivery details](docs/BROWSER_FEEDBACK.md) · [Extension source and verification](extension/README.md).
 
+### Let your agent use the tab
+
+On a paired website, choose **Allow control** in the extension. Your Claude Code or Codex agent can now read the page, click, type, scroll, navigate within that website, run page JavaScript, and take screenshots in your actual Chrome tab, including its existing login. **Stop** gives control back immediately. There is no second pairing, local relay, or separate extension to install.
+
+Actions run together in the extension over the existing server connection. Compact page snapshots identify elements; screenshots are requested when needed. This reduces repeated network trips and image uploads. Control ends when you stop, close the tab, change its agent, leave the paired website, or lose the connection. Chrome 125 or newer is required; the extension uses Chrome’s debugger permission and displays its native debugging banner while attached. [Browser control and agent commands](docs/BROWSER_FEEDBACK.md#browser-control).
+
+![Supermux controlling a paired Chrome tab](docs/screenshots/browser-control.png)
+
 ---
 
 ## Install in one line

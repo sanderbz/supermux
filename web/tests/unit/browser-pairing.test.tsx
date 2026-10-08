@@ -15,5 +15,5 @@ test('agent feedback settings pair, revoke, and isolate identities in a browser 
   const output = new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr)
   if (result.exitCode !== 0) throw new Error(`Browser feedback DOM fixture failed:\n${output}`)
   expect(result.exitCode).toBe(0)
-  expect(output).toContain('Browser feedback DOM fixture passed (53 assertions).')
+  expect(output).toContain('Browser feedback DOM fixture passed (56 assertions).')
 }, 20_000)

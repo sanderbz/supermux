@@ -85,3 +85,28 @@ test('returning from pairing refreshes only the connection and preserves the ope
   assert.equal(saved.clientId,'original-client');assert.equal(saved.message,'Original draft');assert.deepEqual(JSON.parse(JSON.stringify(saved.snapshot)),snapshot);
  }finally{dom.window.close();}
 });
+
+test('control preparation saves the retained editor and reports storage failure without losing the draft',async()=>{
+ const dom=new JSDOM('<main><p id="other">Other page content</p></main>',{url:'https://demo.example/',runScripts:'outside-only',pretendToBeVisual:true});
+ const w=dom.window;let listener,finishSave,saved,fail=true;
+ w.CSS={escape:s=>s};Object.defineProperty(w,'crypto',{value:webcrypto});
+ w.chrome={runtime:{id:'test',sendMessage:async m=>{
+  if(m.type==='draft.load')return {ok:true,data:{connection:{paired:true},...(m.connection_only?{}:{draft:{notes:[{id:'one',kind:'region',text:'Original',rect:{x:20,y:20,width:30,height:40}}]}})}};
+  if(m.type==='draft.save'){const candidate=JSON.parse(JSON.stringify(m.draft));if(fail){await new Promise(resolve=>finishSave=resolve);return {ok:false,error:'Storage unavailable'};}saved=candidate;}
+  return {ok:true,data:true};
+ },onMessage:{addListener:f=>listener=f}}};
+ const attach=w.Element.prototype.attachShadow;w.Element.prototype.attachShadow=function(options){return attach.call(this,{...options,mode:'open'});};
+ w.Element.prototype.getBoundingClientRect=()=>({x:100,y:120,left:100,top:120,right:300,bottom:200,width:200,height:80});
+ try{
+  w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));
+  const host=w.document.querySelector('[data-supermux-overlay]'),root=host.shadowRoot;
+  root.querySelector('button.pin').click();root.querySelector('.editor textarea').value='Latest unsaved edit';
+  listener({type:'control.changed',state:{state:'starting'}},{id:'test'},()=>{});
+  let replied=false;const response=new Promise(resolve=>listener({type:'control.prepare'},{id:'test'},value=>{replied=true;resolve(value);}));
+  await new Promise(r=>setTimeout(r,0));assert.equal(replied,false,'preparation waits for durable storage');assert.equal(host.classList.contains('control-active'),true);
+  w.document.querySelector('#other').dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));assert.equal(root.querySelectorAll('button.pin').length,1,'takeover suspends annotation editing');
+  finishSave();const failed=await response;assert.equal(failed.ok,false);assert.equal(failed.error,'Storage unavailable');assert.equal(root.querySelector('.editor textarea').value,'Latest unsaved edit');
+  listener({type:'control.changed',state:{state:'idle'}},{id:'test'},()=>{});fail=false;
+  const retry=await new Promise(resolve=>listener({type:'control.prepare'},{id:'test'},resolve));assert.equal(retry.ok,true);assert.equal(saved.notes[0].text,'Latest unsaved edit');
+ }finally{dom.window.close();}
+});

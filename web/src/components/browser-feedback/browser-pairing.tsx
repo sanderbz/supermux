@@ -11,6 +11,7 @@ export interface BrowserBinding {
   session: string
   session_label?: string
   created_at?: number
+  control_connected?: boolean
 }
 
 export const supportsBrowserFeedback = (provider: string | undefined) => provider === 'claude' || provider === 'codex'
@@ -68,10 +69,10 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
   const epoch = React.useRef(0)
   const endpoint = serverOrigin()
 
-  const load = React.useCallback(async () => {
+  const load = React.useCallback(async (silent = false) => {
     if (!allowed) return
     const version = epoch.current
-    setLoading(true)
+    if (!silent) setLoading(true)
     try {
       const result = await browserFeedbackApi.list(session)
       if (mounted.current && epoch.current === version) setBindings(Array.isArray(result) ? result : result.bindings)
@@ -90,10 +91,15 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
       if (detail?.session === session && detail.source !== instance) void load()
     }
     window.addEventListener('supermux-browser-bindings-change', refresh)
+    const refreshControl = () => { if (document.visibilityState === 'visible') void load(true) }
+    const timer = window.setInterval(refreshControl, 10_000)
+    document.addEventListener('visibilitychange', refreshControl)
     return () => {
       mounted.current = false; epoch.current++
       if (copyTimer.current) clearTimeout(copyTimer.current)
       window.removeEventListener('supermux-browser-bindings-change', refresh)
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshControl)
     }
   }, [allowed, identity, instance, load, session])
 
@@ -146,7 +152,7 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
     <div className="space-y-3 p-4">
       <div className="flex items-start gap-3">
         <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-border bg-fill-soft text-ink-2"><MonitorUp aria-hidden className="size-[18px]" /></div>
-        <div className="min-w-0 flex-1"><h3 className="text-[14px] font-medium leading-5 tracking-tight text-foreground">Feedback Chrome Extension</h3><p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Point to a detail on any website. Send screenshots and notes straight to {label || 'this agent'}.</p></div>
+        <div className="min-w-0 flex-1"><h3 className="text-[14px] font-medium leading-5 tracking-tight text-foreground">Feedback Chrome Extension</h3><p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Send website feedback to {label || 'this agent'}, or let it work directly in your Chrome tab.</p></div>
       </div>
       <a href={apiUrl(BROWSER_EXTENSION_DOWNLOAD)} download="supermux-browser-extension.zip" data-testid="browser-extension-download" className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary/20 bg-primary/8 px-3 text-[12px] font-medium text-primary transition-colors hover:bg-primary/12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Download aria-hidden className="size-4" />Download Chrome extension<span className="ml-1 text-[9px] font-normal tracking-wider opacity-65">ZIP · DESKTOP</span>
@@ -161,13 +167,13 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
             <li>Pin Supermux in Chrome. On the website you want to annotate, click its icon and choose <strong className="font-medium text-foreground">Connect</strong>. If asked, use this server address. Enter the four-digit code below, then return to the extension to confirm the website and agent.</li>
           </ol>
           <div><p className="mb-1 text-[9px] uppercase tracking-[.12em] text-muted-foreground">Your Supermux server</p><div className="flex items-center gap-2 rounded-lg border border-border bg-background pl-2.5"><code className="min-w-0 flex-1 select-all truncate text-[10px] text-foreground" title={endpoint}>{endpoint}</code><button type="button" onClick={() => void copyAddress(endpoint, 'server')} aria-label={copied === 'server' ? 'Server address copied' : 'Copy server address'} className="grid size-11 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-fill-soft focus-visible:ring-2 focus-visible:ring-ring">{copied === 'server' ? <Check aria-hidden className="size-3.5" /> : <Copy aria-hidden className="size-3.5" />}</button></div></div>
-          <p className="text-[10px] leading-relaxed text-muted-foreground">Each website connects to one agent at a time. Pair it again to switch agents. You review every screenshot before sending.</p>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">Each website connects to one agent at a time. Choose Allow control in the extension to let that agent use your tab. Stop ends control immediately.</p>
         </div>
       </details>
       {remote && <p className="rounded-lg bg-fill-soft px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground">Pairing is available for agents running on this Supermux server. SSH-hosted agents aren’t supported yet.</p>}
       {allowed ? <form onSubmit={pair}>
         <label htmlFor={inputId} className="text-[11px] font-medium text-foreground">Pair a website with {label || 'this agent'}</label>
-        <p className="mb-2.5 mt-1 text-[10px] leading-relaxed text-muted-foreground">Open Supermux on the website you want to connect. Enter its four-digit code here to send feedback to this agent.</p>
+        <p className="mb-2.5 mt-1 text-[10px] leading-relaxed text-muted-foreground">Open Supermux on the website you want to connect. Enter its four-digit code here to connect it to this agent.</p>
         <div className="flex gap-2">
           <input id={inputId} data-testid="browser-pair-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{4}" maxLength={4} placeholder="0000" value={code} disabled={pairing || remote}
             onChange={event => setCode(event.target.value.replace(/\D/g, '').slice(0, 4))}
@@ -182,8 +188,9 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
       <div className="mb-2 flex items-center justify-between gap-2"><h4 className="text-[9px] font-medium uppercase tracking-[.12em] text-muted-foreground">Paired websites</h4><span className="text-[10px] tabular-nums text-muted-foreground">{bindings.length}</span></div>
       {loading ? <p className="flex items-center gap-2 py-2 text-[11px] text-muted-foreground"><Loader2 aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />Loading connections…</p> : bindings.length ? <ul className="max-h-48 divide-y divide-border overflow-y-auto">{bindings.map(binding => <li key={binding.id} className="flex min-h-11 items-center gap-2 py-1">
         <Globe2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-[11px] text-foreground" title={binding.origin}>{binding.origin}</span>
+        {binding.control_connected && <span data-testid="browser-control-active" className="flex shrink-0 items-center gap-1.5 rounded-full bg-status-ready/10 px-2 py-1 text-[10px] text-status-ready-ink"><span aria-hidden className="size-1.5 rounded-full bg-current" />Control on</span>}
         <button type="button" disabled={revoking !== null} onClick={() => void revoke(binding)} title={`Disconnect ${binding.origin}`} aria-label={`Disconnect ${binding.origin}`} className="grid size-11 shrink-0 place-items-center rounded-xl text-muted-foreground transition-colors hover:bg-fill-soft hover:text-status-error focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">{revoking === binding.id ? <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Unplug aria-hidden className="size-3.5" />}</button>
-      </li>)}</ul> : <p className="py-1 text-[11px] leading-relaxed text-muted-foreground">Pair a website to bring its feedback here.</p>}
+      </li>)}</ul> : <p className="py-1 text-[11px] leading-relaxed text-muted-foreground">Pair a website to connect it to this agent.</p>}
     </div>}
   </section>
 }
@@ -194,7 +201,7 @@ export function BrowserPairingButton({ session, label, compact = false, provider
   const [open, setOpen] = React.useState(false)
   if (!allowed || (provider !== undefined && !supportsBrowserFeedback(provider))) return null
   return <>
-    <button type="button" onClick={() => setOpen(true)} title="Pair browser feedback with this chat" aria-label="Pair browser" aria-haspopup="dialog" data-testid="chat-pair-browser" className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2 text-ink-2 transition-colors hover:bg-fill-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:opacity-70">
+    <button type="button" onClick={() => setOpen(true)} title="Connect your browser to this chat" aria-label="Pair browser" aria-haspopup="dialog" data-testid="chat-pair-browser" className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2 text-ink-2 transition-colors hover:bg-fill-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:opacity-70">
       <MonitorUp aria-hidden className="size-4" />{!compact && <span className="text-[11px] font-medium">Pair browser</span>}
     </button>
     {open && <ResponsiveSheet open hideHeader onOpenChange={value => { if (!value) setOpen(false) }} title="Feedback Chrome Extension" description={`Browser feedback for ${label || session}`} className="sm:max-w-[430px]">

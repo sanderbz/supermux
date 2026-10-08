@@ -22,7 +22,7 @@ test('the shipped ZIP is reproducible, complete and readable by an independent Z
 import json, sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     assert z.testzip() is None
-    assert len(z.namelist()) == 13
+    assert len(z.namelist()) == 16
     assert 'manifest.json' in z.namelist()
     assert json.loads(z.read('manifest.json'))['manifest_version'] == 3
     assert '__CONTENT_CSS__' not in z.read('content.js').decode()

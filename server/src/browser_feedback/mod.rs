@@ -1,4 +1,5 @@
 //! Website-scoped browser-extension pairing and durable feedback outbox.
+pub mod control;
 pub mod payload;
 
 use crate::{auth_human::AuthContext, db, error::AppError, state::AppState};
@@ -46,6 +47,14 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/browser-bindings/{id}", delete(revoke))
         .with_state(state)
 }
+pub(crate) fn extension_origin_allowed(origin: &HeaderValue) -> bool {
+    origin
+        .to_str()
+        .ok()
+        .and_then(|o| o.strip_prefix("chrome-extension://"))
+        .is_some_and(|id| id.len() == 32 && id.bytes().all(|c| (b'a'..=b'p').contains(&c)))
+}
+
 pub fn public_router_for(state: AppState) -> Router {
     use axum::routing::{get, post};
     // Chrome's extension id alphabet is a-p, exactly 32 characters. This layer
@@ -53,11 +62,7 @@ pub fn public_router_for(state: AppState) -> Router {
     // endpoints. Dashboard routes keep their existing same-origin rules.
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-            origin
-                .to_str()
-                .ok()
-                .and_then(|o| o.strip_prefix("chrome-extension://"))
-                .is_some_and(|id| id.len() == 32 && id.bytes().all(|c| (b'a'..=b'p').contains(&c)))
+            extension_origin_allowed(origin)
         }))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
@@ -151,7 +156,7 @@ async fn binding_summary(state: &AppState, b: &store::Binding) -> Result<Value, 
     };
     Ok(
         json!({"id":b.id,"origin":b.origin,"session":b.session,"session_label":label,
-        "company_id":b.company_id,"company_label":company_label}),
+        "company_id":b.company_id,"company_label":company_label,"control_connected":state.browser_control.connected(&b.id)}),
     )
 }
 async fn poll_pairing(
@@ -456,6 +461,7 @@ async fn revoke(
     }
     sqlx::query("UPDATE browser_feedback SET status='cancelled',reason='Browser pairing was revoked.',updated_at=? WHERE binding_id=? AND status='queued'").bind(now()).bind(&binding_id).execute(&mut *tx).await?;
     tx.commit().await?;
+    state.browser_control.revoke(&binding_id);
     db::audit::log(
         &state.pool,
         "user",
@@ -806,7 +812,7 @@ mod tests {
     // An actual 1x1 PNG with valid IHDR/IDAT/IEND checksums.
     const PNG:&str="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-    async fn setup() -> (AppState, Router, PathBuf) {
+    pub(super) async fn setup() -> (AppState, Router, PathBuf) {
         let dir = std::env::temp_dir().join(format!("supermux-feedback-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("workspace")).unwrap();
         let config = crate::config::Config {

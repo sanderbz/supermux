@@ -4,7 +4,7 @@ import {join} from 'node:path';
 // Only shipped extension assets enter the archive, never browser storage,
 // local settings, test captures, or files accidentally added to dist.
 const allowed = new Set(['manifest.json','content.js','content.css','worker.js',
-  'shared.js','logo.svg','options.js','options.html','options.css',
+  'shared.js','control-cdp.js','control-session.js','control-ui.js','logo.svg','options.js','options.html','options.css',
   ...[16,32,48,128].map(n=>`icons/${n}.png`)]);
 function crc32(bytes) {
   let crc=0xffffffff;

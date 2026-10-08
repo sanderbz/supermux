@@ -97,12 +97,17 @@ async function run() {
     let releaseOld: ((response: Response) => void) | undefined
     globalThis.fetch = (async () => new Promise<Response>(resolve => { releaseOld = resolve })) as typeof fetch
     await React.act(async () => { useViewer.setState({ viewer: { kind: 'member', companyId: 1, userId: 2, role: 'member', displayName: 'Second', email: 'second@example.com' } }) })
-    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, data: [{ id: 'new', origin: 'https://new-account.example', session: 'codex-demo' }] }), { status: 200 })) as typeof fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, data: [{ id: 'new', origin: 'https://new-account.example', session: 'codex-demo', control_connected: true }] }), { status: 200 })) as typeof fetch
     await React.act(async () => { useViewer.setState({ viewer: { kind: 'member', companyId: 2, userId: 3, role: 'member', displayName: 'Third', email: 'third@example.com' } }) })
     await React.act(async () => { releaseOld!(new Response(JSON.stringify({ ok: true, data: [{ id: 'old', origin: 'https://old-account.example', session: 'codex-demo' }] }), { status: 200 })) })
     checks++; assert.ok(String(container.textContent).includes('https://new-account.example'))
     checks++; assert.ok(!String(container.textContent).includes('https://old-account.example'))
     checks++; assert.ok(!String(container.textContent).includes('https://site.example'))
+    checks++; assert.equal(container.querySelector('[data-testid="browser-control-active"]')?.textContent, 'Control on')
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, data: [{ id: 'new', origin: 'https://new-account.example', session: 'codex-demo', control_connected: false }] }), { status: 200 })) as typeof fetch
+    await React.act(async () => { w.dispatchEvent(new w.CustomEvent('supermux-browser-bindings-change', { detail: { session: 'codex-demo', source: 'other-panel' } })) })
+    checks++; assert.equal(container.querySelector('[data-testid="browser-control-active"]'), null)
+    checks++; assert.ok(String(container.textContent).includes('https://new-account.example'))
     // A company switch still uses the identical installation; policy errors
     // belong to agent access, rather than requiring a company-specific ZIP.
     checks++; assert.equal(container.querySelector('[data-testid="browser-extension-download"]')?.getAttribute('href'), '/downloads/supermux-browser-extension.zip')

@@ -27,6 +27,25 @@ The agent receives a clean screenshot for visual detail, a separate numbered ove
 
 To try the overlay without a server, load the unpacked extension and annotate a normal HTTP or HTTPS page. You can add notes and inspect the capture. Sending becomes available after pairing. Chrome's own settings pages and other restricted pages cannot be annotated.
 
+## Browser control
+
+The same extension can let the paired agent work directly in your Chrome tab. Click **Allow control** in the connection control at the top of the page. The tab keeps its existing login, and the extension connects to your already saved Supermux server. Choose **Stop** to end control. Pairing alone does not enable browser control.
+
+Chrome 125 or newer is required. Chrome requires the extension’s debugger permission at installation or upgrade and shows a native debugging banner while a tab is attached. If DevTools takes over the debugger, control ends; allow control again when you are ready. Other tabs remain outside this connection.
+
+Claude Code and Codex can list connected tabs and submit a batch of page actions. New agent launches discover the `browser_connected_tabs` and `browser_actions` MCP tools. Existing agents can use the installed `supermux-browser` command without restarting:
+
+```sh
+supermux-browser list
+supermux-browser --json '{"target":"bct_…","steps":[{"action":"snapshot"}]}'
+```
+
+Use the exact `target` returned by the list command. It identifies one live connection, so an old action cannot accidentally switch to a newly connected tab. Actions include reading a compact snapshot, clicking, typing, keyboard input, scrolling, same-site navigation, page JavaScript, and screenshots. Element references belong to the current document; take a fresh snapshot after navigation. A batch runs in the tab with up to 32 ordered steps and a 30-second deadline. Screenshots are returned only when requested, rather than after every click.
+
+Control uses one persistent extension-to-server connection through your existing HTTPS or Tailscale address. No Chrome debugging port, local daemon, Playwright service, or second pairing is needed. Stop, disconnect, server reset, changing the paired agent, closing the tab, or navigating to another website ends that tab’s control. The server checks current agent and company access on each request. A connection loss or timeout can leave an action’s outcome uncertain; actions are never automatically replayed. Read the page before deciding whether to try again. Cancelling a running MCP call or interrupting the CLI also stops the batch and ends control; allow control again to continue.
+
+Feedback and control use the same website-to-agent pairing, but have separate operations: sending feedback queues a durable change request; browser actions operate on the currently connected tab. The separate **Shared Browser** connector controls a server-owned browser and does not substitute for a disconnected Chrome tab.
+
 ## Delivery and recovery
 
 `queued` means saved and waiting. `sent` means the server observed the agent consume the terminal input; it does not mean the requested change is finished. Busy, stopped, unknown, modal, or nonempty-composer sessions remain queued. Existing drafts are preserved. Status changes and new feedback wake the outbox; a slow reconciliation tick also checks waiting rows. Messages preserve insertion order within each session, while stopped sessions do not block other sessions.
@@ -60,14 +79,18 @@ cd extension
 npm test
 npm run build
 npm run test:e2e
+npm run test:control
 node scripts/showcase.mjs
 cd ../web
 npm run build
 cd ../server
 cargo test --lib browser_feedback::tests
+cargo test --lib browser_feedback::control
 cargo test --lib sessions::lifecycle::write_runtime_tests
 ```
 
 The Chrome smoke test uses the local Playwright installation in `web/node_modules`; install its Chromium browser before running it. `showcase.mjs` opens a synthetic studio website in real Chromium with the shipped extension, enters two notes through its closed shadow root, captures through the production service worker and `chrome.tabs.captureVisibleTab`, verifies that visible fields are preserved, and writes `docs/screenshots/browser-feedback.png`. Pairing and delivery use a local fixture; the direct-send and retry checks never submit feedback to a real chat. The **Browser feedback** GitHub workflow runs both Chrome checks and uploads their screenshots; it has a ten-minute timeout and runs independently of the server CI jobs.
 
 Packaging tests use Python's standard ZIP reader to validate the archive independently and check reproducibility. Backend regression tests use fake terminal runtimes and local SQLite/filesystem fixtures, including the paste suppression window, swallowed Enter, modal races, draft preservation, member access and CSRF, scoped credentials, deleted-user id reuse, queue ordering, revocation, restart recovery, idempotent numbered-image ingestion, crop provenance after scrolling, and legacy payload support.
+
+The control fixture runs the shipped extension in real Chromium against a disposable React page. It checks native Allow/Stop, trusted input, dropdowns, contenteditable, coordinate double-clicks, same-process and nested cross-origin frames, stale references, delayed navigation, scrolled screenshots, and stopping an unfinished action. It also alternates 20 warm trials of the same three actions: batching uses one command/result exchange instead of three, with 789 versus 1,233 protocol bytes in the local fixture. Local execution time is similar; network round trips are the larger saving when Chrome and the server are on different machines. These measurements exclude model reasoning and are not a comparison against other products.

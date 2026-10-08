@@ -201,7 +201,7 @@ export const CURATED_FALLBACK: ConnectorCard[] = [
   },
   {
     // MIRRORS the server's built-in card (`connectors::browser::mcp::manifest`):
-    // same id, same five tools, same icon — so the offline fallback and the live
+    // same id, same tools, same icon — so the offline fallback and the live
     // row are the same card, and a grant made against either lands on the real
     // connector.
     id: 'shared-browser',
@@ -225,6 +225,8 @@ export const CURATED_FALLBACK: ConnectorCard[] = [
         name: 'request_human_takeover',
         description: 'Ask the human to take the wheel (login, 2FA, CAPTCHA) and wait for the hand-back.',
       },
+      { name: 'browser_connected_tabs', description: 'List Chrome tabs connected through the Supermux extension.' },
+      { name: 'browser_actions', description: 'Run ordered page actions in a connected Chrome tab.' },
     ],
     credentials: [],
     source: 'local',
