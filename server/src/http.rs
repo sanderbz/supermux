@@ -39,6 +39,7 @@ use crate::ws;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(protected_router(state.clone()))
+        .merge(crate::browser_feedback::public_router_for(state.clone()))
         // PUBLIC (no auth): `/api/health` plus the board iCal feed.
         .merge(board::public_router_for(state.clone()))
         // WS pty stream — NO bearer layer; auth is in-band first-frame.
@@ -174,6 +175,9 @@ fn protected_router(state: AppState) -> Router {
     use crate::scope::{member_allowlist_mw, require_admin_mw, require_admin_writes_mw};
     Router::new()
         .merge(sessions::router_for(state.clone()))
+        // Browser pairing follows agent access; each handler checks session
+        // company scope under the lifecycle lock.
+        .merge(crate::browser_feedback::router_for(state.clone()))
         .merge(board::router_for(state.clone()))
         // hosts CRUD + bootstrap — P3d: owner/admin-only. A scoped member never
         // reaches these (uniform 404, hides existence), enforced by the shared

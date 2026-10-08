@@ -37,6 +37,20 @@ If you've seen xAI's Grok bots — always-on AI teammates that get their own com
 
 ---
 
+## Point to a website change
+
+<!-- browser-feedback-showcase -->
+![Supermux browser feedback in Chrome: numbered notes, privacy masking, and readable crops](docs/screenshots/browser-feedback.png)
+<!-- /browser-feedback-showcase -->
+
+The **Feedback Chrome Extension** sends the page detail you mean directly to your Claude Code or Codex agent. Click its toolbar icon, pick an element, circle a detail, or select an area, then add notes and review the masked screenshot before sending. Your agent receives a numbered overview, readable crops, and the exact page and DOM context. Notes follow page and nested scrolling; offscreen notes keep their saved crop and original capture coordinates.
+
+Open the screenshot or any crop to inspect it at full size before sending, and switch between the clean image and numbered notes. Each feedback includes both overviews, plus crops taken from the original capture at up to 1400 × 1000 pixels so your agent can read the detail. Saved crops retain their capture time, viewport, and note geometry after scrolling; pins follow both the page and nested containers. The toolbar and settings use Supermux’s canonical blue chevron branding.
+
+Open an agent’s **Settings → Feedback Chrome Extension** to download the ZIP, follow the install guide, and pair a website with a four-digit code. Each website can connect to a different agent. Install in desktop Chrome, then pair or manage connections from either desktop or your phone. The ZIP also lives at `/downloads/supermux-browser-extension.zip` on your Supermux server. [Installation, privacy, and delivery details](docs/BROWSER_FEEDBACK.md) · [Extension source and verification](extension/README.md).
+
+---
+
 ## Install in one line
 
 SSH into a fresh Ubuntu 22.04+ / Debian 12+ box and run:
@@ -175,6 +189,10 @@ Bot Mode runs on top of a real product. Underneath the companies is the thing su
 - **Schedule recurring prompts.** Cron and "every Nm/Nh" jobs, an iCal feed, a live job list — routine work happens without you.
 - **A terminal made for Claude Code.** Attach a file or photo and it drops the path at Claude's prompt; Markdown and code render with real syntax highlighting; edit prompts in a native textarea; tap Claude-specific actions (cycle permission mode, rewind, approve) a plain SSH app can't know about.
 - **Mixed fleets welcome.** Claude Code is the default; the same overview runs [Codex CLI](https://developers.openai.com/codex/cli/) sessions side by side.
+
+### Point to a website change
+
+The **Supermux · Point & tell** Chrome extension lets you select an element, circle a detail, add notes, and send a reviewed screenshot to a Claude or Codex chat. Download its ZIP from **Browser extension** at the top of the agent's settings, then pair the website using a four-digit code. Company members can pair their own company's agents. Feedback waits until the agent is idle with an empty composer, preserving existing terminal drafts. The [ZIP is included in the repository](extension/releases/supermux-browser-extension.zip). See [installation, pairing, and recovery](docs/BROWSER_FEEDBACK.md).
 
 <p align="center">
   <a href="docs/screenshots/terminal-focus.png"><img src="docs/screenshots/terminal-focus.png" alt="Focus mode on a desktop: Claude's own colour-true screen — an Update receipt with two green added lines, a Bash(bun run build) receipt, 212 tests passing, and a 'Brewed for 34s' timing line — then Claude's composer between its two rules with the next prompt already typed into it and the block cursor after the last character, all under the session's title and its ✎ use-sessions.ts · 3 agents activity, over a dock of Claude-specific keys: ⌘ palette, attach, edit-prompt, Esc, Tab, Ctrl-C, Ctrl-U and the permission-mode switch" width="900"></a>
@@ -406,7 +424,7 @@ curl -sf http://127.0.0.1:<SUPERMUX_INTERNAL_PORT>/api/health
 journalctl -u supermux -n 50
 ```
 
-Public routes are `/api/health`, the PWA shell, and the issue iCal feed. Everything else needs the bearer.
+Public routes include `/api/health`, the PWA shell, and the issue iCal feed. Browser-extension pairing and feedback use their own narrowly scoped capabilities; dashboard APIs require the owner bearer or an authorized human session.
 
 </details>
 

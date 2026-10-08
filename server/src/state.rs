@@ -456,6 +456,9 @@ pub struct AppState {
     /// Empty until the detector drives updates; the map + cleanup ensures
     /// churn never leaks entries.
     pub status_watch: Arc<DashMap<String, watch::Sender<StatusUpdate>>>,
+    /// Serialize the durable browser outbox worker and reconciliation. A
+    /// `sending` row at the next locked tick has no remaining live writer.
+    pub browser_feedback_tick_lock: Arc<Mutex<()>>,
     /// Per-session hook-token cache. Seeded on create + rotated on start;
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `SUPERMUX_HOOK_TOKEN`. The `/api/_internal/hook` route reads it.
@@ -830,6 +833,7 @@ impl AppState {
             workflow_runs: Arc::new(crate::workflows::engine::RunRegistry::default()),
             spawn_guards: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
+            browser_feedback_tick_lock: Arc::new(Mutex::new(())),
             hook_tokens: Arc::new(DashMap::new()),
             pane_conversations: Arc::new(DashMap::new()),
             last_hook: Arc::new(DashMap::new()),

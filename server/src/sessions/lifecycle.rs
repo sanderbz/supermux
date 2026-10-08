@@ -1172,6 +1172,106 @@ fn current_screen_tail(capture: &str) -> String {
     lines[start..].join("\n")
 }
 
+/// Ignore dim ghost suggestions, but retain every typed character. Extended
+/// colour parameters must be skipped: the `2` in `38;2;r;g;b` is not SGR dim.
+fn without_dim_text(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars().peekable();
+    let mut dim = false;
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            let mut params = String::new();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    if code == 'm' {
+                        let values: Vec<&str> = params.split(';').collect();
+                        let mut i = 0;
+                        while i < values.len() {
+                            match values[i] {
+                                "" | "0" | "22" => dim = false,
+                                "2" => dim = true,
+                                "38" | "48" | "58" => {
+                                    i += match values.get(i + 1).copied() {
+                                        Some("2") => 4,
+                                        Some("5") => 2,
+                                        _ => 0,
+                                    };
+                                }
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                    }
+                    break;
+                }
+                params.push(code);
+            }
+        } else if !dim || c == '\n' || c == '\r' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The latest live composer, including its wrapped continuation lines. A box
+/// or NBSP composer outranks transcript echoes. `None` means we cannot prove
+/// what the input holds; callers must never clear or replace it to recover.
+fn composer_text(raw: &str, provider: &str) -> Option<String> {
+    let visible = without_dim_text(raw);
+    let lines: Vec<&str> = visible.lines().collect();
+    let mut fallback = None;
+    let mut preferred = None;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        let boxed = t.starts_with('│');
+        let t = t.trim_start_matches('│').trim_start();
+        let rest = if provider == "codex" {
+            t.strip_prefix('›')
+        } else {
+            strip_caret(t)
+        };
+        if let Some(rest) = rest {
+            fallback = Some((i, rest, boxed));
+            if boxed || rest.starts_with('\u{a0}') {
+                preferred = fallback;
+            }
+        }
+    }
+    let (start, rest, boxed) = preferred.or(fallback)?;
+    let last = lines.iter().rposition(|l| !l.trim().is_empty())?;
+    // An old transcript echo above a panel is not its composer.
+    if last.saturating_sub(start) > 14 && !boxed {
+        return None;
+    }
+    let mut text = rest.trim_end_matches(['│', ' ']).trim().to_string();
+    for line in &lines[start + 1..] {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if (boxed && (t.starts_with('╰') || t.starts_with('└')))
+            || (!boxed && (t.chars().all(|c| c.is_whitespace() || matches!(c, '\u{2500}'..='\u{257f}'))
+                || t == "? for shortcuts"
+                || (provider == "codex" && t.starts_with("gpt-") && t.contains('·'))
+                || t.starts_with("⏵")
+                || t.starts_with("View teammates:")))
+        {
+            break;
+        }
+        // Only indented/boxed rows belong to a wrapped input. A fresh prompt
+        // or an assistant response is not a continuation of an old echo.
+        if !boxed && !line.starts_with(char::is_whitespace) {
+            break;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(t.trim_matches('│').trim());
+    }
+    Some(text)
+}
+
 // ── opening-prompt submission check ──────────────────────────────────────────
 
 /// What one capture says about the OPENING PROMPT we just typed.
@@ -1857,6 +1957,29 @@ async fn deliver_prompt(
     provider: &str,
     prompt: &str,
 ) -> Result<Option<bool>, AppError> {
+    send_text_checked(rt, provider, prompt, false).await
+}
+
+/// Agent input is one bracketed paste, followed by a separate submit. Chat
+/// delivery only retries when the current composer still contains OUR text;
+/// a transcript echo, another draft, or an unreadable panel never authorises
+/// an extra Enter. The opening-prompt path retains its existing classifier.
+async fn send_text_checked(
+    rt: &dyn SessionRuntime,
+    provider: &str,
+    prompt: &str,
+    strict: bool,
+) -> Result<Option<bool>, AppError> {
+    send_text_checked_mode(rt, provider, prompt, strict, false).await
+}
+
+async fn send_text_checked_mode(
+    rt: &dyn SessionRuntime,
+    provider: &str,
+    prompt: &str,
+    strict: bool,
+    idle_only: bool,
+) -> Result<Option<bool>, AppError> {
     if provider == "shell" {
         rt.send_text(prompt).await?;
         submit_gap(rt).await;
@@ -1870,8 +1993,42 @@ async fn deliver_prompt(
         .map(|c| agent_busy(&c))
         .unwrap_or(false);
 
-    rt.send_text(prompt).await?;
+    if idle_only {
+        let raw = rt.capture_screen_ansi().await?;
+        let screen = status::prepare_capture(&raw);
+        if pre_busy || agent_busy(&screen) || send_block(&screen).is_some()
+            || composer_text(&raw, provider).as_deref() != Some("") {
+            return Err(AppError::Conflict("feedback target changed before input could be written".into()));
+        }
+    }
+
+    rt.paste(prompt, true).await?;
     submit_gap(rt).await;
+    // Codex keeps Enter suppressed for 120 ms AFTER a raw paste burst has
+    // flushed. Two tmux forks or the native 50 ms gap do not cross that window.
+    // Explicit paste clears it in current Codex; this also covers older CLIs.
+    // Upstream: codex-rs/tui/src/bottom_pane/paste_burst.rs.
+    if provider == "codex" {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    if strict {
+        let raw = rt.capture_screen_ansi().await.map_err(|_| {
+            AppError::Conflict("input was pasted, but the screen could not be checked before submit; open the terminal to recover it".into())
+        })?;
+        let screen = status::prepare_capture(&raw);
+        let owned = composer_holds_prompt(&raw, provider, prompt);
+        let checked = if owned {
+            screen.lines().filter(|l| !line_is_prompt_echo(l, prompt)).collect::<Vec<_>>().join("\n")
+        } else {
+            screen
+        };
+        if (idle_only && agent_busy(&checked))
+            || send_block(&checked).is_some_and(|b| b != SendBlock::NoAgent || !owned) {
+            return Err(AppError::Conflict(
+                "input was pasted, but the terminal changed to a dialog or an unreadable screen; open the terminal to recover it".into(),
+            ));
+        }
+    }
     rt.send_key("Enter").await?;
 
     if pre_busy {
@@ -1887,11 +2044,20 @@ async fn deliver_prompt(
     let mut last = SubmitState::Unknown;
     for _ in 0..VERIFY_POLLS {
         tokio::time::sleep(VERIFY_POLL).await;
-        let Ok(cap) = rt.capture_plain(status::CAPTURE_LINES).await else {
+        let cap = if strict {
+            rt.capture_screen_ansi().await
+        } else {
+            rt.capture_plain(status::CAPTURE_LINES).await
+        };
+        let Ok(cap) = cap else {
             continue; // capture hiccup: tells us nothing, keep polling
         };
         observed = true;
-        last = submit_state(&cap, prompt);
+        last = if strict {
+            checked_submit_state(&cap, provider, prompt)
+        } else {
+            submit_state(&cap, prompt)
+        };
         match last {
             SubmitState::Submitted => return Ok(Some(true)),
             SubmitState::Stuck if extra_enters < MAX_EXTRA_ENTERS => {
@@ -1912,7 +2078,41 @@ async fn deliver_prompt(
     }
     // The window closed on an Unknown: the prompt text is gone from the screen and
     // no turn is running — the composer cleared, so it submitted.
-    Ok(Some(last == SubmitState::Unknown))
+    if strict && last == SubmitState::Unknown {
+        Ok(None)
+    } else {
+        Ok(Some(last == SubmitState::Unknown))
+    }
+}
+
+fn checked_submit_state(capture: &str, provider: &str, prompt: &str) -> SubmitState {
+    let plain = status::prepare_capture(capture);
+    let without_echo = plain
+        .lines()
+        .filter(|l| !line_is_prompt_echo(l, prompt))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if agent_busy(&without_echo) || selection_screen(&current_screen_tail(&without_echo)) {
+        return SubmitState::Submitted;
+    }
+    // Never retry into startup gates, a picker, or any unrecognised surface.
+    let owned = composer_holds_prompt(capture, provider, prompt);
+    if send_block(&without_echo).is_some_and(|b| b != SendBlock::NoAgent || !owned) {
+        return SubmitState::Unknown;
+    }
+    match composer_text(capture, provider) {
+        Some(text) if text.is_empty() => SubmitState::Submitted,
+        Some(_) if owned => SubmitState::Stuck,
+        _ => SubmitState::Unknown,
+    }
+}
+
+fn composer_holds_prompt(capture: &str, provider: &str, prompt: &str) -> bool {
+    composer_text(capture, provider).is_some_and(|text| {
+        squash(&text) == squash(prompt)
+            || (provider == "codex"
+                && text == format!("[Pasted Content {} chars]", prompt.chars().count()))
+    })
 }
 
 /// SIGTERM then (after a grace) SIGKILL the pane process group.
@@ -3287,6 +3487,9 @@ pub async fn send_harness_text(
         if state.send_dedup.seen(name, id) {
             return Ok(());
         }
+        if state.send_dedup.uncertain(name, id) {
+            return Err(AppError::Conflict("this message may already be in the terminal; check it before sending a new message".into()));
+        }
     }
     // RE-RESOLVE after a wake. `wake_for_send` → `start` can migrate a legacy
     // tmux session to native on its fresh start, which `runtime_invalidate`s the
@@ -3318,10 +3521,12 @@ pub async fn send_harness_text(
     // whenever the current screen was — correctly — a bare prompt.) On an
     // unreadable row we default to guarding (agent-shaped, fail safe); the row
     // exists here (`exists_active` passed above), so that branch is unreachable.
-    let is_agent = db::sessions::get(&state.pool, name)
+    let provider = db::sessions::get(&state.pool, name)
         .await?
-        .map(|s| s.provider != "shell")
-        .unwrap_or(true);
+        .map(|s| s.provider)
+        .unwrap_or_else(|| "claude".into());
+    let is_agent = provider != "shell";
+    let mut pre_busy = false;
     if !woke && is_agent {
         // NATIVE AUTHORITATIVE refuse. `tpgid == pid` proves the pty is at a BARE
         // SHELL (the login shell is the foreground process group — no agent is
@@ -3339,6 +3544,7 @@ pub async fn send_harness_text(
         }
         match rt.capture_plain(status::CAPTURE_LINES).await {
             Ok(raw) => {
+                pre_busy = agent_busy(&raw);
                 // THE REFUSAL NAMES WHAT IS ACTUALLY IN THE WAY (owner report).
                 // It used to say "parked at a prompt that is not the agent's …
                 // likely sitting on a resume picker or a folder-trust dialog"
@@ -3364,10 +3570,28 @@ pub async fn send_harness_text(
         }
     }
 
-    rt.send_text(text).await?;
-    // Backend-declared gap between the text and its submit (see `submit_gap`).
-    submit_gap(rt.as_ref()).await;
-    rt.send_key("Enter").await?;
+    if is_agent {
+        let raw = rt.capture_screen_ansi().await?;
+        if composer_text(&raw, &provider).is_some_and(|draft| !draft.is_empty()) {
+            return Err(AppError::Conflict(format!(
+                "session '{name}' has an unsent terminal draft; submit or clear it in the terminal before sending another message",
+            )));
+        }
+    }
+    if let Some(id) = send_id {
+        state.send_dedup.record_uncertain(name, id);
+    }
+    let submitted = send_text_checked(rt.as_ref(), &provider, text, true).await?;
+    if submitted == Some(false) {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' still holds this message in its terminal composer after submit retries; open the terminal and submit it there",
+        )));
+    }
+    if is_agent && !pre_busy && submitted.is_none() {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' received input, but submission could not be confirmed; check the terminal before sending it again",
+        )));
+    }
     let (preview, at) =
         db::sessions::set_last_send(&state.pool, name, preview_text.unwrap_or(text)).await?;
     broadcast_send(state, name, &preview, at);
@@ -3377,6 +3601,112 @@ pub async fn send_harness_text(
     if let Some(id) = send_id {
         state.send_dedup.record(name, id);
     }
+    Ok(())
+}
+
+/// Queue workers may retry `Deferred`: no input was written. `InvalidTarget`
+/// also wrote nothing, but requires a new capture in the current workspace. `Uncertain`
+/// means delivery crossed the write boundary; preserve the evidence and ask
+/// for manual recovery rather than replaying a possibly submitted prompt.
+#[derive(Debug, thiserror::Error)]
+pub enum FeedbackDeliveryError {
+    #[error("{0}")]
+    Deferred(AppError),
+    #[error("{0}")]
+    InvalidTarget(AppError),
+    #[error("{0}")]
+    Uncertain(AppError),
+}
+
+/// Deliver browser feedback only to an already-running idle agent with a
+/// positively empty composer. All checks and the write share the ordinary
+/// lifecycle lock. This door never wakes a session, clears text, or queues a
+/// message onto a busy turn.
+pub async fn send_feedback_text(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    send_id: &str,
+) -> Result<(), FeedbackDeliveryError> {
+    use FeedbackDeliveryError::{Deferred, InvalidTarget, Uncertain};
+    reject_wrapper_markup(text).map_err(Deferred)?;
+    let lock = state.lock_for(name);
+    let _guard = lock.lock().await;
+    if state.send_dedup.seen(name, send_id) {
+        return Ok(());
+    }
+    if state.send_dedup.uncertain(name, send_id) {
+        return Err(Uncertain(AppError::Conflict("feedback may already be in the terminal; manual recovery required".into())));
+    }
+    // A revoke shares this session lock. Check its durable capability AFTER
+    // taking the lock, so a worker cannot deliver from a stale queue snapshot.
+    let feedback = db::browser_feedback::get(&state.pool, send_id).await.map_err(|e|Deferred(e.into()))?;
+    if let Some(feedback) = feedback.as_ref() {
+        let binding = db::browser_feedback::binding(&state.pool, &feedback.binding_id).await.map_err(|e|Deferred(e.into()))?;
+        let binding = binding.filter(|b| b.session == name);
+        let current = match binding.as_ref() {
+            Some(b) => crate::browser_feedback::binding_is_current(state, b).await.map_err(Deferred)?,
+            None => false,
+        };
+        if !current {
+            return Err(Deferred(AppError::Conflict("browser pairing was revoked".into())));
+        }
+    }
+    let session = db::sessions::get(&state.pool, name)
+        .await
+        .map_err(|e| Deferred(e.into()))?
+        .filter(|s| s.archived == 0)
+        .ok_or_else(|| Deferred(AppError::NotFound(format!("session '{name}'"))))?;
+    if session.provider == "shell" || session.host_id.is_some() {
+        return Err(Deferred(AppError::Conflict(
+            "browser feedback requires a local Claude or Codex session".into(),
+        )));
+    }
+    if let Some(feedback) = feedback.as_ref() {
+        // Configuration changes share this lock. The worker's earlier check
+        // cannot establish that artifacts still belong to the workspace at write time.
+        crate::browser_feedback::validate_delivery_workspace(state, name, feedback)
+            .await
+            .map_err(InvalidTarget)?;
+    }
+    if super::login::is_frozen(name) {
+        return Err(Deferred(super::login::frozen_error(name)));
+    }
+    let rt = state.runtime_for(name).await.map_err(|e| Deferred(e.into()))?;
+    if state.status_watch_for(name).borrow().0 != "idle" {
+        return Err(Deferred(AppError::Conflict("agent is not confirmed idle".into())));
+    }
+    if !rt.alive().await || !rt.capture_is_authoritative().await {
+        return Err(Deferred(AppError::Conflict("agent is not ready".into())));
+    }
+    if rt.shell_is_foreground().await == Some(true) {
+        return Err(Deferred(AppError::Conflict("agent is at a bare shell".into())));
+    }
+    let raw = rt.capture_screen_ansi().await.map_err(|e| Deferred(e.into()))?;
+    let screen = status::prepare_capture(&raw);
+    if let Some(block) = send_block(&screen) {
+        return Err(Deferred(AppError::Conflict(block.sentence(name))));
+    }
+    if agent_busy(&screen) || composer_text(&raw, &session.provider).as_deref() != Some("") {
+        return Err(Deferred(AppError::Conflict(
+            "agent is busy or its terminal composer is not confidently empty".into(),
+        )));
+    }
+    // Everything below may have written input, including failed runtime I/O.
+    state.send_dedup.record_uncertain(name, send_id);
+    let submitted = send_text_checked_mode(rt.as_ref(), &session.provider, text, true, true)
+        .await
+        .map_err(Uncertain)?;
+    if submitted != Some(true) {
+        return Err(Uncertain(AppError::Conflict(
+            "feedback submission could not be confirmed; check the terminal before resending".into(),
+        )));
+    }
+    let (preview, at) = db::sessions::set_last_send(&state.pool, name, text)
+        .await
+        .map_err(|e| Uncertain(e.into()))?;
+    broadcast_send(state, name, &preview, at);
+    state.send_dedup.record(name, send_id);
     Ok(())
 }
 
@@ -6687,6 +7017,16 @@ mod write_runtime_tests {
         text_calls: AtomicUsize,
         key_calls: AtomicUsize,
         capture_calls: AtomicUsize,
+        simulation: Mutex<Option<InputSimulation>>,
+    }
+
+    struct InputSimulation {
+        provider: &'static str,
+        draft: String,
+        pasted_at: Option<tokio::time::Instant>,
+        swallow_once: bool,
+        modal_after_paste: bool,
+        submitted: bool,
     }
 
     impl StubRuntime {
@@ -6699,6 +7039,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                simulation: Mutex::new(None),
             })
         }
         /// A runtime whose `capture_plain` always fails — exercises the send
@@ -6712,6 +7053,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                simulation: Mutex::new(None),
             })
         }
         /// A native-shaped runtime that reports it is sitting at a BARE SHELL
@@ -6726,6 +7068,7 @@ mod write_runtime_tests {
                 text_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
+                simulation: Mutex::new(None),
             })
         }
         /// A pane that shows each of `screens` in turn, then holds the last one.
@@ -6736,12 +7079,39 @@ mod write_runtime_tests {
         }
         /// The next scripted screen, or the static capture when nothing is scripted.
         fn next_screen(&self) -> String {
+            if let Some(sim) = self.simulation.lock().unwrap().as_ref() {
+                if sim.modal_after_paste && sim.pasted_at.is_some() {
+                    return "Do you want to run this command?\n› 1. Yes\n  2. No\nPress enter to confirm".into();
+                }
+                if sim.submitted {
+                    return "◦ Working (1s • esc to interrupt)".into();
+                }
+                let (caret, footer) = if sim.provider == "codex" {
+                    ("›", "gpt-5-codex · /tmp/project")
+                } else {
+                    ("❯", "  ? for shortcuts")
+                };
+                return format!("{caret} {}\n{footer}", sim.draft);
+            }
             let mut q = self.script.lock().unwrap();
             match q.len() {
                 0 => self.capture.clone(),
                 1 => q[0].clone(),
                 _ => q.remove(0),
             }
+        }
+
+        fn simulating(provider: &'static str, swallow_once: bool, modal_after_paste: bool) -> Arc<Self> {
+            let rt = Self::parked_at("");
+            *rt.simulation.lock().unwrap() = Some(InputSimulation {
+                provider,
+                draft: String::new(),
+                pasted_at: None,
+                swallow_once,
+                modal_after_paste,
+                submitted: false,
+            });
+            rt
         }
     }
 
@@ -6762,9 +7132,27 @@ mod write_runtime_tests {
         }
         async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
             self.key_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(sim) = self.simulation.lock().unwrap().as_mut() {
+                if sim.swallow_once {
+                    sim.swallow_once = false;
+                } else if sim.provider == "codex"
+                    && sim.pasted_at.is_some_and(|at| at.elapsed() <= Duration::from_millis(120))
+                {
+                    sim.draft.push('\n');
+                } else {
+                    sim.submitted = true;
+                    sim.draft.clear();
+                }
+            }
             Ok(())
         }
         async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
+            self.text_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(sim) = self.simulation.lock().unwrap().as_mut() {
+                assert!(_b, "agent delivery must use explicit bracketed paste");
+                sim.draft.push_str(_t);
+                sim.pasted_at = Some(tokio::time::Instant::now());
+            }
             Ok(())
         }
         async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
@@ -6781,6 +7169,9 @@ mod write_runtime_tests {
             Ok(self.capture.clone())
         }
         async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
+            if self.simulation.lock().unwrap().is_some() {
+                return Ok(self.next_screen());
+            }
             Ok(self.capture.clone())
         }
         async fn capture_full(&self) -> anyhow::Result<String> {
@@ -6914,7 +7305,7 @@ mod write_runtime_tests {
             .await
             .unwrap();
 
-        let composer = "❯ Try \"fix tests\"\n  ? for shortcuts";
+        let composer = "❯ \n  ? for shortcuts";
         let rt = StubRuntime::parked_at(composer);
         state
             .session_runtimes
@@ -6948,7 +7339,7 @@ mod write_runtime_tests {
             .await
             .unwrap();
 
-        let composer = "❯ Try \"fix tests\"\n  ? for shortcuts";
+        let composer = "❯ \n  ? for shortcuts";
         let rt = StubRuntime::parked_at(composer);
         state.session_runtimes.insert("idem".to_string(), rt.clone());
 
@@ -7202,5 +7593,110 @@ mod write_runtime_tests {
         assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the prompt is still queued to the agent");
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
         assert_eq!(rt.capture_calls.load(Ordering::SeqCst), 1, "the pre-send sample only");
+    }
+
+    #[tokio::test]
+    async fn codex_chat_crosses_the_paste_enter_suppression_window() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "codex-submit", "/tmp", "codex").await.unwrap();
+        let rt = StubRuntime::simulating("codex", false, false);
+        state.session_runtimes.insert("codex-submit".into(), rt.clone());
+        send_chat_text(&state, "codex-submit", "fix this input bug", Some("submit-1")).await.unwrap();
+        assert!(rt.simulation.lock().unwrap().as_ref().unwrap().submitted);
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "150 ms gap avoids swallowing the first Enter");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn chat_recovers_one_swallowed_enter_for_both_agents_without_repasting() {
+        for provider in ["claude", "codex"] {
+            let (state, dir) = test_state().await;
+            db::sessions::insert_minimal(&state.pool, "submit", "/tmp", provider).await.unwrap();
+            let rt = StubRuntime::simulating(provider, true, false);
+            state.session_runtimes.insert("submit".into(), rt.clone());
+            send_chat_text(&state, "submit", "fix this input bug", Some("submit-1")).await.unwrap();
+            assert!(rt.simulation.lock().unwrap().as_ref().unwrap().submitted);
+            assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "retry only Enter, never text");
+            assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2);
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_modal_opening_after_paste_never_receives_enter_or_a_replayed_message() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "race", "/tmp", "codex").await.unwrap();
+        let rt = StubRuntime::simulating("codex", false, true);
+        state.session_runtimes.insert("race".into(), rt.clone());
+        for _ in 0..2 {
+            assert!(matches!(send_chat_text(&state, "race", "fix this input bug", Some("race-1")).await, Err(AppError::Conflict(_))));
+        }
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+        assert!(state.send_dedup.uncertain("race", "race-1"));
+        assert!(db::sessions::get(&state.pool, "race").await.unwrap().unwrap().last_send_text.is_empty());
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn existing_multiline_drafts_refuse_chat_and_feedback_without_writing() {
+        for provider in ["claude", "codex"] {
+            let (state, dir) = test_state().await;
+            db::sessions::insert_minimal(&state.pool, "draft", "/tmp", provider).await.unwrap();
+            let rt = StubRuntime::simulating(provider, false, false);
+            rt.simulation.lock().unwrap().as_mut().unwrap().draft = "\n  keep my existing draft".into();
+            state.session_runtimes.insert("draft".into(), rt.clone());
+            assert!(send_chat_text(&state, "draft", "new message", None).await.is_err());
+            assert!(matches!(send_feedback_text(&state, "draft", "feedback", "feedback-1").await, Err(FeedbackDeliveryError::Deferred(_))));
+            assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn strict_submit_uses_the_current_composer_and_handles_collapsed_codex_pastes() {
+        assert_eq!(checked_submit_state("❯ fix this input bug\nDone.\n❯ \n  ? for shortcuts", "claude", "fix this input bug"), SubmitState::Submitted);
+        let prompt = "x".repeat(1200);
+        assert_eq!(checked_submit_state("› [Pasted Content 1200 chars]\ngpt-5-codex · /tmp", "codex", &prompt), SubmitState::Stuck);
+        assert_eq!(checked_submit_state("❯ fix this input bug", "claude", "fix this input bug"), SubmitState::Stuck);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pasted_prompt_containing_modal_words_still_submits() {
+        let rt = StubRuntime::simulating("claude", true, false);
+        let prompt = "Change the label Enter to select and the text resume a session in the help page";
+        assert_eq!(send_text_checked(rt.as_ref(), "claude", prompt, true).await.unwrap(), Some(true));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn draft_reader_preserves_plain_placeholders_and_ignores_only_dim_ghosts() {
+        assert_eq!(composer_text("❯ Try \"fix tests\"\n  ? for shortcuts", "claude").as_deref(), Some("Try \"fix tests\""));
+        assert_eq!(composer_text("❯ \x1b[2mTry \"fix tests\"\x1b[22m\n  ? for shortcuts", "claude").as_deref(), Some(""));
+        assert_eq!(composer_text("❯ \x1b[38;2;2;120;230mkeep this typed text\x1b[0m\n  ? for shortcuts", "claude").as_deref(), Some("keep this typed text"));
+        assert_eq!(composer_text("❯ \n  gpt-5 should be renamed\n  ? for shortcuts", "claude").as_deref(), Some("gpt-5 should be renamed"));
+        assert_eq!(composer_text("╭────╮\n│ ❯ \n│ ? for shortcuts │\n╰────╯", "claude").as_deref(), Some("? for shortcuts"));
+    }
+
+    #[tokio::test]
+    async fn feedback_never_uses_an_empty_screen_to_override_active_waiting_or_unknown_status() {
+        let (state,dir)=test_state().await;
+        db::sessions::insert_minimal(&state.pool,"feedback-status","/tmp","claude").await.unwrap();
+        let rt=StubRuntime::simulating("claude",false,false);
+        state.session_runtimes.insert("feedback-status".into(),rt.clone());
+        for status in ["active","waiting","unknown"] {
+            state.status_watch_for("feedback-status").send_replace((status.into(),1));
+            assert!(matches!(send_feedback_text(&state,"feedback-status","feedback request","status-id").await,Err(FeedbackDeliveryError::Deferred(_))));
+        }
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst),0);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst),0);
+        state.pool.close().await;
+        let _=std::fs::remove_dir_all(dir);
     }
 }

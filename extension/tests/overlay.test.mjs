@@ -1,0 +1,28 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {readFile} from 'node:fs/promises';import {webcrypto} from 'node:crypto';
+import {JSDOM} from '../../web/node_modules/jsdom/lib/api.js';
+test('overlay picks safe DOM context, edits, draws, masks private areas, and freezes viewport',async()=>{
+ const dom=new JSDOM('<!doctype html><title>Demo</title><main><h1>Build a better homepage</h1><p id="copy">Public copy <input value="secret" type="password"><span data-private>hidden account</span></p><iframe src="https://private.example"></iframe></main>',{url:'https://demo.example/path?secret=value',runScripts:'outside-only',pretendToBeVisual:true});
+ const w=dom.window;let listener;const messages=[];w.chrome={runtime:{id:'test',sendMessage:async m=>{messages.push(m);return{ok:true,data:m.type==='draft.load'?{connection:{session:'Claude'}}:true};},onMessage:{addListener:f=>listener=f}}};w.CSS={escape:s=>s};Object.defineProperty(w,'crypto',{value:webcrypto});
+ const attach=w.Element.prototype.attachShadow;w.Element.prototype.attachShadow=function(options){return attach.call(this,{...options,mode:'open'});};w.Element.prototype.getBoundingClientRect=function(){return{x:100,y:120,left:100,top:120,right:300,bottom:200,width:200,height:80};};
+ w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));
+ const shadow=w.document.querySelector('[data-supermux-overlay]').shadowRoot;
+ assert.equal(shadow.querySelectorAll('[data-mode]').length,3);assert.ok(shadow.querySelector('.bar-message'));
+ w.document.querySelector('#copy').dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));
+ assert.equal(shadow.querySelector('.pin').textContent,'1');const area=shadow.querySelector('.editor textarea');area.value='Make this clearer';area.dispatchEvent(new w.Event('input',{bubbles:true}));
+ shadow.querySelector('[data-action="done"]').click();await new Promise(r=>setTimeout(r,5));
+ const rpc=(type,extra={})=>new Promise(resolve=>listener({type,...extra},{id:'test'},resolve));
+ const capture=await rpc('capture.prepare');assert.equal(capture.annotations[0].element.text,'Public copy');assert.equal(capture.url,'https://demo.example/path?secret=%5Bredacted%5D');assert.equal(capture.annotations[0].text,'Make this clearer');assert.equal(shadow.querySelectorAll('.privacy-mask').length,3);assert.ok(w.document.querySelector('[data-supermux-overlay]').classList.contains('capturing'));
+ assert.equal(await rpc('capture.validate',{nonce:capture.nonce,viewport:capture.viewport}),true);
+ assert.equal(await rpc('capture.validate',{nonce:'other',viewport:capture.viewport}),false);
+ w.dispatchEvent(new w.Event('scroll'));assert.equal(await rpc('capture.validate',{nonce:capture.nonce,viewport:capture.viewport}),false);
+ await rpc('capture.restore');assert.equal(shadow.querySelectorAll('.privacy-mask').length,0);
+ shadow.querySelector('[data-mode="draw"]').click();const body=w.document.body;
+ body.dispatchEvent(new w.MouseEvent('pointerdown',{clientX:20,clientY:20,bubbles:true,cancelable:true,button:0}));
+ body.dispatchEvent(new w.MouseEvent('pointermove',{clientX:100,clientY:80,bubbles:true,cancelable:true}));
+ body.dispatchEvent(new w.MouseEvent('pointerup',{clientX:100,clientY:80,bubbles:true,cancelable:true}));
+ assert.equal(shadow.querySelectorAll('.pin').length,2);assert.ok(shadow.querySelector('.stroke'));
+ w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(shadow.querySelector('.ui').hidden,true);
+ w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));assert.equal(w.document.querySelectorAll('[data-supermux-overlay]').length,1);assert.equal(shadow.querySelector('.ui').hidden,false);
+ await new Promise(r=>setTimeout(r,600));const draft=messages.filter(m=>m.type==='draft.save').at(-1).draft;assert.equal(draft.notes.length,2);assert.equal(JSON.stringify(draft.notes).includes('hidden account'),false);
+ w.history.pushState({},'', '/different?page=pricing#/plans');w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));assert.equal(shadow.querySelectorAll('.pin').length,0);assert.equal(shadow.querySelector('.ui').hidden,false);dom.window.close();
+});

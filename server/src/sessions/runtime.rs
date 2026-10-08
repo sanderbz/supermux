@@ -660,7 +660,7 @@ pub(crate) mod testing {
     /// The capture this fixture serves: Claude's empty composer plus its
     /// shortcut hint — the exact shape `lifecycle::send_block` admits (a caret
     /// row that is not a numbered menu row, and `? for shortcuts`).
-    const COMPOSER_SCREEN: &str = "❯ Try \"fix tests\"\n  ? for shortcuts";
+    const COMPOSER_SCREEN: &str = "❯ \n  ? for shortcuts";
 
     /// A runtime that is always alive, always shows an agent composer, and
     /// swallows every write. See the module doc.

@@ -10,6 +10,7 @@ pub mod auth;
 pub mod auth_human;
 pub mod board;
 pub mod bot_memory;
+pub mod browser_feedback;
 pub mod claude_config;
 pub mod claude_tools;
 pub mod companies;

@@ -82,6 +82,9 @@ export const SSE_NAMED_EVENTS = [
   // system lines are read from `/api/sessions/{name}/events`, the durable
   // ledger, so they survive a reload. `use-harness-events.ts` subscribes.
   'harness',
+  // A company-scoped browser-feedback receipt was queued — payload
+  // `{ id, session, status }`; image files stay in the agent's workspace.
+  'browser-feedback',
   'external-edit',
   // A file-namespace mutation — payload
   // `{ op, path, dir, from, session }`, COMPANY-STAMPED by the path's owner
