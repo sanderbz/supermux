@@ -7,7 +7,7 @@ const MAX_RESULT=8*1024*1024-4096;
 export function createControlService({chrome:c,getConfig,WebSocketClass=globalThis.WebSocket}) {
   if(!c.debugger||!WebSocketClass)return {supported:false,show:async()=>{},hideUi:async()=>{},connectionChanged:async()=>{},status:async()=>null,handle:async()=>{throw new Error('Browser control requires Chrome 125 or newer.');}};
   const sessions=new Map(),shown=new Set(),intents=new Map();
-  let lifecycle=Promise.resolve();
+  let lifecycle=Promise.resolve(),tabUpdates=Promise.resolve();
   function serialized(fn){const next=lifecycle.then(fn);lifecycle=next.catch(()=>{});return next;}
   const ready=(async()=>{
     const {controlSessions=[]}=await c.storage.session.get('controlSessions');
@@ -48,7 +48,7 @@ export function createControlService({chrome:c,getConfig,WebSocketClass=globalTh
     await c.scripting.executeScript({target:{tabId:tab.id},files:['control-ui.js']});shown.add(tab.id);await notify(tab.id);
   }
   async function hideUi(tabId,hidden){try{await c.tabs.sendMessage(tabId,{type:'control.capture',hidden});}catch{}}
-  async function stop(session,reason='Stopped by you'){
+  async function stop(session,reason='Stopped by you',refreshUrl=false){
     if(!session||session.stopped)return;
     session.stopped=true;session.state='stopping';if(session.run)session.run.cancelled=true;
     clearInterval(session.heartbeat);clearTimeout(session.authTimer);clearTimeout(session.run?.timer);
@@ -56,6 +56,7 @@ export function createControlService({chrome:c,getConfig,WebSocketClass=globalTh
     try{write(session,{type:'stop',reason});}catch{}
     try{session.socket?.close(1000,'Control stopped');}catch{}
     try{await c.debugger.detach({tabId:session.tabId});}catch{}
+    if(refreshUrl)try{await updateTabCache(session.tabId,session.authority);}catch{}
     if(sessions.get(session.tabId)===session){sessions.delete(session.tabId);await persist();await notify(session.tabId);}
   }
   async function execute(session,frame){
@@ -94,7 +95,7 @@ export function createControlService({chrome:c,getConfig,WebSocketClass=globalTh
     await ready;
     if(sender.frameId!==undefined&&sender.frameId!==0)throw failure('wrong_tab','Allow control from the top-level website.');
     const current=await c.tabs.get(tab.id);
-    if(!current.url||current.url!==tab.url||(sender.url&&sender.url!==current.url))throw failure('wrong_tab','This page changed. Click the extension icon again.');
+    if(!current.url||current.url!==tab.url||(sender.url&&new URL(sender.url).origin!==new URL(current.url).origin))throw failure('wrong_tab','This page changed. Click the extension icon again.');
     const site=new URL(current.url).origin,config=await getConfig(),authority=identity(config,site);
     if(!authority?.bindingId||!authority.token)throw failure('not_paired','Connect this website to an agent first.');
     if(intents.get(tab.id)!==intent)throw failure('control_stopped','Browser control stopped.');
@@ -154,19 +155,33 @@ export function createControlService({chrome:c,getConfig,WebSocketClass=globalTh
   });
   c.debugger.onDetach.addListener(source=>{void stop(sessions.get(source.tabId),'Chrome stopped browser control');});
   c.tabs.onRemoved.addListener(tabId=>{shown.delete(tabId);void stop(sessions.get(tabId),'The tab closed');});
-  c.tabs.onUpdated.addListener((tabId,change,tab)=>{
+  function updateTabCache(tabId,authority,showOnComplete=false){
+    // Serialize control-navigation writes and read current URL at execution time.
+    const next=tabUpdates.then(async()=>{
+      const stored=await c.storage.session.get('annotationTabs');
+      const [tab,config]=await Promise.all([c.tabs.get(tabId),getConfig()]);
+      if(!tab.url)return;
+      if(authority&&(new URL(tab.url).origin!==authority.site||!same(authority,identity(config,authority.site))))return;
+      if(authority&&!await c.permissions.contains({origins:[authority.server+'/*']}))return;
+      const [latest,latestConfig]=await Promise.all([c.tabs.get(tabId),getConfig()]);
+      if(!latest.url||new URL(latest.url).origin!==new URL(tab.url).origin)return;
+      if(authority&&!same(authority,identity(latestConfig,authority.site)))return;
+      await c.storage.session.set({annotationTabs:{...stored.annotationTabs,[tabId]:latest.url}});
+      if(showOnComplete)await show(latest);
+    });
+    tabUpdates=next.catch(()=>{});return next;
+  }
+  c.tabs.onUpdated.addListener((tabId,change)=>{
     const session=sessions.get(tabId);
     if(session&&(change.url||change.status))void ensure(session).catch(()=>stop(session,'The tab left the paired website'));
-    if(change.status==='complete'&&(session||shown.has(tabId))){
-      void (async()=>{const stored=await c.storage.session.get('annotationTabs');const annotationTabs={...stored.annotationTabs,[tabId]:tab.url};await c.storage.session.set({annotationTabs});await show(tab);})().catch(()=>{});
-    }
+    if(change.url&&session?.state==='active'||change.status==='complete'&&(session||shown.has(tabId)))void updateTabCache(tabId,session?.authority,change.status==='complete').catch(()=>{});
   });
   c.permissions.onRemoved?.addListener(()=>{void Promise.all([...sessions.values()].map(s=>ensure(s).catch(()=>stop(s,'Server access removed'))));});
   async function connectionChanged(){await ready;for(const session of [...sessions.values()])try{await ensure(session);}catch{await stop(session,'The connected agent changed');}for(const id of shown)await notify(id);}
   async function handle(type,tab,sender){
     if(type==='control.status')return status(tab.id);
     if(type==='control.start'){if(sessions.has(tab.id))return status(tab.id);const intent=(intents.get(tab.id)||0)+1;intents.set(tab.id,intent);return serialized(()=>start(tab,sender,intent));}
-    if(type==='control.stop'){intents.set(tab.id,(intents.get(tab.id)||0)+1);await stop(sessions.get(tab.id));return status(tab.id);}
+    if(type==='control.stop'){intents.set(tab.id,(intents.get(tab.id)||0)+1);await stop(sessions.get(tab.id),'Stopped by you',true);return status(tab.id);}
     throw new Error('Unknown browser control action.');
   }
   return {supported:true,show,hideUi,status,handle,connectionChanged};

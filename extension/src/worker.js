@@ -152,6 +152,8 @@ async function handle(message,sender){
   }
   return p.status==='paired'?{status:'awaiting-confirmation',id:pending.id,server_origin:c.origin,binding:publicBinding(p.binding)}:{status:p.status};
  }
+ // Stop only removes this tab's grant, including during navigation/revocation.
+ if(type==='control.stop'&&sender.tab?.id)return controls.handle(type,sender.tab,sender);
  const tab=await authorized(sender);
  if(type?.startsWith('control.'))return controls.handle(type,tab,sender);
  if(type==='draft.load'){await controls.show(tab);if(message.connection_only)return {connection:publicConnection(await config(),new URL(tab.url).origin)};const key=await draftKey(tab.url);const saved=await drafts(async()=>(await storage.get(key))[key]);return {draft:unpackDraft(saved),connection:publicConnection(await config(),new URL(tab.url).origin)};}

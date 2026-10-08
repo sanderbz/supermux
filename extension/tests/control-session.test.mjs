@@ -126,3 +126,22 @@ test('Stop during draft preparation prevents a queued activation',async()=>{
   f.chrome.debugger.attach=async()=>{attached=true;};f.chrome.tabs.sendMessage=async(_id,message)=>{if(message.type==='control.prepare'){entered.resolve();await held.promise;return {ok:true};}};
   const starting=f.start();await entered.promise;await f.stop();held.resolve();await assert.rejects(starting,/Browser control stopped/);assert.equal(attached,false);assert.equal(f.sockets.length,0);
 });
+
+test('serialized SPA URL updates read the latest tab rather than delayed event URLs',async()=>{
+  const f=fixture(),held=deferred(),entered=deferred();try{
+    await f.start();const get=f.chrome.storage.session.get;let first=true;
+    f.chrome.storage.session.get=async key=>{if(key==='annotationTabs'&&first){first=false;entered.resolve();await held.promise;}return get(key);};
+    f.tab.url='https://example.test/first';f.chrome.tabs.onUpdated.emit(7,{url:f.tab.url},{...f.tab});await entered.promise;
+    f.tab.url='https://example.test/latest';f.chrome.tabs.onUpdated.emit(7,{url:f.tab.url},{...f.tab});held.resolve();
+    await until(()=>f.saved.annotationTabs?.[7]===f.tab.url);await new Promise(r=>setTimeout(r,10));assert.equal(f.saved.annotationTabs[7],'https://example.test/latest');
+  }finally{held.resolve();await f.stop();}
+});
+
+test('native Stop detaches immediately and refreshes SPA URL before returning the idle state',async()=>{
+  const f=fixture(),held=deferred(),entered=deferred();try{
+    await f.start();f.tab.url='https://example.test/spa';const get=f.chrome.storage.session.get;
+    f.chrome.storage.session.get=async key=>{if(key==='annotationTabs'){entered.resolve();await held.promise;}return get(key);};
+    const stopping=f.stop();await entered.promise;assert.equal(f.detaches.length,1,'command stream already detached');assert.equal(f.messages.at(-1).state.state,'active','idle UI waits for URL cache');
+    held.resolve();await stopping;assert.equal(f.saved.annotationTabs[7],f.tab.url);assert.equal(f.messages.at(-1).state.state,'idle');await f.start();assert.equal(f.sockets.length,2,'initial sender document URL remains valid within the paired origin');
+  }finally{held.resolve();await f.stop();}
+});
