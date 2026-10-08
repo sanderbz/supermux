@@ -618,6 +618,9 @@ function systemRow(w: WireEntry): { text: string; badge: string; detail?: string
     }
   }
   switch (w.label) {
+    case 'turn_started':
+    case 'turn_complete': return null
+    case 'turn_aborted': return { text: str(w.body, 'content') ?? 'Turn interrupted.', badge: 'harness' }
     case 'model_refusal_fallback':
     case 'model_fallback':
     case 'model_consent_fallback': {
@@ -935,6 +938,11 @@ export function toChatEntries(
 
   for (const w of wire) {
     if (isSubagent(w)) continue
+    if (w.label === 'token_usage_record' || w.label === 'token_count') continue
+    if (w.kind === 'subagent') {
+      out.push({ uuid: w.uuid, ts: w.ts_ms / 1000, kind: 'coordination', tone: 'quiet', label: w.label, text: str(w.body, 'content') ?? str(w.body, 'text') ?? 'Agent activity', truncated: w.truncated })
+      continue
+    }
 
     if (w.kind === 'tool_result') {
       const id = w.tool_use_id
@@ -1254,6 +1262,7 @@ export function truncatedUuids(
     // will draw. This is the ONLY thing standing between the surface and a
     // request for an entry it does not render — hence the named predicate.
     if (isSubagent(w)) continue
+    if (w.label === 'token_usage_record' || w.label === 'token_count') continue
     if (
       w.kind !== 'assistant' &&
       w.kind !== 'prompt' &&

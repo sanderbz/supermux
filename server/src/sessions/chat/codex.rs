@@ -1,59 +1,18 @@
-//! Codex rollout dialect for the chat data plane.
+//! Codex rollout dialect for the shared chat data plane.
 //!
-//! The chat renderer was built around Claude Code's project transcript. Codex
-//! writes a different file, in a different place, with a different vocabulary —
-//! but the pipeline behind the renderer ([`super::store`], [`super::tailer`],
-//! [`super::ws`]) is provider-neutral: it moves [`ChatEntry`]s. So the ONLY
-//! Codex-specific code is this module: **where the file is** ([`locate`]) and
-//! **what a line means** ([`entries_from_object`]). Everything downstream —
-//! the byte cursor, the oversize/partial-line/malformed rules, the ring, the
-//! per-entry wire cap, and every React component — is reused unchanged.
+//! `event_msg` carries human-visible conversation events. The raw
+//! `response_item` mirror can replay prompt context, so it is not rendered.
+//! Flat messages and completed typed items both map to stable line-offset IDs.
+//! Shell, file, MCP and collaboration calls retain their result/failure status;
+//! an unfinished call does not receive a success receipt.
 //!
-//! # Which of Codex's three streams this reads, and why
+//! Verified usage/settings telemetry is skipped. Lifecycle records become
+//! explicit system entries; they do not override live PTY status. Unmodeled
+//! actions retain their payload as `Unknown` for the terminal fallback.
 //!
-//! A rollout (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`) is an
-//! append-only JSONL carrying three overlapping streams. Measured across the 91
-//! rollouts on this box (2026-09-07, codex-cli 0.151.0):
-//!
-//! * `response_item` — the RAW model-API mirror. Present in 91/91 files, and the
-//!   obvious first choice, which is why it is worth writing down why it is the
-//!   wrong one: it REPLAYS. Each turn re-sends the whole prompt array, so the
-//!   injected context blocks repeat verbatim on every request — in the worst
-//!   file measured, 509 user messages expand to 6348 blocks of which only 1822
-//!   are distinct, one block recurring 502 times. Rendering that stream is a
-//!   chat log that repeats itself hundreds of times.
-//! * `event_msg` — the HUMAN-VISIBLE UI stream, the one the Codex TUI itself
-//!   draws. No replay: one event per thing that actually happened. This is what
-//!   we read, and it is the same choice [`crate::sessions::recall::codex`]
-//!   already made for the prompt-history popover.
-//! * top-level `session_meta` / `world_state` / `turn_context` / `compacted` —
-//!   header + telemetry. Skipped.
-//!
-//! # The two `event_msg` shapes
-//!
-//! Codex changed its event vocabulary mid-flight, and both shapes are on disk:
-//!
-//! * **older** (89/91 files): flat `user_message` / `agent_message` events.
-//! * **newer** (2/91, codex-cli 0.151.0): a single `item_completed` event
-//!   carrying a typed `item` (`UserMessage`, `AgentMessage`, `Reasoning`,
-//!   `CommandExecution`, `Extension`, `ContextCompaction`).
-//!
-//! They never co-occur in one file (measured: zero files carry both), so the
-//! dispatch below stays STATELESS — no "which format is this file?" flag to keep
-//! across polls, and no way to double-render a turn. An older rollout therefore
-//! renders prompts and replies but no tool activity (its tool calls live only in
-//! the replaying `response_item` stream); a current one renders reasoning and
-//! shell commands too. That asymmetry is deliberate and honest: it costs nothing
-//! on the sessions people are actually running.
-//!
-//! # Nothing is dropped
-//!
-//! An event this module does not model becomes [`Kind::Unknown`] carrying its own
-//! payload and label — never a silent drop and never a parse failure, exactly as
-//! [`super::parser`] treats an unmodelled Claude line. The renderer turns those
-//! into the visible "open the terminal" row, which is the whole point: Codex may
-//! do something the chat view cannot draw, and the user must be TOLD that rather
-//! than shown a gap.
+//! Transcript ownership is resolved in `source`: the current foreground
+//! process tree is stronger evidence than a persisted ID or directory match.
+//! Directory discovery excludes subagents and uses launch time when available.
 
 use std::path::{Path, PathBuf};
 
@@ -62,15 +21,14 @@ use serde_json::{Map, Value};
 use super::model::{ChatEntry, Kind};
 use super::parser::{parse_ts_ms, str_at};
 
-/// `event_msg` payload types that are pure telemetry/lifecycle noise: they carry
+/// `event_msg` payload types that are pure telemetry noise: they carry
 /// no conversation content, fire thousands of times (`token_count` alone is
 /// 14 398 of the 39 023 events on this box), and have no useful rendering. These
 /// are the ONLY events skipped outright — everything else either maps to a kind
 /// or becomes [`Kind::Unknown`].
 const NOISE_EVENTS: &[&str] = &[
     "token_count",
-    "task_started",
-    "task_complete",
+    "token_usage_record",
     "thread_settings_applied",
     "sub_agent_activity",
 ];
@@ -124,6 +82,20 @@ pub fn entries_from_object(obj: &Map<String, Value>, offset: u64) -> Vec<ChatEnt
     }
 
     match pt {
+        "task_started" | "task_complete" | "turn_aborted" => {
+            let (label, state, text) = match pt {
+                "task_started" => ("turn_started", "active", "Turn started"),
+                "task_complete" => ("turn_complete", "idle", "Turn completed"),
+                _ => ("turn_aborted", "interrupted", "Turn interrupted"),
+            };
+            vec![base.entry(0, Kind::System, serde_json::json!({
+                "content": text, "state": state, "turn_id": payload.get("turn_id"),
+                "reason": payload.get("reason"),
+            }), Some(label))]
+        }
+        "error" => vec![base.entry(0, Kind::AgentError, serde_json::json!({
+            "text": str_at(payload, &["message"]).unwrap_or("Agent error"), "error": payload.get("error"),
+        }), Some("codex_error"))],
         // ── older rollouts: flat message events ──
         "user_message" => vec![base.entry(0, Kind::Prompt, text_body(payload, "message"), None)],
         "agent_message" => {
@@ -185,7 +157,15 @@ fn item_entries(item: &Map<String, Value>, base: &Header) -> Vec<ChatEntry> {
     let id = str_at(item, &["id"]);
     match ty {
         "UserMessage" => vec![base.entry(0, Kind::Prompt, blocks_text(item), None)],
-        "AgentMessage" => vec![base.entry(0, Kind::Assistant, blocks_text(item), None)],
+        "AgentMessage" => {
+            let mut entries = vec![base.entry(0, Kind::Assistant, blocks_text(item), None)];
+            if item.get("questions").and_then(Value::as_array).is_some_and(|q| !q.is_empty()) {
+                let mut question = base.entry(1, Kind::ToolUse, serde_json::json!({ "input": { "questions": item.get("questions") }, "state": "waiting" }), Some("AskUserQuestion"));
+                question.tool_use_id = id.map(str::to_string);
+                entries.push(question);
+            }
+            entries
+        },
         "Reasoning" => vec![base.entry(0, Kind::Thinking, text_body(item, "summary_text"), None)],
 
         // A shell run is a call AND its output. Emitting both, joined by
@@ -213,25 +193,20 @@ fn item_entries(item: &Map<String, Value>, base: &Header) -> Vec<ChatEntry> {
             );
             out.tool_use_id = id.map(str::to_string);
             // No exit code yet (a still-running command) is not a failure.
-            out.ok = Some(exit.map(|c| c == 0).unwrap_or(true));
-            vec![call, out]
+            out.ok = exit.map(|c| c == 0).or_else(|| completed_ok(item));
+            if out.ok.is_some() { vec![call, out] } else { vec![call] }
         }
 
-        "Extension" => {
-            let mut e = base.entry(
-                0,
-                Kind::ToolUse,
-                serde_json::json!({
-                    "input": {
-                        "action": item.get("action").cloned().unwrap_or(Value::Null),
-                        "query": item.get("query").cloned().unwrap_or(Value::Null),
-                    },
-                }),
-                Some(str_at(item, &["kind"]).unwrap_or("extension")),
-            );
+        "FileChange" => tool_pair(item, base, "apply_patch", serde_json::json!({ "changes": item.get("changes"), "file_path": item.get("changes").and_then(Value::as_object).and_then(|c| c.keys().next()) })),
+        "McpToolCall" => tool_pair(item, base, str_at(item, &["tool"]).unwrap_or("mcp"), item.get("arguments").cloned().unwrap_or(Value::Null)),
+        "CollabAgentToolCall" => tool_pair(item, base, str_at(item, &["tool"]).unwrap_or("collaboration"), serde_json::json!({ "receiver_agents": item.get("receiver_agents"), "receiver_thread_ids": item.get("receiver_thread_ids") })),
+        "ImageView" => {
+            let mut e = base.entry(0, Kind::ToolUse, serde_json::json!({ "input": { "file_path": item.get("path") } }), Some("view_image"));
             e.tool_use_id = id.map(str::to_string);
             vec![e]
         }
+        "SubAgentActivity" => vec![base.entry(0, Kind::Subagent, serde_json::json!({ "content": item.get("kind"), "agent_path": item.get("agent_path"), "agent_thread_id": item.get("agent_thread_id") }), Some(str_at(item, &["kind"]).unwrap_or("subagent_activity")))],
+        "Extension" => tool_pair(item, base, str_at(item, &["kind"]).unwrap_or("extension"), serde_json::json!({ "action": item.get("action"), "query": item.get("query") })),
 
         "ContextCompaction" => vec![base.entry(
             0,
@@ -242,6 +217,52 @@ fn item_entries(item: &Map<String, Value>, base: &Header) -> Vec<ChatEntry> {
 
         _ => vec![base.entry(0, Kind::Unknown, Value::Object(item.clone()), Some(ty))],
     }
+}
+
+/// An item is successful only after a terminal status or explicit result. A
+/// still-running call must not acquire a success receipt before it has finished.
+fn completed_ok(item: &Map<String, Value>) -> Option<bool> {
+    if item.get("failure").is_some_and(|v| !v.is_null()) {
+        return Some(false);
+    }
+    if item
+        .get("result")
+        .and_then(|r| r.get("isError"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Some(false);
+    }
+    match str_at(item, &["status"])
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "completed" | "complete" | "succeeded" | "success" => Some(true),
+        "failed" | "error" | "declined" | "denied" | "interrupted" | "cancelled" => Some(false),
+        _ => None,
+    }
+}
+
+fn tool_pair(item: &Map<String, Value>, base: &Header, name: &str, input: Value) -> Vec<ChatEntry> {
+    let mut call = base.entry(
+        0,
+        Kind::ToolUse,
+        serde_json::json!({ "input": input }),
+        Some(name),
+    );
+    call.tool_use_id = str_at(item, &["id", "call_id"]).map(str::to_string);
+    let Some(ok) = completed_ok(item) else {
+        return vec![call];
+    };
+    let mut out = base.entry(1, Kind::ToolResult, serde_json::json!({
+        "content": item.get("result").or_else(|| item.get("results")).cloned()
+            .unwrap_or_else(|| Value::String(str_at(item, &["stderr", "stdout"]).unwrap_or("").to_string())),
+        "status": item.get("status"), "failure": item.get("failure"),
+    }), None);
+    out.tool_use_id = call.tool_use_id.clone();
+    out.ok = Some(ok);
+    vec![call, out]
 }
 
 /// `{ "text": <o[key] as string> }` — the body shape every text kind on the wire
@@ -334,20 +355,94 @@ fn codex_home() -> PathBuf {
 /// joins `<parent>/<stem>.jsonl` — and arm the existing directory watcher on the
 /// parent. The tailer therefore needs no notion of "a codex path" at all.
 ///
-/// **Why by `cwd` and not by id:** the `codex_session_id` column exists in the
-/// schema but nothing has ever written it (grep: zero assignments), so it is
-/// always empty. Codex keeps no project index either, so the only honest
-/// pointer is the one `recall::codex` already uses: the newest rollout whose
-/// `session_meta.payload.cwd` is this session's directory. "Newest" is by mtime,
-/// read from the directory entry alone — a header is only opened for a
-/// candidate that could still win.
+/// Legacy discovery entry point. Production uses verified process ownership,
+/// then a stable source pin, explicit persisted ID, or launch-time matching.
 pub fn locate(dir: &str) -> Option<(PathBuf, String)> {
-    locate_in_root(&codex_home().join("sessions"), dir)
+    locate_session(dir, "")
+}
+
+/// Validate a process-owned rollout without revealing or trusting its filename alone.
+pub fn source_from_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+    dir: &str,
+) -> Option<(PathBuf, String)> {
+    let want = std::fs::canonicalize(dir).unwrap_or_else(|_| PathBuf::from(dir));
+    let mut roots = Vec::new();
+    for path in paths {
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl")
+            || !path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with("rollout-"))
+        {
+            continue;
+        }
+        let Some(meta) = rollout_header(&path) else {
+            continue;
+        };
+        let Some(cwd) = meta.get("cwd").and_then(Value::as_str) else {
+            continue;
+        };
+        if std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd)) != want {
+            continue;
+        }
+        if meta
+            .get("source")
+            .is_some_and(|s| s.get("subagent").is_some())
+            || meta.get("parent_thread_id").is_some_and(|p| !p.is_null())
+        {
+            continue;
+        }
+        roots.push(path);
+    }
+    roots.sort();
+    roots.dedup();
+    // Several root files open at once is ambiguous, never newest-file adoption.
+    if roots.len() != 1 {
+        return None;
+    }
+    let path = roots.pop()?;
+    Some((
+        path.parent()?.to_path_buf(),
+        path.file_stem()?.to_str()?.to_string(),
+    ))
 }
 
 /// [`locate`] against an explicit sessions root, so tests do not need a real
 /// `$CODEX_HOME`.
+pub fn locate_session(dir: &str, session_id: &str) -> Option<(PathBuf, String)> {
+    locate_session_started(dir, session_id, 0)
+}
+
+#[cfg(test)]
 fn locate_in_root(root: &Path, dir: &str) -> Option<(PathBuf, String)> {
+    locate_session_in_root(root, dir, "")
+}
+
+pub fn locate_session_started(
+    dir: &str,
+    session_id: &str,
+    last_started: i64,
+) -> Option<(PathBuf, String)> {
+    locate_started_in_root(
+        &codex_home().join("sessions"),
+        dir,
+        session_id,
+        last_started,
+    )
+}
+
+#[cfg(test)]
+fn locate_session_in_root(root: &Path, dir: &str, session_id: &str) -> Option<(PathBuf, String)> {
+    locate_started_in_root(root, dir, session_id, 0)
+}
+
+fn locate_started_in_root(
+    root: &Path,
+    dir: &str,
+    session_id: &str,
+    last_started: i64,
+) -> Option<(PathBuf, String)> {
     let want = std::fs::canonicalize(dir).unwrap_or_else(|_| PathBuf::from(dir));
 
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
@@ -356,14 +451,58 @@ fn locate_in_root(root: &Path, dir: &str) -> Option<(PathBuf, String)> {
     // never opened.
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
 
+    let mut closest: Option<(u64, PathBuf)> = None;
     for (_, path) in candidates {
-        if rollout_cwd(&path).is_some_and(|cwd| {
-            std::fs::canonicalize(&cwd).unwrap_or(PathBuf::from(&cwd)) == want
-        }) {
-            let stem = path.file_stem()?.to_str()?.to_string();
-            let parent = path.parent()?.to_path_buf();
-            return Some((parent, stem));
+        if !session_id.is_empty()
+            && !path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.ends_with(session_id))
+        {
+            continue;
         }
+        let Some(meta) = rollout_header(&path) else {
+            continue;
+        };
+        let Some(cwd) = meta.get("cwd").and_then(Value::as_str) else {
+            continue;
+        };
+        if std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd)) != want {
+            continue;
+        }
+        if meta
+            .get("source")
+            .is_some_and(|s| s.get("subagent").is_some())
+            || meta.get("parent_thread_id").is_some_and(|p| !p.is_null())
+        {
+            continue;
+        }
+        if session_id.is_empty() && meta.get("source").and_then(Value::as_str) == Some("vscode") {
+            continue;
+        }
+        if last_started > 0 && session_id.is_empty() {
+            let created = parse_ts_ms(meta.get("timestamp").and_then(Value::as_str)) / 1000;
+            // An older root in the same directory is not proof that a freshly
+            // launched session has a transcript. Do not pin that old root.
+            if created == 0 || created < last_started.saturating_sub(120) {
+                continue;
+            }
+            let distance = created.abs_diff(last_started);
+            if closest.as_ref().is_none_or(|(best, _)| distance < *best) {
+                closest = Some((distance, path));
+            }
+            continue;
+        }
+        return Some((
+            path.parent()?.to_path_buf(),
+            path.file_stem()?.to_str()?.to_string(),
+        ));
+    }
+    if let Some((_, path)) = closest {
+        return Some((
+            path.parent()?.to_path_buf(),
+            path.file_stem()?.to_str()?.to_string(),
+        ));
     }
     None
 }
@@ -402,19 +541,18 @@ fn collect_rollouts(dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTi
 /// The `cwd` from a rollout's `session_meta` header, read from the first few
 /// lines only — the header is line 1 in every rollout measured, and a bounded
 /// scan keeps a malformed file from costing a full read.
-fn rollout_cwd(path: &Path) -> Option<String> {
+fn rollout_header(path: &Path) -> Option<Map<String, Value>> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
-    for line in std::io::BufReader::new(file).lines().take(4).map_while(Result::ok) {
-        if !line.contains("\"session_meta\"") {
-            continue;
-        }
+    for line in std::io::BufReader::new(file)
+        .lines()
+        .take(4)
+        .map_while(Result::ok)
+    {
         let v: Value = serde_json::from_str(&line).ok()?;
-        return v
-            .get("payload")
-            .and_then(|p| p.get("cwd"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        if v.get("type").and_then(Value::as_str) == Some("session_meta") {
+            return v.get("payload").and_then(Value::as_object).cloned();
+        }
     }
     None
 }
@@ -422,6 +560,114 @@ fn rollout_cwd(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_lifecycle_is_explicit_and_usage_records_are_quiet() {
+        for (event, state) in [
+            ("task_started", "active"),
+            ("task_complete", "idle"),
+            ("turn_aborted", "interrupted"),
+        ] {
+            let entries=parse(&serde_json::json!({"type":"event_msg","payload":{"type":event,"turn_id":"turn-1","reason":"interrupted"}}).to_string());
+            assert_eq!(entries[0].kind, Kind::System);
+            assert_eq!(entries[0].body["state"], state);
+            assert_eq!(entries[0].body["turn_id"], "turn-1");
+        }
+        assert!(parse(r#"{"type":"event_msg","payload":{"type":"token_usage_record","usage":{"total_tokens":99}}}"#).is_empty());
+    }
+
+    #[test]
+    fn current_tools_preserve_failures_and_never_finish_a_running_call() {
+        for kind in [
+            "FileChange",
+            "McpToolCall",
+            "CollabAgentToolCall",
+            "Extension",
+        ] {
+            let input = serde_json::json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":kind,"id":"call-1","status":"failed","tool":"example","stderr":"denied","result":{"isError":true,"content":[]}}}});
+            let entries = parse(&input.to_string());
+            assert_eq!(entries.len(), 2, "{kind}");
+            assert_eq!(entries[0].kind, Kind::ToolUse);
+            assert_eq!(entries[1].kind, Kind::ToolResult);
+            assert_eq!(entries[1].ok, Some(false));
+            assert_eq!(entries[0].tool_use_id, entries[1].tool_use_id);
+            assert_ne!(entries[0].uuid, entries[1].uuid);
+        }
+        let running = parse(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"running","command":"sleep 3","status":"in_progress"}}}"#,
+        );
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].kind, Kind::ToolUse);
+    }
+
+    #[test]
+    fn process_owned_source_excludes_subagent_and_rejects_ambiguous_roots() {
+        let dir = std::env::temp_dir().join(format!("codex-owned-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("rollout-root.jsonl");
+        let agent = dir.join("rollout-subagent.jsonl");
+        let other = dir.join("rollout-other.jsonl");
+        for (path, source) in [
+            (&root, serde_json::json!("cli")),
+            (&other, serde_json::json!("cli")),
+            (
+                &agent,
+                serde_json::json!({"subagent":{"parent_thread_id":"root"}}),
+            ),
+        ] {
+            std::fs::write(
+                path,
+                serde_json::json!({"type":"session_meta","payload":{"cwd":&dir,"source":source}})
+                    .to_string()
+                    + "\n",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            source_from_paths(vec![agent.clone(), root.clone()], dir.to_str().unwrap())
+                .unwrap()
+                .1,
+            "rollout-root"
+        );
+        assert!(source_from_paths(vec![root, other], dir.to_str().unwrap()).is_none());
+        assert!(source_from_paths(vec![agent], dir.to_str().unwrap()).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unowned_startup_never_pins_an_old_thread_and_explicit_identity_wins() {
+        let dir = std::env::temp_dir().join(format!("codex-start-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("rollout-old.jsonl");
+        std::fs::write(&old,serde_json::json!({"type":"session_meta","payload":{"id":"old","cwd":&dir,"source":"cli","timestamp":"2026-10-08T10:00:00Z"}}).to_string()+"\n").unwrap();
+        let started = parse_ts_ms(Some("2026-10-08T11:00:00Z")) / 1000;
+        assert!(locate_started_in_root(&dir, dir.to_str().unwrap(), "", started).is_none());
+        assert_eq!(
+            locate_started_in_root(&dir, dir.to_str().unwrap(), "old", started)
+                .unwrap()
+                .1,
+            "rollout-old"
+        );
+        let current = dir.join("rollout-current.jsonl");
+        std::fs::write(&current,serde_json::json!({"type":"session_meta","payload":{"id":"current","cwd":&dir,"source":"cli","timestamp":"2026-10-08T11:00:02Z"}}).to_string()+"\n").unwrap();
+        assert_eq!(
+            locate_started_in_root(&dir, dir.to_str().unwrap(), "", started)
+                .unwrap()
+                .1,
+            "rollout-current"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unmodeled_permission_request_preserves_terminal_fallback() {
+        let entry = parse(
+            r#"{"type":"event_msg","payload":{"type":"exec_approval_request","call_id":"approval","command":"example"}}"#,
+        );
+        assert_eq!(entry[0].kind, Kind::Unknown);
+        assert_eq!(entry[0].label.as_deref(), Some("exec_approval_request"));
+        assert_eq!(entry[0].body["command"], "example");
+    }
 
     fn parse(line: &str) -> Vec<ChatEntry> {
         let v: Value = serde_json::from_str(line).expect("valid json");
@@ -535,12 +781,15 @@ mod tests {
         // "Codex did something the chat view can't show yet" row.
         let e = parse(
             r#"{"timestamp":"2026-09-07T10:00:00.000Z","type":"event_msg",
-                "payload":{"type":"turn_aborted","reason":"interrupted"}}"#,
+                "payload":{"type":"future_interactive_action","reason":"interrupted"}}"#,
         );
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].kind, Kind::Unknown);
-        assert_eq!(e[0].label.as_deref(), Some("turn_aborted"));
-        assert_eq!(e[0].body["reason"], "interrupted", "the payload is kept whole");
+        assert_eq!(e[0].label.as_deref(), Some("future_interactive_action"));
+        assert_eq!(
+            e[0].body["reason"], "interrupted",
+            "the payload is kept whole"
+        );
 
         // …and so is a top-level type from a future codex release.
         let f = parse(r#"{"timestamp":"2026-09-07T10:00:00.000Z","type":"brand_new_thing"}"#);
@@ -613,4 +862,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
-

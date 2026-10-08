@@ -29,6 +29,7 @@
 //   &theme=dark      force the app theme (persists — it is the real switch)
 //   &bare=1          hide the picker, for screenshots
 import * as React from 'react'
+import DevChatScroll from './dev-chat-scroll'
 import { useSearchParams } from 'react-router-dom'
 
 import { PAPER } from '@/brand/tokens'
@@ -67,6 +68,11 @@ import {
 } from './dev-chat-live.fixture'
 
 export default function DevChatLive() {
+  const [params] = useSearchParams()
+  return params.has('scroll') ? <DevChatScroll /> : <DevChatStates />
+}
+
+function DevChatStates() {
   const [params, setParams] = useSearchParams()
   const { resolvedTheme, setTheme } = useTheme()
 

@@ -51,14 +51,7 @@ import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
 import { CHAT_GONE, CHAT_OFFLINE_BLOCKED, isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
-import {
-  FOLLOW_THRESHOLD_PX,
-  followsFooterGrowth,
-  jumpVisible,
-  restoredScrollTop,
-  shouldLoadOlder,
-  type ScrollMark,
-} from './backlog'
+import { useTranscriptScroll } from './use-transcript-scroll'
 import { ChatComposer, type ChatComposerActions } from './composer'
 import { attachmentSentence } from './composer-insert'
 import { useStagedAttachments } from '../focus-mode/use-staged-attachments'
@@ -74,8 +67,6 @@ import { LoginCard, ProviderAuthCard } from './login-card'
 import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
-import { useDeferredFollow } from './follow-bottom'
-import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 import { useTapToDismissKeyboard } from './use-tap-to-dismiss'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, scopedMentionIndex } from './grouping'
@@ -202,7 +193,7 @@ export default function ChatPanel({
   const nameSig = React.useMemo(
     () =>
       sessions
-        .map((s) => `${s.name} ${s.display_name ?? ''} ${s.company_id ?? ''}`)
+        .map((s) => `${s.name}\0${s.display_name ?? ''}\0${s.company_id ?? ''}`)
         .join(''),
     [sessions],
   )
@@ -362,274 +353,10 @@ export default function ChatPanel({
       />
     )
 
-  // Follow-bottom pin: stick to the newest content unless the user scrolled up.
-  const scrollRef = React.useRef<HTMLDivElement | null>(null)
-  const pinnedRef = React.useRef(true)
-  // Keyboard-open scroll anchor (see the effect below): `wasAtBottomRef` is the
-  // atomic capture of "was the transcript at the bottom when the field focused",
-  // read straight off the scroller BEFORE the viewport shrinks; `anchoringRef`
-  // marks the open animation window, during which onScroll must NOT downgrade the
-  // pin (the shrink transiently reads distance>48).
-  const wasAtBottomRef = React.useRef(false)
-  const anchoringRef = React.useRef(false)
-  // STICKY user-scrolled-away: the durable memory the per-render `pinnedRef`
-  // cannot be, because the keyboard-open anchor keeps overwriting the pin the
-  // whole time the keyboard is up. A real finger/wheel gesture sets it; it holds
-  // auto-follow stood down across every stream tick until the reader returns to
-  // the bottom (onScroll) or taps the jump pill (jumpToBottom).
-  const userScrolledAwayRef = React.useRef(false)
-  // The pill's visibility is STATE, not the pin's ref: it has to re-render.
-  // Its threshold is its own (`JUMP_AWAY_PX`) — see `backlog.ts`.
-  const [showJump, setShowJump] = React.useState(false)
-
-  // ── back-pagination (QA #3) ────────────────────────────────────────────────
-  // Reaching the top fetches the page below what is on screen, and the scroll
-  // region is put back where the reader's eye was: the same distance from the
-  // top of the OLD content, i.e. the height the prepend added, added on. Without
-  // it, "load earlier" reads as the conversation teleporting.
-  const restoreRef = React.useRef<ScrollMark | null>(null)
-  const loadOlder = backlog.loadOlder
-  const requestOlder = React.useCallback(() => {
-    const el = scrollRef.current
-    // Marked BEFORE the fetch, not in the response handler: by the time the
-    // page lands the user may have scrolled on, and the mark has to describe
-    // the layout the delta will be measured against.
-    if (el) restoreRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop }
-    loadOlder()
-  }, [loadOlder])
-
-  const pagesLoaded = backlog.pagesLoaded
-  const restoredFor = React.useRef(pagesLoaded)
-  React.useLayoutEffect(() => {
-    // Layout effect, and only on the commit that prepended: the correction has
-    // to land before the browser paints, or the page visibly jumps first.
-    if (restoredFor.current === pagesLoaded) return
-    restoredFor.current = pagesLoaded
-    const el = scrollRef.current
-    const mark = restoreRef.current
-    restoreRef.current = null
-    if (!el || !mark) return
-    el.scrollTop = restoredScrollTop(mark, el.scrollHeight)
-  }, [pagesLoaded])
-
-  const hasOlder = backlog.hasOlder
-  const loadingOlder = backlog.loadingOlder
-  const onScroll = React.useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    // STICKY OVERRIDE: once a real user gesture parked the view away from the
-    // bottom, follow stays false regardless of the anchoring lock — until the
-    // reader scrolls back within threshold, which clears the flag and re-pins.
-    // This is what stops a keyboard-open stream from re-snapping a scrolled-up
-    // reader (the anchoring lock never releases while the keyboard is up).
-    if (userScrolledAwayRef.current) {
-      if (distance < FOLLOW_THRESHOLD_PX) {
-        userScrolledAwayRef.current = false
-        pinnedRef.current = true
-      } else {
-        pinnedRef.current = false
-      }
-    } else if (!anchoringRef.current) {
-      // DETERMINISM LOCK: while the keyboard-open anchor is armed, do not let the
-      // transient mid-shrink distance>48 frames flip the pin to false (that race is
-      // exactly what made the first open inconsistent). showJump/loadOlder stay
-      // unguarded — they are position read-outs, not the follow decision.
-      pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
-    }
-    setShowJump(jumpVisible(distance))
-    if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
-      requestOlder()
-    }
-  }, [hasOlder, loadingOlder, requestOlder])
-
-  const jumpToBottom = React.useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    pinnedRef.current = true
-    // The explicit "get me back to live" gesture re-engages auto-follow: drop
-    // the sticky scrolled-away flag so the stream is followed again.
-    userScrolledAwayRef.current = false
-    setShowJump(false)
-    if (typeof el.scrollTo === 'function') {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    } else {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [])
-
-  // FOLLOW-BOTTOM, and the two things it must not do (iOS selection bug).
-  //
-  // No dependency array on purpose: "the track grew" is not expressible as a
-  // dep — new confirmed rows, the live layer, a receipt opening are all just
-  // renders of this component — so the pin re-asserts itself on every one.
-  // That generosity is what made it a SELECTION EATER on the phone:
-  //
-  //   · it fired on every render, and the peek poller re-renders this panel
-  //     once every SLOW_PEEK_MS while the agent is idle (`use-peek-lens.ts`
-  //     now holds the frame when the capture is byte-identical, which removes
-  //     the idle renders at the source — this guard is the second lock);
-  //   · `el.scrollTop = …` on the scroller a selection lives in ends the
-  //     selection gesture in WebKit: the native Copy callout is dismissed and
-  //     the highlight goes with it. A reader long-pressing a message therefore
-  //     lost the selection a second or two later, "as if some JS keeps
-  //     deselecting" — which is exactly what it was.
-  //
-  // So: never write while the reader holds a selection in the track, and never
-  // write a value the scroller is already at (a redundant write is still a
-  // scroll gesture as far as WebKit is concerned, and it is free to skip).
-  // TAP THE CONVERSATION TO PUT THE KEYBOARD AWAY (the WhatsApp gesture).
-  //
-  // The phone composer is a contenteditable so iOS stops drawing its
-  // prev/next/Done accessory bar (`plain-editable.tsx`); Done was the only
-  // NATIVE dismiss, so the gesture has to come back app-side. Coarse pointers
-  // only — a click that stole the caret out of the desktop composer would fight
-  // `arm-composer-focus.ts`, which exists to put it back.
+  const { scrollRef, onScroll, showJump, jumpToBottom, onReserveGrew } = useTranscriptScroll(`${name}:${tail.sourceRevision ?? tail.resyncCount}`, backlog)
+  const requestOlder = backlog.loadOlder
   const coarse = useMediaQuery('(pointer: coarse)')
   useTapToDismissKeyboard(scrollRef, coarse)
-
-  // The follow-bottom gate. `selectionInside(el)` already stood this write DOWN
-  // while a selection was held (keeping the highlight), but nothing RESUMED the
-  // follow when the selection cleared — so after a copy a reader who had drifted
-  // below the live bottom stayed stuck scrolled up until some later render moved
-  // the view. `useDeferredFollow` keeps the same stand-down AND flushes the
-  // deferred scroll the instant the selection clears (see `follow-bottom.ts`).
-  const follow = useDeferredFollow()
-
-  React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el || !pinnedRef.current) return
-    const bottom = el.scrollHeight - el.clientHeight
-    if (Math.abs(el.scrollTop - bottom) < 1) return
-    follow(() => {
-      const e = scrollRef.current
-      if (!e || !pinnedRef.current) return
-      e.scrollTop = e.scrollHeight - e.clientHeight
-    })
-  })
-
-  // …and the same pin, for the one thing that grows WITHOUT re-rendering this
-  // component: the composer (r2 finding 34). The track reserves room for it by
-  // MEASURING it, and that measurement is state inside `ChatConversation` — so
-  // a refusal banner appearing re-rendered only that subtree, the effect above
-  // never ran, and the newly taller glass covered another 76px of the live
-  // band. It was found as the composer's own dialog-question refusal landing on
-  // top of the dialog card it tells you to answer.
-  const onReserveGrew = React.useCallback((grewBy: number) => {
-    const el = scrollRef.current
-    if (!el || !followsFooterGrowth(el, grewBy)) return
-    pinnedRef.current = true
-    // Same rule as the effect above: a reader holding a selection in the track
-    // keeps it (the write is deferred), even at the cost of the newest band being
-    // briefly covered — and the follow resumes the instant the selection clears.
-    follow(() => {
-      const e = scrollRef.current
-      if (e) e.scrollTop = e.scrollHeight
-    })
-  }, [follow])
-
-  // ── Keyboard-open scroll anchor (mode-agnostic; benefits all KbLayout modes) ─
-  // When the soft keyboard opens the visual viewport shrinks (and mode 9 shrinks
-  // #root to match), cutting the scroller's clientHeight by ~keyboardInset — a
-  // transcript that sat exactly at the bottom is suddenly ~keyboardInset px from
-  // it, so the newest message hides behind the composer/keyboard. Worse, onScroll
-  // resamples pinnedRef DURING the shrink + the iOS native focus-scroll, sees
-  // distance>48, and clobbers pinnedRef to false, so the render-gated follow
-  // effect (above) declines to re-pin. The outcome depended on rAF/event ordering
-  // — the inconsistent "sometimes the first open works".
-  //
-  // The fix is an atomic capture-before / re-assert-after bracket:
-  //   1. `focusin` (the earliest deterministic pre-shrink signal, and where
-  //      WebKit collapses any track selection) reads the scroller DIRECTLY to
-  //      record wasAtBottom and arms `anchoringRef`.
-  //   2. every rAF-coalesced visualViewport frame while the detector reads `open`
-  //      && wasAtBottom re-pins to the true bottom through `follow()` (never a raw
-  //      scrollTop= — the selection-preservation deferral is honoured). Re-pinning
-  //      EVERY settling frame makes the final fully-shrunk frame land pinned
-  //      regardless of ordering vs mode 9's shrink.
-  //   3. while armed, onScroll's pinnedRef downgrade is suppressed (see onScroll)
-  //      so no transient frame can flip the pin. On open→false the bracket disarms.
-  // Scrolled up (wasAtBottom false) → the loop writes nothing and scrollTop is
-  // left where the reader parked it. Gated on `coarse`: desktop never attaches
-  // (open never becomes true anyway).
-  React.useEffect(() => {
-    if (!coarse) return
-    const visual =
-      typeof window !== 'undefined' ? window.visualViewport : undefined
-    if (!visual) return
-
-    const detect = createKeyboardOpenDetector()
-
-    // STEP 1 — capture "was at bottom" the instant an editable in this surface
-    // focuses, BEFORE the native focus-scroll settles and BEFORE mode 9's next
-    // rAF shrinks clientHeight. Read the scroller directly, not pinnedRef.
-    const onFocusIn = (e: FocusEvent) => {
-      const t = e.target as HTMLElement | null
-      if (!t) return
-      const editable =
-        t.tagName === 'TEXTAREA' ||
-        t.tagName === 'INPUT' ||
-        t.isContentEditable === true
-      if (!editable) return
-      const el = scrollRef.current
-      if (!el) return
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-      wasAtBottomRef.current = distance < FOLLOW_THRESHOLD_PX
-      anchoringRef.current = true
-    }
-
-    // STEP 2 — re-assert bottom on every settling frame while the keyboard is
-    // open; disarm on close.
-    let raf = 0
-    const measure = () => {
-      raf = 0
-      const { open } = detect(visual)
-      if (open) {
-        if (
-          anchoringRef.current &&
-          wasAtBottomRef.current &&
-          !userScrolledAwayRef.current
-        ) {
-          follow(() => {
-            const el = scrollRef.current
-            if (el) el.scrollTop = el.scrollHeight - el.clientHeight
-          })
-        }
-      } else if (anchoringRef.current) {
-        anchoringRef.current = false
-        wasAtBottomRef.current = false
-      }
-    }
-    const schedule = () => {
-      if (raf) return
-      raf = window.requestAnimationFrame(measure)
-    }
-
-    // A real user drag/wheel on the scroller is an unambiguous "I took over":
-    // disarm the anchoring lock (so onScroll's pin downgrade stops being
-    // suppressed) and set the sticky flag, so a scrolled-away reader is no
-    // longer yanked to the bottom on every stream tick while the keyboard is
-    // still open. Passive — this never blocks the scroll, only observes it.
-    const onUserDrag = () => {
-      anchoringRef.current = false
-      userScrolledAwayRef.current = true
-    }
-    const scroller = scrollRef.current
-
-    document.addEventListener('focusin', onFocusIn)
-    visual.addEventListener('resize', schedule)
-    visual.addEventListener('scroll', schedule)
-    scroller?.addEventListener('touchmove', onUserDrag, { passive: true })
-    scroller?.addEventListener('wheel', onUserDrag, { passive: true })
-    return () => {
-      if (raf) window.cancelAnimationFrame(raf)
-      document.removeEventListener('focusin', onFocusIn)
-      visual.removeEventListener('resize', schedule)
-      visual.removeEventListener('scroll', schedule)
-      scroller?.removeEventListener('touchmove', onUserDrag)
-      scroller?.removeEventListener('wheel', onUserDrag)
-    }
-  }, [coarse, follow])
 
   // ── The input plane (fase A4 T3) ───────────────────────────────────────────
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft

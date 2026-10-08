@@ -727,3 +727,39 @@ describe('the harness rows cc 2.1.25x background agents produce', () => {
     expect(row.text).toBe('Caveat: the messages below…')
   })
 })
+
+describe('authoritative transcript source identity', () => {
+  const seed = (id = 'conversation-a', epoch = 'store-a', gen = 1): ServerFrame => ({ type: 'seed', entries: [ENTRY_JSON as WireEntry], has_more: false, next_before: null, conversation_id: id, source_epoch: epoch, source_generation: gen })
+  const done: ServerFrame = { type: 'seed_done', state: 'live', resync_epoch: 0, high_water: 8 }
+  test('same-source lag repair and reconnect preserve history identity, even without a cursor', () => {
+    let state = feed(EMPTY_WIRE, seed(), done)
+    const revision = state.sourceRevision
+    state = feed(state, { type: 'resync', reason: 'lagged' }, seed(), done)
+    expect(state.sourceRevision).toBe(revision)
+    state = feed(state, seed('conversation-a', 'new-store', 1), done)
+    expect(state.sourceRevision).toBe(revision)
+    state = feed(state, seed('conversation-b', 'new-store', 1), done)
+    expect(state.sourceRevision).toBe(revision + 1)
+  })
+  test('generation change invalidates history only within the same store epoch', () => {
+    const state = feed(EMPTY_WIRE, seed(), done)
+    expect(applyFrame(state, seed('conversation-a', 'store-a', 2)).sourceRevision).toBe(state.sourceRevision + 1)
+    expect(applyFrame(state, seed('conversation-a', 'store-b', 2)).sourceRevision).toBe(state.sourceRevision)
+  })
+  test('resync and seed revoke prior boundary; wrong-source entry frames cannot advance the conversation', () => {
+    const state = feed(EMPTY_WIRE, seed(), done)
+    const entry: ServerFrame = { type: 'entry', entry: { ...ENTRY_JSON, seq: 8, uuid: 'u8' } as WireEntry }
+    const waiting = applyFrame(state, { type: 'resync', reason: 'source switched' })
+    expect(applyFrame(waiting, entry)).toBe(waiting)
+    const seeded = applyFrame(state, seed())
+    expect(applyFrame(seeded, entry)).toBe(seeded)
+    expect(applyFrame(state, { ...entry, conversation_id: 'old-source', source_epoch: 'store-a', source_generation: 1 })).toBe(state)
+    expect(applyFrame(state, { ...entry, conversation_id: 'conversation-a', source_epoch: 'store-a', source_generation: 99 })).toBe(state)
+  })
+  test('known Codex telemetry is quiet; interruption and main agent activity remain visible', () => {
+    const wire = (kind: WireEntry['kind'], label: string, content: string): WireEntry => ({ ...ENTRY_JSON, kind, label, body: { content } })
+    expect(toChatEntries([wire('unknown', 'token_usage_record', 'telemetry')], { surfaceUnmapped: true })).toEqual([])
+    expect(toChatEntries([wire('system', 'turn_aborted', 'Turn interrupted.')])[0].text).toBe('Turn interrupted.')
+    expect(toChatEntries([wire('subagent', 'working', 'Reviewer is checking the patch.')])[0].text).toBe('Reviewer is checking the patch.')
+  })
+})

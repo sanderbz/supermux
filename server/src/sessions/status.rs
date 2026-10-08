@@ -301,6 +301,8 @@ pub enum HookEvent {
     PostToolUse,
     /// `Notification` — Claude is asking the user something ⇒ `Waiting`.
     Notification,
+    /// `PermissionRequest` — a direct blocking ask, even if the start hook was missed.
+    PermissionRequest,
     /// `Stop` — the MAIN agent's turn ended ⇒ `Idle`.
     Stop,
     /// `SubagentStop` — a Task sub-agent finished. Recorded but NON-DECISIVE for
@@ -323,9 +325,11 @@ impl HookEvent {
                 Some(HookEvent::UserPromptSubmit)
             }
             "pre_tool" | "pre_tool_use" | "PreToolUse" => Some(HookEvent::PreToolUse),
-            "post_tool" | "post_tool_use" | "PostToolUse" => Some(HookEvent::PostToolUse),
+            "post_tool" | "post_tool_use" | "PostToolUse" | "post_tool_failure"
+            | "PostToolUseFailure" => Some(HookEvent::PostToolUse),
             "notification" | "Notification" => Some(HookEvent::Notification),
-            "stop" | "Stop" => Some(HookEvent::Stop),
+            "permission_request" | "PermissionRequest" => Some(HookEvent::PermissionRequest),
+            "stop" | "Stop" | "stop_failure" | "StopFailure" => Some(HookEvent::Stop),
             "subagent_stop" | "SubagentStop" => Some(HookEvent::SubagentStop),
             _ => None,
         }
@@ -359,6 +363,8 @@ pub struct TurnState {
     pub subagent_stop: Option<Instant>,
     /// Newest `Notification` — Claude is asking the user something (blocked).
     pub notification: Option<Instant>,
+    /// Newest direct permission ask; only a subsequent turn/tool/end resolves it.
+    pub permission_request: Option<Instant>,
 }
 
 impl TurnState {
@@ -372,6 +378,7 @@ impl TurnState {
             HookEvent::Stop => &mut self.stop,
             HookEvent::SubagentStop => &mut self.subagent_stop,
             HookEvent::Notification => &mut self.notification,
+            HookEvent::PermissionRequest => &mut self.permission_request,
         };
         // Monotonic per type: never let an out-of-order delivery move a slot back.
         if slot.map(|prev| at > prev).unwrap_or(true) {
@@ -408,14 +415,20 @@ impl TurnState {
 
     /// The newest of ALL turn-relevant hooks (start/end/notif), if any.
     fn newest(&self) -> Option<Instant> {
-        [self.turn_start(), self.turn_end(), self.notification]
-            .into_iter()
-            .flatten()
-            .max()
+        [
+            self.turn_start(),
+            self.turn_end(),
+            self.notification,
+            self.permission_request,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
     }
 
     /// Classify purely from the turn timestamps, when the newest is within
     /// [`TURN_SAFETY`]:
+    /// * an unresolved direct `PermissionRequest` ⇒ `Waiting`;
     /// * `Notification` newest AND a turn is IN PROGRESS ⇒ `Waiting` (a genuine
     ///   permission/question prompt — Claude paused mid-turn to ask the user);
     /// * `Notification` newest but the turn already ENDED (a `Stop`/`SubagentStop`
@@ -439,6 +452,16 @@ impl TurnState {
         }
         let start = self.turn_start();
         let end = self.turn_end();
+        // A direct ask proves the agent is blocked even if the turn's start was
+        // missed. Delayed generic notifications cannot resolve that ask.
+        if self.permission_request.is_some_and(|ask| {
+            [start, end]
+                .into_iter()
+                .flatten()
+                .all(|resolved| ask > resolved)
+        }) {
+            return Some(Status::Waiting);
+        }
         // Notification is decisive only when it is itself the newest signal — a
         // mid-turn notification superseded by a later PreToolUse/Stop must not pin
         // Waiting. AND it means "blocked on the user" only when it arrived WITHIN
@@ -861,11 +884,12 @@ impl StatusDetector {
         //   waiting → a `› N.` selector / "Press enter to confirm" → Waiting
         //   else    → Idle (positively — see below)
         if self.provider == "codex" {
-            if CODEX_ACTIVE_BANK.is_match(capture) {
-                return Status::Active;
-            }
+            // Approval selectors may retain the busy footer underneath them.
             if CODEX_WAITING_BANK.is_match(capture) {
                 return Status::Waiting;
+            }
+            if CODEX_ACTIVE_BANK.is_match(capture) {
+                return Status::Active;
             }
             // Codex ALWAYS shows `esc to interrupt` while a turn runs, so the
             // ABSENCE of it (with no selector) is a reliable REST signal → Idle.
@@ -1159,6 +1183,29 @@ static IDLE_BANK: Lazy<Regex> =
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_approval_preempts_a_remaining_busy_footer() {
+        use super::*;
+        let mut detector = StatusDetector::for_provider("codex");
+        assert_eq!(
+            detector.detect(
+                "Do you want to run this command?\n› 1. Yes\n◦ Working (3s • esc to interrupt)",
+                Instant::now(),
+                TurnState::default(),
+                false
+            ),
+            Status::Waiting
+        );
+        assert_eq!(
+            detector.detect(
+                "◦ Working (4s • esc to interrupt)",
+                Instant::now(),
+                TurnState::default(),
+                false
+            ),
+            Status::Active
+        );
+    }
     use super::*;
 
     /// A heartbeat in the neutral band (1.5s–30s): neither `Active` nor the idle
@@ -2020,6 +2067,12 @@ mod tests {
             ("pre_tool", PreToolUse),
             ("post_tool", PostToolUse),
             ("notification", Notification),
+            ("permission_request", PermissionRequest),
+            ("PermissionRequest", PermissionRequest),
+            ("post_tool_failure", PostToolUse),
+            ("PostToolUseFailure", PostToolUse),
+            ("stop_failure", Stop),
+            ("StopFailure", Stop),
             ("stop", Stop),
             ("subagent_stop", SubagentStop),
             ("PreToolUse", PreToolUse),
@@ -2036,6 +2089,54 @@ mod tests {
         // the turn boundary (and regressing the false-finished fix).
         assert_eq!(HookEvent::from_event_str("subagent_start"), None);
         assert_eq!(HookEvent::from_event_str("SubagentStart"), None);
+    }
+
+    #[test]
+    fn direct_permission_after_missed_start_survives_notification_until_resolution() {
+        let now = Instant::now();
+        for resolution in [
+            HookEvent::PostToolUse,
+            HookEvent::PreToolUse,
+            HookEvent::UserPromptSubmit,
+            HookEvent::Stop,
+        ] {
+            let mut turn = TurnState::default();
+            turn.apply(now - Duration::from_secs(9), HookEvent::Stop);
+            turn.apply(now - Duration::from_secs(8), HookEvent::PermissionRequest);
+            assert_eq!(turn.classify(), Some(Status::Waiting));
+            turn.apply(now - Duration::from_secs(2), HookEvent::Notification);
+            assert_eq!(turn.classify(), Some(Status::Waiting));
+            turn.apply(now, resolution);
+            assert_eq!(
+                turn.classify(),
+                Some(if resolution == HookEvent::Stop {
+                    Status::Idle
+                } else {
+                    Status::Active
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn direct_permission_without_other_hooks_waits_and_expires_safely() {
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now(), HookEvent::PermissionRequest);
+        assert_eq!(turn.classify(), Some(Status::Waiting));
+        turn.permission_request = Some(Instant::now() - TURN_SAFETY - Duration::from_secs(1));
+        assert_eq!(turn.classify(), None);
+    }
+
+    #[test]
+    fn main_failed_turn_end_outranks_blank_or_stale_busy_capture() {
+        let now = Instant::now();
+        let mut turn = TurnState::default();
+        turn.apply(now - Duration::from_secs(1), HookEvent::UserPromptSubmit);
+        turn.apply(now, HookEvent::from_event_str("StopFailure").unwrap());
+        for capture in ["", "✻ Thinking… (esc to interrupt)"] {
+            let mut detector = StatusDetector::new();
+            assert_eq!(detector.detect(capture, now, turn, true), Status::Idle);
+        }
     }
 
     #[test]

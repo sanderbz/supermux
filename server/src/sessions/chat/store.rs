@@ -102,6 +102,10 @@ pub struct ChatTail {
 /// exact boundary (`high_water`), a receiver that starts at that boundary, and
 /// where disk paging resumes.
 pub struct Attachment {
+    pub source: Option<super::source::TranscriptSource>,
+    pub source_generation: u64,
+    pub source_epoch: String,
+    pub read_offset: u64,
     pub ring: Vec<WireEntry>,
     pub high_water: u64,
     pub rx: broadcast::Receiver<WireEntry>,
@@ -115,6 +119,10 @@ pub struct Attachment {
 }
 
 struct Inner {
+    source: Option<super::source::TranscriptSource>,
+    source_generation: u64,
+    read_offset: u64,
+    owner_probe: Option<(String, i64, String, std::time::Instant)>,
     ring: VecDeque<WireEntry>,
     next_seq: u64,
     cap: usize,
@@ -137,6 +145,7 @@ pub struct ChatStore {
     /// [`ChatTail::epoch`]; the thing that makes a seq-domain counter comparable
     /// across the store's many lifetimes.
     epoch: i64,
+    source_epoch: String,
 }
 
 impl Default for ChatStore {
@@ -160,12 +169,17 @@ impl ChatStore {
         let (tx, _) = broadcast::channel(broadcast_cap.max(1));
         Self {
             inner: Mutex::new(Inner {
+                source: None,
+                source_generation: 0,
+                read_offset: 0,
+                owner_probe: None,
                 ring: VecDeque::with_capacity(ring_cap.min(64)),
                 next_seq: 0,
                 cap: ring_cap.max(1),
             }),
             tx,
             epoch: now_ms(),
+            source_epoch: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -194,6 +208,9 @@ impl ChatStore {
         }
         let mut g = self.lock();
         for mut w in sealed {
+            if let Some(source) = &g.source {
+                w.set_source(g.source_generation, &source.conversation_id);
+            }
             w.set_seq(g.next_seq);
             g.next_seq += 1;
             g.ring.push_back(w.clone());
@@ -205,12 +222,81 @@ impl ChatStore {
         }
     }
 
+    /// Switch source, clear the old ring and publish the replacement under one lock.
+    /// Live entries retain the same generation as the snapshot that contains them.
+    pub fn publish_source(
+        &self,
+        source: super::source::TranscriptSource,
+        sealed: Vec<WireEntry>,
+        reset: bool,
+        read_offset: u64,
+    ) -> bool {
+        let mut g = self.lock();
+        let changed = reset
+            || !g
+                .source
+                .as_ref()
+                .is_some_and(|s| s.same_transcript(&source));
+        if changed {
+            g.ring.clear();
+            g.source_generation += 1;
+        }
+        g.source = Some(source.clone());
+        g.read_offset = read_offset;
+        for mut w in sealed {
+            w.set_seq(g.next_seq);
+            w.set_source(g.source_generation, &source.conversation_id);
+            g.next_seq += 1;
+            g.ring.push_back(w.clone());
+            while g.ring.len() > g.cap {
+                g.ring.pop_front();
+            }
+            let _ = self.tx.send(w);
+        }
+        changed
+    }
+
+    /// File appends can wake the tailer every150ms; process discovery remains
+    /// at most once per normal2s poll per session. REST discovery stays fresh.
+    pub fn claim_owner_probe(&self, dir: &str, started: i64, saved_id: &str) -> bool {
+        let mut inner = self.lock();
+        if inner.owner_probe.as_ref().is_some_and(|(d, s, id, at)| {
+            d == dir
+                && *s == started
+                && id == saved_id
+                && at.elapsed() < std::time::Duration::from_secs(2)
+        }) {
+            return false;
+        }
+        inner.owner_probe = Some((
+            dir.to_string(),
+            started,
+            saved_id.to_string(),
+            std::time::Instant::now(),
+        ));
+        true
+    }
+
+    pub fn source(&self) -> Option<super::source::TranscriptSource> {
+        self.lock().source.clone()
+    }
+    pub fn source_epoch(&self) -> &str {
+        &self.source_epoch
+    }
+    pub fn source_generation(&self) -> u64 {
+        self.lock().source_generation
+    }
+
     /// Snapshot-and-subscribe. See the module docs for why both halves are one
     /// critical section.
     pub fn attach(&self) -> Attachment {
         let g = self.lock();
         let rx = self.tx.subscribe();
         Attachment {
+            source: g.source.clone(),
+            source_generation: g.source_generation,
+            source_epoch: self.source_epoch.clone(),
+            read_offset: g.read_offset,
             ring: g.ring.iter().cloned().collect(),
             high_water: g.next_seq,
             oldest_main_offset: g.ring.iter().find(|w| !w.is_subagent()).map(|w| w.offset()),
@@ -339,6 +425,112 @@ pub fn one_line_capped(text: &str, max: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streamed_appends_do_not_spawn_repeated_owner_probes() {
+        let store = super::ChatStore::new();
+        assert!(store.claim_owner_probe("/fixture", 1, "saved"));
+        for _ in 0..100 {
+            assert!(!store.claim_owner_probe("/fixture", 1, "saved"));
+        }
+        assert!(
+            store.claim_owner_probe("/fixture", 2, "saved"),
+            "new session start invalidates the cached ownership"
+        );
+        assert!(
+            store.claim_owner_probe("/fixture", 2, "resumed"),
+            "explicit thread change invalidates the cached ownership"
+        );
+    }
+    fn source(id: &str) -> super::super::source::TranscriptSource {
+        super::super::source::TranscriptSource {
+            project: std::path::PathBuf::from("/fixture"),
+            working_dir: "/fixture".into(),
+            last_started: 1,
+            owner_verified: false,
+            conversation_id: id.into(),
+            dialect: super::super::parser::Dialect::Codex,
+        }
+    }
+
+    #[test]
+    fn direct_publisher_keeps_attached_source_identity() {
+        use super::*;
+        let store = ChatStore::new();
+        store.publish_source(source("current"), Vec::new(), false, 0);
+        let mut attached = store.attach();
+        store.publish(vec![ChatEntry::test_text("direct", "entry")]);
+        let live = attached.rx.try_recv().unwrap();
+        assert_eq!(live.conversation_id(), Some("current"));
+        assert_eq!(live.source_generation(), attached.source_generation);
+        assert_eq!(live.seq(), attached.high_water);
+        let fresh = store.attach();
+        assert_eq!(fresh.ring[0].conversation_id(), Some("current"));
+        assert_eq!(fresh.ring[0].source_generation(), fresh.source_generation);
+    }
+
+    #[test]
+    fn replacement_snapshot_and_live_provenance_share_one_boundary() {
+        use super::*;
+        let store = ChatStore::new();
+        store.publish_source(
+            source("old"),
+            vec![WireEntry::seal_pending(&ChatEntry::test_text(
+                "old-entry",
+                "old",
+            ))],
+            false,
+            100,
+        );
+        let mut previous = store.attach();
+        store.publish_source(
+            source("new"),
+            vec![WireEntry::seal_pending(&ChatEntry::test_text(
+                "new-entry",
+                "new",
+            ))],
+            true,
+            250,
+        );
+        let current = store.attach();
+        let live = previous.rx.try_recv().unwrap();
+        assert_eq!(current.source.as_ref().unwrap().conversation_id, "new");
+        assert_eq!(current.ring.len(), 1);
+        assert_eq!(live.conversation_id(), Some("new"));
+        assert_eq!(live.source_generation(), current.source_generation);
+        assert_ne!(live.source_generation(), previous.source_generation);
+        assert_eq!(current.read_offset, 250);
+        assert!(live.seq() < current.high_water);
+    }
+
+    #[test]
+    fn concurrent_attach_cannot_stamp_old_entries_as_a_new_source() {
+        use super::*;
+        let store = std::sync::Arc::new(ChatStore::new());
+        let writer = store.clone();
+        let thread = std::thread::spawn(move || {
+            for i in 0..300 {
+                let id = format!("conversation-{i}");
+                writer.publish_source(
+                    source(&id),
+                    vec![WireEntry::seal_pending(&ChatEntry::test_text(&id, &id))],
+                    true,
+                    i,
+                );
+            }
+        });
+        for _ in 0..300 {
+            let snapshot = store.attach();
+            for entry in &snapshot.ring {
+                assert_eq!(
+                    entry.conversation_id(),
+                    snapshot.source.as_ref().map(|s| s.conversation_id.as_str())
+                );
+                assert_eq!(entry.source_generation(), snapshot.source_generation);
+                assert!(entry.seq() < snapshot.high_water);
+            }
+        }
+        thread.join().unwrap();
+    }
     use super::*;
     use crate::sessions::chat::model::{ChatEntry, Kind};
     use std::sync::atomic::{AtomicBool, Ordering};
