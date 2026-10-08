@@ -119,7 +119,7 @@ export function WorkingRow({
   const clauseText = subagentsClause(rows.length)
   // The emoji taxonomy stays terminal/tile-only, so the label is stripped here
   // exactly as the confirmed receipt it will become is (`stripEmojiPrefix`).
-  const label = activity ? stripEmojiPrefix(activity) : 'Thinking…'
+  const label = activity ? stripEmojiPrefix(activity) : 'Working…'
 
   return (
     <motion.div

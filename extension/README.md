@@ -1,6 +1,6 @@
 # Supermux · Point & tell
 
-A Chrome Manifest V3 extension for reviewed website feedback. Pick DOM elements, draw a circle, or select an area; add notes; review the screenshot; send to the Supermux chat paired with that website.
+A Chrome Manifest V3 extension for website feedback. Pick DOM elements, draw a circle, or select an area; add notes; send directly to the Supermux chat paired with that website.
 
 ## Try it
 
@@ -13,7 +13,7 @@ Download the ZIP from your Claude or Codex agent’s **Settings → Feedback Chr
 
 Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `extension/dist`. Pin Supermux to the toolbar. Open a regular HTTP/HTTPS website and click its icon. Local annotation and screenshot review work before connecting a server.
 
-**⌘ P / Ctrl P** picks an element, **⌘ D / Ctrl D** draws, **⌘ R / Ctrl R** selects an area (⌘ on Mac, Ctrl on Windows/Linux). Shortcuts leave text fields and their native undo untouched. Click a numbered pin to edit; **⌘/Ctrl Enter** finishes a note; **⌘/Ctrl Z** undoes; **Escape** closes a note, review, or the overlay. Drafts recover on the same page. Notes follow page scrolling. Finish a note while visible to save its crop, then Review captures the current viewport. Retake whenever you need to. In Review, click the screenshot or a crop to inspect the full image; switch between the clean and numbered overview or inspect actual pixels. Escape closes the viewer and returns focus to its preview. **Edit notes** returns to annotation without losing your overall message.
+**⌘ P / Ctrl P** picks an element, **⌘ D / Ctrl D** draws, **⌘ R / Ctrl R** selects an area (⌘ on Mac, Ctrl on Windows/Linux). Shortcuts leave text fields and their native undo untouched. Click a numbered pin to edit; **⌘/Ctrl Enter** finishes a note; **⌘/Ctrl Z** undoes; **Escape** closes a note, review, or the overlay. Drafts recover on the same page. Notes follow page scrolling. Finish a note while visible to save its crop. The round **Send** button captures the current viewport and sends the notes directly to the paired chat. Sending requires at least one written note and a website connection. A failed send keeps its frozen screenshot and retry identity. The optional screenshot icon opens the saved overview and crops; click either to inspect the full image or actual pixels. Escape closes the viewer and returns focus to its preview.
 
 For a standalone design preview, open `extension/preview/index.html` in a browser. It runs the production overlay with a simulated worker and page capture.
 
@@ -46,4 +46,4 @@ Brand assets use the canonical blue chevrons from `brand/logo-supermux.svg`, `we
 
 Node tests use the workspace’s `web/node_modules/jsdom`. The browser suite uses a persistent Chromium extension context and CDP to inspect the production closed shadow root. It checks actual document and overflow-container scrolling against SVG outlines, drawing points, pins, and the selected editor; fixed/sticky elements and restored DOM anchors after reload are included. Run `npm run build && npm run test:e2e` on a host that permits Chromium to launch; Node geometry tests alone do not verify browser layout. No production dependencies or bundler are required.
 
-The showcase command opens a local example website, annotates it with the built extension, and captures the production review UI to `docs/screenshots/browser-feedback.png`. It requires Chromium with extension support and is also available in the browser feedback showcase GitHub Actions workflow.
+The showcase command opens a local example website, annotates it with the built extension, and captures the production annotation UI to `docs/screenshots/browser-feedback.png`. It requires Chromium with extension support and is also available in the browser feedback showcase GitHub Actions workflow.

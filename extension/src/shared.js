@@ -38,7 +38,7 @@ export function validateFeedback(p) {
     if(n.element&&(typeof n.element.tag!=='string'||n.element.tag.length>64||['text','selector','role'].some(k=>n.element[k]!==undefined&&(typeof n.element[k]!=='string'||n.element[k].length>2048))))throw new Error('Invalid element context.');
     ids.set(n.id,i+1);
   }
-  if(!p.message.trim()&&!p.annotations.some(n=>n.text?.trim()))throw new Error('Add a message or a note before sending.');
+  if(!p.message.trim()&&!p.annotations.some(n=>n.text?.trim()))throw new Error('Add a note before sending.');
   const screenshot=pngInfo(p.screenshot);if(!proportions(screenshot,p.viewport,p.viewport.dpr))throw new Error('Screenshot geometry does not match its viewport.');
   let total=screenshot.bytes;
   if(p.annotated_screenshot){const annotated=pngInfo(p.annotated_screenshot);if(annotated.width!==screenshot.width||annotated.height!==screenshot.height)throw new Error('Numbered overview dimensions must match the screenshot.');total+=annotated.bytes;}

@@ -6,7 +6,7 @@ test('overlay picks safe DOM context, edits, draws, captures visible content wit
  const attach=w.Element.prototype.attachShadow;w.Element.prototype.attachShadow=function(options){return attach.call(this,{...options,mode:'open'});};w.Element.prototype.getBoundingClientRect=function(){return{x:100,y:120,left:100,top:120,right:300,bottom:200,width:200,height:80};};
  w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));
  const shadow=w.document.querySelector('[data-supermux-overlay]').shadowRoot;
- assert.equal(shadow.querySelectorAll('[data-mode]').length,3);assert.ok(shadow.querySelector('.bar-message'));
+ assert.equal(shadow.querySelectorAll('[data-mode]').length,3);assert.equal(shadow.querySelector('.bar-message'),null);
  w.document.querySelector('#copy').dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));
  assert.equal(shadow.querySelector('.pin').textContent,'1');const area=shadow.querySelector('.editor textarea');area.value='Make this clearer';area.dispatchEvent(new w.Event('input',{bubbles:true}));
  shadow.querySelector('[data-action="done"]').click();await new Promise(r=>setTimeout(r,5));
@@ -32,17 +32,17 @@ test('review has one connection control, plain copy, and allows visible editable
   const dom=new JSDOM('<main><input id="field" type="password" value="never-extract-this"><p data-private>Visible private-labelled text</p></main>',{url:'https://demo.example',runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window;w.CSS={escape:s=>s};Object.defineProperty(w,'crypto',{value:webcrypto});
   const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1sAAAAASUVORK5CYII=';
-  w.chrome={runtime:{id:'test',sendMessage:async()=>({ok:true,data:{connection:{paired,session:'agent',session_label:'Agent',company_label:'Company'},draft:{notes:[],message:'',snapshot:{viewport:{width:640,height:480},annotations:[],crops:[],preview:'data:image/png;base64,'+png,screenshot:{data_base64:png}}}}}),onMessage:{addListener(){}}}};
+  w.chrome={runtime:{id:'test',sendMessage:async()=>({ok:true,data:{connection:{paired,session:'agent',session_label:'Agent',company_label:'Company'},draft:{notes:[{id:'one',kind:'region',text:'Adjust this',rect:{x:20,y:20,width:30,height:40}}],message:'',snapshot:{viewport:{width:640,height:480},annotations:[],crops:[],preview:'data:image/png;base64,'+png,screenshot:{data_base64:png}}}}}),onMessage:{addListener(){}}}};
   const attach=w.Element.prototype.attachShadow;w.Element.prototype.attachShadow=function(options){return attach.call(this,{...options,mode:'open'});};
   w.Element.prototype.getBoundingClientRect=()=>({x:100,y:120,left:100,top:120,right:300,bottom:200,width:200,height:80});
   w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));
   const root=w.document.querySelector('[data-supermux-overlay]').shadowRoot;
   root.querySelector('[data-action="review"]').click();
   assert.equal(root.querySelectorAll('[data-action="settings"]').length,1);
-  assert.equal(root.querySelector('.panel h2').textContent,'Review feedback');
+  assert.equal(root.querySelector('.panel h2').textContent,'Screenshot and notes');
   assert.equal(root.querySelector('.connection-action').textContent,paired?'Change':'Connect');
   assert.equal(root.querySelector('.connection-name').textContent,paired?'AgentCompany':'No chat connected');
-  assert.equal(root.querySelector('.send').disabled,!paired);
+  assert.equal(root.querySelector('[data-action="send"]').disabled,!paired);
   assert.equal(/ONE LAST LOOK|Make it clear|masked|let your notes do the talking/.test(root.querySelector('.panel').textContent),false);
   root.querySelector('[data-action="back"]').click();
   w.document.querySelector('#field').dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));
@@ -58,7 +58,7 @@ test('returning from pairing refreshes only the connection and preserves the ope
  const snapshot={viewport:{width:640,height:480},annotations:[],crops:[],preview:'data:image/png;base64,fixture',screenshot:{data_base64:'fixture'}};
  w.chrome={runtime:{id:'test',sendMessage:async m=>{
   requests.push(m);
-  if(m.type==='draft.load')return {ok:true,data:{connection,...(m.connection_only?{}:{draft:{notes:[],message:'Original draft',clientId:'original-client',snapshot}})}};
+  if(m.type==='draft.load')return {ok:true,data:{connection,...(m.connection_only?{}:{draft:{notes:[{id:'one',kind:'region',text:'Adjust this',rect:{x:20,y:20,width:30,height:40}}],message:'Original draft',clientId:'original-client',snapshot}})}};
   if(m.type==='draft.save')saved=m.draft;
   return {ok:true,data:true};
  },onMessage:{addListener(){}}}};
@@ -67,20 +67,20 @@ test('returning from pairing refreshes only the connection and preserves the ope
   w.eval(await readFile(new URL('../dist/content.js',import.meta.url),'utf8'));await new Promise(r=>setTimeout(r,20));
   const root=w.document.querySelector('[data-supermux-overlay]').shadowRoot;
   root.querySelector('[data-action="review"]').click();
-  const field=root.querySelector('.message');field.focus();
-  assert.equal(root.querySelector('.send').disabled,true);
+  const field=root.querySelector('.capture-preview');field.focus();
+  assert.equal(root.querySelector('[data-action="send"]').disabled,true);
   connection={paired:true,session:'agent-a',session_label:'Agent A',company_label:'Company A'};
   w.dispatchEvent(new w.Event('focus'));await new Promise(r=>setTimeout(r,20));
   assert.equal(root.querySelector('.connection-name').textContent,'Agent ACompany A');
-  assert.equal(root.querySelector('.send').disabled,false);
-  assert.equal(root.querySelector('.message'),field);assert.equal(root.activeElement,field);
-  assert.equal(field.value,'Original draft');
+  assert.equal(root.querySelector('[data-action="send"]').disabled,false);
+  assert.equal(root.querySelector('.capture-preview'),field);assert.equal(root.activeElement,field);
+  assert.equal(root.querySelector('.message'),null);
   connection={paired:true,session:'agent-b',session_label:'Agent B',company_label:'Company B'};
   w.document.dispatchEvent(new w.Event('visibilitychange'));await new Promise(r=>setTimeout(r,20));
   assert.equal(root.querySelector('.connection-name').textContent,'Agent BCompany B');
-  assert.equal(root.querySelector('.message'),field);assert.equal(root.activeElement,field);
+  assert.equal(root.querySelector('.capture-preview'),field);assert.equal(root.activeElement,field);
   assert.equal(requests.filter(m=>m.type==='draft.load'&&m.connection_only).length,2);
-  field.dispatchEvent(new w.Event('input',{bubbles:true}));
+  w.__supermuxAnnotation.toggle(false);
   await new Promise(r=>setTimeout(r,550));
   assert.equal(saved.clientId,'original-client');assert.equal(saved.message,'Original draft');assert.deepEqual(JSON.parse(JSON.stringify(saved.snapshot)),snapshot);
  }finally{dom.window.close();}

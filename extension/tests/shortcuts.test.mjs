@@ -17,11 +17,11 @@ for(const [platform,hint,modifier,other] of [['MacIntel',null,'metaKey','ctrlKey
  w.document.querySelector('h1').dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));
  const note=shadow.querySelector('.editor textarea');note.focus();
  for(const k of ['p','d','r','z'])for(const extra of [{},{[modifier]:true}]){assert.equal(key(note,k,extra).defaultPrevented,false);assert.equal(shadow.querySelector('.editor textarea'),note);assert.equal(current(),'element');}
- const bar=shadow.querySelector('.bar-message');bar.focus();for(const k of ['p','d','r','z'])assert.equal(key(bar,k,{[modifier]:true}).defaultPrevented,false);assert.equal(shadow.querySelector('.editor textarea'),note);
+ assert.equal(shadow.querySelector('.bar-message'),null);
  const website=w.document.querySelector('#website');website.focus();for(const k of ['p','d','r','z'])assert.equal(key(website,k,{[modifier]:true}).defaultPrevented,false);assert.equal(current(),'element');
  const editable=w.document.querySelector('#editable');editable.focus();assert.equal(key(editable.querySelector('span'),'d',{[modifier]:true}).defaultPrevented,false);assert.equal(current(),'element');
  const closedHost=w.document.querySelector('#closed'),closedRoot=closedHost.attachShadow({mode:'closed'}),privateInput=w.document.createElement('input');closedRoot.append(privateInput);privateInput.focus();assert.equal(key(privateInput,'d',{[modifier]:true}).defaultPrevented,false);assert.equal(current(),'element');
  note.focus();assert.equal(key(note,'Enter',{[modifier]:true}).defaultPrevented,true);assert.equal(shadow.querySelector('.editor'),null);
- shadow.querySelector('[data-action="review"]').click();await new Promise(r=>setTimeout(r,20));const message=shadow.querySelector('.message');message.focus();for(const k of ['p','d','r','z'])for(const extra of [{},{[modifier]:true}])assert.equal(key(message,k,extra).defaultPrevented,false);assert.equal(shadow.querySelector('.message'),message);
- assert.equal(key(message,'Escape').defaultPrevented,true);assert.equal(shadow.querySelector('.panel'),null);dom.window.close();
+ shadow.querySelector('[data-action="review"]').click();await new Promise(r=>setTimeout(r,20));assert.equal(shadow.querySelector('.message'),null);
+ assert.equal(key(shadow.querySelector('[data-action="back"]'),'Escape').defaultPrevented,true);assert.equal(shadow.querySelector('.panel'),null);dom.window.close();
 });

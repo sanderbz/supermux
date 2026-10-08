@@ -59,11 +59,16 @@ interface ApiStatusStore extends ApiConnectionState {
 }
 
 /** Decide whether a freshly-reported failure should escalate to a hard outage.
- *  5xx and network errors → `server_unreachable`. 401/403 → `auth_invalid`. The
- *  rest (404, 409, 400, …) are real responses from a HEALTHY server — they do
- *  NOT touch the connection state. */
+ *  5xx and network errors → `server_unreachable`. 401 → `auth_invalid`. The
+ *  rest (403, 404, 409, 400, …) are real responses from a HEALTHY server — they
+ *  do NOT touch the connection state.
+ *
+ *  403 is NOT an expired session: the server knew who you are and refused this
+ *  one call (an owner-only route a colleague's UI touched, a CSRF miss). Treating
+ *  it as `auth_invalid` raised the sticky "Sign in again" overlay over a valid
+ *  colleague session, again and again. Only 401 means the credential is gone. */
 function classifyFailure(status: number): ApiConnectionKind | null {
-  if (status === 401 || status === 403) return 'auth_invalid'
+  if (status === 401) return 'auth_invalid'
   if (status === 0) return 'server_unreachable' // fetch threw / network error
   if (status >= 500 && status <= 599) return 'server_unreachable'
   return null

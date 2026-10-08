@@ -267,7 +267,7 @@ describe('the working row’s first rung', () => {
   })
 
   test('no hook label yet — the row still says what it is', () => {
-    expect(text(rowAt(1_000))).toContain('Thinking…')
+    expect(text(rowAt(1_000))).toContain('Working…')
   })
 
   test('the agents clause survives the reskin', () => {
