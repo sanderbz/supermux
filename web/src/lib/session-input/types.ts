@@ -67,7 +67,11 @@ export interface SessionInput {
    *  plane carries it on `POST /send` as `send_id` and the server dedups on it,
    *  so a Retry of an already-delivered message can never duplicate it. The
    *  terminal plane types into the pty directly and ignores it. */
-  submit(text: string, opts?: { sendId?: string }): Promise<void>
+  submit(text: string, opts?: {
+    sendId?: string
+    /** Client-only draft provenance for retry recovery; never sent to the API. */
+    composer?: { draft: string; attachmentPrefix: string }
+  }): Promise<void>
   /** Text WITHOUT submit — bracketed paste on the REST plane, raw bytes on the
    *  terminal. The insert surfaces (attachments, snippets, pickers) use this. */
   insert(text: string): Promise<void>

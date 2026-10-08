@@ -85,6 +85,9 @@ export interface PendingSend {
    * response never comes back.
    */
   sendId?: string
+  /** Original composer text, separate from quoted attachment paths on the wire. */
+  composerDraft?: string
+  attachmentPrefix?: string
   /** The SERVER confirmed it typed this text into the pty (`set_last_send`,
    *  written by `/send` after the paste + Enter). Transport-independent, so it
    *  survives exactly the failure the watchdog cannot see through. */
