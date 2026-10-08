@@ -10,7 +10,9 @@ test('worker isolates site capabilities, restores captures, and keeps drafts on 
  const rpc=(type,extra={},sender={id:'test',tab})=>new Promise(resolve=>handler({type,...extra},sender,resolve));
  assert.equal((await rpc('connection.configure',{origin:'https://server.example'},options)).ok,true);
  assert.equal((await rpc('pair.start',{site:'https://one.example'},options)).ok,true);assert.equal(JSON.parse(requests.at(-1).options.body).origin,'https://one.example');
- assert.equal((await rpc('pair.poll',{site:'https://one.example'},options)).data.status,'paired');
+ assert.equal((await rpc('pair.poll',{site:'https://one.example'},options)).data.status,'awaiting-confirmation');
+ assert.equal((await rpc('draft.load')).data.connection.paired,false);
+ assert.equal((await rpc('pair.confirm',{site:'https://one.example',id:'pair',binding_id:'binding',server_origin:'https://server.example'},options)).ok,true);
  const view=await rpc('draft.load');assert.equal(view.data.connection.session,'claude');assert.equal(JSON.stringify(view).includes('poll-secret'),false);
  assert.equal((await rpc('connection.get',{site:'https://one.example'})).ok,false);
  const other=await rpc('draft.load',{}, {id:'test',tab:{id:2,windowId:9,url:session.annotationTabs[2]}});assert.equal(other.data.connection.paired,false);
