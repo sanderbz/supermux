@@ -26,6 +26,7 @@ import { armedRefusal } from './registry/armed'
 import { classifySlash, readTrigger, slashName } from './slash'
 import type { PickerJump } from './composer-keys'
 import { isInlineOwned } from './pending'
+import { sendFailureNote } from './send-errors'
 
 /** How much of the terminal's own draft the block banner quotes back. Enough to
  *  recognise the sentence, short enough that the banner stays one line. */
@@ -618,7 +619,7 @@ export function useComposer({
         // The attachment paths go on the wire FIRST, then the user's prose —
         // quoted absolute paths Claude's Read/vision tool resolves, exactly the
         // shape the dock and terminal drag/paste have always injected.
-        await input.submit(prefix + text)
+        await input.submit(prefix + text, { composer: { draft: raw, attachmentPrefix: prefix } })
         // Cleared only AFTER the POST resolves: a rejected send keeps the
         // user's words in the box, where they can retry them.
         //
@@ -649,7 +650,7 @@ export function useComposer({
         if (!isInlineOwned(err)) {
           setNotice({
             kind: 'send-failed',
-            detail: err instanceof Error ? err.message : undefined,
+            detail: sendFailureNote(err),
           })
         }
       } finally {

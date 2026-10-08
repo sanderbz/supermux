@@ -53,7 +53,7 @@ import { CHAT_GONE, CHAT_OFFLINE_BLOCKED, isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
 import { useTranscriptScroll } from './use-transcript-scroll'
 import { ChatComposer, type ChatComposerActions } from './composer'
-import { attachmentSentence } from './composer-insert'
+import { attachmentSentence, retryAttachmentsUnchanged } from './composer-insert'
 import { useStagedAttachments } from '../focus-mode/use-staged-attachments'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
@@ -439,6 +439,7 @@ export default function ChatPanel({
   // different KIND of blindness: the lens sees the dialogs above and simply has
   // not fingerprinted this one — it cannot see an elicitation at all.
   const formCard = session?.elicitation != null
+  const staged = useStagedAttachments()
   const pending = usePendingSends({
     name,
     input: plane,
@@ -457,6 +458,9 @@ export default function ChatPanel({
     // A6 T2.5 — do not manufacture "undelivered" out of a silence the dead
     // socket is itself causing.
     planeDown,
+    onRetrySent: React.useCallback(send => {
+      if (retryAttachmentsUnchanged(staged.attachments, send.attachmentPrefix)) staged.reset()
+    }, [staged]),
   })
   // ── The `@`-hand-off plane (fase B4 T4) ────────────────────────────────────
   // A draft that OPENS with `@colleague` is a hand-off, not a message, and the
@@ -480,7 +484,6 @@ export default function ChatPanel({
   // outgoing prefix and reset fold into the SAME gated submit the peek/slash/
   // hand-off gates guard (never around them). Handed to `<ChatComposer>` for the
   // chip row, the `+` Attach group, the desktop disc, and paste / drag-drop.
-  const staged = useStagedAttachments()
   const composer = useComposer({
     name,
     input: pending.input,

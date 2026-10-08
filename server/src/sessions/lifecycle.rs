@@ -1214,12 +1214,90 @@ fn without_dim_text(raw: &str) -> String {
     out
 }
 
+/// Codex separates its styled model/status footer from the input with a blank
+/// row. Model-like text typed inside the composer must remain a real draft.
+fn codex_footer_boundary(raw: &str, visible: &str, separated: bool) -> bool {
+    if !separated {
+        return false;
+    }
+    let lower = visible.trim().to_ascii_lowercase();
+    let Some((model_effort, _)) = lower.split_once('·') else {
+        return false;
+    };
+    let mut words = model_effort.split_whitespace();
+    let Some(model) = words.next() else {
+        return false;
+    };
+    if !model.starts_with("gpt-") || model.len() <= 4 {
+        return false;
+    }
+    if let Some(effort) = words.next() {
+        if !matches!(
+            effort,
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+        ) {
+            return false;
+        }
+    }
+    if words.next().is_some() {
+        return false;
+    }
+    let Some(model_at) = raw.to_ascii_lowercase().find(model) else {
+        return false;
+    };
+    let mut foreground = false;
+    // Inspect the model's own foreground, not a colour elsewhere in the footer.
+    for escape in raw[..model_at].split("\x1b[").skip(1) {
+        let Some((params, _)) = escape.split_once('m') else {
+            continue;
+        };
+        let values: Vec<&str> = params.split(';').collect();
+        let mut i = 0;
+        while i < values.len() {
+            match values[i] {
+                "" | "0" | "39" => foreground = false,
+                "38" => {
+                    foreground = true;
+                    i += match values.get(i + 1).copied() {
+                        Some("2") => 4,
+                        Some("5") => 2,
+                        _ => 0,
+                    };
+                }
+                "48" | "58" => {
+                    i += match values.get(i + 1).copied() {
+                        Some("2") => 4,
+                        Some("5") => 2,
+                        _ => 0,
+                    };
+                }
+                code if code
+                    .parse::<u8>()
+                    .is_ok_and(|c| (30..=37).contains(&c) || (90..=97).contains(&c)) =>
+                {
+                    foreground = true
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    foreground
+}
+
+enum ComposerRead {
+    Text(String),
+    NotVisible,
+    Uncertain,
+}
+
 /// The latest live composer, including its wrapped continuation lines. A box
-/// or NBSP composer outranks transcript echoes. `None` means we cannot prove
-/// what the input holds; callers must never clear or replace it to recover.
-fn composer_text(raw: &str, provider: &str) -> Option<String> {
+/// or NBSP composer outranks transcript echoes. An uncertain visible composer
+/// cannot authorize input; an absent composer is a separate busy-screen case.
+fn read_composer(raw: &str, provider: &str) -> ComposerRead {
     let visible = without_dim_text(raw);
     let lines: Vec<&str> = visible.lines().collect();
+    let raw_lines: Vec<&str> = raw.lines().collect();
     let mut fallback = None;
     let mut preferred = None;
     for (i, line) in lines.iter().enumerate() {
@@ -1238,24 +1316,37 @@ fn composer_text(raw: &str, provider: &str) -> Option<String> {
             }
         }
     }
-    let (start, rest, boxed) = preferred.or(fallback)?;
-    let last = lines.iter().rposition(|l| !l.trim().is_empty())?;
+    let Some((start, rest, boxed)) = preferred.or(fallback) else {
+        return ComposerRead::NotVisible;
+    };
+    let last = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .unwrap_or(start);
     // An old transcript echo above a panel is not its composer.
     if last.saturating_sub(start) > 14 && !boxed {
-        return None;
+        return ComposerRead::Uncertain;
     }
     let mut text = rest.trim_end_matches(['│', ' ']).trim().to_string();
-    for line in &lines[start + 1..] {
+    for (index, line) in lines.iter().enumerate().skip(start + 1) {
         let t = line.trim();
         if t.is_empty() {
             continue;
         }
         if (boxed && (t.starts_with('╰') || t.starts_with('└')))
-            || (!boxed && (t.chars().all(|c| c.is_whitespace() || matches!(c, '\u{2500}'..='\u{257f}'))
-                || t == "? for shortcuts"
-                || (provider == "codex" && t.starts_with("gpt-") && t.contains('·'))
-                || t.starts_with("⏵")
-                || t.starts_with("View teammates:")))
+            || (!boxed
+                && (t
+                    .chars()
+                    .all(|c| c.is_whitespace() || matches!(c, '\u{2500}'..='\u{257f}'))
+                    || t == "? for shortcuts"
+                    || (provider == "codex"
+                        && codex_footer_boundary(
+                            raw_lines.get(index).copied().unwrap_or(""),
+                            t,
+                            lines[index - 1].trim().is_empty(),
+                        ))
+                    || t.starts_with("⏵")
+                    || t.starts_with("View teammates:")))
         {
             break;
         }
@@ -1269,7 +1360,14 @@ fn composer_text(raw: &str, provider: &str) -> Option<String> {
         }
         text.push_str(t.trim_matches('│').trim());
     }
-    Some(text)
+    ComposerRead::Text(text)
+}
+
+fn composer_text(raw: &str, provider: &str) -> Option<String> {
+    match read_composer(raw, provider) {
+        ComposerRead::Text(text) => Some(text),
+        ComposerRead::NotVisible | ComposerRead::Uncertain => None,
+    }
 }
 
 // ── opening-prompt submission check ──────────────────────────────────────────
@@ -3572,10 +3670,17 @@ pub async fn send_harness_text(
 
     if is_agent {
         let raw = rt.capture_screen_ansi().await?;
-        if composer_text(&raw, &provider).is_some_and(|draft| !draft.is_empty()) {
-            return Err(AppError::Conflict(format!(
+        match read_composer(&raw, &provider) {
+            ComposerRead::Text(draft) if draft.is_empty() => {},
+            ComposerRead::Text(_) => return Err(AppError::Conflict(format!(
                 "session '{name}' has an unsent terminal draft; submit or clear it in the terminal before sending another message",
-            )));
+            ))),
+            // A current busy footer may have no composer at all. A visible but
+            // unreadable composer is never empty, even while the agent is busy.
+            ComposerRead::NotVisible if agent_busy(&current_screen_tail(&status::prepare_capture(&raw))) => {},
+            ComposerRead::NotVisible | ComposerRead::Uncertain => return Err(AppError::Conflict(format!(
+                "session '{name}' terminal composer could not be confirmed empty; check it in the terminal before sending another message",
+            ))),
         }
     }
     if let Some(id) = send_id {
@@ -7020,8 +7125,21 @@ mod write_runtime_tests {
         simulation: Mutex<Option<InputSimulation>>,
     }
 
+    // Sanitized observed Codex0.160.1 footer: model/status spans use foreground
+    // colours, then wrap at mobile width. Only UI chrome, no transcript content.
+    const CURRENT_CODEX_FOOTER: &str = "\n  \x1b[0;38;2;246;226;183mGPT-6.1-Sol high\x1b[0m · \x1b[0;38;2;171;223;167m~/project\x1b[0m · Main[default] · ← for agen\nts";
+    fn current_codex_screen(draft: &str) -> String {
+        let input = if draft.is_empty() {
+            "\x1b[0;2mAsk Codex to do anything\x1b[0m"
+        } else {
+            draft
+        };
+        format!("\x1b[0;1m›\x1b[0m {input}\n{CURRENT_CODEX_FOOTER}")
+    }
+
     struct InputSimulation {
         provider: &'static str,
+        current_codex_chrome: bool,
         draft: String,
         pasted_at: Option<tokio::time::Instant>,
         swallow_once: bool,
@@ -7086,6 +7204,9 @@ mod write_runtime_tests {
                 if sim.submitted {
                     return "◦ Working (1s • esc to interrupt)".into();
                 }
+                if sim.provider == "codex" && sim.current_codex_chrome {
+                    return current_codex_screen(&sim.draft);
+                }
                 let (caret, footer) = if sim.provider == "codex" {
                     ("›", "gpt-5-codex · /tmp/project")
                 } else {
@@ -7105,6 +7226,7 @@ mod write_runtime_tests {
             let rt = Self::parked_at("");
             *rt.simulation.lock().unwrap() = Some(InputSimulation {
                 provider,
+                current_codex_chrome: false,
                 draft: String::new(),
                 pasted_at: None,
                 swallow_once,
@@ -7673,6 +7795,255 @@ mod write_runtime_tests {
         let prompt = "Change the label Enter to select and the text resume a session in the help page";
         assert_eq!(send_text_checked(rt.as_ref(), "claude", prompt, true).await.unwrap(), Some(true));
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn codex_uppercase_wrapped_footer_is_chrome_not_an_unsent_draft() {
+        for footer in [
+            CURRENT_CODEX_FOOTER.to_string(),
+            CURRENT_CODEX_FOOTER.replace("GPT-", "gpt-"),
+        ] {
+            let capture = format!("› \x1b[2mAsk Codex to do anything\x1b[22m\n{footer}");
+            assert_eq!(composer_text(&capture, "codex").as_deref(), Some(""));
+            assert_eq!(
+                checked_submit_state(&capture, "codex", "new request"),
+                SubmitState::Submitted
+            );
+        }
+    }
+
+    #[test]
+    fn footer_boundary_requires_model_colour_separator_and_real_footer_shape() {
+        let footer = "GPT-6.1-Sol high · ~/project";
+        for sgr in ["38;2;2;0;230", "38;5;0", "31", "94"] {
+            let raw = format!("\x1b[{sgr}m{footer}\x1b[0m");
+            assert!(codex_footer_boundary(&raw, footer, true), "{sgr}");
+            assert!(!codex_footer_boundary(&raw, footer, false));
+        }
+        for raw in [
+            format!("\x1b[31m\x1b[39m{footer}"),
+            format!("\x1b[31m\x1b[0m{footer}"),
+            format!("\x1b[48;2;38;30;0m{footer}"),
+            "GPT-6.1-Sol high · \x1b[31m~/project\x1b[0m".to_string(),
+            footer.to_string(),
+        ] {
+            assert!(!codex_footer_boundary(&raw, footer, true));
+        }
+        assert!(!codex_footer_boundary(
+            "\x1b[31mGPT-6.1-Sol should be renamed · please",
+            "GPT-6.1-Sol should be renamed · please",
+            true
+        ));
+    }
+
+    #[test]
+    fn model_words_inside_real_multiline_input_stay_a_draft() {
+        for draft in [
+            "GPT-6.1-Sol high · rename this label",
+            "\n  GPT-6.1-Sol high · rename this label",
+            "\n\n  gpt-6.1-sol high · ~/project",
+            "\n  \x1b[38;2;2;120;230mGPT-6.1-Sol high · rename this label\x1b[0m",
+        ] {
+            let capture = current_codex_screen(draft);
+            let text = composer_text(&capture, "codex").unwrap();
+            assert!(
+                text.contains("rename this label") || text == "gpt-6.1-sol high · ~/project",
+                "typed model words must remain: {text:?}"
+            );
+            assert_ne!(
+                checked_submit_state(&capture, "codex", "new request"),
+                SubmitState::Submitted
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn current_codex_footer_allows_chat_and_feedback_and_same_id_retry_without_repasting() {
+        for feedback in [false, true] {
+            for swallowed in [false, true] {
+                let (state, dir) = test_state().await;
+                db::sessions::insert_minimal(&state.pool, "current-codex", "/tmp", "codex")
+                    .await
+                    .unwrap();
+                let rt = StubRuntime::simulating("codex", swallowed, false);
+                rt.simulation
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .current_codex_chrome = true;
+                state
+                    .session_runtimes
+                    .insert("current-codex".into(), rt.clone());
+                state
+                    .status_watch_for("current-codex")
+                    .send_replace(("idle".into(), 1));
+                for _ in 0..2 {
+                    if feedback {
+                        send_feedback_text(&state, "current-codex", "new request", "current-id")
+                            .await
+                            .unwrap();
+                    } else {
+                        send_chat_text(&state, "current-codex", "new request", Some("current-id"))
+                            .await
+                            .unwrap();
+                    }
+                }
+                assert!(rt.simulation.lock().unwrap().as_ref().unwrap().submitted);
+                assert_eq!(
+                    rt.text_calls.load(Ordering::SeqCst),
+                    1,
+                    "same ID must not paste again"
+                );
+                assert_eq!(
+                    rt.key_calls.load(Ordering::SeqCst),
+                    if swallowed { 2 } else { 1 }
+                );
+                assert_eq!(
+                    db::sessions::get(&state.pool, "current-codex")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .last_send_text,
+                    "new request"
+                );
+                state.pool.close().await;
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_model_prefixed_multiline_drafts_refuse_chat_and_feedback_without_writing() {
+        for draft in [
+            "\n  GPT-6.1-Sol high · rename this label",
+            "\n\n  gpt-6.1-sol high · ~/project",
+        ] {
+            let (state, dir) = test_state().await;
+            db::sessions::insert_minimal(&state.pool, "codex-draft", "/tmp", "codex")
+                .await
+                .unwrap();
+            let rt = StubRuntime::simulating("codex", false, false);
+            {
+                let mut sim = rt.simulation.lock().unwrap();
+                sim.as_mut().unwrap().current_codex_chrome = true;
+                sim.as_mut().unwrap().draft = draft.into();
+            }
+            state
+                .session_runtimes
+                .insert("codex-draft".into(), rt.clone());
+            state
+                .status_watch_for("codex-draft")
+                .send_replace(("idle".into(), 1));
+            assert!(matches!(
+                send_chat_text(&state, "codex-draft", "new request", Some("draft-id")).await,
+                Err(AppError::Conflict(_))
+            ));
+            assert!(matches!(
+                send_feedback_text(&state, "codex-draft", "new request", "feedback-id").await,
+                Err(FeedbackDeliveryError::Deferred(_))
+            ));
+            assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+            assert!(!state.send_dedup.uncertain("codex-draft", "draft-id"));
+            assert!(db::sessions::get(&state.pool, "codex-draft")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_send_text
+                .is_empty());
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn long_visible_drafts_refuse_idle_and_busy_chat_before_any_write_or_reservation() {
+        for provider in ["codex", "claude"] {
+            for busy in [false, true] {
+                let draft = (0..20)
+                    .map(|i| format!("  keep draft line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let footer = if provider == "codex" {
+                    CURRENT_CODEX_FOOTER
+                } else {
+                    "\n  ⏵⏵ accept edits on\n  View teammates: worker"
+                };
+                let caret = if provider == "codex" { "›" } else { "❯" };
+                let spinner = if busy {
+                    "  ◦ Working (1s • esc to interrupt)\n"
+                } else {
+                    ""
+                };
+                let capture = format!("{caret} first draft line\n{draft}\n{spinner}{footer}");
+                assert!(matches!(
+                    read_composer(&capture, provider),
+                    ComposerRead::Uncertain
+                ));
+                let (state, dir) = test_state().await;
+                db::sessions::insert_minimal(&state.pool, "long-draft", "/tmp", provider)
+                    .await
+                    .unwrap();
+                let rt = StubRuntime::parked_at(&capture);
+                state
+                    .session_runtimes
+                    .insert("long-draft".into(), rt.clone());
+                state
+                    .status_watch_for("long-draft")
+                    .send_replace(("idle".into(), 1));
+                assert!(matches!(
+                    send_chat_text(&state, "long-draft", "new request", Some("long-id")).await,
+                    Err(AppError::Conflict(_))
+                ));
+                assert!(matches!(
+                    send_feedback_text(&state, "long-draft", "new request", "feedback-id").await,
+                    Err(FeedbackDeliveryError::Deferred(_))
+                ));
+                assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+                assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+                assert!(!state.send_dedup.uncertain("long-draft", "long-id"));
+                assert!(db::sessions::get(&state.pool, "long-draft")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .last_send_text
+                    .is_empty());
+                state.pool.close().await;
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_idle_model_footer_without_a_visible_composer_never_authorizes_input() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "missing-composer", "/tmp", "codex")
+            .await
+            .unwrap();
+        let rt = StubRuntime::parked_at(CURRENT_CODEX_FOOTER);
+        state
+            .session_runtimes
+            .insert("missing-composer".into(), rt.clone());
+        assert!(matches!(
+            read_composer(CURRENT_CODEX_FOOTER, "codex"),
+            ComposerRead::NotVisible
+        ));
+        assert!(matches!(
+            send_chat_text(
+                &state,
+                "missing-composer",
+                "new request",
+                Some("missing-id")
+            )
+            .await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+        assert!(!state.send_dedup.uncertain("missing-composer", "missing-id"));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

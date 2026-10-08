@@ -306,6 +306,8 @@ sudo bash install.sh
 
 **Chat and scrollback**: Claude Code and Codex use their own transcripts consistently for live messages, older pages, and expanded tool output. Codex follows the running agent's conversation, keeping concurrent agents in the same repository separate. Scrolling up pauses automatic following; older pages and expanding content preserve your reading position. Use the jump-to-latest button to follow new replies again. Reconnecting preserves older pages from the same conversation and discards responses from a previous conversation. Claude permission requests update the waiting state immediately; main-agent API failures end the turn and retain the error details. A child-agent failure does not end the parent turn.
 
+**Sending and retrying**: Chat protects unfinished prompts in the agent terminal. Codex's model footer and dim input suggestions do not count as a draft. If a message is refused, its text stays available to edit. Retry checks the current terminal again and reuses the same message; pressing Send again with unchanged text retries the failed bubble. A successful retry clears a matching composer draft and keeps edits made while sending. Retries keep their original idempotency key, and the server refuses a replay while submission is unresolved.
+
 **After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
 
 ### Other paths
