@@ -190,7 +190,7 @@ function isPromptEcho(t: string): boolean {
  * ever in-progress prose: prose is what the agent is typing NOW, which is
  * strictly below everything already boxed and closed.
  */
-export function extractProvisionalTail(capture: string, max = 12): string[] {
+export function extractProvisionalTail(capture: string, max = 12, provider: 'claude' | 'codex' = 'claude'): string[] {
   if (!capture) return []
   // THE DIALOG SCREEN BELONGS TO THE CARD, AND A PANEL BELONGS TO NOBODY.
   //
@@ -213,6 +213,14 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
   if (lens.dialog || lens.modal) return []
   const lines = capture.split('\n')
   const stripped = lines.map(plain)
+  if (provider === 'codex') {
+    // Without a visible composer boundary, the capture might contain only a
+    // wrapped draft or old tool output. Do not present either as agent prose.
+    const composer = stripped.findLastIndex((line) => /^›(?:\s|$)/.test(line.trimStart()))
+    const footer = stripped.findIndex((line, i) => i > composer &&
+      /^(?:gpt|codex|o\d)[\w.-]*(?:\s+(?:minimal|low|medium|high|xhigh|auto))?\s+·\s/i.test(line.trim()))
+    if (composer < 0 || footer < 0 || !stripped.slice(composer + 1, footer).some((line) => line.trim() === '')) return []
+  }
   // The bottom cut: the composer, in whichever layout this build draws it —
   // a `╭` box top (≤ 2.1.232) or a bare/ruled `❯` row (2.1.233+). Scanned from
   // the bottom for the FIRST of either, so a capture that still holds the
@@ -221,6 +229,13 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
   let cut = lines.length
   for (let i = stripped.length - 1; i >= 0; i--) {
     const t = stripped[i].trimStart()
+    // Codex keeps its composer below the output, including wrapped drafts and
+    // its model/workspace footer. The whole composer region is terminal UI,
+    // never the assistant's unconfirmed answer.
+    if (provider === 'codex' && /^›(?:\s|$)/.test(t)) {
+      cut = i
+      break
+    }
     if (t.startsWith('╭')) {
       cut = i
       break

@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from 'bun:test'
 
-import { shouldEndTurn } from '../../src/components/chat/use-chat-turn'
+import { shouldEndTurn, provisionalSourceDegraded } from '../../src/components/chat/use-chat-turn'
 import { stopReconcile } from '../../src/components/chat/use-composer'
 
 const base = {
@@ -78,5 +78,31 @@ describe('stopReconcile — the honest half of Stop', () => {
     // The genuine failure the `stop-failed` notice owns: the interrupt did not
     // reach a still-running turn, so the client must not pretend it is idle.
     expect(stopReconcile(false)).toBe(false)
+  })
+})
+
+describe('provisional fallback requires an established source outage', () => {
+  const established = { seeded: true, state: 'live' as const, gone: null, fresh: false }
+
+  test('a quiet healthy tool or prose turn never becomes raw terminal text', () => {
+    expect(provisionalSourceDegraded(established)).toBe(false)
+  })
+
+  test('reload and source re-seeding finish before enabling raw fallback', () => {
+    expect(provisionalSourceDegraded({ ...established, state: 'connecting' })).toBe(false)
+    expect(provisionalSourceDegraded({ ...established, seeded: false, state: 'reconnecting' })).toBe(false)
+  })
+
+  test('an established degraded source keeps its qualified terminal fallback', () => {
+    for (const state of ['reconnecting', 'no_hooks', 'offline'] as const) {
+      expect(provisionalSourceDegraded({ ...established, state })).toBe(true)
+    }
+  })
+
+  test('fresh conversations and terminal refusals are not an outage fallback', () => {
+    expect(provisionalSourceDegraded({ ...established, state: 'reconnecting', fresh: true })).toBe(false)
+    for (const gone of ['no-session', 'chat-unavailable'] as const) {
+      expect(provisionalSourceDegraded({ ...established, state: 'offline', gone })).toBe(false)
+    }
   })
 })

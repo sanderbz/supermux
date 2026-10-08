@@ -770,7 +770,7 @@ export default function ChatPanel({
       onDismissAttention={dismissAttention}
       onOpenTerminal={onOpenTerminal}
       provisional={
-        showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
+        showProvisional ? <ProvisionalTail name={name} show={showProvisional} provider={session?.provider === 'codex' ? 'codex' : 'claude'} surface={phone ? 'phone' : 'desktop'} /> : null
       }
       login={
         (login.providerAuth && (

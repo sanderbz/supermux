@@ -36,9 +36,17 @@ import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
 import { serverNowMs } from './latency'
 
-/** Only show the provisional tail when the transcript is clearly BEHIND the
- *  live turn — right after a batch lands the pty text is confirmed content
- *  and showing it again would duplicate (the A1 anti-glitch heuristic). */
+/** A quiet completed-event stream does not establish a broken data plane.
+ * Raw terminal evidence is reserved for an established, degraded connection;
+ * initial loading and re-seeding must first finish their coherent snapshot. */
+export function provisionalSourceDegraded(
+  source: Pick<ChatWireView, 'seeded' | 'state' | 'gone' | 'fresh'>,
+): boolean {
+  return source.seeded && !source.gone && !source.fresh &&
+    (source.state === 'reconnecting' || source.state === 'no_hooks' || source.state === 'offline')
+}
+
+/** After a real outage, let a just-received batch supersede raw terminal text. */
 const PROVISIONAL_LAG_MS = 5_000
 /** How recent `last_send_at` must be at the flip to count as THIS turn's
  *  anchor (terminal-typed sends never stamp it, so it can be stale). */
@@ -271,10 +279,12 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
 
   const overlay = useReceiptOverlay(session, turnStart, lastConfirmedTs)
 
-  // Shown while the transcript is behind the live turn; liveLayerUp keeps it
+  // Shown only when the seeded data plane is degraded; liveLayerUp keeps it
   // (and the overlay) mounted through the post-Stop confirmation window, so
   // the answer never blanks out before its confirmed form arrives.
+  const provisionalEligible = provisionalSourceDegraded(tail)
   const showProvisional =
+    provisionalEligible &&
     liveLayerUp &&
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
@@ -291,7 +301,7 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   useWakeAt(
     // The provisional tail appears once the transcript is PROVISIONAL_LAG_MS
     // behind the live turn.
-    liveLayerUp && turnStart != null && !showProvisional ? lastConfirmedMs + PROVISIONAL_LAG_MS : null,
+    provisionalEligible && liveLayerUp && turnStart != null && !showProvisional ? lastConfirmedMs + PROVISIONAL_LAG_MS : null,
     wake,
   )
   useWakeAt(
