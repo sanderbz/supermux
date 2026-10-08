@@ -2205,8 +2205,22 @@ async fn git_handler(
 async fn config_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(input): Json<ConfigInput>,
+    ctx: crate::scope::OptCtx,
+    Json(mut input): Json<ConfigInput>,
 ) -> Result<Json<Envelope<SessionView>>, AppError> {
+    if input.dir.is_some() {
+        // Workspace changes serialize with feedback capture and final delivery.
+        let lock = state.lock_for(&name);
+        let _guard = lock.lock().await;
+        crate::scope::authorize_session_for_human(&state, ctx.0.as_ref(), &name).await?;
+        if let Some(jail) = crate::scope::company_jail(&state, ctx.0.as_ref()).await? {
+            let dir =
+                crate::files::path_safe::resolve_safe(input.dir.as_deref().unwrap(), Some(&jail))
+                    .await?;
+            input.dir = Some(dir.to_string_lossy().into_owned());
+        }
+        return Ok(ok(config_patch(&state, &name, input).await?));
+    }
     Ok(ok(config_patch(&state, &name, input).await?))
 }
 

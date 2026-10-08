@@ -1,5 +1,5 @@
 // Photograph the shipped extension in real Chromium. Only the demo page and
-// connection label are fixtures; capture, masking, crops, and UI are production.
+// connection label are fixtures; capture, crops, and UI are production.
 import {chromium} from '../../web/node_modules/playwright/index.mjs';
 import {mkdtemp,rm,cp,readFile,writeFile,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 const profile=await mkdtemp(join(tmpdir(),'supermux-showcase-'));
 const fixture=await readFile(new URL('../showcase/index.html',import.meta.url),'utf8');
-let context,server;
+let context,server,pairSequence=0;const proposedBindings=new Map();
 try{
   const extension=join(profile,'extension');
   await cp(fileURLToPath(new URL('../dist/',import.meta.url)),extension,{recursive:true});
@@ -23,7 +23,19 @@ try{
   // the shipped manifest keeps activeTab and optional server access only.
   manifest.host_permissions=['<all_urls>'];
   await writeFile(manifestPath,JSON.stringify(manifest));
-  server=createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end(fixture);});
+  server=createServer(async(req,res)=>{
+    if(req.url.startsWith('/api/browser/pairings')){
+      let data;
+      if(req.method==='POST'){
+        const chunks=[];for await(const chunk of req)chunks.push(chunk);const site=JSON.parse(Buffer.concat(chunks).toString()).origin;
+        const id='synthetic-pair-'+(++pairSequence);
+        proposedBindings.set(id,{id:'synthetic-binding-'+pairSequence,origin:site,session:'design-'+pairSequence,session_label:'Design',company_id:pairSequence,company_label:'Example company '+pairSequence,token:'synthetic-token-never-shared'});
+        data={id,code:'1234',poll_token:'synthetic-poll-never-shared'};
+      }else data={status:'paired',binding:proposedBindings.get(req.url.split('/').at(-1))};
+      res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,data}));return;
+    }
+    res.setHeader('Content-Type','text/html');res.end(fixture);
+  });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   context=await chromium.launchPersistentContext(profile,{
     channel:'chromium',headless:process.env.HEADED!=='1',
@@ -34,6 +46,9 @@ try{
   const page=await context.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.bringToFront();
+  await page.locator('#embedded-preview').contentFrame().locator('body').waitFor();
+  await page.evaluate(()=>document.fonts.ready);
+  const baseline='data:image/png;base64,'+(await page.screenshot()).toString('base64');
   await worker.evaluate(async url=>{
     const [tab]=await chrome.tabs.query({url});
     const site=new URL(url).origin;
@@ -113,17 +128,26 @@ try{
   assert.deepEqual(draft.snapshot.crops.map(c=>c.number),[1,2]);
   assert.equal(draft.snapshot.viewport.width,1440);assert.equal(draft.snapshot.viewport.height,960);
   assert.ok(draft.snapshot.crops.every(c=>c.capture.captured_at&&c.capture.annotation_rect&&c.capture.rect));
-  // Decode the real captured bitmap and verify the editable field is masked.
-  const email=await page.locator('#email').boundingBox();
-  const maskPixel=await overlay(async(_root,{data,x,y})=>{
-    const image=new Image();image.src='data:image/png;base64,'+data;await image.decode();
+  // Native pixels of a filled input, a private-labelled element, and an
+  // embedded frame remain identical to the page before annotation was opened.
+  const points=[];
+  for(const selector of ['#email','[data-private]','#embedded-preview']){
+    const r=await page.locator(selector).boundingBox();points.push({x:r.x+r.width/2,y:r.y+r.height/2});
+  }
+  async function pixels(data){return overlay(async(_root,{data,points})=>{
+    const image=new Image();image.src=data;await image.decode();
     const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
     const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);
-    return {pixel:[...ctx.getImageData(Math.floor(x*image.width/innerWidth),Math.floor(y*image.height/innerHeight),1,1).data],width:image.width,height:image.height};
-  },{data:draft.snapshot.screenshot.data_base64,x:email.x+email.width/2,y:email.y+email.height/2});
-  assert.ok(maskPixel.width>0&&maskPixel.width<=1440&&maskPixel.height>0&&maskPixel.height<=960);
-  assert.ok(Math.abs(maskPixel.height-maskPixel.width*960/1440)<=2,'capture preserves viewport dimensions or proportional downsampling');
-  assert.deepEqual(maskPixel.pixel,[34,45,36,255],'production capture masks the private input');
+    return {pixels:points.map(p=>[...ctx.getImageData(Math.floor(p.x*image.width/1440),Math.floor(p.y*image.height/960),1,1).data]),width:image.width,height:image.height};
+  },{data,points});}
+  const reference=await pixels(baseline),captured=await pixels('data:image/png;base64,'+draft.snapshot.screenshot.data_base64);
+  assert.ok(captured.width>0&&captured.width<=1440&&captured.height>0&&captured.height<=960);
+  assert.ok(Math.abs(captured.height-captured.width*960/1440)<=2,'capture preserves viewport proportions');
+  assert.deepEqual(captured.pixels,reference.pixels,'visible input, private-labelled element, and frame content are never covered');
+  assert.ok(reference.pixels.every(pixel=>pixel.join(',')!=='34,45,36,255'),'samples distinguish visible page content from the removed mask');
+  assert.equal(await overlay(root=>root.querySelectorAll('[data-action="settings"]').length),1,'one connected target/change control');
+  assert.equal(await overlay(root=>root.querySelector('.panel h2').textContent),'Review feedback');
+  assert.equal(await overlay(root=>/masked|ONE LAST LOOK|Make it clear/.test(root.querySelector('.panel').textContent)),false);
   await until(async()=>assert.equal(await overlay(root=>[...root.querySelectorAll('.capture img,.note-row img')].every(i=>i.complete&&i.naturalWidth>0)),true),'preview images loaded');
   assert.equal(await overlay(root=>!!root.querySelector('.bar-message')),false,'review has one overall message field');
   assert.match(await overlay(root=>root.querySelector('.review-btn').textContent),/Edit notes/);
@@ -138,7 +162,7 @@ try{
   await clickOverlay('[data-action="image-size"]');
   await until(async()=>assert.equal(await overlay(root=>{const image=root.querySelector('.image-viewer-stage img');return image.complete&&image.naturalWidth>0&&Math.abs(image.getBoundingClientRect().width-image.naturalWidth)<1;}),true,'actual size uses original pixels'),'decoded actual-size image and settled viewer');
   // Capture while the viewer is open: its entire layer must disappear, while
-  // production privacy masks stay visible. Respect Chrome's capture rate limit.
+  // the visible page stays unchanged. Respect Chrome's capture rate limit.
   await new Promise(resolve=>setTimeout(resolve,550));
   const tabId=await worker.evaluate(async url=>(await chrome.tabs.query({url}))[0].id,page.url());
   const prepared=await worker.evaluate(id=>chrome.tabs.sendMessage(id,{type:'capture.prepare'}),tabId);
@@ -147,9 +171,10 @@ try{
     assert.equal(await overlay(root=>getComputedStyle(root.querySelector('.image-viewer-layer')).visibility),'hidden');
     whileViewing=await worker.evaluate(async({id,metadata})=>{const tab=await chrome.tabs.get(id);const image=await chrome.tabs.captureVisibleTab(tab.windowId,{format:'png'});if(!await chrome.tabs.sendMessage(id,{type:'capture.validate',viewport:metadata.viewport,nonce:metadata.nonce}))throw new Error('Viewer capture moved');return image;},{id:tabId,metadata:prepared});
   }finally{await worker.evaluate(id=>chrome.tabs.sendMessage(id,{type:'capture.restore'}),tabId);}
-  const viewingPixels=await overlay(async(_root,{data,x,y})=>{const image=new Image();image.src=data;await image.decode();const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);return {mask:[...ctx.getImageData(Math.floor(x),Math.floor(y),1,1).data],corner:[...ctx.getImageData(15,15,1,1).data]};},{data:whileViewing,x:email.x+email.width/2,y:email.y+email.height/2});
-  assert.deepEqual(viewingPixels.mask,[34,45,36,255],'viewer capture preserves privacy masking');
-  assert.deepEqual(viewingPixels.corner,[245,246,239,255],'viewer backdrop is excluded from capture');
+  const viewingPixels=await pixels(whileViewing);
+  assert.deepEqual(viewingPixels.pixels,reference.pixels,'viewer capture retains unaltered visible page pixels');
+  const corner=await overlay(async(_root,data)=>{const image=new Image();image.src=data;await image.decode();const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);return [...ctx.getImageData(15,15,1,1).data];},whileViewing);
+  assert.deepEqual(corner,[245,246,239,255],'viewer backdrop is excluded from capture');
   await page.keyboard.press('Escape');
   assert.equal(await overlay(root=>root.activeElement.dataset.image),'numbered');
   assert.equal(await overlay(root=>root.querySelector('.message').value),draft.message);
@@ -177,7 +202,43 @@ try{
     }),true);
   },'fonts and finite review animations settled');
   await page.screenshot({path:output});
-  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, verified privacy mask, frozen image viewer, focus/Escape, actual pixels, and narrow/reduced-motion layout. No feedback submitted.`);
+  // Exercise the shipped options page: a known server starts pairing without
+  // its address form, but the candidate cannot receive feedback until confirmed.
+  const targetSite='https://synthetic-website.example',options=await context.newPage();
+  const extensionId=new URL(worker.url()).hostname;
+  await options.goto(`chrome-extension://${extensionId}/options.html?site=${encodeURIComponent(targetSite)}`);
+  await options.locator('#confirmation').waitFor({state:'visible'});
+  assert.equal(await options.locator('#connect').isVisible(),false,'known-server setup has no repeated URL form');
+  assert.equal(await options.locator('#confirm-site').textContent(),targetSite);
+  assert.equal(await options.locator('#confirm-target').textContent(),'Example company 1 · Design (design-1)');
+  const original=await worker.evaluate(async()=> (await chrome.storage.local.get('connection')).connection.bindings);
+  assert.equal(original[targetSite],undefined,'unconfirmed target stays inactive');
+  await options.setViewportSize({width:390,height:844});
+  await options.screenshot({path:join(tmpdir(),'supermux-feedback-confirmation.png'),fullPage:true});
+  await options.locator('#confirm').click();await options.locator('#connected').waitFor({state:'visible'});
+  const confirmed=await worker.evaluate(async()=> (await chrome.storage.local.get('connection')).connection.bindings);
+  assert.equal(confirmed[targetSite].session,'design-1');assert.deepEqual(confirmed[new URL(page.url()).origin],original[new URL(page.url()).origin],'another website keeps its own binding');
+  await options.locator('#change-agent').click();await options.locator('#confirmation').waitFor({state:'visible'});
+  assert.equal(await options.locator('#confirm-target').textContent(),'Example company 2 · Design (design-2)');
+  assert.equal(await worker.evaluate(async site=>(await chrome.storage.local.get('connection')).connection.bindings[site].session,targetSite),'design-1','Change agent keeps previous target active until confirmation');
+  assert.equal(await options.locator('#connect').isVisible(),false);
+  // Returning to an already open review updates its target without rebuilding
+  // the message, notes, capture, or retry identity.
+  await options.goto(`chrome-extension://${extensionId}/options.html?site=${encodeURIComponent(new URL(page.url()).origin)}`);
+  await options.locator('#connected').waitFor({state:'visible'});
+  await options.locator('#change-agent').click();await options.locator('#confirmation').waitFor({state:'visible'});
+  await options.locator('#confirm').click();await options.locator('#connected').waitFor({state:'visible'});
+  await page.bringToFront();
+  assert.equal(await overlay(()=>document.visibilityState),'visible');
+  // Headless Chrome has no native window activation; exercise the same focus
+  // event used by a real return from the extension settings tab.
+  await overlay(()=>window.dispatchEvent(new Event('focus')));
+  await until(async()=>assert.equal(await overlay(root=>root.querySelector('.connection-name').textContent),'DesignExample company 3'),'return from options refreshes the connected target');
+  assert.equal(await overlay(root=>root.querySelector('.send').disabled),false);
+  assert.equal(await overlay(root=>root.querySelector('.message').value),draft.message);
+  assert.deepEqual((await savedDraft()).snapshot,draft.snapshot,'target refresh preserves frozen capture');
+  assert.equal((await savedDraft()).clientId,draft.clientId,'target refresh preserves retry identity');
+  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, verified unaltered fields/private elements/frames, frozen image viewer, focus/Escape, actual pixels, narrow/reduced-motion layout, automatic saved-server pairing and explicit website/company/agent confirmation. No feedback submitted.`);
 }finally{
   await context?.close();if(server)await new Promise(resolve=>server.close(resolve));
   await rm(profile,{recursive:true,force:true});

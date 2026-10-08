@@ -11,10 +11,6 @@ export const permissionFor = origin => `${origin}/*`;
 export function safeUrl(value) {
   try {
     const u=new URL(value);u.username='';u.password='';
-    const secret=/^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|auth|authorization|password|passwd|secret|code|key|api[_-]?key|session|session[_-]?id|csrf|signature)$/i;
-    for(const key of [...u.searchParams.keys()])if(secret.test(key))u.searchParams.set(key,'[redacted]');
-    const hash=u.hash.slice(1),queryAt=hash.indexOf('?');
-    if(queryAt>=0||(!hash.startsWith('/')&&hash.includes('='))){const prefix=queryAt>=0?hash.slice(0,queryAt+1):'';const params=new URLSearchParams(queryAt>=0?hash.slice(queryAt+1):hash);for(const key of [...params.keys()])if(secret.test(key))params.set(key,'[redacted]');u.hash=prefix+params.toString();}
     return u.href;
   }catch{return '';}
 }

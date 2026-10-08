@@ -13,10 +13,10 @@ test('fractional narrow crop geometry tolerates pixel rounding on both axes',()=
  const p={client_id:'narrow',url:'https://example.com',message:'Fix narrow detail',viewport,screenshot:{mime:'image/png',data_base64:png(100,1200)},annotations:[{id:'one',kind:'region',rect}],crops:[{annotation_id:'one',mime:'image/png',data_base64:png(24,1000),capture:{captured_at:'2026-10-07T12:00:00Z',viewport,rect,annotation_rect:rect}}]};
  assert.equal(validateFeedback(p),p);assert.throws(()=>validateFeedback({...p,crops:[{...p.crops[0],data_base64:png(24,800)}]}),/capture context/);
 });
-test('URL context does not disclose query, fragment, or credentials',()=>assert.equal(safeUrl('https://me:secret@example.com/path?token=secret#private'),'https://example.com/path?token=%5Bredacted%5D#private'));
+test('URL context preserves query and fragment while excluding URL userinfo credentials',()=>assert.equal(safeUrl('https://me:secret@example.com/path?token=secret#private'),'https://example.com/path?token=secret#private'));
 test('reject invalid feedback and excessive attachments',()=>{const p={client_id:'one',url:'https://example.com',message:'fix it',viewport:{width:100,height:100,dpr:1,scroll_x:0,scroll_y:0},annotations:[],screenshot:{mime:'image/png',data_base64:tinyPNG}};assert.equal(validateFeedback(p),p);assert.throws(()=>validateFeedback({...p,annotations:Array(41).fill({})}));assert.throws(()=>validateFeedback({...p,screenshot:{mime:'image/jpeg',data_base64:'x'}}));});
 
-test('preserve query and hash router context while masking auth fragments',()=>{assert.equal(safeUrl('https://site.example/?page=pricing#/about?tab=plans'),'https://site.example/?page=pricing#/about?tab=plans');assert.equal(safeUrl('https://site.example/#access_token=abc&state=hello'),'https://site.example/#access_token=%5Bredacted%5D&state=hello');});
+test('preserve complete query and hash router context',()=>{assert.equal(safeUrl('https://site.example/?page=pricing#/about?tab=plans'),'https://site.example/?page=pricing#/about?tab=plans');assert.equal(safeUrl('https://site.example/#access_token=abc&state=hello'),'https://site.example/#access_token=abc&state=hello');});
 
 test('normalize a pasted Tailscale server trailing slash',()=>assert.equal(endpointOrigin('https://macmini.taild681cb.ts.net/'),'https://macmini.taild681cb.ts.net'));
 

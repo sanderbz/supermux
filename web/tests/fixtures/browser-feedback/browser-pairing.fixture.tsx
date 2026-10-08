@@ -12,7 +12,7 @@ Object.assign(w, { _SUPERMUX_AUTH_TOKEN: 'owner-secret', _SUPERMUX_BASE_URL: '',
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 const React = await import('react')
 const { createRoot } = await import('react-dom/client')
-const { BrowserPairingButton, BrowserFeedbackCard, supportsBrowserFeedback } = await import('../../../src/components/browser-feedback/browser-pairing')
+const { BrowserPairingButton, BrowserFeedbackCard, supportsBrowserFeedback, browserFeedbackError } = await import('../../../src/components/browser-feedback/browser-pairing')
 const { useViewer } = await import('../../../src/stores/viewer-store')
 
 let checks = 0
@@ -37,6 +37,8 @@ async function run() {
     checks++; assert.notEqual(w.document.activeElement, input)
     checks++; assert.equal(w.document.querySelector('[data-testid="browser-extension-download"]')?.getAttribute('href'), '/downloads/supermux-browser-extension.zip')
     checks++; assert.ok(String(w.document.body.textContent).includes('Feedback Chrome Extension'))
+    checks++; assert.ok(String(w.document.body.textContent).includes('Install once. Reuse the same extension across agents and companies you can access.'))
+    checks++; assert.ok(String(w.document.body.textContent).includes('Open Supermux on the website you want to connect.'))
     await React.act(async () => {
       Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value')!.set!.call(input, '1234')
       input.dispatchEvent(new w.Event('input', { bubbles: true }))
@@ -46,7 +48,7 @@ async function run() {
     checks++; assert.equal(claim.url, '/api/sessions/claude-demo/browser-pairings')
     checks++; assert.deepEqual(JSON.parse(String(claim.init?.body)), { code: '1234' })
     checks++; assert.equal((claim.init?.headers as Record<string, string>).Authorization, 'Bearer owner-secret')
-    checks++; assert.ok(String(w.document.body.textContent).includes('https://site.example is connected'))
+    checks++; assert.ok(String(w.document.body.textContent).includes('Code accepted for https://site.example'))
     await React.act(async () => { w.document.querySelector<HTMLButtonElement>('[aria-label="Disconnect https://site.example"]')!.click() })
     checks++; assert.equal(calls.at(-1)?.url, '/api/sessions/claude-demo/browser-bindings/binding')
     checks++; assert.equal(calls.at(-1)?.init?.method, 'DELETE')
@@ -64,6 +66,8 @@ async function run() {
     const memberInput = container.querySelector<HTMLInputElement>('[data-testid="browser-pair-code"]')!
     checks++; assert.equal(memberInput.autofocus, false)
     checks++; assert.ok(String(container.textContent).includes('desktop'))
+    checks++; assert.ok(String(container.textContent).includes('Pair a website with Codex'))
+    checks++; assert.equal(container.querySelector('[data-testid="browser-extension-download"]')?.getAttribute('href'), '/downloads/supermux-browser-extension.zip')
     await React.act(async () => {
       Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value')!.set!.call(memberInput, '5678')
       memberInput.dispatchEvent(new w.Event('input', { bubbles: true }))
@@ -99,6 +103,23 @@ async function run() {
     checks++; assert.ok(String(container.textContent).includes('https://new-account.example'))
     checks++; assert.ok(!String(container.textContent).includes('https://old-account.example'))
     checks++; assert.ok(!String(container.textContent).includes('https://site.example'))
+    // A company switch still uses the identical installation; policy errors
+    // belong to agent access, rather than requiring a company-specific ZIP.
+    checks++; assert.equal(container.querySelector('[data-testid="browser-extension-download"]')?.getAttribute('href'), '/downloads/supermux-browser-extension.zip')
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: false, error: 'conflict: agent workspace is outside its company isolation root' }), { status: 409 })) as typeof fetch
+    const failedInput = container.querySelector<HTMLInputElement>('[data-testid="browser-pair-code"]')!
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value')!.set!.call(failedInput, '9012')
+      failedInput.dispatchEvent(new w.Event('input', { bubbles: true }))
+    })
+    await React.act(async () => { failedInput.closest('form')!.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })) })
+    checks++; assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes('Ask an administrator to check its workspace access.'))
+    checks++; assert.ok(!container.querySelector('[role="alert"]')?.textContent?.includes('isolation root'))
+    checks++; assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes('You don’t need a separate extension.'))
+    checks++; assert.equal(failedInput.value, '9012')
+    checks++; assert.equal(browserFeedbackError(new Error('The pairing code has expired.'), 'fallback'), 'The pairing code has expired.')
+    checks++; assert.equal(browserFeedbackError(null, 'Could not pair.'), 'Could not pair.')
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, data: [] }), { status: 200 })) as typeof fetch
     await React.act(async () => { root.render(<BrowserFeedbackCard session="codex-demo" remote />) })
     checks++; assert.equal(container.querySelector<HTMLInputElement>('[data-testid="browser-pair-code"]')!.disabled, true)
     checks++; assert.ok(String(container.textContent).includes('SSH-hosted agents'))

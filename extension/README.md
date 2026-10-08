@@ -1,6 +1,6 @@
 # Supermux · Point & tell
 
-A Chrome Manifest V3 extension for reviewed website feedback. Pick DOM elements, draw a circle, or select an area; add notes; review a masked screenshot; send to the Supermux chat paired with that website.
+A Chrome Manifest V3 extension for reviewed website feedback. Pick DOM elements, draw a circle, or select an area; add notes; review the screenshot; send to the Supermux chat paired with that website.
 
 ## Try it
 
@@ -19,17 +19,19 @@ For a standalone design preview, open `extension/preview/index.html` in a browse
 
 ## Connect a chat
 
-From Review choose **Connect this website to a chat**. Enter your Supermux endpoint (prefer your Tailscale HTTPS address; localhost and private Tailscale HTTP are supported). The browser asks for access to that exact server. In your Supermux chat choose **Pair browser**, then enter the extension’s four-digit code. Return to the website and reopen the overlay. If Connect reports an HTML page or a missing browser feedback API, verify the server address and update the Supermux server with browser feedback support; an older dashboard alone cannot accept pairing codes. Each website origin can connect to a different chat. Disconnect individual bindings from the chat sheet; **Reset server** in extension settings removes all local bindings and server permission.
+Use the overlay’s connection control. On first use, enter your Supermux endpoint (prefer your Tailscale HTTPS address; localhost and private Tailscale HTTP are supported) and grant access to that exact server. For another website, the saved server starts pairing automatically. In the intended Supermux chat choose **Pair browser**, then enter the extension’s four-digit code. Return to extension settings and confirm the displayed website and agent. If Connect reports an HTML page or a missing browser feedback API, verify the server address and update the Supermux server with browser feedback support; an older dashboard alone cannot accept pairing codes. Install the same extension once for all accessible agents and companies. Each website origin remembers its own chat. **Change agent** pairs a new destination without removing connections for other websites. Disconnect individual bindings from the chat sheet; **Reset server** in extension settings removes all local bindings and server permission.
 
-## Privacy and delivery
+## Capture and delivery
 
-Server credentials stay in the background worker and trusted extension storage. Content scripts receive only the paired chat label. Captures mask visible inputs, editable fields, marked private elements (`data-private` / `data-sensitive`), accessible shadow controls, and embedded frames. Closed shadow roots cannot be inspected. Always review the screenshot for other sensitive content. Route query and hash context are preserved while common credential parameters and URL userinfo are redacted. DOM context excludes private/editable text and executable markup.
+Server credentials stay in the background worker and trusted extension storage; public connection details never include them. Screenshots preserve the visible page as Chrome renders it, including inputs, editable content, private elements, and embedded frames. Query and hash context are preserved. Native password fields retain Chrome’s own display. The extension does not read hidden form values or executable markup.
 
 The agent receives a clean overview, a matching numbered overview, and one crop per note. Crops read from the original capture before overview downsampling, preserve native text detail up to 1400 × 1000 pixels, and shrink adaptively to stay inside image and request budgets. Explicit note numbers match the numbered overview and the delivered crop filenames. Each new crop records its capture time, viewport, original note geometry, drawing points, and the exact padded/clipped crop bounds.
 
-Screenshots and crops freeze their capture coordinates. A viewport or active-tab change cancels capture. Offscreen notes use their previously saved image and capture context; deleting an earlier note updates its displayed number without changing the crop’s provenance. Older saved drafts remain readable; their original capture context and matching numbered overview may be unavailable. Offscreen notes are labeled outside the current full screenshot. Failed sends preserve the draft and client id for idempotent retry. “Queued” means received by Supermux; “Delivered” appears only after server status becomes `sent`.
+Screenshots and crops freeze their capture coordinates. A viewport or active-tab change cancels capture. Offscreen notes use their previously saved image and capture context; deleting an earlier note updates its displayed number without changing the crop’s provenance. Older saved drafts remain readable; their original capture context and matching numbered overview may be unavailable. Offscreen notes are labeled outside the current full screenshot. Failed sends preserve the draft and client id for idempotent retry. Each submission keeps its original agent for retries and status checks, even if the website is subsequently connected to a different agent. Resetting the server invalidates old submission credentials instead of redirecting retries. “Queued” means received by Supermux; “Delivered” appears only after server status becomes `sent`.
 
 Drafts deduplicate repeated image pixels and adapt saved crop sizes to a combined 10 MiB image budget while retaining every note and its capture context. The extension requests `unlimitedStorage` to support detailed screenshots, then enforces its own limits: 48 MiB per packed draft, 80 MiB across retained drafts, and seven days of retention. Older drafts are pruned after a new draft saves successfully. Sending waits for that save; a storage failure keeps the previous saved draft and displays a retry message.
+
+Submission recovery stores only small destination and receipt records, never extra screenshot copies. It retains at most 2,048 records or 4 MiB and does not evict old attempts, so a forgotten retry cannot silently target a different agent. At capacity, new sends stop with the draft preserved.
 
 ## Verify
 

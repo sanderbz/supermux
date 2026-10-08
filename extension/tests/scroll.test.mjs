@@ -61,7 +61,7 @@ test('nonbubbling nested scroll translates Pick, Draw and Area, clips offscreen 
   h.pick('nested');h.draw('draw',h.w.document.querySelector('#nested'),[145,235],[210,265]);h.draw('region',h.w.document.querySelector('#nested'),[150,240],[225,275]);
   await h.scroll(h.panel,15,25);
   assert.deepEqual(h.pin(1),{x:225,y:195});assert.deepEqual(h.pin(2),{x:195,y:210});assert.deepEqual(h.pin(3),{x:210,y:215});assert.equal(h.shadow.querySelector('.stroke').getAttribute('points'),'130,210 195,240');
-  const shot=await h.rpc('capture.prepare');assert.deepEqual(shot.annotations[2].rect,{x:135,y:215,width:75,height:35});assert.equal('anchor' in shot.annotations[2],false);assert.equal('anchor' in shot.annotations[1],false);assert.equal(h.shadow.querySelectorAll('.privacy-mask').length,1);
+  const shot=await h.rpc('capture.prepare');assert.deepEqual(shot.annotations[2].rect,{x:135,y:215,width:75,height:35});assert.equal('anchor' in shot.annotations[2],false);assert.equal('anchor' in shot.annotations[1],false);assert.equal(h.shadow.querySelectorAll('.privacy-mask').length,0);
   h.panel.scrollTop=30;assert.equal(await h.rpc('capture.validate',{nonce:shot.nonce,viewport:shot.viewport}),false);await h.rpc('capture.restore');
   const pending=await h.rpc('capture.prepare');await h.scroll(h.panel,15,40);assert.equal(await h.rpc('capture.validate',{nonce:pending.nonce,viewport:pending.viewport}),false);assert.equal(h.shadow.querySelectorAll('.privacy-mask').length,0);
   await h.scroll(h.panel,15,150);assert.equal(h.pin(1),null);assert.equal(h.pin(2),null);assert.equal(h.pin(3),null);assert.equal(h.shadow.querySelectorAll('.annotation-outline,.stroke').length,0);
