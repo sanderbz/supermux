@@ -7,8 +7,9 @@
 // to take a "report" callback would add 12 dependency edges + 12 PRs of churn
 // for ZERO behavior change. A single boot-time `fetch` monkey-patch sees
 // every request the same way, even from code we don't own (third-party libs,
-// future modules). The patch is additive — it preserves the original behavior
-// byte-for-byte, only reading the response/error to drive the store.
+// future modules). The patch is additive — it reads the response/error to drive
+// the store, and its one write is the CSRF header on a cookie session's
+// state-changing API calls (`withCsrf`).
 //
 // SCOPE. We only observe URLs that look like our API (start with `/api/`, OR
 // match the configured `baseUrl()` + `/api/`). Cross-origin fetches and
@@ -24,9 +25,28 @@
 //     swallowed so a buggy reporter cannot break user-visible requests.
 
 import { useApiStatus } from '@/stores/api-status-store'
+import { csrfCookie } from './auth'
 
 /** True when `installFetchInstrumentation()` has already run on this window. */
 let installed = false
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/** A colleague's cookie session must echo the readable `supermux_csrf` cookie in
+ *  `x-supermux-csrf` on every state-changing API call (the server's double-submit
+ *  check, `auth_human/middleware.rs`). Only `/auth/*` did; the ~12 feature
+ *  clients never did, so every write by an external user was a 403. Done here,
+ *  once, for all of them. No cookie (the owner on a bearer) → untouched. */
+function withCsrf(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+  if (SAFE_METHODS.has(method)) return init
+  const token = csrfCookie()
+  if (!token) return init
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  if (headers.has('x-supermux-csrf')) return init
+  headers.set('x-supermux-csrf', token)
+  return { ...init, headers }
+}
 
 /** Best-effort check: does this URL belong to our API surface? Accepts:
  *    - relative path starting with `/api/`
@@ -66,6 +86,13 @@ export function installFetchInstrumentation(): void {
 
   window.fetch = async (input, init) => {
     const isApi = isApiUrl(input)
+    if (isApi) {
+      try {
+        init = withCsrf(input, init)
+      } catch {
+        /* never let the header helper break the request */
+      }
+    }
 
     let res: Response
     try {

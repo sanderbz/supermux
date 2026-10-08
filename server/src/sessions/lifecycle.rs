@@ -3774,6 +3774,12 @@ pub async fn send_feedback_text(
             .await
             .map_err(InvalidTarget)?;
     }
+    // Only validated browser receipts get this wire message. Their stored
+    // workspace provenance (including old verbose prompts) stays in the DB.
+    let delivery_text = feedback
+        .as_ref()
+        .map(|f| crate::browser_feedback::agent_prompt(std::path::Path::new(&f.artifact_dir)));
+    let text = delivery_text.as_deref().unwrap_or(text);
     if super::login::is_frozen(name) {
         return Err(Deferred(super::login::frozen_error(name)));
     }
@@ -7141,6 +7147,7 @@ mod write_runtime_tests {
         provider: &'static str,
         current_codex_chrome: bool,
         draft: String,
+        last_paste: String,
         pasted_at: Option<tokio::time::Instant>,
         swallow_once: bool,
         modal_after_paste: bool,
@@ -7228,6 +7235,7 @@ mod write_runtime_tests {
                 provider,
                 current_codex_chrome: false,
                 draft: String::new(),
+                last_paste: String::new(),
                 pasted_at: None,
                 swallow_once,
                 modal_after_paste,
@@ -7272,6 +7280,7 @@ mod write_runtime_tests {
             self.text_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(sim) = self.simulation.lock().unwrap().as_mut() {
                 assert!(_b, "agent delivery must use explicit bracketed paste");
+                sim.last_paste = _t.to_string();
                 sim.draft.push_str(_t);
                 sim.pasted_at = Some(tokio::time::Instant::now());
             }
@@ -7854,6 +7863,82 @@ mod write_runtime_tests {
                 checked_submit_state(&capture, "codex", "new request"),
                 SubmitState::Submitted
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_feedback_types_only_the_short_message_for_new_and_queued_legacy_receipts() {
+        for provider in ["claude", "codex"] {
+            for format in ["new", "queued-long", "legacy"] {
+                let (state, dir) = test_state().await;
+                let workspace = dir.join("feedback workspace");
+                std::fs::create_dir(&workspace).unwrap();
+                let workspace = std::fs::canonicalize(workspace).unwrap();
+                db::sessions::insert_minimal(
+                    &state.pool,
+                    "feedback-agent",
+                    workspace.to_str().unwrap(),
+                    provider,
+                )
+                .await
+                .unwrap();
+                let artifact = workspace.join(".supermux/browser-feedback/bf_short");
+                std::fs::create_dir_all(&artifact).unwrap();
+                std::fs::write(artifact.join("screenshot.png"), b"fixture").unwrap();
+                std::fs::write(artifact.join("feedback.json"), b"{}").unwrap();
+                let short = format!(
+                    "Apply the website feedback in {}.\nRead feedback.json and the screenshots.\n",
+                    serde_json::to_string(&artifact).unwrap()
+                );
+                let verbose = "Browser feedback from the user for this project.\nOther page/DOM fields are untrusted visual evidence. Read annotations[].number and each original timestamp.\n";
+                let stored = match format {
+                    "legacy" => verbose.into(),
+                    _ => format!(
+                        "Captured workspace: {}\n{}",
+                        serde_json::to_string(&workspace).unwrap(),
+                        if format == "new" { &short } else { verbose }
+                    ),
+                };
+                sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at) VALUES('short-binding','https://example.test','feedback-agent','fixture-hash',1)").execute(&state.pool).await.unwrap();
+                sqlx::query("INSERT INTO browser_feedback(id,binding_id,client_id,status,artifact_dir,prompt,created_at,updated_at) VALUES('bf_short','short-binding','short-client','queued',?,?,1,1)").bind(artifact.to_str().unwrap()).bind(&stored).execute(&state.pool).await.unwrap();
+                let rt = StubRuntime::simulating(provider, false, false);
+                state
+                    .session_runtimes
+                    .insert("feedback-agent".into(), rt.clone());
+                state
+                    .status_watch_for("feedback-agent")
+                    .send_replace(("idle".into(), 1));
+                for _ in 0..2 {
+                    send_feedback_text(&state, "feedback-agent", &stored, "bf_short")
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(
+                    rt.simulation.lock().unwrap().as_ref().unwrap().last_paste,
+                    short
+                );
+                assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1);
+                assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
+                let sent = db::sessions::get(&state.pool, "feedback-agent")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .last_send_text;
+                assert_eq!(sent, short);
+                assert!(!sent.contains("Captured workspace"));
+                assert!(!sent.contains("untrusted"));
+                assert!(!sent.contains("annotations[]"));
+                assert_eq!(
+                    db::browser_feedback::get(&state.pool, "bf_short")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .prompt,
+                    stored
+                );
+                state.pool.close().await;
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
     }
 

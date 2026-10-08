@@ -37,6 +37,9 @@ const NOISE_EVENTS: &[&str] = &[
 /// replaying raw-API mirror (see the module note), and per-turn telemetry.
 const SKIP_TOP_LEVEL: &[&str] = &[
     "response_item",
+    // Current Codex also writes usage as a top-level ledger record. It is
+    // telemetry, not an action or a source-liveness signal.
+    "token_usage_record",
     "session_meta",
     "world_state",
     "turn_context",
@@ -694,6 +697,26 @@ mod tests {
         assert_eq!(a[0].kind, Kind::Assistant);
         assert_eq!(a[0].body["text"], "done");
         assert!(a[0].ts_ms > 0, "the rollout's own clock must survive");
+    }
+
+    #[test]
+    fn top_level_usage_ledger_does_not_displace_a_reloaded_conversation() {
+        let telemetry = r#"{"type":"token_usage_record","ordinal":42,
+            "timestamp":"2026-10-08T10:36:00Z","payload":{
+            "response_id":"response-fixture","root_turn_id":"root-fixture",
+            "session_id":"session-fixture","thread_id":"thread-fixture",
+            "thread_token_usage":{"input_tokens":100,"output_tokens":20},
+            "turn_id":"turn-fixture","turn_token_usage":{"input_tokens":10},
+            "usage":{"total_tokens":120}}}"#;
+        assert!(parse(telemetry).is_empty());
+        // Filtering this verified ledger shape must not suppress interactive
+        // actions or errors whose schema has not yet been modeled.
+        let unknown =
+            parse(r#"{"type":"future_approval_request","payload":{"requires_action":true}}"#);
+        assert_eq!(unknown[0].kind, Kind::Unknown);
+        let error =
+            parse(r#"{"type":"event_msg","payload":{"type":"error","message":"fixture failure"}}"#);
+        assert_eq!(error[0].kind, Kind::AgentError);
     }
 
     #[test]

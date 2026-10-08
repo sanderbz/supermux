@@ -14,6 +14,7 @@
 // half-written costs one round-trip, not a restart.
 
 import { apiToken, apiUrl } from '@/lib/api/client'
+import { csrfCookie } from '@/lib/api/auth'
 
 import {
   backoffMs,
@@ -137,6 +138,10 @@ export const httpTransport: UploadTransport = {
       xhr.open('PATCH', apiUrl(`/api/fs/uploads/${encodeURIComponent(id)}`), true)
       const token = apiToken()
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      // XHR bypasses the fetch wrapper, so a colleague's cookie session echoes
+      // the CSRF cookie here itself (see `withCsrf` in api/fetch-wrap.ts).
+      const csrf = csrfCookie()
+      if (csrf) xhr.setRequestHeader('x-supermux-csrf', csrf)
       xhr.setRequestHeader('Upload-Offset', String(offset))
       xhr.setRequestHeader('Content-Type', 'application/octet-stream')
       xhr.upload.onprogress = (e) => onProgress(e.loaded)

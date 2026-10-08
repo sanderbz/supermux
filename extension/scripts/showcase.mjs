@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 const profile=await mkdtemp(join(tmpdir(),'supermux-showcase-'));
 const fixture=await readFile(new URL('../showcase/index.html',import.meta.url),'utf8');
-let context,server,pairSequence=0;const proposedBindings=new Map();
+let context,server,pairSequence=0;const submitted=[];const proposedBindings=new Map();
 try{
   const extension=join(profile,'extension');
   await cp(fileURLToPath(new URL('../dist/',import.meta.url)),extension,{recursive:true});
@@ -24,6 +24,13 @@ try{
   manifest.host_permissions=['<all_urls>'];
   await writeFile(manifestPath,JSON.stringify(manifest));
   server=createServer(async(req,res)=>{
+    if(req.url.startsWith('/api/browser/feedback')){
+      if(req.method==='POST'){
+        const chunks=[];for await(const chunk of req)chunks.push(chunk);submitted.push(JSON.parse(Buffer.concat(chunks).toString()));
+        if(submitted.length===1){res.statusCode=503;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:false,error:'Temporary fixture interruption. Retry sending.'}));return;}
+      }
+      res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,data:{id:'synthetic-feedback',status:'sent'}}));return;
+    }
     if(req.url.startsWith('/api/browser/pairings')){
       let data;
       if(req.method==='POST'){
@@ -113,15 +120,15 @@ try{
     await typeOverlay('.editor textarea',text);await clickOverlay('[data-action="done"]');
     await until(async()=>{const draft=await savedDraft();assert.ok(draft?.notes?.some(n=>n.text===text&&draft.noteCrops?.[n.id]?.capture));},'real note crop saved');
   }
-  await typeOverlay('.bar-message','Refine the hero: calmer typography and a clearer call to action.');
+  assert.equal(await overlay(root=>root.querySelector('.bar-message')),null);
   await clickOverlay('[data-action="review"]');
   const draft=await until(async()=>{
     const value=await savedDraft();assert.ok(value?.snapshot?.screenshot?.data_base64);
     assert.equal(value.snapshot.crops.length,2);assert.equal(value.notes.length,2);
     assert.equal(value.snapshot.annotations.length,2);
-    assert.equal(value.message,'Refine the hero: calmer typography and a clearer call to action.');
+    assert.equal(value.message,'');
     assert.equal(value.snapshot.url,page.url());
-    assert.equal(await overlay(root=>root.querySelector('.send')?.disabled),false);
+    assert.equal(await overlay(root=>root.querySelector('[data-action="send"]')?.disabled),false);
     return value;
   },'review with actual Chrome capture');
   assert.deepEqual(draft.snapshot.annotations.map(n=>n.number),[1,2]);
@@ -146,11 +153,11 @@ try{
   assert.deepEqual(captured.pixels,reference.pixels,'visible input, private-labelled element, and frame content are never covered');
   assert.ok(reference.pixels.every(pixel=>pixel.join(',')!=='34,45,36,255'),'samples distinguish visible page content from the removed mask');
   assert.equal(await overlay(root=>root.querySelectorAll('[data-action="settings"]').length),1,'one connected target/change control');
-  assert.equal(await overlay(root=>root.querySelector('.panel h2').textContent),'Review feedback');
+  assert.equal(await overlay(root=>root.querySelector('.panel h2').textContent),'Screenshot and notes');
   assert.equal(await overlay(root=>/masked|ONE LAST LOOK|Make it clear/.test(root.querySelector('.panel').textContent)),false);
   await until(async()=>assert.equal(await overlay(root=>[...root.querySelectorAll('.capture img,.note-row img')].every(i=>i.complete&&i.naturalWidth>0)),true),'preview images loaded');
-  assert.equal(await overlay(root=>!!root.querySelector('.bar-message')),false,'review has one overall message field');
-  assert.match(await overlay(root=>root.querySelector('.review-btn').textContent),/Edit notes/);
+  assert.equal(await overlay(root=>!!root.querySelector('.bar-message')),false,'toolbar has no general message field');
+  assert.equal(await overlay(root=>root.querySelector('.message')),null);
   await clickOverlay('[data-image="numbered"]');
   assert.equal(await overlay(root=>root.activeElement.dataset.action),'image-close');
   assert.equal(await overlay(root=>root.querySelector('.image-viewer-stage img').getAttribute('src')),draft.snapshot.preview);
@@ -177,7 +184,7 @@ try{
   assert.deepEqual(corner,[245,246,239,255],'viewer backdrop is excluded from capture');
   await page.keyboard.press('Escape');
   assert.equal(await overlay(root=>root.activeElement.dataset.image),'numbered');
-  assert.equal(await overlay(root=>root.querySelector('.message').value),draft.message);
+  assert.equal(await overlay(root=>root.querySelector('.message')),null);
   await clickOverlay('[data-image="crop"]');
   assert.equal(await overlay(root=>root.querySelector('#sm-image-title').textContent),'Note 1');
   assert.equal(await overlay(root=>root.querySelector('.image-viewer-stage img').getAttribute('src')),'data:image/png;base64,'+draft.snapshot.crops[0].data_base64);
@@ -201,6 +208,14 @@ try{
       return [...root.querySelectorAll('*')].every(el=>el.getAnimations().every(a=>!Number.isFinite(a.effect?.getComputedTiming().endTime)||a.playState==='finished'||a.playState==='idle'));
     }),true);
   },'fonts and finite review animations settled');
+  await page.screenshot({path:join(tmpdir(),'supermux-direct-send-inspection.png')});
+  await clickOverlay('[data-action="back"]');
+  assert.equal(await overlay(root=>root.querySelector('.panel')),null);
+  await overlay(async root=>{
+    await Promise.all([...root.querySelectorAll('*')].flatMap(el=>el.getAnimations()).filter(a=>Number.isFinite(a.effect?.getComputedTiming().endTime)).map(a=>a.finished.catch(()=>{})));
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  });
+  assert.equal(await overlay(root=>{const button=root.querySelector('[data-action="send"]'),bar=root.querySelector('.bar'),r=button.getBoundingClientRect();return getComputedStyle(bar).opacity==='1'&&r.width>0&&r.y>=0&&r.bottom<=innerHeight;}),true,'direct Send is visible in the primary screenshot');
   await page.screenshot({path:output});
   // Exercise the shipped options page: a known server starts pairing without
   // its address form, but the candidate cannot receive feedback until confirmed.
@@ -234,11 +249,36 @@ try{
   // event used by a real return from the extension settings tab.
   await overlay(()=>window.dispatchEvent(new Event('focus')));
   await until(async()=>assert.equal(await overlay(root=>root.querySelector('.connection-name').textContent),'DesignExample company 3'),'return from options refreshes the connected target');
-  assert.equal(await overlay(root=>root.querySelector('.send').disabled),false);
-  assert.equal(await overlay(root=>root.querySelector('.message').value),draft.message);
+  assert.equal(await overlay(root=>root.querySelector('[data-action="send"]').disabled),false);
+  assert.equal(await overlay(root=>root.querySelector('.message')),null);
   assert.deepEqual((await savedDraft()).snapshot,draft.snapshot,'target refresh preserves frozen capture');
   assert.equal((await savedDraft()).clientId,draft.clientId,'target refresh preserves retry identity');
-  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, verified unaltered fields/private elements/frames, frozen image viewer, focus/Escape, actual pixels, narrow/reduced-motion layout, automatic saved-server pairing and explicit website/company/agent confirmation. No feedback submitted.`);
+  await options.setViewportSize({width:1440,height:960});await options.close();await page.bringToFront();
+  await page.setViewportSize({width:1440,height:960});
+  // Per-tab device emulation includes a viewport while Chrome's native
+  // window also has browser chrome. Align the native content area for capture.
+  const nativeProbe=await worker.evaluate(async()=>chrome.tabs.captureVisibleTab(undefined,{format:'png'}));
+  const nativeBytes=Buffer.from(nativeProbe.split(',')[1],'base64');
+  const {windowId,bounds}=await cdp.send('Browser.getWindowForTarget');
+  await cdp.send('Browser.setWindowBounds',{windowId,bounds:{width:bounds.width+1440-nativeBytes.readUInt32BE(16),height:bounds.height+960-nativeBytes.readUInt32BE(20)}});
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await new Promise(resolve=>setTimeout(resolve,550));
+  // Submit only to the local synthetic HTTP fixture, never a real chat. The
+  // first click captures a newly edited note without visiting the image panel.
+  await page.locator('#headline').click();await typeOverlay('.editor textarea','Align this heading with the content.');
+  await clickOverlay('[data-action="send"]');
+  await until(async()=>assert.equal(await overlay(root=>!!root.querySelector('.send-error')),true),'direct-send interruption');
+  if(submitted.length===0){const saved=await savedDraft();const image=Buffer.from(saved.snapshot.screenshot.data_base64,'base64');console.log('Synthetic capture geometry',JSON.stringify({viewport:saved.snapshot.viewport,png:{width:image.readUInt32BE(16),height:image.readUInt32BE(20)}}));}
+  assert.match(await overlay(root=>root.querySelector('.send-error').textContent),/Temporary fixture interruption/,'direct send reached synthetic HTTP fixture');
+  assert.equal(await overlay(root=>root.querySelector('.panel')),null);assert.equal(submitted.length,1);
+  assert.equal(submitted[0].annotations.length,3);assert.equal(submitted[0].annotations[2].text,'Align this heading with the content.');
+  assert.equal(submitted[0].crops.length,3);assert.equal(submitted[0].message,'');
+  assert.deepEqual((await pixels('data:image/png;base64,'+submitted[0].screenshot.data_base64)).pixels,reference.pixels,'direct send captures the website, not the options tab');
+  await clickOverlay('[data-action="send"]');
+  await until(async()=>assert.match(await overlay(root=>root.querySelector('.send-status').textContent),/Sent to Example company 3 · Design/),'direct retry delivered to fixture');
+  assert.equal(submitted.length,2);assert.deepEqual(submitted[1],submitted[0],'retry keeps exact frozen pixels and client identity');
+  assert.equal(await overlay(root=>root.querySelector('.panel')),null);
+  console.log(`Saved ${output}: actual Chrome extension, production capture, two numbered crops, verified unaltered fields/private elements/frames, frozen image viewer, focus/Escape, actual pixels, narrow/reduced-motion layout, automatic saved-server pairing and explicit website/company/agent confirmation. Direct capture/send/retry verified only against the local synthetic fixture; no real feedback submitted.`);
 }finally{
   await context?.close();if(server)await new Promise(resolve=>server.close(resolve));
   await rm(profile,{recursive:true,force:true});

@@ -28,11 +28,13 @@ export function ProvisionalTail({
   show,
   pin,
   surface,
+  provider = 'claude',
 }: {
   name: string
   show: boolean
   pin?: MarkPin
   surface?: 'desktop' | 'phone'
+  provider?: 'claude' | 'codex'
 }) {
   const [lines, setLines] = React.useState<string[]>([])
 
@@ -61,7 +63,7 @@ export function ProvisionalTail({
         // selection is held (the normal live case) nothing changes — the frame
         // swaps every tick exactly as before.
         if (selectionInChatTrack()) return
-        setLines(extractProvisionalTail(cap))
+        setLines(extractProvisionalTail(cap, 12, provider))
       } catch {
         /* transient — keep the previous frame */
       }
@@ -72,7 +74,7 @@ export function ProvisionalTail({
       dead = true
       window.clearInterval(id)
     }
-  }, [name, show])
+  }, [name, show, provider])
 
   if (!show || lines.length === 0) return null
   return <ProvisionalTailView lines={lines} seed={name} pin={pin} surface={surface} />

@@ -487,3 +487,32 @@ describe('extractProvisionalTail — the bare-caret composer (cc 2.1.233)', () =
     expect(extractProvisionalTail(capture)).toEqual(['● the agent is writing this'])
   })
 })
+
+describe('Codex outage evidence excludes its composer and footer', () => {
+  test('keeps assistant output and removes the uppercase wrapped mobile footer', () => {
+    const prose = '\u001b[32m• This answer is still arriving.\u001b[0m'
+    const capture = [prose, '', '\u001b[2m› Ask Codex to do anything\u001b[0m', '', '  GPT-6.1-Sol high · ~/projects/workspace · Main', '  [default] · ← for agen', '  ts'].join('\n')
+    expect(extractProvisionalTail(capture, 12, 'codex')).toEqual([prose])
+  })
+
+  test('genuine multiline terminal drafts do not become assistant prose', () => {
+    const capture = ['• Answer still streaming.', '', '› Keep this private draft', '  and its wrapped continuation', '', '  gpt-6.1-sol high · ~/project · Main'].join('\n')
+    expect(extractProvisionalTail(capture, 12, 'codex')).toEqual(['• Answer still streaming.'])
+  })
+
+  test('a composer-only capture has no outage prose', () => {
+    expect(extractProvisionalTail('› Ask Codex to do anything\n\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
+  })
+
+  test('model names and angle quotes inside output are preserved', () => {
+    const prose = ['• GPT-6.1-Sol is the requested model.', 'This explanation includes › as an example.']
+    expect(extractProvisionalTail([...prose, '›', '', 'gpt-6.1-sol high · ~/project'].join('\n'), 12, 'codex')).toEqual(prose)
+  })
+})
+
+
+test('Codex refuses fallback without a proved visible composer boundary', () => {
+  expect(extractProvisionalTail('• Saved tool output.\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
+  expect(extractProvisionalTail('› quoted example\n• More assistant prose.', 12, 'codex')).toEqual([])
+  expect(extractProvisionalTail('  a wrapped draft continuation\n\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
+})

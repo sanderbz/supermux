@@ -30,7 +30,7 @@ export interface WorkingRowProps {
   /** The session that is working. Omit for the bare presence line. */
   seed?: string
   pin?: MarkPin
-  /** What it is doing right now — the hook label, or "Thinking…". */
+  /** What it is doing right now — the hook label, or "Working…". */
   label: string
   /**
    * Right-hand elapsed clause.

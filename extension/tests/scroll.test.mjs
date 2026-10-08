@@ -30,8 +30,8 @@ async function harness(draft,options={}){
  w.chrome={runtime:{id:'test',onMessage:{addListener:f=>listener=f},sendMessage:async m=>{
   if(m.type==='draft.load')return{ok:true,data:{draft:structuredClone(draft),connection:{paired:!!options.paired}}};
   if(m.type==='draft.save'){if(options.saveFails)return{ok:false,error:'Latest changes could not be saved. Keep this page open and retry.'};lastDraft=structuredClone(m.draft);return{ok:true,data:true};}
-  if(m.type==='capture'){const raw=await rpc('capture.prepare');if(!raw) return{ok:false,error:'Capture moved'};shots.push(structuredClone(raw));await rpc('capture.restore');return{ok:true,data:{...raw,dataUrl:'data:image/png;base64,'+png()}};}
-  if(m.type==='feedback.submit'){sent.push(structuredClone(m.payload));return{ok:true,data:{id:'receipt',status:'sent'}};}
+  if(m.type==='capture'){if(options.captureDelay)await delay(options.captureDelay);if(options.captureFails){options.captureFails--;return {ok:false,error:'Capture moved. Try again.'};}const raw=await rpc('capture.prepare');if(!raw) return{ok:false,error:'Capture moved'};shots.push(structuredClone(raw));await rpc('capture.restore');return{ok:true,data:{...raw,dataUrl:'data:image/png;base64,'+png()}};}
+  if(m.type==='feedback.submit'){sent.push(structuredClone(m.payload));if(options.submitFails){options.submitFails--;return {ok:false,error:'Network interrupted. Retry sending.'};}return{ok:true,data:{id:'receipt',status:'sent'}};}
   return{ok:true,data:true};
  }}};
  if(options.changedTarget)w.document.querySelector('#nested').textContent='Replacement content';
@@ -39,7 +39,7 @@ async function harness(draft,options={}){
  w.eval(script);await delay(25);
  const key=(target,k)=>target.dispatchEvent(new w.KeyboardEvent('keydown',{key:k,bubbles:true,composed:true,cancelable:true}));
  const finish=()=>key(shadow.querySelector('.editor textarea'),'Escape');
- const pick=id=>{shadow.querySelector('[data-mode="element"]').click();w.document.getElementById(id).dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));finish();};
+ const pick=id=>{shadow.querySelector('[data-mode="element"]').click();w.document.getElementById(id).dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true}));const field=shadow.querySelector('.editor textarea');field.value='Adjust this';field.dispatchEvent(new w.Event('input',{bubbles:true}));finish();};
  const draw=(mode,target,start,end)=>{shadow.querySelector(`[data-mode="${mode}"]`).click();for(const [type,coords] of [['pointerdown',start],['pointermove',end],['pointerup',end]])target.dispatchEvent(new w.MouseEvent(type,{clientX:coords[0],clientY:coords[1],button:0,bubbles:true,cancelable:true}));finish();};
  const pin=n=>{const node=shadow.querySelector(`[aria-label="Edit note ${n}"]`);return node?{x:parseFloat(node.style.left),y:parseFloat(node.style.top)}:null;};
  const scroll=async(el,x,y)=>{if(el===w){w.scrollX=x;w.scrollY=y;}else{el.scrollLeft=x;el.scrollTop=y;}el.dispatchEvent(new w.Event('scroll',{bubbles:false}));await delay(25);};
@@ -103,7 +103,7 @@ test('draft recovery and undo restore only unique matching DOM refs and preserve
   }finally{a.dom.window.close();}
  }
  const noCrop={notes:[draft.notes[0]],message:'',noteCrops:{}};const missing=await harness(noCrop,{missingTarget:true});try{
-  missing.shadow.querySelector('[data-action="review"]').click();await delay(130);assert.match(missing.shadow.querySelector('.toast').textContent,/no screenshot context/);missing.shadow.querySelector('.note-row [data-pin]').click();missing.shadow.querySelector('[data-action="delete"]').click();assert.equal(missing.shadow.querySelectorAll('.pin').length,0);
+  missing.shadow.querySelector('[data-action="review"]').click();await delay(130);assert.match(missing.shadow.querySelector('.send-error').textContent,/no screenshot context/);missing.shadow.querySelector('.note-row [data-pin]').click();missing.shadow.querySelector('[data-action="delete"]').click();assert.equal(missing.shadow.querySelectorAll('.pin').length,0);
  }finally{missing.dom.window.close();}
 });
 test('clipped notes keep their prior crop; live partial crops never include pixels outside the scroller',async()=>{
@@ -121,7 +121,7 @@ test('retains native crop detail and original capture provenance when an offscre
   const firstCrop=h.draws.find(call=>call.args.length===9);assert.equal(firstCrop.args[0].width,4096,'crop reads from original full-resolution image');assert.equal(firstCrop.canvas.width,736,'normal text crop keeps native pixels beyond overview scale');
   h.shadow.querySelector('[aria-label="Edit note 1"]').click();h.shadow.querySelector('[data-action="delete"]').click();await h.scroll(h.panel,0,150);h.shadow.querySelector('[data-action="review"]').click();await delay(130);await delay(550);
   const shot=h.getDraft().snapshot;assert.equal(shot.annotations[0].number,1);assert.equal(shot.crops[0].number,1);assert.deepEqual(shot.crops[0].capture,original.capture);assert.equal(shot.crops[0].data_base64,original.data_base64);assert.equal(shot.crops[0].capture.viewport.scroll_y,0);assert.equal(shot.crops[0].capture.annotation_rect.y,220);
-  const message=h.shadow.querySelector('.message');message.value='Make this easier to read';message.dispatchEvent(new h.w.Event('input',{bubbles:true}));h.shadow.querySelector('[data-action="send"]').click();await delay(30);assert.equal(h.sent.length,1);assert.equal(h.sent[0].annotated_screenshot.data_base64,shot.preview.split(',')[1]);assert.equal(h.sent[0].annotations[0].number,1);assert.deepEqual(h.sent[0].crops[0].capture,original.capture);
+  h.shadow.querySelector('[data-action="send"]').click();await delay(30);assert.equal(h.sent.length,1);assert.equal(h.sent[0].annotated_screenshot.data_base64,shot.preview.split(',')[1]);assert.equal(h.sent[0].annotations[0].number,1);assert.deepEqual(h.sent[0].crops[0].capture,original.capture);
  }finally{h.dom.window.close();}
 });
 
@@ -134,25 +134,92 @@ test('complex PNGs shrink to budget without detaching clean and numbered overvie
 
 test('legacy recovered screenshots keep their clean image and normalize note numbers on send',async()=>{
  const draft={notes:[{id:'one',kind:'region',rect:{x:20,y:20,width:30,height:40},text:'Adjust this'}],message:'Change this',snapshot:{viewport:{width:1024,height:768,dpr:1,scroll_x:0,scroll_y:0},url:'https://voltlogger.com/',annotations:[{id:'one',kind:'region',rect:{x:20,y:20,width:30,height:40},text:'Adjust this'}],screenshot:{mime:'image/png',data_base64:png(1024,768)},preview:'data:image/png;base64,'+png(600,450),crops:[{annotation_id:'one',mime:'image/png',data_base64:png(30,40)}]}};
- const h=await harness(draft,{paired:true});try{h.shadow.querySelector('[data-action="review"]').click();h.shadow.querySelector('[data-action="send"]').click();await delay(40);assert.equal(h.sent.length,1);assert.equal(h.sent[0].screenshot.data_base64,draft.snapshot.screenshot.data_base64);assert.equal(h.sent[0].annotated_screenshot,undefined);assert.equal(h.sent[0].annotations[0].number,1);assert.equal(h.sent[0].crops[0].number,1);assert.equal(h.sent[0].crops[0].capture,undefined);}finally{h.dom.window.close();}
+ const h=await harness(draft,{paired:true});try{h.shadow.querySelector('[data-action="send"]').click();await delay(40);assert.equal(h.sent.length,1);assert.equal(h.sent[0].screenshot.data_base64,draft.snapshot.screenshot.data_base64);assert.equal(h.sent[0].annotated_screenshot,undefined);assert.equal(h.sent[0].annotations[0].number,1);assert.equal(h.sent[0].crops[0].number,1);assert.equal(h.sent[0].crops[0].capture,undefined);}finally{h.dom.window.close();}
 });
 
-test('sending waits for durable saving and retains review when storage fails',async()=>{
- const h=await harness(undefined,{paired:true,saveFails:true});try{h.pick('normal');h.shadow.querySelector('[data-action="review"]').click();await delay(200);const input=h.shadow.querySelector('.message');input.value='Make this clearer';input.dispatchEvent(new h.w.Event('input',{bubbles:true}));h.shadow.querySelector('[data-action="send"]').click();await delay(40);assert.equal(h.sent.length,0);assert.match(h.shadow.querySelector('.error').textContent,/could not be saved/);assert.ok(h.shadow.querySelector('.capture img'));assert.equal(h.shadow.querySelectorAll('.note-row').length,1);}finally{h.dom.window.close();}
+test('direct sending waits for durable saving and retains notes and capture when storage fails',async()=>{
+ const h=await harness(undefined,{paired:true,saveFails:true});try{
+  h.pick('normal');h.shadow.querySelector('[data-action="send"]').click();await delay(180);
+  assert.equal(h.sent.length,0);assert.match(h.shadow.querySelector('.send-error').textContent,/could not be saved/);
+  assert.equal(h.shadow.querySelector('.panel'),null);assert.equal(h.shadow.querySelectorAll('.pin').length,1);
+  assert.equal(h.shadow.querySelector('[data-action="send"]').disabled,false);
+ }finally{h.dom.window.close();}
 });
 
 test('frozen image review preserves saved pixels and context while trapping focus and closing before review',async()=>{
  const crop={annotation_id:'offscreen',number:1,mime:'image/png',data_base64:png(200,80,3),capture:{captured_at:'2026-10-07T12:00:00Z',viewport:{width:1024,height:768,dpr:1,scroll_x:0,scroll_y:0},rect:{x:10,y:20,width:200,height:80},annotation_rect:{x:20,y:30,width:180,height:60}}};
  const draft={notes:[{id:'offscreen',kind:'region',text:'Improve this saved detail',rect:{x:20,y:1300,width:180,height:60}}],message:'Keep this overall message',noteCrops:{offscreen:crop},snapshot:{url:'https://voltlogger.com/',viewport:{width:1024,height:768,dpr:1,scroll_x:0,scroll_y:1000},annotations:[{id:'offscreen',number:1,kind:'region',text:'Improve this saved detail',rect:{x:20,y:-970,width:180,height:60}}],screenshot:{mime:'image/png',data_base64:png(1024,768,1)},preview:'data:image/png;base64,'+png(1024,768,2),crops:[crop],hiddenIds:['offscreen'],numberedOverview:true}};
  const h=await harness(draft,{paired:true});try{
-  h.shadow.querySelector('[data-action="review"]').click();assert.equal(h.shadow.querySelector('.bar-message'),null);assert.match(h.shadow.querySelector('.review-btn').textContent,/Edit notes/);
+  h.shadow.querySelector('[data-action="review"]').click();assert.equal(h.shadow.querySelector('.bar-message'),null);assert.equal(h.shadow.querySelector('.message'),null);
   const trigger=h.shadow.querySelector('[data-image="numbered"]');trigger.click();const close=h.shadow.querySelector('[data-action="image-close"]');assert.equal(h.shadow.activeElement,close);assert.equal(h.shadow.querySelector('.image-viewer').getAttribute('aria-modal'),'true');assert.equal(h.shadow.querySelector('.ui').inert,true);assert.equal(h.shadow.querySelector('.image-viewer-stage img').src,draft.snapshot.preview);
   const key=(target,key,extra={})=>{const e=new h.w.KeyboardEvent('keydown',{key,bubbles:true,composed:true,cancelable:true,...extra});target.dispatchEvent(e);return e;};
   assert.equal(key(close,'Tab',{shiftKey:true}).defaultPrevented,true);const stage=h.shadow.querySelector('.image-viewer-stage');assert.equal(h.shadow.activeElement,stage);assert.equal(key(stage,'Tab').defaultPrevented,true);assert.equal(h.shadow.activeElement,close);
   h.shadow.querySelector('[data-image-view="clean"]').click();assert.equal(h.shadow.querySelector('.image-viewer-stage img').src,'data:image/png;base64,'+draft.snapshot.screenshot.data_base64);h.shadow.querySelector('[data-action="image-size"]').click();assert.ok(h.shadow.querySelector('.image-viewer-stage.native'));assert.equal(h.shots.length,0,'viewing frozen images never captures again');
-  key(h.shadow.activeElement,'Escape');assert.equal(h.shadow.querySelector('.image-viewer'),null);assert.equal(h.shadow.activeElement,trigger);assert.ok(h.shadow.querySelector('.panel'));assert.equal(h.shadow.querySelector('.message').value,draft.message);assert.equal(h.shadow.querySelector('.ui').inert,false);
+  key(h.shadow.activeElement,'Escape');assert.equal(h.shadow.querySelector('.image-viewer'),null);assert.equal(h.shadow.activeElement,trigger);assert.ok(h.shadow.querySelector('.panel'));assert.equal(h.shadow.querySelector('.message'),null);assert.equal(h.shadow.querySelector('.ui').inert,false);
   const cropTrigger=h.shadow.querySelector('[data-image="crop"]');cropTrigger.click();assert.equal(h.shadow.querySelector('#sm-image-title').textContent,'Note 1');assert.equal(h.shadow.querySelector('.image-viewer-stage img').src,'data:image/png;base64,'+crop.data_base64);assert.equal(h.shadow.querySelector('[data-image-view]'),null);
   const capture=await h.rpc('capture.prepare');assert.ok(capture);assert.ok(h.w.document.querySelector('[data-supermux-overlay]').classList.contains('capturing'));await h.rpc('capture.restore');
-  key(h.shadow.activeElement,'Escape');assert.equal(h.shadow.activeElement,cropTrigger);h.shadow.querySelector('.review-btn').click();assert.equal(h.shadow.querySelector('.panel'),null);assert.equal(h.shadow.querySelector('.bar-message').value,draft.message);h.w.__supermuxAnnotation.toggle(false);await delay(550);assert.deepEqual(h.getDraft().snapshot,draft.snapshot);assert.deepEqual(h.getDraft().noteCrops,draft.noteCrops);
+  key(h.shadow.activeElement,'Escape');assert.equal(h.shadow.activeElement,cropTrigger);h.shadow.querySelector('[data-action="back"]').click();assert.equal(h.shadow.querySelector('.panel'),null);assert.equal(h.shadow.querySelector('.bar-message'),null);h.w.__supermuxAnnotation.toggle(false);await delay(550);assert.deepEqual(h.getDraft().snapshot,draft.snapshot);assert.deepEqual(h.getDraft().noteCrops,draft.noteCrops);
+ }finally{h.dom.window.close();}
+});
+
+
+test('one direct Send captures current notes and submits without opening a panel',async()=>{
+ const h=await harness(undefined,{paired:true});try{
+  assert.equal(h.shadow.querySelector('[data-action="send"]').disabled,true);
+  h.pick('normal');h.shadow.querySelector('[aria-label="Edit note 1"]').click();
+  const editor=h.shadow.querySelector('.editor textarea');editor.value='Use clearer wording';editor.dispatchEvent(new h.w.Event('input',{bubbles:true}));
+  h.shadow.querySelector('[data-action="send"]').click();await delay(180);
+  assert.equal(h.sent.length,1);assert.equal(h.sent[0].annotations[0].text,'Use clearer wording');
+  assert.ok(h.sent[0].screenshot.data_base64);assert.ok(h.sent[0].annotated_screenshot.data_base64);assert.equal(h.sent[0].crops.length,1);
+  assert.equal(h.shadow.querySelector('.panel'),null);assert.equal(h.shadow.querySelector('.bar-message'),null);assert.equal(h.shadow.querySelector('.message'),null);
+  assert.equal(h.shadow.querySelectorAll('.pin').length,0);assert.match(h.shadow.querySelector('[role="status"]').textContent,/Sent to/);
+ }finally{h.dom.window.close();}
+});
+
+test('a failed direct capture retains the note and retries before any submit',async()=>{
+ const h=await harness(undefined,{paired:true,captureFails:1});try{
+  h.pick('normal');h.shadow.querySelector('[data-action="send"]').click();await delay(60);
+  assert.equal(h.sent.length,0);assert.equal(h.shadow.querySelectorAll('.pin').length,1);assert.match(h.shadow.querySelector('[role="alert"]').textContent,/Capture moved/);
+  assert.equal(h.shadow.querySelector('[data-action="send"]').getAttribute('aria-label'),'Retry sending');
+  h.shadow.querySelector('[data-action="send"]').click();await delay(180);assert.equal(h.sent.length,1);
+ }finally{h.dom.window.close();}
+});
+
+test('network retry reuses the frozen capture and client identity without recapturing',async()=>{
+ const h=await harness(undefined,{paired:true,submitFails:1});try{
+  h.pick('normal');h.shadow.querySelector('[data-action="send"]').click();await delay(180);
+  assert.equal(h.sent.length,1);const original=structuredClone(h.sent[0]),captures=h.shots.length;
+  assert.equal(h.shadow.querySelectorAll('.pin').length,1);assert.match(h.shadow.querySelector('[role="alert"]').textContent,/Network interrupted/);
+  h.shadow.querySelector('[data-action="send"]').click();await delay(60);
+  assert.equal(h.sent.length,2);assert.deepEqual(h.sent[1],original);assert.equal(h.shots.length,captures);assert.equal(h.shadow.querySelector('.panel'),null);
+ }finally{h.dom.window.close();}
+});
+
+test('an unpaired website cannot send and retains its annotations',async()=>{
+ const h=await harness();try{
+  h.pick('normal');const button=h.shadow.querySelector('[data-action="send"]');assert.equal(button.disabled,true);button.click();await delay(60);
+  assert.equal(h.sent.length,0);assert.equal(h.shots.length,0);assert.equal(h.shadow.querySelectorAll('.pin').length,1);
+  assert.equal(h.shadow.querySelectorAll('[data-action="settings"]').length,1);
+ }finally{h.dom.window.close();}
+});
+
+
+test('Done followed immediately by two Send clicks waits for the note crop and sends once',async()=>{
+ const h=await harness(undefined,{paired:true,captureDelay:60});try{
+  h.pick('normal');h.shadow.querySelector('[aria-label="Edit note 1"]').click();h.shadow.querySelector('[data-action="done"]').click();
+  const send=h.shadow.querySelector('[data-action="send"]');send.click();send.click();await delay(280);
+  assert.equal(h.sent.length,1);assert.equal(h.shots.length,2);assert.equal(h.sent[0].crops.length,1);
+  assert.equal(h.sent[0].crops[0].annotation_id,h.sent[0].annotations[0].id);assert.equal(h.shadow.querySelector('.panel'),null);
+ }finally{h.dom.window.close();}
+});
+
+
+test('an empty annotation cannot send; typing enables Send in place and clearing disables it',async()=>{
+ const h=await harness(undefined,{paired:true});try{
+  h.w.document.querySelector('#normal').dispatchEvent(new h.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  const editor=h.shadow.querySelector('.editor textarea'),send=h.shadow.querySelector('[data-action="send"]');
+  assert.equal(send.disabled,true);send.click();await delay(30);assert.equal(h.sent.length,0);
+  editor.value='Make this readable';editor.dispatchEvent(new h.w.Event('input',{bubbles:true}));assert.equal(send.disabled,false);assert.equal(h.shadow.querySelector('.editor textarea'),editor);
+  editor.value='  ';editor.dispatchEvent(new h.w.Event('input',{bubbles:true}));assert.equal(send.disabled,true);assert.equal(h.shadow.querySelector('.editor textarea'),editor);
  }finally{h.dom.window.close();}
 });
