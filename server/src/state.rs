@@ -722,6 +722,7 @@ pub struct AppState {
     /// a SIGTERM/SIGINT hook installed only once chrome is really running), so
     /// nothing here or in `main.rs` has to remember to stop it.
     pub browser: Arc<crate::connectors::browser::BrowserService>,
+    pub browser_control: Arc<crate::browser_feedback::control::ControlBridge>,
     /// Portable agent-isolation runtime (companies §4.4): the requested
     /// [`IsolationMode`](crate::isolation::IsolationMode), the once-at-startup
     /// probe result, and the active backend. The spawn path (`lifecycle::
@@ -863,6 +864,7 @@ impl AppState {
             // The pool is attached (not passed to `new`) so that call stays
             // allocation-only, which the lazy-start invariant depends on; the
             // workspace-TAB surface is the only thing that reads it.
+            browser_control: Arc::new(crate::browser_feedback::control::ControlBridge::default()),
             browser: {
                 let svc = crate::connectors::browser::BrowserService::new(browser_cfg);
                 svc.attach_pool(browser_pool);

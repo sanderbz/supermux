@@ -72,7 +72,7 @@ for (const phone of [false, true]) {
           } else
             await route.fulfill({
               contentType: 'application/json',
-              body: JSON.stringify({ ok: true, data: [] }),
+              body: JSON.stringify({ ok: true, data: [{ id: 'connected-browser', origin: 'https://site.example', session: 'second-agent', control_connected: true }] }),
             })
         })
         await page.goto(url + '/dev/chat-live?mock&grok=1&pairing')
@@ -94,6 +94,7 @@ for (const phone of [false, true]) {
           .getByRole('button', { name: 'Switch fixture company' })
           .click()
         await expect(card).toContainText('Pair a website with Design')
+        await expect(card.getByTestId('browser-control-active')).toHaveText('Control on')
         await expect(download).toHaveAttribute('href', originalDownload!)
         await page.getByTestId('browser-pair-code').fill('4555')
         await card.getByRole('button', { name: 'Pair', exact: true }).click()

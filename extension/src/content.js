@@ -17,7 +17,7 @@
   document.documentElement.append(host);
   const ui=root.querySelector('.ui'),scene=root.querySelector('.scene'),pins=root.querySelector('.pins');
   const imageLayer=root.querySelector('.image-viewer-layer');
-  let imageView=null,imageReturnFocus=null;
+  let imageView=null,imageReturnFocus=null,controlActive=false;
   let notes=[],mode='element',selected=null,hover=null,hoverElement=null,message='',snapshot=null,connection=null,visible=true,review=false,busy=false,receipt=null,drawing=null,history=[],captureGuard=null,clientId=crypto.randomUUID(),saveTimer,toastTimer,noteCrops={},feedbackError='';
   const elementRefs=new Map(),anchorRefs=new Map();
   let scrollRevision=0,paintFrame=0;
@@ -125,10 +125,10 @@
     paint();
     if(restoreImageFocus)ui.querySelector(restoreImageFocus.kind==='crop'?`[data-image="crop"][data-note="${CSS.escape(restoreImageFocus.id)}"]`:'[data-image="numbered"]')?.focus();
   }
-  function connectionControl(){return `<button class="connection-control ${connection?.paired?'':'unpaired'}" data-action="settings" title="${escape(connection?.paired?(connection.company_label?connection.company_label+' · ':'')+(connection.session_label||connection.session):'Connect this website to a chat')}" aria-label="${connection?.paired?'Change connected chat: '+escape((connection.company_label?connection.company_label+' · ':'')+(connection.session_label||connection.session)):'Connect this website to a chat'}"><span class="connection-target"><span class="target-dot ${connection?.paired?'connected':''}"></span><span class="connection-name">${connection?.paired?escape(connection.session_label||connection.session):'No chat connected'}${connection?.paired&&connection.company_label?`<small>${escape(connection.company_label)}</small>`:''}</span></span><span class="connection-action">${connection?.paired?'Change':'Connect'}${icon('arrow')}</span></button>`;}
+  function connectionControl(){return `<button class="connection-control ${connection?.control_enabled&&connection?.paired?'control-external':''} ${connection?.paired?'':'unpaired'}" data-action="settings" title="${escape(connection?.paired?(connection.company_label?connection.company_label+' · ':'')+(connection.session_label||connection.session):'Connect this website to a chat')}" aria-label="${connection?.paired?'Change connected chat: '+escape((connection.company_label?connection.company_label+' · ':'')+(connection.session_label||connection.session)):'Connect this website to a chat'}"><span class="connection-target"><span class="target-dot ${connection?.paired?'connected':''}"></span><span class="connection-name">${connection?.paired?escape(connection.session_label||connection.session):'No chat connected'}${connection?.paired&&connection.company_label?`<small>${escape(connection.company_label)}</small>`:''}</span></span><span class="connection-action">${connection?.paired?'Change':'Connect'}${icon('arrow')}</span></button>`;}
   let connectionRefresh=null;
   function refreshConnection(){
-    if(!visible||document.visibilityState==='hidden'||connectionRefresh)return;
+    if(controlActive||!visible||document.visibilityState==='hidden'||connectionRefresh)return;
     const page=draftPage;
     connectionRefresh=rpc('draft.load',{connection_only:true}).then(data=>{
       if(page!==draftPage||location.href!==page||JSON.stringify(connection)===JSON.stringify(data.connection))return;
@@ -159,14 +159,14 @@
   function closeImageView(){
     if(!imageView)return;imageView=null;imageLayer.hidden=true;imageLayer.innerHTML='';ui.inert=false;pins.inert=false;ui.removeAttribute('aria-hidden');pins.removeAttribute('aria-hidden');const trigger=imageReturnFocus;imageReturnFocus=null;if(trigger?.isConnected)trigger.focus();else ui.querySelector('[data-image="numbered"]')?.focus();
   }
-  function overlayEvent(e){return e.composedPath().includes(host);}
+  function overlayEvent(e){return e.composedPath().some(node=>node===host||node.hasAttribute?.('data-supermux-control'));}
   function point(e){return{x:e.clientX+scrollX,y:e.clientY+scrollY};}
-  function mousemove(e){if(!visible||busy||review||selected||overlayEvent(e)||captureGuard)return;if(drawing){const p=point(e),last=drawing.points.at(-1);if(Math.hypot(p.x-last.x,p.y-last.y)>2){if(mode==='region')drawing.points=[drawing.points[0],p];else if(drawing.points.length<1500)drawing.points.push(p);}paint();return;}if(mode==='element'){hoverElement=logical(e.target);hover=hoverElement?.getBoundingClientRect()||null;paint();}}
-  function down(e){if(!visible||review||selected||overlayEvent(e)||captureGuard||e.button!==0)return;if(mode!=='element'){e.preventDefault();e.stopImmediatePropagation();const anchoring=anchorFor(e.target);drawing={points:[point(e)],pointerId:e.pointerId,anchor:anchoring?.anchor,anchorElement:anchoring?.element};if(anchoring)anchorRefs.set('__drawing',anchoring.element);hover=null;paint();}}
-  function up(e){if(!drawing)return;e.preventDefault();e.stopImmediatePropagation();const current=drawing,path=current.points;drawing=null;anchorRefs.delete('__drawing');const rect=drawBounds(path);if(rect.width>8&&rect.height>8)addNote({id:crypto.randomUUID(),kind:mode,rect,points:mode==='draw'?path:undefined,text:'',...(current.anchor?{anchor:current.anchor}:{})},undefined,current.anchorElement);else paint();}
-  function click(e){if(!visible||busy||review||overlayEvent(e)||captureGuard)return;if(mode==='element'&&!selected){const el=logical(e.target);if(!el){toast('Choose a visible element on the page.');return;}e.preventDefault();e.stopImmediatePropagation();addNote({id:crypto.randomUUID(),kind:'element',rect:docRect(el.getBoundingClientRect()),text:'',element:{tag:el.tagName.toLowerCase(),selector:selector(el),text:publicText(el),role:el.getAttribute('role')||undefined}},el);}else if(mode!=='element'){e.preventDefault();e.stopImmediatePropagation();}}
+  function mousemove(e){if(controlActive||!visible||busy||review||selected||overlayEvent(e)||captureGuard)return;if(drawing){const p=point(e),last=drawing.points.at(-1);if(Math.hypot(p.x-last.x,p.y-last.y)>2){if(mode==='region')drawing.points=[drawing.points[0],p];else if(drawing.points.length<1500)drawing.points.push(p);}paint();return;}if(mode==='element'){hoverElement=logical(e.target);hover=hoverElement?.getBoundingClientRect()||null;paint();}}
+  function down(e){if(controlActive||!visible||review||selected||overlayEvent(e)||captureGuard||e.button!==0)return;if(mode!=='element'){e.preventDefault();e.stopImmediatePropagation();const anchoring=anchorFor(e.target);drawing={points:[point(e)],pointerId:e.pointerId,anchor:anchoring?.anchor,anchorElement:anchoring?.element};if(anchoring)anchorRefs.set('__drawing',anchoring.element);hover=null;paint();}}
+  function up(e){if(controlActive||!drawing)return;e.preventDefault();e.stopImmediatePropagation();const current=drawing,path=current.points;drawing=null;anchorRefs.delete('__drawing');const rect=drawBounds(path);if(rect.width>8&&rect.height>8)addNote({id:crypto.randomUUID(),kind:mode,rect,points:mode==='draw'?path:undefined,text:'',...(current.anchor?{anchor:current.anchor}:{})},undefined,current.anchorElement);else paint();}
+  function click(e){if(controlActive||!visible||busy||review||overlayEvent(e)||captureGuard)return;if(mode==='element'&&!selected){const el=logical(e.target);if(!el){toast('Choose a visible element on the page.');return;}e.preventDefault();e.stopImmediatePropagation();addNote({id:crypto.randomUUID(),kind:'element',rect:docRect(el.getBoundingClientRect()),text:'',element:{tag:el.tagName.toLowerCase(),selector:selector(el),text:publicText(el),role:el.getAttribute('role')||undefined}},el);}else if(mode!=='element'){e.preventDefault();e.stopImmediatePropagation();}}
   function keydown(e){
-    if(!visible||busy||e.isComposing)return;
+    if(controlActive||!visible||busy||e.isComposing)return;
     const path=e.composedPath(),inside=path.includes(host);
     if(imageView){
       e.stopPropagation();
@@ -267,6 +267,10 @@
   function restoreCapture(){const imageFocus=captureGuard?.imageFocus;clearTimeout(captureGuard?.timer);captureGuard=null;host.classList.remove('capturing');if(imageFocus?.isConnected)imageFocus.focus();}
   chrome.runtime.onMessage.addListener((m,sender,reply)=>{
     if(sender.id&&sender.id!==chrome.runtime.id)return;
+    if(m.type==='control.prepare'){
+      (async()=>{if(busy)throw new Error('Finish sending or capturing before allowing control.');saveEditor();clearTimeout(saveTimer);await Promise.all([...noteCaptures]);await saveDraft();reply({ok:true});})().catch(e=>reply({ok:false,error:e.message}));return true;
+    }
+    if(m.type==='control.changed'){controlActive=['starting','active','stopping'].includes(m.state?.state);host.classList.toggle('control-active',controlActive);if(controlActive){closeImageView();hover=null;drawing=null;paint();}else refreshConnection();return;}
     if(m.type==='capture.validate'){const v=viewport();reply(!!captureGuard&&captureGuard.nonce===m.nonce&&captureGuard.revision===scrollRevision&&captureGuard.scrollState.every(([el,x,y])=>el.isConnected&&el.scrollLeft===x&&el.scrollTop===y)&&Object.keys(v).every(k=>v[k]===m.viewport[k]));return;}
     if(m.type==='capture.restore'){restoreCapture();reply({ok:true});return;}
     if(m.type==='capture.prepare'){

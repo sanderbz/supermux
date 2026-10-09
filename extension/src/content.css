@@ -29,3 +29,7 @@
 .bar .connection-control{width:34px;height:36px;padding:0;margin:0;border:0;border-radius:10px;display:grid;place-items:center;background:transparent}.bar .connection-control .connection-name,.bar .connection-control .connection-action{display:none}.bar .connection-control .connection-target{gap:0}.bar .connection-control:hover{background:#e9eee3}.direct-send{height:36px;width:36px;flex:none;display:grid;place-items:center;border-radius:50%;background:#2b3c29;color:#fff}.direct-send svg{width:18px;height:18px}.direct-send:hover{background:#3d5137}.direct-send:disabled{cursor:default}.send-status{position:absolute;left:50%;bottom:91px;transform:translateX(-50%);max-width:calc(100vw - 30px);padding:10px 14px;border:1px solid #dce2d7;border-radius:10px;background:#fafcf7;color:#4c6040;font-size:12px;line-height:1.5;pointer-events:auto;box-shadow:0 4px 16px #22301d12}.send-error{color:#8b4c34;background:#fcf1e8;border-color:#e9d1be}.ui:has(.send-status) .hint-float{display:none}@media(max-width:700px){.send-status{bottom:78px}}
 
 .bar .connection-control.unpaired{width:auto;padding:0 8px;display:flex;gap:7px}.bar .connection-control.unpaired .connection-action{display:block;font-size:11px}.bar .connection-control.unpaired .connection-action svg{display:none}
+
+.bar .connection-control.control-external{display:none}
+
+:host(.control-active){visibility:hidden!important}

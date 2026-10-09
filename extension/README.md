@@ -39,6 +39,7 @@ Submission recovery stores only small destination and receipt records, never ext
 npm run build
 npm test
 npm run test:e2e
+npm run test:control
 npm run showcase
 ```
 
@@ -47,3 +48,11 @@ Brand assets use the canonical blue chevrons from `brand/logo-supermux.svg`, `we
 Node tests use the workspace’s `web/node_modules/jsdom`. The browser suite uses a persistent Chromium extension context and CDP to inspect the production closed shadow root. It checks actual document and overflow-container scrolling against SVG outlines, drawing points, pins, and the selected editor; fixed/sticky elements and restored DOM anchors after reload are included. Run `npm run build && npm run test:e2e` on a host that permits Chromium to launch; Node geometry tests alone do not verify browser layout. No production dependencies or bundler are required.
 
 The showcase command opens a local example website, annotates it with the built extension, and captures the production annotation UI to `docs/screenshots/browser-feedback.png`. It requires Chromium with extension support and is also available in the browser feedback showcase GitHub Actions workflow.
+
+## Browser control
+
+Chrome 125 or newer is required. On a paired website, click **Allow control** to attach Chrome’s debugger to that tab. The connected agent can inspect the page and run trusted clicks, typing, keys, scrolling, same-site navigation and page JavaScript. Screenshots are taken only when requested. **Stop** detaches control; changing the website, connected agent or server also ends the grant. An interrupted batch is not replayed automatically.
+
+The existing website/company/agent binding supplies authority. Each activation gets a new target, so a previous tab grant cannot silently move to another tab. Control includes page JavaScript; it is not a network sandbox. Pairing and bearer tokens remain in the extension worker.
+
+`npm run test:control` runs a disposable local React page through the production extension in real Chromium. It verifies native Allow/Stop, trusted input, nested frames, stale references, navigation, screenshot scroll offsets and cancellation, then reports 20 alternating local batch-versus-separate trials. The benchmark reports request/result counts and UTF-8 command, progress and result bytes; it does not simulate remote latency. The script captures `docs/screenshots/browser-control.png`.

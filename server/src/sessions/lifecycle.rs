@@ -656,6 +656,11 @@ fn build_launch_command(
                 let kv = format!("experimental_instructions_file={:?}", path.display().to_string());
                 parts.push(shell_escape::unix::escape(std::borrow::Cow::Owned(kv)).into_owned());
             }
+            for word in mcp_flags {
+                parts.push(
+                    shell_escape::unix::escape(std::borrow::Cow::Borrowed(word)).into_owned(),
+                );
+            }
             let codex = parts.join(" ");
 
             // Codex is an optional provider, so make its first launch
@@ -2911,6 +2916,12 @@ async fn start_locked_inner(
                 tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
             }
         }
+    } else if s.provider == "codex"
+        && crate::browser_feedback::control::has_binding(state, name).await
+    {
+        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+            connector_flags = crate::connectors::browser::mcp::codex_flags(&path);
+        }
     }
 
     let dir = PathBuf::from(&s.dir);
@@ -3465,7 +3476,8 @@ pub async fn send_chat_text(
     send_id: Option<&str>,
 ) -> Result<(), AppError> {
     reject_wrapper_markup(text)?;
-    send_harness_text(state, name, text, None, send_id).await
+    let wire = crate::browser_feedback::control::with_hint(state, name, text).await;
+    send_harness_text(state, name, &wire, Some(text), send_id).await
 }
 
 /// [`send_chat_text`] for a message sent by an authenticated HUMAN colleague
@@ -3489,13 +3501,10 @@ pub async fn send_human_text(
     send_id: Option<&str>,
 ) -> Result<(), AppError> {
     reject_wrapper_markup(text)?;
-    let wrapped = crate::agents::delegate::wrap_human(
-        author_user_id,
-        author_name,
-        author_company_id,
-        text,
-    )
-    .map_err(|e| AppError::BadRequest(e.into()))?;
+    let wire = crate::browser_feedback::control::with_hint(state, name, text).await;
+    let wrapped =
+        crate::agents::delegate::wrap_human(author_user_id, author_name, author_company_id, &wire)
+            .map_err(|e| AppError::BadRequest(e.into()))?;
     send_harness_text(state, name, &wrapped, Some(text), send_id).await
 }
 
@@ -3780,6 +3789,8 @@ pub async fn send_feedback_text(
         .as_ref()
         .map(|f| crate::browser_feedback::agent_prompt(std::path::Path::new(&f.artifact_dir)));
     let text = delivery_text.as_deref().unwrap_or(text);
+    let wire = crate::browser_feedback::control::with_hint(state, name, text).await;
+    let text = wire.as_str();
     if super::login::is_frozen(name) {
         return Err(Deferred(super::login::frozen_error(name)));
     }
@@ -7863,6 +7874,192 @@ mod write_runtime_tests {
                 checked_submit_state(&capture, "codex", "new request"),
                 SubmitState::Submitted
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_control_hint_preserves_owner_member_and_feedback_delivery_for_both_providers()
+    {
+        for provider in ["claude", "codex"] {
+            for kind in ["owner", "member", "feedback"] {
+                for connected in [false, true] {
+                    let (state, dir) = test_state().await;
+                    let workspace = std::fs::canonicalize(&dir).unwrap();
+                    db::sessions::insert_minimal(
+                        &state.pool,
+                        "control-agent",
+                        workspace.to_str().unwrap(),
+                        provider,
+                    )
+                    .await
+                    .unwrap();
+                    sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at) VALUES('bb_hint','https://example.test','control-agent','fixture',1)").execute(&state.pool).await.unwrap();
+                    if connected {
+                        crate::browser_feedback::control::connect_test(&state, "bb_hint").await;
+                    }
+                    let original = "Check this page";
+                    let feedback_dir = workspace.join(".supermux/browser-feedback/bf_hint");
+                    let base = if kind == "feedback" {
+                        std::fs::create_dir_all(&feedback_dir).unwrap();
+                        std::fs::write(feedback_dir.join("feedback.json"), b"{}").unwrap();
+                        std::fs::write(feedback_dir.join("screenshot.png"), b"fixture").unwrap();
+                        let base = crate::browser_feedback::agent_prompt(&feedback_dir);
+                        let stored = format!(
+                            "Captured workspace: {}\n{base}",
+                            serde_json::to_string(&workspace).unwrap()
+                        );
+                        sqlx::query("INSERT INTO browser_feedback(id,binding_id,client_id,status,artifact_dir,prompt,created_at,updated_at) VALUES('bf_hint','bb_hint','client-hint','queued',?,?,1,1)").bind(feedback_dir.to_str().unwrap()).bind(stored).execute(&state.pool).await.unwrap();
+                        base
+                    } else {
+                        original.to_string()
+                    };
+                    let hinted = if connected {
+                        format!("{base}\n\nBrowser control: supermux-browser list.")
+                    } else {
+                        base.clone()
+                    };
+                    let expected = if kind == "member" {
+                        crate::agents::delegate::wrap_human(1, "Member", None, &hinted).unwrap()
+                    } else {
+                        hinted
+                    };
+                    let rt = StubRuntime::simulating(provider, false, false);
+                    state
+                        .session_runtimes
+                        .insert("control-agent".into(), rt.clone());
+                    state
+                        .status_watch_for("control-agent")
+                        .send_replace(("idle".into(), 1));
+                    let send = async {
+                        match kind {
+                            "feedback" => {
+                                send_feedback_text(&state, "control-agent", original, "bf_hint")
+                                    .await
+                                    .map_err(|e| format!("{e:?}"))
+                            }
+                            "member" => send_human_text(
+                                &state,
+                                "control-agent",
+                                original,
+                                1,
+                                "Member",
+                                None,
+                                Some("hint-id"),
+                            )
+                            .await
+                            .map_err(|e| format!("{e:?}")),
+                            _ => send_chat_text(&state, "control-agent", original, Some("hint-id"))
+                                .await
+                                .map_err(|e| format!("{e:?}")),
+                        }
+                    };
+                    send.await.unwrap();
+                    assert_eq!(
+                        rt.simulation.lock().unwrap().as_ref().unwrap().last_paste,
+                        expected,
+                        "{provider}/{kind}/{connected}"
+                    );
+                    state.browser_control.revoke("bb_hint");
+                    match kind {
+                        "feedback" => {
+                            send_feedback_text(&state, "control-agent", original, "bf_hint")
+                                .await
+                                .unwrap()
+                        }
+                        "member" => send_human_text(
+                            &state,
+                            "control-agent",
+                            original,
+                            1,
+                            "Member",
+                            None,
+                            Some("hint-id"),
+                        )
+                        .await
+                        .unwrap(),
+                        _ => send_chat_text(&state, "control-agent", original, Some("hint-id"))
+                            .await
+                            .unwrap(),
+                    }
+                    assert_eq!(
+                        rt.text_calls.load(Ordering::SeqCst),
+                        1,
+                        "no retyping after control disconnect"
+                    );
+                    assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
+                    let preview = db::sessions::get(&state.pool, "control-agent")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .last_send_text;
+                    assert_eq!(
+                        preview,
+                        if kind == "feedback" {
+                            expected
+                        } else {
+                            original.into()
+                        }
+                    );
+                    state.pool.close().await;
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_control_hint_preserves_slash_commands_whitespace_and_terminal_drafts() {
+        for provider in ["claude", "codex"] {
+            let (state, dir) = test_state().await;
+            db::sessions::insert_minimal(&state.pool, "control-agent", "/tmp", provider)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at) VALUES('bb_hint','https://example.test','control-agent','fixture',1)").execute(&state.pool).await.unwrap();
+            crate::browser_feedback::control::connect_test(&state, "bb_hint").await;
+            for command in ["/compact", "  /model gpt-6", "/login"] {
+                assert_eq!(
+                    crate::browser_feedback::control::with_hint(&state, "control-agent", command)
+                        .await,
+                    command
+                );
+            }
+            assert_eq!(
+                crate::browser_feedback::control::with_hint(
+                    &state,
+                    "control-agent",
+                    "keep newline\n"
+                )
+                .await,
+                "keep newline\n\n\nBrowser control: supermux-browser list."
+            );
+            let rt = StubRuntime::simulating(provider, false, false);
+            rt.simulation.lock().unwrap().as_mut().unwrap().draft =
+                "existing terminal draft".into();
+            state
+                .session_runtimes
+                .insert("control-agent".into(), rt.clone());
+            state
+                .status_watch_for("control-agent")
+                .send_replace(("idle".into(), 1));
+            assert!(
+                send_chat_text(&state, "control-agent", "new request", Some("draft-id"))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                send_feedback_text(&state, "control-agent", "new request", "feedback-id")
+                    .await
+                    .is_err()
+            );
+            assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                rt.simulation.lock().unwrap().as_ref().unwrap().draft,
+                "existing terminal draft"
+            );
+            assert!(!state.send_dedup.uncertain("control-agent", "draft-id"));
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 

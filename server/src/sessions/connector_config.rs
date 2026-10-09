@@ -790,6 +790,21 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
         }
     }
 
+    if !wants_browser && crate::browser_feedback::control::has_binding(state, session_name).await {
+        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+            let emit = crate::connectors::browser::mcp::control_emit(&path);
+            if !cfg.is_active() {
+                return Ok(Some(FinishedConfig {
+                    env: HashMap::new(),
+                    launch_flags: crate::connectors::browser::mcp::claude_control_flags(&path),
+                }));
+            }
+            cfg.mcp_servers
+                .insert("supermux_browser_control".into(), emit);
+            cfg.allow_rules
+                .push(Value::String("mcp__supermux_browser_control__*".into()));
+        }
+    }
     cfg.finish().await
 }
 
@@ -1047,6 +1062,32 @@ mod tests {
             .position(|w| w == "--mcp-config")
             .expect("--mcp-config present");
         serde_json::from_str(&fin.launch_flags[i + 1]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn paired_plain_session_adds_only_control_tools_without_disabling_ambient_mcp() {
+        let (state, dir) = browser_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "alice", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at) VALUES('bb_plain','https://example.test','alice','hash',1)").execute(&state.pool).await.unwrap();
+        let fin = assemble(&state, "alice").await.unwrap().unwrap();
+        assert!(fin.env.is_empty());
+        assert!(!fin.launch_flags.iter().any(|f| f == "--strict-mcp-config"));
+        let mcp = mcp_config_json(&fin);
+        assert!(mcp["mcpServers"]["browser"].is_null());
+        assert_eq!(
+            mcp["mcpServers"]["supermux_browser_control"]["args"][1],
+            "--control-only"
+        );
+        let settings: Value = serde_json::from_str(settings_flag(&fin).unwrap()).unwrap();
+        assert!(settings.get("enableAllProjectMcpServers").is_none());
+        assert!(settings.get("crossSessionInbound").is_none());
+        assert_eq!(
+            settings["permissions"]["allow"][1],
+            "Bash(supermux-browser *)"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// GRANTED: the launch carries the browser MCP server + its allow rule, with

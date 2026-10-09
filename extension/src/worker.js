@@ -1,13 +1,15 @@
+import {createControlService} from './control-session.js';
 import {endpointOrigin, permissionFor, safeUrl, validateFeedback} from './shared.js';
 const storage=chrome.storage.local;
 void storage.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
 const config = async()=> (await storage.get('connection')).connection;
+const controls=createControlService({chrome,getConfig:config});
 let connectionQueue=Promise.resolve();
 function trusted(fn){const next=connectionQueue.then(fn);connectionQueue=next.catch(()=>{});return next;}
-function mutateConnection(fn){return trusted(async()=>{const result=await fn(await config());if(result===null)await storage.remove('connection');else await storage.set({connection:result});return result;});}
+function mutateConnection(fn){return trusted(async()=>{const result=await fn(await config());if(result===null)await storage.remove('connection');else await storage.set({connection:result});await controls.connectionChanged();return result;});}
 const extensionPage = sender => sender.id===chrome.runtime.id && sender.url?.split('?')[0]===chrome.runtime.getURL('options.html');
 const publicBinding=b=>b?{id:b.id,origin:b.origin,session:b.session,session_label:b.session_label,company_id:b.company_id,company_label:b.company_label}:null;
-const publicConnection=(c,site)=>c?{origin:c.origin,site,paired:!!c.bindings?.[site],session:c.bindings?.[site]?.session,session_label:c.bindings?.[site]?.session_label,company_id:c.bindings?.[site]?.company_id,company_label:c.bindings?.[site]?.company_label}:null;
+const publicConnection=(c,site)=>c?{origin:c.origin,site,control_enabled:controls.supported,paired:!!c.bindings?.[site],session:c.bindings?.[site]?.session,session_label:c.bindings?.[site]?.session_label,company_id:c.bindings?.[site]?.company_id,company_label:c.bindings?.[site]?.company_label}:null;
 const websiteOrigin=value=>{const url=new URL(value);if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.origin!==value)throw new Error('Choose a regular website to pair.');return url.origin;};
 async function api(origin,path,token,body){
  const granted=await chrome.permissions.contains({origins:[permissionFor(origin)]});
@@ -78,13 +80,14 @@ async function performCapture(tab){
   if(!metadata?.viewport) throw new Error('Page capture is unavailable. Reopen the extension.');
   const current=(await chrome.tabs.query({active:true,windowId:tab.windowId}))[0];
   if(current?.id!==tab.id||current.url!==original.url) throw new Error('The active page changed. Capture cancelled.');
+  await controls.hideUi(tab.id,true);
   const dataUrl=await chrome.tabs.captureVisibleTab(tab.windowId,{format:'png'});
   const after=(await chrome.tabs.query({active:true,windowId:tab.windowId}))[0];
   if(after?.id!==tab.id||after.url!==original.url) throw new Error('The active page changed. Capture cancelled.');
   const valid=await chrome.tabs.sendMessage(tab.id,{type:'capture.validate',viewport:metadata.viewport,nonce:metadata.nonce});
   if(!valid)throw new Error('The viewport moved during capture. Please capture again.');
   return {dataUrl,...metadata};
- }finally{if(prepared) await chrome.tabs.sendMessage(tab.id,{type:'capture.restore'}).catch(()=>{});}
+ }finally{await controls.hideUi(tab.id,false);if(prepared) await chrome.tabs.sendMessage(tab.id,{type:'capture.restore'}).catch(()=>{});}
 }
 // A send retains its original destination, including when its response was
 // lost and this website is subsequently paired with another agent. This trusted
@@ -149,8 +152,11 @@ async function handle(message,sender){
   }
   return p.status==='paired'?{status:'awaiting-confirmation',id:pending.id,server_origin:c.origin,binding:publicBinding(p.binding)}:{status:p.status};
  }
+ // Stop only removes this tab's grant, including during navigation/revocation.
+ if(type==='control.stop'&&sender.tab?.id)return controls.handle(type,sender.tab,sender);
  const tab=await authorized(sender);
- if(type==='draft.load'){if(message.connection_only)return {connection:publicConnection(await config(),new URL(tab.url).origin)};const key=await draftKey(tab.url);const saved=await drafts(async()=>(await storage.get(key))[key]);return {draft:unpackDraft(saved),connection:publicConnection(await config(),new URL(tab.url).origin)};}
+ if(type?.startsWith('control.'))return controls.handle(type,tab,sender);
+ if(type==='draft.load'){await controls.show(tab);if(message.connection_only)return {connection:publicConnection(await config(),new URL(tab.url).origin)};const key=await draftKey(tab.url);const saved=await drafts(async()=>(await storage.get(key))[key]);return {draft:unpackDraft(saved),connection:publicConnection(await config(),new URL(tab.url).origin)};}
  if(type==='draft.save'){
   const key=await draftKey(tab.url);return drafts(()=>saveDraft(key,message.draft));
  }
