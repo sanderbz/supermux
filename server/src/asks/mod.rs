@@ -34,6 +34,18 @@
 //! (PostToolUse etc.). So the "the turn moved on" clears never close an ask
 //! whose hook is still attached, and a hook that vanishes without being
 //! released closes its ask after a short grace period.
+//!
+//! **Delivered is not applied.** Claude does NOT end the hook when the human
+//! answers "Yes" at the terminal, and no hook fires at that moment: the ask
+//! stays answerable until the approved tool finishes. An API answer in that
+//! window reaches the hook but not Claude; the call's PostToolUse corrects the
+//! record afterwards ([`correct_overridden`]).
+//!
+//! **Only attended sessions wait** ([`hook`]): a headless `claude -p` inside a
+//! pane shares the pane's hook env but can show no dialog.
+//!
+//! **An id names one question** ([`open_or_refresh`]): different content under
+//! the same identity supersedes the ask instead of editing it.
 
 pub mod answer;
 pub mod detail;
@@ -188,12 +200,40 @@ fn tool_use_id(raw: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// An API answer delivered to a tool-call ask's hook, remembered by the call's
+/// `tool_use_id` until that call's PostToolUse shows which answer took effect.
+///
+/// Claude Code does not kill a PermissionRequest hook when the human answers
+/// "Yes" at the terminal (verified 2.1.300), so the hook — and the ask — stay
+/// answerable while the approved tool runs. An API "deny" in that window is
+/// delivered (the hook prints it) but ignored by Claude: the tool runs anyway.
+/// No hook fires at the moment of the terminal "Yes", so the call's own
+/// PostToolUse is the first proof; it rewrites the ask to what really happened
+/// ([`correct_overridden`]).
+#[derive(Debug, Clone)]
+struct AnsweredCall {
+    ask_id: String,
+    /// question asks: the `answers` the hook handed Claude, to compare with the
+    /// answers the finished call actually carries.
+    answers: Option<Value>,
+}
+
 pub struct AskRegistry {
     pub config: AsksConfig,
     locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     waiters: std::sync::Mutex<HashMap<String, Waiter>>,
     tool_keys: std::sync::Mutex<HashMap<String, String>>,
+    /// match key → the `tool_use_id` of the most recent PreToolUse with that
+    /// key: the call a PermissionRequest (which names no tool_use_id) is for.
+    latest_call: std::sync::Mutex<HashMap<String, String>>,
+    /// `tool_use_id` → the API answer delivered for that call.
+    answered_calls: std::sync::Mutex<HashMap<String, AnsweredCall>>,
     next_gen: AtomicU64,
+}
+
+/// Lock a std mutex, riding through poisoning (the maps stay usable).
+fn guard<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl AskRegistry {
@@ -203,6 +243,8 @@ impl AskRegistry {
             locks: DashMap::new(),
             waiters: std::sync::Mutex::new(HashMap::new()),
             tool_keys: std::sync::Mutex::new(HashMap::new()),
+            latest_call: std::sync::Mutex::new(HashMap::new()),
+            answered_calls: std::sync::Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
         }
     }
@@ -230,20 +272,53 @@ impl AskRegistry {
     /// Remember which match key a tool call's PreToolUse carried, so its
     /// PostToolUse (same `tool_use_id`) closes exactly that ask.
     fn remember_tool_key(&self, tool_use_id: &str, key: String) {
-        let mut m = self.tool_keys.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut latest = guard(&self.latest_call);
+            if latest.len() >= TOOL_KEYS_MAX {
+                latest.clear();
+            }
+            latest.insert(key.clone(), tool_use_id.to_string());
+        }
+        let mut m = guard(&self.tool_keys);
         if m.len() >= TOOL_KEYS_MAX {
-            // A PostToolUse that never came (killed session) leaks one entry; a
-            // wholesale reset at the cap bounds that without bookkeeping.
+            // A PostToolUse that never came (killed session, a denied call)
+            // leaks one entry; a wholesale reset at the cap bounds that without
+            // bookkeeping.
             m.clear();
         }
         m.insert(tool_use_id.to_string(), key);
     }
 
+    fn peek_tool_key(&self, tool_use_id: &str) -> Option<String> {
+        guard(&self.tool_keys).get(tool_use_id).cloned()
+    }
+
     fn take_tool_key(&self, tool_use_id: &str) -> Option<String> {
-        self.tool_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(tool_use_id)
+        let key = guard(&self.tool_keys).remove(tool_use_id)?;
+        let mut latest = guard(&self.latest_call);
+        if latest.get(&key).is_some_and(|t| t == tool_use_id) {
+            latest.remove(&key);
+        }
+        Some(key)
+    }
+
+    /// The call (by `tool_use_id`) a tool-call ask with this match key is for.
+    fn latest_call_for(&self, key: &str) -> Option<String> {
+        guard(&self.latest_call).get(key).cloned()
+    }
+
+    fn remember_answered(&self, tool_use_id: String, call: AnsweredCall) {
+        let mut m = guard(&self.answered_calls);
+        if m.len() >= TOOL_KEYS_MAX {
+            // Entries of answers that took effect (a deny: no PostToolUse ever
+            // comes) are never taken; the reset at the cap bounds them.
+            m.clear();
+        }
+        m.insert(tool_use_id, call);
+    }
+
+    fn take_answered(&self, tool_use_id: &str) -> Option<AnsweredCall> {
+        guard(&self.answered_calls).remove(tool_use_id)
     }
 
     /// Send `outcome` to the waiter of `id` (removing it). `false` when there
@@ -340,8 +415,16 @@ fn new_id() -> String {
 
 // ── lifecycle (callers hold the session lock) ────────────────────────────────
 
-/// Find the open ask of `(session, kind, key)` or create it. A re-raised ask
-/// whose detail changed is updated in place (same id, new rev).
+/// Find the open ask of `(session, kind, key)` or create it.
+///
+/// An ask never changes WHAT it asks. The same key raised again with the same
+/// detail (Claude re-firing a dialog, a decision hook reconnecting, a repeated
+/// needs-you line) is the same ask. With a DIFFERENT detail — a second
+/// needs-input question on the card, a new needs-you message, a re-fired
+/// dialog in another mode or offering other "always allow" choices — the old
+/// ask closes as `resolved` / `superseded` (naming its successor) and a new ask
+/// with a new id opens. So an answer addressed to an id always answers the
+/// question its sender was shown; a client holding the old id gets 409.
 async fn open_or_refresh(
     state: &AppState,
     session: &str,
@@ -352,19 +435,15 @@ async fn open_or_refresh(
 ) -> anyhow::Result<AskRow> {
     let detail_s = detail.to_string();
     let open = db::asks::open_for_session(&state.pool, session, Some(kind)).await?;
+    let id = new_id();
     if let Some(row) = open.into_iter().find(|r| r.match_key == key) {
         if row.detail == detail_s {
             return Ok(row);
         }
-        if let Some(updated) =
-            db::asks::update_detail(&state.pool, &row.id, &detail_s, now_ms()).await?
-        {
-            emit(state, "updated", &updated);
-            return Ok(updated);
-        }
-        return Ok(row);
+        let mut res = resolution("agent", "superseded");
+        res["superseded_by"] = json!(id);
+        close_row(state, &row, "resolved", res).await?;
     }
-    let id = new_id();
     let row = db::asks::insert(
         &state.pool,
         &db::asks::NewAsk {
@@ -449,23 +528,46 @@ async fn close_for_tool(
     raw: &Value,
     failed: bool,
 ) -> anyhow::Result<()> {
+    // This call was answered through the API: did that answer take effect?
+    if let Some(call) = tool_use_id(raw).and_then(|t| state.asks.take_answered(t)) {
+        correct_overridden(state, &call, raw, failed).await?;
+    }
     let open: Vec<AskRow> = db::asks::open_for_session(&state.pool, session, None)
         .await?
         .into_iter()
         .filter(|r| r.kind == KIND_PERMISSION || r.kind == KIND_QUESTION)
         .collect();
     let outcome = if failed { "tool_failed" } else { "tool_ran" };
+    let tid = tool_use_id(raw);
     // The keys this call is known by: the one its PreToolUse was seen with
     // (correlated by `tool_use_id`, robust to anything that rewrote the input on
     // the way), and the one its own input hashes to.
     let mut keys = Vec::new();
-    if let Some(k) = tool_use_id(raw).and_then(|t| state.asks.take_tool_key(t)) {
+    if let Some(k) = tid.and_then(|t| state.asks.peek_tool_key(t)) {
         keys.push(k);
     }
     if detail::tool_name(raw).is_some() {
         keys.push(detail::tool_key(raw));
     }
     let exact = open.iter().find(|r| keys.contains(&r.match_key)).cloned();
+    // An exact match whose decision hook is still attached is closed only when
+    // THIS call is the one its dialog is for — the latest PreToolUse with that
+    // key. Two identical calls of one agent share a key (the PermissionRequest
+    // names no tool_use_id), and the first finishing must not close the
+    // second's pending dialog. When that cannot be told (no tool_use_id, or the
+    // PreToolUse was never seen — e.g. supermux restarted in between), close:
+    // after a terminal "Yes" nothing else would release the hook for hours.
+    // Read before `take_tool_key` forgets this call.
+    let exact_is_this_call = exact.as_ref().map(|r| {
+        !state.asks.has_waiter(&r.id)
+            || match (tid, state.asks.latest_call_for(&r.match_key)) {
+                (Some(t), Some(latest)) => t == latest,
+                _ => true,
+            }
+    });
+    if let Some(t) = tid {
+        state.asks.take_tool_key(t);
+    }
     // Without an exact match, fall back — but only onto an ask with NO decision
     // hook attached: an attached hook proves its own request is still pending,
     // so a parallel call of the same tool finishing must not close it.
@@ -473,23 +575,28 @@ async fn close_for_tool(
         .iter()
         .filter(|r| !state.asks.has_waiter(&r.id))
         .collect();
-    let target = exact.or_else(|| match detail::tool_name(raw) {
-        Some(tool) => unhooked
-            .iter()
-            .find(|r| {
-                let d: Value = serde_json::from_str(&r.detail).unwrap_or_default();
-                if tool == detail::ASK_USER_QUESTION {
-                    r.kind == KIND_QUESTION
-                } else {
-                    r.kind == KIND_PERMISSION && d["tool"].as_str() == Some(tool)
-                }
-            })
-            .map(|r| (*r).clone()),
-        // A payload the hook had to truncate: no tool name to match on. The
-        // oldest open unhooked tool ask is the one a finished call most
-        // plausibly belonged to (the in-memory card makes the same call).
-        None => unhooked.first().map(|r| (*r).clone()),
-    });
+    let target = match (exact, exact_is_this_call) {
+        (Some(row), Some(true)) => Some(row),
+        // The key's pending dialog belongs to another, identical call.
+        (Some(_), _) => None,
+        (None, _) => match detail::tool_name(raw) {
+            Some(tool) => unhooked
+                .iter()
+                .find(|r| {
+                    let d: Value = serde_json::from_str(&r.detail).unwrap_or_default();
+                    if tool == detail::ASK_USER_QUESTION {
+                        r.kind == KIND_QUESTION
+                    } else {
+                        r.kind == KIND_PERMISSION && d["tool"].as_str() == Some(tool)
+                    }
+                })
+                .map(|r| (*r).clone()),
+            // A payload the hook had to truncate: no tool name to match on. The
+            // oldest open unhooked tool ask is the one a finished call most
+            // plausibly belonged to (the in-memory card makes the same call).
+            None => unhooked.first().map(|r| (*r).clone()),
+        },
+    };
     if let Some(row) = target {
         close_row(state, &row, "resolved", resolution("terminal", outcome)).await?;
     }
@@ -517,6 +624,74 @@ async fn close_for_tool(
         resolution("agent", "working"),
     )
     .await
+}
+
+/// A tool call whose ask was answered through the API finished (its
+/// PostToolUse / PostToolUseFailure). If that answer cannot have been the one
+/// Claude applied, the terminal decided first: rewrite the ask from
+/// `answered` to `resolved` / `terminal`, keeping the API answer under
+/// `overridden`, and publish it (`updated`).
+///
+/// * A `deny` (permission or question): a denied call never runs, so a
+///   finished call proves the terminal's "Yes" won.
+/// * A question `answer`: the finished call carries the answers Claude used;
+///   different from the ones the hook delivered → the terminal's won.
+/// * An `allow`: the tool was going to run either way — nothing to correct.
+async fn correct_overridden(
+    state: &AppState,
+    call: &AnsweredCall,
+    raw: &Value,
+    failed: bool,
+) -> anyhow::Result<()> {
+    let Some(row) = db::asks::get(&state.pool, &call.ask_id).await? else {
+        return Ok(());
+    };
+    if row.state != "answered" {
+        return Ok(());
+    }
+    let old: Value = row
+        .resolution
+        .as_deref()
+        .and_then(|r| serde_json::from_str(r).ok())
+        .unwrap_or_else(|| json!({}));
+    let api_outcome = old["outcome"].as_str().unwrap_or_default().to_string();
+    let overridden = match api_outcome.as_str() {
+        "deny" => true,
+        "answer" => match (&call.answers, detail::question_answers(raw)) {
+            (Some(sent), Some(got)) => *sent != Value::Object(got.clone()),
+            _ => false,
+        },
+        _ => false,
+    };
+    if !overridden {
+        return Ok(());
+    }
+    let res = json!({
+        "by": "terminal",
+        "outcome": if failed { "tool_failed" } else { "tool_ran" },
+        "overridden": old,
+    });
+    if let Some(updated) = db::asks::rewrite_closed(
+        &state.pool,
+        &row.id,
+        "answered",
+        "resolved",
+        &res.to_string(),
+        now_ms(),
+    )
+    .await?
+    {
+        emit(state, "updated", &updated);
+        db::audit::log(
+            &state.pool,
+            "terminal",
+            "ask.overridden",
+            &row.id,
+            json!({ "session": updated.session, "kind": updated.kind, "api_outcome": api_outcome }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Record one Claude Code hook event against the session's asks. Called by
@@ -686,11 +861,14 @@ async fn observe_locked(
             if foreign_agent {
                 return Ok(None);
             }
-            // A new prompt is the human (or a teammate) talking to the agent
-            // again — the one signal that a board needs-input was answered
-            // outside this API (typed at the terminal, in chat…). NOT the
-            // session going Active: an agent raises needs-input mid-turn, while
-            // it is still active, so that edge says nothing about an answer.
+            // A new prompt means the agent is working again: a needs-you line
+            // or an unhooked dialog ask is stale.
+            //
+            // NOT a board `needs_input`: a prompt is not necessarily its answer
+            // (a teammate's message, a scheduled prompt, an auto-continue). That
+            // ask follows the CARD instead (`sync_needs_input`): it closes when
+            // the card's "needs your input" state clears, so the ask and the
+            // card never disagree.
             close_kinds(
                 state,
                 session,
@@ -699,7 +877,6 @@ async fn observe_locked(
                     KIND_QUESTION,
                     KIND_ELICITATION,
                     KIND_WAITING,
-                    KIND_NEEDS_INPUT,
                 ],
                 Sweep::Unhooked,
                 resolution("session", "new_prompt"),
@@ -881,6 +1058,89 @@ pub async fn open_needs_input(state: &AppState, session: &str, issue_id: &str, q
     }
 }
 
+/// Does the card still stand behind a needs_input ask raised by
+/// `ask_session`? `Err(outcome)` names why not; `cleared` is the outcome to use
+/// when only the card's "needs your input" flag went down.
+fn card_backs(
+    issue: Option<&db::board::Issue>,
+    ask_session: &str,
+    cleared: &'static str,
+) -> Result<(), &'static str> {
+    let Some(issue) = issue else {
+        return Err("issue_deleted");
+    };
+    if issue.archived != 0 {
+        return Err("issue_discarded");
+    }
+    if issue.status == "done" {
+        return Err("issue_done");
+    }
+    if issue.session.as_deref() != Some(ask_session) {
+        // The card now belongs to another agent: an answer would be typed
+        // into a session that never asked.
+        return Err("reassigned");
+    }
+    if issue.awaiting_input == 0 {
+        return Err(cleared);
+    }
+    Ok(())
+}
+
+/// Make the card's open needs_input asks agree with the card: close each one
+/// the card no longer stands behind (deleted, discarded, done, reassigned, or
+/// its "needs your input" state cleared), as `resolved` with `{by, outcome}`.
+/// `cleared` is the outcome for a cleared flag (`resumed` when the agent went
+/// back to work). Called after every board mutation that can do that; never
+/// fails the caller (errors are logged).
+pub async fn sync_needs_input(state: &AppState, issue_id: &str, by: &str, cleared: &'static str) {
+    let rows = match db::asks::open_for_issue(&state.pool, issue_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(issue_id, error = %e, "asks: could not read needs-input asks");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let issue = match db::board::get_issue(&state.pool, issue_id).await {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(issue_id, error = %e, "asks: could not read the card of a needs-input ask");
+            return;
+        }
+    };
+    for row in rows {
+        if let Err(outcome) = card_backs(issue.as_ref(), &row.session, cleared) {
+            let _guard = state.asks.lock(&row.session).await;
+            if let Err(e) = close_row(state, &row, "resolved", resolution(by, outcome)).await {
+                tracing::warn!(issue_id, error = %e, "asks: could not close needs-input");
+            }
+        }
+    }
+}
+
+/// A session is about to be deleted: close its open asks (`resolved` /
+/// `{by: session, outcome: deleted}`, each with a rev and a `closed` frame)
+/// and release their hooks. The rows themselves survive the delete with a NULL
+/// session (migration 0046), so `since` replays the close to a client that was
+/// offline.
+pub async fn close_for_session_removed(state: &AppState, session: &str) {
+    let _guard = state.asks.lock(session).await;
+    let rows = match db::asks::open_for_session(&state.pool, session, None).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(session, error = %e, "asks: could not read the asks of a deleted session");
+            return;
+        }
+    };
+    for row in rows {
+        if let Err(e) = close_row(state, &row, "resolved", resolution("session", "deleted")).await {
+            tracing::warn!(session, error = %e, "asks: could not close an ask of a deleted session");
+        }
+    }
+}
+
 /// A board card's "needs input" cleared (`by`: `board` for a board reply,
 /// `agent` when the agent resumed work).
 pub async fn close_needs_input(
@@ -959,6 +1219,9 @@ pub async fn answer_ask(
             _ => answer::elicitation(body, &payload),
         };
         let (output, record) = built.map_err(AppError::BadRequest)?;
+        let sent_answers = output
+            .pointer("/hookSpecificOutput/decision/updatedInput/answers")
+            .cloned();
         if !state.asks.deliver(id, Outcome::Decision(output)) {
             return Err(AppError::Conflict(format!(
                 "ask_not_answerable: the decision hook for ask {id} went away before the answer reached it"
@@ -976,6 +1239,20 @@ pub async fn answer_ask(
             .await?
             .ok_or_else(|| not_open(&row))?;
         emit(state, "closed", &closed);
+        // Delivered is not applied: if the terminal already decided this call,
+        // its PostToolUse corrects the record (`correct_overridden`). Recorded
+        // under the session lock, so that PostToolUse cannot slip in first.
+        if closed.kind == KIND_PERMISSION || closed.kind == KIND_QUESTION {
+            if let Some(t) = state.asks.latest_call_for(&closed.match_key) {
+                state.asks.remember_answered(
+                    t,
+                    AnsweredCall {
+                        ask_id: closed.id.clone(),
+                        answers: sent_answers,
+                    },
+                );
+            }
+        }
         db::audit::log(
             &state.pool,
             actor,
@@ -999,6 +1276,20 @@ pub async fn answer_ask(
         if fresh.state != "open" {
             return Err(not_open(&fresh));
         }
+        // A board question is answered on its card, to the agent that asked:
+        // refuse (and close) when the card no longer stands behind it — moved
+        // to another session, closed, discarded, or no longer waiting.
+        if let (KIND_NEEDS_INPUT, Some(issue_id)) = (fresh.kind.as_str(), fresh.issue_id.as_deref())
+        {
+            let issue = db::board::get_issue(&state.pool, issue_id).await?;
+            if let Err(outcome) = card_backs(issue.as_ref(), &fresh.session, "input_cleared") {
+                close_row(state, &fresh, "resolved", resolution("board", outcome)).await?;
+                return Err(AppError::Conflict(format!(
+                    "ask_not_open: ask {id} is resolved: its card {issue_id} no longer waits on {} ({outcome})",
+                    fresh.session
+                )));
+            }
+        }
         let c = db::asks::close(&state.pool, id, "answered", &res.to_string(), now_ms())
             .await?
             .ok_or_else(|| not_open(&fresh))?;
@@ -1008,14 +1299,21 @@ pub async fn answer_ask(
     // Typed OUTSIDE the lock: delivering wakes the session, whose own hooks
     // (UserPromptSubmit…) must not queue behind this request.
     let delivered = match (claimed.kind.as_str(), claimed.issue_id.as_deref()) {
-        (KIND_NEEDS_INPUT, Some(issue)) => crate::board::reply_to_issue(state, issue, &text, actor)
-            .await
-            .map(|_| ()),
+        (KIND_NEEDS_INPUT, Some(issue)) => {
+            crate::board::reply_to_issue(state, issue, &text, actor, Some(&claimed.session))
+                .await
+                .map(|_| ())
+        }
         _ => crate::sessions::lifecycle::send_text(state, &claimed.session, &text).await,
     };
     if let Err(e) = delivered {
         if let Ok(Some(reopened)) = db::asks::reopen(&state.pool, id, now_ms()).await {
             emit(state, "updated", &reopened);
+        }
+        // Still owed — unless the card moved on meanwhile (the delivery may
+        // have failed BECAUSE it was reassigned).
+        if let Some(issue) = claimed.issue_id.as_deref() {
+            sync_needs_input(state, issue, "board", "input_cleared").await;
         }
         return Err(e);
     }
@@ -1080,6 +1378,20 @@ pub async fn start(state: &AppState) {
         ),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "asks: could not clear stale hook attachments"),
+    }
+    // A session deleted while its close-first step failed leaves open asks
+    // with no session; nothing can answer or close them any more.
+    match db::asks::open_orphans(&state.pool).await {
+        Ok(rows) => {
+            for row in rows {
+                if let Err(e) =
+                    close_row(state, &row, "resolved", resolution("session", "deleted")).await
+                {
+                    tracing::warn!(id = %row.id, error = %e, "asks: could not close an orphaned ask");
+                }
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "asks: could not read orphaned asks"),
     }
     let state = state.clone();
     tokio::spawn(async move {

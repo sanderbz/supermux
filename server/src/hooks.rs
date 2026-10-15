@@ -175,6 +175,7 @@ async fn hook_handler(
         &body.pane,
         &body.event,
         body.payload.unwrap_or(Value::Null),
+        true,
     )
     .await;
 
@@ -186,12 +187,17 @@ async fn hook_handler(
 /// ([`crate::asks::hook`], which replaces it for `PermissionRequest` /
 /// `Elicitation` and must therefore do all of the same). Returns the id of the
 /// ask this event opened or refreshed, if any.
+///
+/// `record_asks: false` skips the asks side entirely — the decision hook's
+/// request from an UNATTENDED Claude Code (a `claude -p` inside a pane), which
+/// can neither show nor wait on a dialog.
 pub(crate) async fn ingest(
     state: &AppState,
     session: &str,
     pane: &str,
     event: &str,
     raw_payload: Value,
+    record_asks: bool,
 ) -> Option<String> {
     let state = state.clone();
     let body = IngestEvent { session, pane, event };
@@ -269,7 +275,11 @@ pub(crate) async fn ingest(
     // The DURABLE side of the same event: open / refresh / close the session's
     // asks (`crate::asks`). After `apply_payload`, so the live card and the
     // ask row never disagree about which came first.
-    let ask_id = crate::asks::observe(&state, body.session, body.event, &raw_payload, foreign_agent).await;
+    let ask_id = if record_asks {
+        crate::asks::observe(&state, body.session, body.event, &raw_payload, foreign_agent).await
+    } else {
+        None
+    };
 
     // A live agent file-write becomes a `files` SSE frame, so a file a bot
     // wrote seconds ago appears in the Files surface without a reload. Only the

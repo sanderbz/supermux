@@ -24,8 +24,10 @@ pub struct AskRow {
     pub rev: i64,
 }
 
-const COLS: &str = "id, session, kind, state, match_key, detail, resolution, hook_attached, \
-                    issue_id, created_at, updated_at, resolved_at, rev";
+/// `session` is NULL once its session was deleted (the FK is `SET NULL`, see
+/// migration 0046); rows read it as `""`.
+const COLS: &str = "id, COALESCE(session, '') AS session, kind, state, match_key, detail, \
+                    resolution, hook_attached, issue_id, created_at, updated_at, resolved_at, rev";
 
 /// Take the next rev inside `tx`.
 async fn next_rev(tx: &mut Transaction<'_, Sqlite>) -> sqlx::Result<i64> {
@@ -130,35 +132,6 @@ pub async fn open_for_issue(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<V
     .await
 }
 
-/// Replace an open ask's detail (a re-raised dialog whose content changed).
-/// `None` when the row is gone or no longer open.
-pub async fn update_detail(
-    pool: &SqlitePool,
-    id: &str,
-    detail: &str,
-    now: i64,
-) -> sqlx::Result<Option<AskRow>> {
-    let mut tx = pool.begin().await?;
-    let rev = next_rev(&mut tx).await?;
-    let n = sqlx::query(
-        "UPDATE asks SET detail = ?, updated_at = ?, rev = ? WHERE id = ? AND state = 'open'",
-    )
-    .bind(detail)
-    .bind(now)
-    .bind(rev)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if n == 0 {
-        tx.rollback().await?;
-        return Ok(None);
-    }
-    let row = get_tx(&mut tx, id).await?;
-    tx.commit().await?;
-    Ok(row)
-}
-
 /// Flip `hook_attached` on an open ask. `None` when nothing changed (already at
 /// that value, gone, or closed) — so the caller emits an SSE frame only on a
 /// real change.
@@ -224,6 +197,52 @@ pub async fn close(
     let row = get_tx(&mut tx, id).await?;
     tx.commit().await?;
     Ok(row)
+}
+
+/// Correct a CLOSED ask's outcome: `from_state` → `to_state` with a new
+/// resolution (and a new rev, so `since` replays it). Used when the tool call
+/// an API answer was delivered for turns out to have been decided at the
+/// terminal first. `None` when the row is not in `from_state` any more.
+pub async fn rewrite_closed(
+    pool: &SqlitePool,
+    id: &str,
+    from_state: &str,
+    to_state: &str,
+    resolution: &str,
+    now: i64,
+) -> sqlx::Result<Option<AskRow>> {
+    let mut tx = pool.begin().await?;
+    let rev = next_rev(&mut tx).await?;
+    let n = sqlx::query(
+        "UPDATE asks SET state = ?, resolution = ?, updated_at = ?, rev = ? \
+         WHERE id = ? AND state = ?",
+    )
+    .bind(to_state)
+    .bind(resolution)
+    .bind(now)
+    .bind(rev)
+    .bind(id)
+    .bind(from_state)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let row = get_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// Open asks whose session row is gone (`session IS NULL`): a delete whose
+/// close-first step failed. Closed at boot.
+pub async fn open_orphans(pool: &SqlitePool) -> sqlx::Result<Vec<AskRow>> {
+    sqlx::query_as(&format!(
+        "SELECT {COLS} FROM asks WHERE session IS NULL AND state = 'open' ORDER BY rev"
+    ))
+    .fetch_all(pool)
+    .await
 }
 
 /// Put an `answered` ask back to `open` — the answer could not be delivered

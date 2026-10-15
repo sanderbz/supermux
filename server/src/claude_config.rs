@@ -533,9 +533,27 @@ const DECISION_HOOK_TIMEOUT_SECS: u64 = crate::asks::MAX_HOLD_SECS + 600;
 /// Claude's timeout.
 const DECISION_CURL_MAX_TIME: u64 = crate::asks::MAX_HOLD_SECS + 300;
 
-/// How often the decision hook reconnects after the server went away (a
-/// restart or deploy) before it gives up and leaves the dialog to the terminal.
+/// How often the PermissionRequest decision hook reconnects after the server
+/// went away (a restart or deploy) before it gives up and leaves the dialog to
+/// the terminal. Harmless to the human: Claude Code draws that dialog
+/// alongside the running hook.
 const DECISION_RETRIES: u32 = 45;
+
+/// The Elicitation decision hook never reconnects, and gives up on a server it
+/// cannot reach within this many seconds: Claude Code draws the MCP form only
+/// AFTER this hook returns, so a hook still trying to reach a stopped or
+/// restarting supermux would hide the form (measured: ~92 s with the
+/// PermissionRequest retry budget). The old observe-only hook's bound was 1 s.
+const ELICITATION_CONNECT_TIMEOUT_SECS: u32 = 1;
+
+/// Per decision event: (reconnect budget, `--connect-timeout` clause).
+fn decision_limits(event_token: &str) -> (u32, String) {
+    if event_token == "elicitation" {
+        (0, format!("--connect-timeout {ELICITATION_CONNECT_TIMEOUT_SECS} "))
+    } else {
+        (DECISION_RETRIES, String::new())
+    }
+}
 
 /// The decision hook command (see [`DECISION_EVENTS`]).
 ///
@@ -561,23 +579,34 @@ const DECISION_RETRIES: u32 = 45;
 ///   The retry budget counts only QUICK failures: an attempt that stayed
 ///   connected for over 30s resets it, so a proxy that drops idle
 ///   connections (a remote host behind a tunnel) cannot exhaust it over a
-///   long hold.
+///   long hold. The Elicitation hook has NO reconnect budget and a 1 s
+///   connect timeout ([`decision_limits`]): it runs before the form is drawn.
+/// * `attended=` / `entry=` tell the server whether this Claude Code can show
+///   a dialog at all (`$CLAUDE_CODE_SESSION_ATTENDED`, and
+///   `$CLAUDE_CODE_ENTRYPOINT` normalised to `cli`/`other` as the fallback). A
+///   headless `claude -p` started inside a pane inherits the `SUPERMUX_*` env
+///   and reaches this endpoint too; the server answers it at once
+///   (`crate::asks::hook`). Normalised by `case`, so no env value can reach the
+///   URL unescaped.
 /// * Always `exit 0`.
 fn decision_command(event_token: &str) -> String {
+    let (retries, connect) = decision_limits(event_token);
     format!(
         ": {MARKER}; D=$(cat); [ -n \"$SUPERMUX_URL\" ] || exit 0; [ -z \"$D\" ] && D='{{}}'; \
+         case \"$CLAUDE_CODE_SESSION_ATTENDED\" in 1) A=1;; 0) A=0;; *) A=;; esac; \
+         case \"$CLAUDE_CODE_ENTRYPOINT\" in cli) E=cli;; '') E=;; *) E=other;; esac; \
          T=$(mktemp 2>/dev/null) || exit 0; C=; \
          trap '[ -n \"$C\" ] && kill $C 2>/dev/null; rm -f \"$T\"; exit 0' TERM INT HUP; \
          n=0; while :; do t0=$(date +%s); \
-         printf '%s' \"$D\" | curl -sf -o \"$T\" --max-time {DECISION_CURL_MAX_TIME} -X POST \
+         printf '%s' \"$D\" | curl -sf -o \"$T\" {connect}--max-time {DECISION_CURL_MAX_TIME} -X POST \
          -H 'Content-Type: application/json' \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          -H \"X-Supermux-Session: $SUPERMUX_SESSION\" \
          -H \"X-Supermux-Pane: $TMUX_PANE\" \
-         --data-binary @- \"$SUPERMUX_URL/api/_internal/ask?event={event_token}&attempt=$n\" & C=$!; \
+         --data-binary @- \"$SUPERMUX_URL/api/_internal/ask?event={event_token}&attempt=$n&attended=$A&entry=$E\" & C=$!; \
          wait $C; r=$?; C=; \
          [ $(( $(date +%s) - t0 )) -gt 30 ] && n=0; \
-         case $r in 0) cat \"$T\"; break;; 7|52|56) n=$((n+1)); [ $n -gt {DECISION_RETRIES} ] && break; sleep 2;; *) break;; esac; \
+         case $r in 0) cat \"$T\"; break;; 7|52|56) n=$((n+1)); [ $n -gt {retries} ] && break; sleep 2;; *) break;; esac; \
          done; rm -f \"$T\"; exit 0"
     )
 }
@@ -1177,6 +1206,126 @@ mod tests {
             assert!(closed, "{shell}: killing the hook must close its connection to the server");
             task.abort();
         }
+    }
+
+    /// Run `decision_command(event)` in `sh` with an explicit Claude Code env
+    /// (the test process may itself run inside Claude Code, whose
+    /// `CLAUDE_CODE_*` vars would otherwise leak in).
+    async fn run_decision(
+        event: &str,
+        url: &str,
+        claude_env: &[(&str, &str)],
+    ) -> (std::process::Output, std::time::Duration) {
+        use tokio::io::AsyncWriteExt;
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(decision_command(event))
+            .env("SUPERMUX_URL", url)
+            .env("SUPERMUX_HOOK_TOKEN", "t")
+            .env("SUPERMUX_SESSION", "s")
+            .env_remove("CLAUDE_CODE_SESSION_ATTENDED")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        for (k, v) in claude_env {
+            cmd.env(k, v);
+        }
+        let t0 = std::time::Instant::now();
+        let mut child = cmd.spawn().expect("spawn the hook");
+        let mut i = child.stdin.take().unwrap();
+        i.write_all(PAYLOAD.as_bytes()).await.unwrap();
+        drop(i);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(120), child.wait_with_output())
+            .await
+            .expect("hook finished")
+            .unwrap();
+        (out, t0.elapsed())
+    }
+
+    /// The hook tells the server whether its Claude Code can show a dialog:
+    /// `attended` from `$CLAUDE_CODE_SESSION_ATTENDED`, `entry` from
+    /// `$CLAUDE_CODE_ENTRYPOINT` (normalised; no raw env value reaches the URL).
+    #[tokio::test]
+    async fn decision_hook_reports_whether_the_session_is_attended() {
+        use axum::routing::post;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let app = axum::Router::new().route(
+            "/api/_internal/ask",
+            post({
+                let seen = seen.clone();
+                move |uri: axum::http::Uri| {
+                    let seen = seen.clone();
+                    async move {
+                        seen.lock().unwrap().push(uri.query().unwrap_or_default().to_string());
+                        ""
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let cases: [(&[(&str, &str)], &str); 4] = [
+            // Interactive Claude Code 2.1.300.
+            (
+                &[("CLAUDE_CODE_SESSION_ATTENDED", "1"), ("CLAUDE_CODE_ENTRYPOINT", "cli")],
+                "attended=1&entry=cli",
+            ),
+            // `claude -p` (also when started from inside an interactive one).
+            (
+                &[("CLAUDE_CODE_SESSION_ATTENDED", "0"), ("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")],
+                "attended=0&entry=other",
+            ),
+            // A Claude Code that exports neither.
+            (&[], "attended=&entry="),
+            // Junk never reaches the URL verbatim.
+            (
+                &[("CLAUDE_CODE_SESSION_ATTENDED", "1&x=y"), ("CLAUDE_CODE_ENTRYPOINT", "a b#c")],
+                "attended=&entry=other",
+            ),
+        ];
+        for (env, want) in cases {
+            let (out, _) = run_decision("permission_request", &url, env).await;
+            assert!(out.status.success() && out.stdout.is_empty());
+            let q = seen.lock().unwrap().pop().expect("the hook reached the server");
+            assert!(q.ends_with(want), "{env:?}: query {q:?} should end with {want:?}");
+            assert!(q.starts_with("event=permission_request&attempt=0&"), "{q}");
+        }
+        task.abort();
+    }
+
+    /// Claude Code draws an MCP form only after the Elicitation hook returns,
+    /// so a supermux that is down must not hide the form: that hook gives up at
+    /// once (no reconnect loop), like the old observe hook's 1 s bound. The
+    /// PermissionRequest hook keeps its reconnect loop (its dialog is drawn
+    /// alongside), pinned by `decision_hook_reconnects_after_the_server_comes_back`.
+    #[tokio::test]
+    async fn the_elicitation_hook_never_waits_for_a_server_that_is_down() {
+        let addr = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let (out, took) = run_decision(
+            "elicitation",
+            &format!("http://{addr}"),
+            &[("CLAUDE_CODE_SESSION_ATTENDED", "1")],
+        )
+        .await;
+        assert!(out.status.success() && out.stdout.is_empty());
+        assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+        // An unroutable address (no RST): bounded by the connect timeout.
+        let (out, took) = run_decision(
+            "elicitation",
+            "http://10.255.255.1:9",
+            &[("CLAUDE_CODE_SESSION_ATTENDED", "1")],
+        )
+        .await;
+        assert!(out.status.success() && out.stdout.is_empty());
+        assert!(took < std::time::Duration::from_secs(4), "took {took:?}");
+        assert!(decision_command("elicitation").contains("--connect-timeout 1 "));
+        assert!(!decision_command("permission_request").contains("--connect-timeout"));
     }
 
     #[tokio::test]

@@ -72,12 +72,23 @@ async fn rig() -> Rig {
 }
 
 impl Rig {
-    /// What Claude Code's decision hook does: stream the payload, read the body.
+    /// What Claude Code's decision hook does in an attended (interactive)
+    /// session: stream the payload, read the body.
     fn decide(&self, event: &str, payload: Value) -> tokio::task::JoinHandle<(u16, String)> {
+        self.decide_with(event, payload, "attempt=0&attended=1")
+    }
+
+    /// The same, with explicit query flags (`attempt`, `attended`).
+    fn decide_with(
+        &self,
+        event: &str,
+        payload: Value,
+        flags: &str,
+    ) -> tokio::task::JoinHandle<(u16, String)> {
         let req = self
             .http
             .post(format!(
-                "{}/api/_internal/ask?event={event}&attempt=0",
+                "{}/api/_internal/ask?event={event}&{flags}",
                 self.url
             ))
             .header("Content-Type", "application/json")
@@ -132,6 +143,65 @@ impl Rig {
             .unwrap();
         let code = r.status().as_u16();
         (code, r.json().await.unwrap_or(Value::Null))
+    }
+
+    async fn patch(&self, path: &str, body: Value) -> (u16, Value) {
+        let r = self
+            .http
+            .patch(format!("{}{path}", self.url))
+            .bearer_auth(BEARER)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let code = r.status().as_u16();
+        (code, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// `supermux-task needs-input "<question>"` from `session`.
+    async fn needs_input(&self, session: &str, token: &str, question: &str) {
+        let resp = self
+            .http
+            .post(format!("{}/api/hook/board/needs-input", self.url))
+            .header("Content-Type", "application/json")
+            .header("X-Supermux-Hook-Token", token)
+            .body(json!({ "session": session, "question": question }).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    async fn add_session(&self, name: &str, token: &str) {
+        db::sessions::insert_minimal(&self.state.pool, name, "/tmp", "claude")
+            .await
+            .unwrap();
+        db::sessions::ensure_runtime(&self.state.pool, name, token)
+            .await
+            .unwrap();
+    }
+
+    async fn add_card(&self, id: &str, session: &str) {
+        db::board::insert_issue(
+            &self.state.pool,
+            &db::board::NewIssue {
+                id: id.into(),
+                title: "ship it".into(),
+                desc: String::new(),
+                status: "doing".into(),
+                session: Some(session.to_string()),
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+                board_id: "main".into(),
+                team_task_id: None,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn open_asks(&self) -> Vec<Value> {
@@ -308,7 +378,8 @@ async fn a_multi_select_question_is_answered_with_labels() {
 async fn an_answer_at_the_terminal_releases_the_hook_and_resolves_the_ask() {
     let r = rig().await;
     let payload = bash_permission("ls");
-    r.observe("pre_tool", json!({ "tool_name": "Bash", "tool_use_id": "toolu_1", "tool_input": payload["tool_input"] }))
+    // Every real hook payload carries Claude's session_id (part of the key).
+    r.observe("pre_tool", json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_1", "tool_input": payload["tool_input"] }))
         .await;
     let hook = r.decide("permission_request", payload.clone());
     let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
@@ -316,11 +387,11 @@ async fn an_answer_at_the_terminal_releases_the_hook_and_resolves_the_ask() {
         .unwrap()
         .to_string();
     // A parallel Bash call finishing does NOT close this pending one.
-    r.observe("post_tool", json!({ "tool_name": "Bash", "tool_use_id": "toolu_0", "tool_input": { "command": "pwd" } }))
+    r.observe("post_tool", json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_0", "tool_input": { "command": "pwd" } }))
         .await;
     assert_eq!(r.ask(&id).await["state"], json!("open"));
     // The human pressed "Yes" in the terminal: the tool ran.
-    r.observe("post_tool", json!({ "tool_name": "Bash", "tool_use_id": "toolu_1", "tool_input": payload["tool_input"] }))
+    r.observe("post_tool", json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_1", "tool_input": payload["tool_input"] }))
         .await;
     let (code, body) = tokio::time::timeout(Duration::from_secs(5), hook)
         .await
@@ -696,15 +767,28 @@ async fn a_board_needs_input_is_an_ask() {
     r.observe("stop", json!({ "hook_event_name": "Stop" }))
         .await;
     assert_eq!(r.ask(&id).await["state"], json!("open"));
-    // The human typing to the agent is the answer given outside this API.
+    // A new prompt is not necessarily the answer (a teammate's FYI, a scheduled
+    // prompt): the ask follows the CARD, which still says "needs your input".
     r.observe(
         "user_prompt",
-        json!({ "hook_event_name": "UserPromptSubmit", "prompt": "eu" }),
+        json!({ "hook_event_name": "UserPromptSubmit", "prompt": "FYI from a teammate: CI is green" }),
     )
     .await;
     let a = r.ask(&id).await;
+    assert_eq!(a["state"], json!("open"), "{a}");
+    assert_eq!(a["answerable"], json!(true));
+    // The human answering on the board closes it (and clears the card).
+    db::board::patch_issue(
+        &r.state.pool,
+        "T-1",
+        &[db::board::IssueField::AwaitingInput(0)],
+    )
+    .await
+    .unwrap();
+    supermux_server::asks::sync_needs_input(&r.state, "T-1", "board", "input_cleared").await;
+    let a = r.ask(&id).await;
     assert_eq!(a["state"], json!("resolved"));
-    assert_eq!(a["resolution"]["outcome"], json!("new_prompt"));
+    assert_eq!(a["resolution"]["outcome"], json!("input_cleared"));
 
     // A second question on the card, then the agent finishes the card.
     let resp = r
@@ -739,4 +823,536 @@ async fn a_board_needs_input_is_an_ask() {
         r.ask(&id2).await["resolution"]["outcome"],
         json!("issue_done")
     );
+}
+
+// ── review fixes ─────────────────────────────────────────────────────────────
+
+/// A headless `claude -p` (or an SDK run) inside a supermux pane inherits the
+/// pane's hook env, so its PermissionRequest reaches the decision endpoint. It
+/// cannot show a dialog: waiting would hang it for up to `hold_secs` where
+/// Claude would otherwise deny at once. It gets "no decision" immediately and
+/// no ask.
+#[tokio::test]
+async fn an_unattended_request_gets_no_decision_at_once_and_no_ask() {
+    let r = rig().await;
+    for flags in [
+        // `claude -p` on Claude Code 2.1.300.
+        "attempt=0&attended=0&entry=other",
+        // A hook command written before the attended flag existed.
+        "attempt=0",
+        // A Claude Code that exports neither variable and is not the CLI.
+        "attempt=0&attended=&entry=other",
+    ] {
+        let hook = r.decide_with("permission_request", bash_permission("make ci"), flags);
+        let (code, body) = tokio::time::timeout(Duration::from_secs(3), hook)
+            .await
+            .unwrap_or_else(|_| panic!("{flags}: must not wait"))
+            .unwrap();
+        assert_eq!((code, body.as_str()), (200, ""), "{flags}");
+        let (_, v) = r.get("/api/asks?state=all").await;
+        assert!(
+            v["data"]["asks"].as_array().unwrap().is_empty(),
+            "{flags}: an unattended request is not an ask: {v}"
+        );
+    }
+    // The CLI entrypoint alone (a Claude Code without the attended variable)
+    // counts as attended.
+    let hook = r.decide_with(
+        "permission_request",
+        bash_permission("make ci"),
+        "attempt=0&attended=&entry=cli",
+    );
+    let asks = r.wait_open(1, |a| a["answerable"] == json!(true)).await;
+    assert!(!hook.is_finished());
+    hook.abort();
+    let _ = asks;
+}
+
+/// The lead and an in-process teammate (own Claude session id, the lead's pane
+/// token) asking the very same command are two pending requests: two asks, two
+/// hooks, and neither one's PostToolUse closes the other's.
+#[tokio::test]
+async fn the_same_command_from_the_lead_and_a_teammate_are_two_asks() {
+    let r = rig().await;
+    let mut lead_p = bash_permission("npm test");
+    lead_p["session_id"] = json!("cc-lead");
+    let mut mate_p = bash_permission("npm test");
+    mate_p["session_id"] = json!("cc-mate");
+    mate_p["agent_type"] = json!("general-purpose");
+    let lead = r.decide("permission_request", lead_p.clone());
+    let mate = r.decide("permission_request", mate_p.clone());
+    let asks = r.wait_open(2, |a| a["answerable"] == json!(true)).await;
+    assert!(
+        !lead.is_finished(),
+        "the teammate's request must not release the lead's hook"
+    );
+    let lead_id = asks
+        .iter()
+        .find(|a| a["detail"].get("agent_type").is_none())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The teammate's call finishing does not touch the lead's ask.
+    r.observe(
+        "post_tool",
+        json!({ "session_id": "cc-mate", "agent_type": "general-purpose", "tool_name": "Bash",
+                "tool_use_id": "toolu_mate", "tool_input": mate_p["tool_input"] }),
+    )
+    .await;
+    let mate_body = tokio::time::timeout(Duration::from_secs(3), mate)
+        .await
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(
+        mate_body, "",
+        "the teammate's hook is released with no decision"
+    );
+    let a = r.ask(&lead_id).await;
+    assert_eq!(a["state"], json!("open"), "{a}");
+    assert_eq!(a["answerable"], json!(true));
+    // And an answer reaches exactly the lead's hook.
+    let (code, v) = r
+        .post(
+            &format!("/api/asks/{lead_id}/answer"),
+            json!({ "decision": "allow" }),
+        )
+        .await;
+    assert_eq!(code, 200, "{v}");
+    let (_, body) = lead.await.unwrap();
+    assert!(body.contains("\"allow\""), "{body}");
+}
+
+/// The terminal answered "Yes" first; the hook stays connected while the tool
+/// runs, so an API "deny" in that window is delivered (200) but cannot take
+/// effect. The call's PostToolUse proves it ran: the ask is corrected to
+/// `resolved` / `terminal` / `tool_ran`, keeping the API answer as
+/// `overridden`, and `since` replays the correction.
+#[tokio::test]
+async fn a_deny_delivered_after_the_terminal_said_yes_is_corrected_when_the_tool_finishes() {
+    let r = rig().await;
+    let payload = bash_permission("python3 long_job.py");
+    r.observe(
+        "pre_tool",
+        json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_9", "tool_input": payload["tool_input"] }),
+    )
+    .await;
+    let hook = r.decide("permission_request", payload.clone());
+    let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, v) = r
+        .post(
+            &format!("/api/asks/{id}/answer"),
+            json!({ "decision": "deny", "message": "do not run this", "client": "phone" }),
+        )
+        .await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["data"]["state"], json!("answered"));
+    let rev_after_answer = v["data"]["rev"].as_i64().unwrap();
+    let (_, body) = hook.await.unwrap();
+    assert!(body.contains("\"deny\""), "delivered: {body}");
+    // …but the tool ran anyway (Claude took the terminal's "Yes").
+    r.observe(
+        "post_tool",
+        json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_9",
+                "tool_input": payload["tool_input"], "tool_response": { "stdout": "1" } }),
+    )
+    .await;
+    let a = r.ask(&id).await;
+    assert_eq!(a["state"], json!("resolved"), "{a}");
+    assert_eq!(a["resolution"]["by"], json!("terminal"));
+    assert_eq!(a["resolution"]["outcome"], json!("tool_ran"));
+    assert_eq!(a["resolution"]["overridden"]["outcome"], json!("deny"));
+    assert_eq!(a["resolution"]["overridden"]["client"], json!("phone"));
+    let (_, v) = r.get(&format!("/api/asks?since={rev_after_answer}")).await;
+    let changes = v["data"]["asks"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "{v}");
+    assert_eq!(changes[0]["state"], json!("resolved"));
+
+    // A deny that DID take effect has no PostToolUse: it stays answered. And an
+    // allow followed by its PostToolUse is simply what happened.
+    let p2 = bash_permission("rm -rf build");
+    r.observe(
+        "pre_tool",
+        json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_10", "tool_input": p2["tool_input"] }),
+    )
+    .await;
+    let hook = r.decide("permission_request", p2.clone());
+    let id2 = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, _) = r
+        .post(
+            &format!("/api/asks/{id2}/answer"),
+            json!({ "decision": "allow" }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    let _ = hook.await;
+    r.observe(
+        "post_tool",
+        json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_10", "tool_input": p2["tool_input"] }),
+    )
+    .await;
+    let a = r.ask(&id2).await;
+    assert_eq!(a["state"], json!("answered"), "{a}");
+    assert_eq!(a["resolution"]["outcome"], json!("allow"));
+}
+
+/// The same for a question: answers delivered through the API but a different
+/// choice made at the terminal first → the finished call carries the
+/// terminal's answers, and the ask is corrected. The API's own answers
+/// arriving in the PostToolUse leave it answered.
+#[tokio::test]
+async fn a_question_answered_at_the_terminal_first_is_corrected() {
+    let r = rig().await;
+    for (terminal_won, tid) in [(true, "toolu_q7"), (false, "toolu_q8")] {
+        let mut input = question_input();
+        // A different call each round (the key hashes the input).
+        input["questions"][1]["question"] = json!(format!("Which color ({tid})?"));
+        r.observe(
+            "pre_tool",
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": tid, "tool_input": input }),
+        )
+        .await;
+        let hook = r.decide(
+            "permission_request",
+            json!({ "hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion", "permission_mode": "default", "tool_input": input }),
+        );
+        let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (code, v) = r
+            .post(
+                &format!("/api/asks/{id}/answer"),
+                json!({ "answers": { "0": ["Apple"], "1": "Red" } }),
+            )
+            .await;
+        assert_eq!(code, 200, "{v}");
+        let (_, body) = hook.await.unwrap();
+        let sent: Value = serde_json::from_str(&body).unwrap();
+        let mut finished = input.clone();
+        finished["answers"] = if terminal_won {
+            json!({ "Which fruits do you like?": "Banana", (format!("Which color ({tid})?")): "Green" })
+        } else {
+            sent["hookSpecificOutput"]["decision"]["updatedInput"]["answers"].clone()
+        };
+        r.observe(
+            "post_tool",
+            json!({ "tool_name": "AskUserQuestion", "tool_use_id": tid, "tool_input": finished }),
+        )
+        .await;
+        let a = r.ask(&id).await;
+        if terminal_won {
+            assert_eq!(a["state"], json!("resolved"), "{a}");
+            assert_eq!(a["resolution"]["by"], json!("terminal"));
+            assert_eq!(a["resolution"]["overridden"]["outcome"], json!("answer"));
+        } else {
+            assert_eq!(a["state"], json!("answered"), "{a}");
+        }
+    }
+}
+
+/// An ask id names ONE question. A second needs-input on the card closes the
+/// first as superseded (naming its successor) and opens a new ask; an answer
+/// addressed to the old id is refused.
+#[tokio::test]
+async fn a_changed_question_is_a_new_ask_and_the_old_id_is_refused() {
+    let r = rig().await;
+    r.add_card("T-9", SESSION).await;
+    r.needs_input(SESSION, TOKEN, "Drop the prod table? reply yes/no")
+        .await;
+    let first = r.wait_open(1, |_| true).await[0].clone();
+    r.needs_input(SESSION, TOKEN, "Also delete all backups? reply yes/no")
+        .await;
+    let second = r.wait_open(1, |_| true).await[0].clone();
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(
+        second["detail"]["question"],
+        json!("Also delete all backups? reply yes/no")
+    );
+    let old = r.ask(first["id"].as_str().unwrap()).await;
+    assert_eq!(old["state"], json!("resolved"));
+    assert_eq!(old["resolution"]["outcome"], json!("superseded"));
+    assert_eq!(old["resolution"]["superseded_by"], second["id"]);
+    let (code, v) = r
+        .post(
+            &format!("/api/asks/{}/answer", first["id"].as_str().unwrap()),
+            json!({ "text": "yes" }),
+        )
+        .await;
+    assert_eq!(code, 409, "{v}");
+    // The same question raised again is the same ask.
+    r.needs_input(SESSION, TOKEN, "Also delete all backups? reply yes/no")
+        .await;
+    assert_eq!(r.wait_open(1, |_| true).await[0]["id"], second["id"]);
+
+    // A needs-you notification with a new message: a new ask too.
+    r.observe("notification", json!({ "notification_type": "agent_needs_input", "message": "Which database should I wipe?" }))
+        .await;
+    let w1 = r.wait_open(1, |a| a["kind"] == json!("waiting")).await[0]["id"].clone();
+    r.observe("notification", json!({ "notification_type": "idle_prompt", "message": "Claude is waiting for your input" }))
+        .await;
+    let w2 = r.wait_open(1, |a| a["kind"] == json!("waiting")).await[0]["id"].clone();
+    assert_ne!(w1, w2);
+}
+
+/// A re-raised dialog for the same call that offers OTHER "always allow"
+/// choices is a new ask: `permissions: [0]` sent for the old id can never
+/// apply an update the client did not see.
+#[tokio::test]
+async fn a_dialog_offering_other_choices_is_a_new_ask() {
+    let r = rig().await;
+    let first_hook = r.decide("permission_request", bash_permission("make deploy"));
+    let seen = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0].clone();
+    assert_eq!(
+        seen["input"]["permission_suggestions"][0]["type"],
+        json!("addDirectories")
+    );
+    let mut p2 = bash_permission("make deploy");
+    p2["permission_suggestions"] = json!([{ "type": "addRules", "rules": [{"toolName": "Bash"}], "behavior": "allow", "destination": "userSettings" }]);
+    let second_hook = r.decide("permission_request", p2);
+    let now = r
+        .wait_open(1, |a| {
+            a["answerable"] == json!(true) && a["id"] != seen["id"]
+        })
+        .await[0]
+        .clone();
+    let (code, _) = r
+        .post(
+            &format!("/api/asks/{}/answer", seen["id"].as_str().unwrap()),
+            json!({ "decision": "allow", "permissions": [0] }),
+        )
+        .await;
+    assert_eq!(code, 409, "the old id must not apply the new suggestion");
+    let (_, b1) = tokio::time::timeout(Duration::from_secs(3), first_hook)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(b1, "", "the superseded hook is released with no decision");
+    let (code, _) = r
+        .post(
+            &format!("/api/asks/{}/answer", now["id"].as_str().unwrap()),
+            json!({ "decision": "allow", "permissions": [0] }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    let (_, b2) = second_hook.await.unwrap();
+    assert!(b2.contains("addRules"), "{b2}");
+}
+
+/// A needs-input answer goes to the agent that ASKED, on its card. Moving the
+/// card to another session closes the question (`board` / `reassigned`); a
+/// reassignment that bypassed the board API is refused at answer time, and
+/// nothing is typed into the other session.
+#[tokio::test]
+async fn a_reassigned_card_closes_its_question_and_never_answers_another_agent() {
+    let r = rig().await;
+    r.add_session("other", "other-token").await;
+    r.add_card("T-9", SESSION).await;
+    r.needs_input(SESSION, TOKEN, "eu or us?").await;
+    let id = r.wait_open(1, |_| true).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, v) = r
+        .patch("/api/board/T-9", json!({ "session": "other" }))
+        .await;
+    assert_eq!(code, 200, "{v}");
+    let a = r.ask(&id).await;
+    assert_eq!(a["state"], json!("resolved"), "{a}");
+    assert_eq!(a["resolution"]["by"], json!("board"));
+    assert_eq!(a["resolution"]["outcome"], json!("reassigned"));
+
+    // Back to the asker, a new question; then the link moves behind the API's
+    // back. The answer is refused and the ask closed — never delivered.
+    r.patch("/api/board/T-9", json!({ "session": SESSION }))
+        .await;
+    r.needs_input(SESSION, TOKEN, "staging or prod?").await;
+    let id = r.wait_open(1, |_| true).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    db::board::patch_issue(
+        &r.state.pool,
+        "T-9",
+        &[db::board::IssueField::Session(Some("other".into()))],
+    )
+    .await
+    .unwrap();
+    let (code, v) = r
+        .post(&format!("/api/asks/{id}/answer"), json!({ "text": "prod" }))
+        .await;
+    assert_eq!(code, 409, "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reassigned"),
+        "{v}"
+    );
+    assert_eq!(
+        r.ask(&id).await["resolution"]["outcome"],
+        json!("reassigned")
+    );
+    let replies: Vec<(String,)> =
+        sqlx::query_as("SELECT action FROM audit_log WHERE action = 'issue.reply'")
+            .fetch_all(&r.state.pool)
+            .await
+            .unwrap();
+    assert!(
+        replies.is_empty(),
+        "nothing was typed anywhere: {replies:?}"
+    );
+}
+
+/// Closing, deleting or discarding the card from the board closes its
+/// question; so does the card's "needs your input" state clearing behind the
+/// API's back (refused at answer time).
+#[tokio::test]
+async fn closing_the_card_closes_its_question() {
+    let r = rig().await;
+    for (i, (action, outcome)) in [
+        ("done", "issue_done"),
+        ("delete", "issue_deleted"),
+        ("discard", "issue_discarded"),
+        ("cleared", "input_cleared"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let card = format!("T-{}", 20 + i);
+        r.add_card(&card, SESSION).await;
+        r.needs_input(SESSION, TOKEN, &format!("question {i}?"))
+            .await;
+        let id = r.wait_open(1, |a| a["issue_id"] == json!(card)).await[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        match action {
+            "done" => {
+                let (code, v) = r
+                    .patch(&format!("/api/board/{card}"), json!({ "status": "done" }))
+                    .await;
+                assert_eq!(code, 200, "{v}");
+            }
+            "delete" => {
+                let x = r
+                    .http
+                    .delete(format!("{}/api/board/{card}", r.url))
+                    .bearer_auth(BEARER)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(x.status(), 200);
+            }
+            "discard" => {
+                let (code, v) = r
+                    .post(&format!("/api/board/{card}/discard"), json!({}))
+                    .await;
+                assert_eq!(code, 200, "{v}");
+            }
+            _ => {
+                db::board::patch_issue(
+                    &r.state.pool,
+                    &card,
+                    &[db::board::IssueField::AwaitingInput(0)],
+                )
+                .await
+                .unwrap();
+                let (code, v) = r
+                    .post(&format!("/api/asks/{id}/answer"), json!({ "text": "x" }))
+                    .await;
+                assert_eq!(code, 409, "{v}");
+            }
+        }
+        let a = r.ask(&id).await;
+        assert_eq!(a["state"], json!("resolved"), "{action}: {a}");
+        assert_eq!(a["resolution"]["outcome"], json!(outcome), "{action}: {a}");
+    }
+}
+
+/// Deleting a session closes its open asks — a rev and a `closed` frame each —
+/// and the closed rows outlive the session row, so a client resuming with
+/// `since` learns the ask is gone.
+#[tokio::test]
+async fn deleting_a_session_closes_its_asks_and_since_replays_it() {
+    let r = rig().await;
+    r.add_session("doomed", "doomed-token").await;
+    let resp = r
+        .http
+        .post(format!("{}/api/_internal/hook", r.url))
+        .header("Content-Type", "application/json")
+        .header("X-Supermux-Hook-Token", "doomed-token")
+        .body(
+            json!({ "session": "doomed", "event": "notification", "pane": "",
+                    "payload": { "notification_type": "agent_needs_input", "message": "Pick one" } })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let a = r.wait_open(1, |a| a["session"] == json!("doomed")).await[0].clone();
+    let cursor = a["rev"].as_i64().unwrap();
+    let mut sse = r.state.sse_tx.subscribe();
+    let x = r
+        .http
+        .delete(format!("{}/api/sessions/doomed", r.url))
+        .bearer_auth(BEARER)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(x.status(), 200, "{:?}", x.text().await);
+    let (_, v) = r.get(&format!("/api/asks?since={cursor}")).await;
+    let changes = v["data"]["asks"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "{v}");
+    assert_eq!(changes[0]["id"], a["id"]);
+    assert_eq!(changes[0]["state"], json!("resolved"));
+    assert_eq!(changes[0]["resolution"]["outcome"], json!("deleted"));
+    assert!(v["data"]["rev"].as_i64().unwrap() > cursor);
+    let mut saw_closed = false;
+    while let Ok(ev) = sse.try_recv() {
+        if ev.event == "asks" && ev.payload["op"] == json!("closed") {
+            saw_closed = true;
+        }
+    }
+    assert!(saw_closed, "a closed frame was published");
+}
+
+/// Two identical calls of one agent share a key (the PermissionRequest names
+/// no tool_use_id). The FIRST finishing must not close the SECOND's pending
+/// dialog: only the call the dialog is for (the latest PreToolUse with that
+/// key) closes a hooked ask.
+#[tokio::test]
+async fn an_identical_earlier_call_finishing_leaves_the_pending_dialog_open() {
+    let r = rig().await;
+    let payload = bash_permission("npm test");
+    let pre = |t: &str| json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": t, "tool_input": payload["tool_input"] });
+    // Call A was approved earlier and is still running; call B asks now.
+    r.observe("pre_tool", pre("toolu_A")).await;
+    r.observe("pre_tool", pre("toolu_B")).await;
+    let hook = r.decide("permission_request", payload.clone());
+    let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    r.observe("post_tool", pre("toolu_A")).await;
+    let a = r.ask(&id).await;
+    assert_eq!(a["state"], json!("open"), "{a}");
+    assert_eq!(a["answerable"], json!(true));
+    assert!(!hook.is_finished());
+    // B itself finishing (its "Yes" at the terminal) closes it.
+    r.observe("post_tool", pre("toolu_B")).await;
+    let (_, body) = tokio::time::timeout(Duration::from_secs(3), hook)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(body, "");
+    assert_eq!(r.ask(&id).await["resolution"]["outcome"], json!("tool_ran"));
 }

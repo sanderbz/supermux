@@ -45,17 +45,30 @@ open ──► answered    answered through this API (resolution.by = "api")
 
 | `by` | `outcome` | Meaning |
 |---|---|---|
-| `terminal` | `tool_ran` / `tool_failed` | answered outside this API — at the keyboard, or by another client pressing keys — and the tool call finished |
+| `terminal` | `tool_ran` / `tool_failed` | answered outside this API — at the keyboard, or by another client pressing keys — and the tool call finished. Carries `overridden` when an API answer had been delivered but the terminal's answer is the one that took effect (see [Delivered is not applied](#delivered-is-not-applied)) |
 | `terminal` | `accept` / `decline` / `cancel` | the MCP form was answered at the keyboard |
 | `hook` | `cancelled` | Claude Code withdrew the request (the human pressed Esc / "No", the turn was interrupted) |
-| `agent` | `turn_ended` / `working` / `issue_done` | the agent moved on |
-| `session` | `new_prompt` / `session_started` / `session_ended` | the human prompted the agent again, or the Claude process started/ended |
+| `agent` | `turn_ended` / `working` / `issue_done` / `resumed` | the agent moved on (`resumed`: it went back to work and the board cleared the card's "needs your input") |
+| `agent` | `superseded` | the agent asked again with different content; `superseded_by` names the new ask |
+| `session` | `new_prompt` / `session_started` / `session_ended` / `deleted` | the agent was prompted again, the Claude process started/ended, or the session was deleted |
 | `board` | `reply` | a needs-input answered through `POST /api/board/{id}/reply` |
+| `board` | `issue_done` / `issue_deleted` / `issue_discarded` / `reassigned` / `input_cleared` | the card behind a needs-input was closed, deleted, discarded, moved to another session, or stopped waiting |
 
 One dialog is one ask: Claude re-firing the same dialog, the question's
 PreToolUse and PermissionRequest, and the decision hook reconnecting after a
-supermux restart all land on the same row (matched by a hash of the tool call,
-never by content).
+supermux restart all land on the same row (matched by a hash of the tool call
+and of who asked — Claude's `session_id` and the subagent's `agent_id` —
+never by content). The same command asked by the lead and by an in-process
+teammate is two asks.
+
+**An ask never changes what it asks.** When the agent asks again under the
+same identity but with different content — a second needs-input question on
+the card, a new needs-you message, a re-fired dialog in another mode or with
+other "always allow" choices — the old ask closes as `resolved` / `superseded`
+(`resolution.superseded_by` = the new id) and a new ask opens. An answer sent
+to an id therefore always answers the question that id was shown with; an
+answer to the old id is a `409`. That is why the answer endpoints take no
+`rev`.
 
 ## REST API
 
@@ -100,6 +113,9 @@ An ask:
 }
 ```
 
+- `session` — `""` once the session was deleted: its open asks are closed
+  (`session` / `deleted`) before the delete, and the closed rows stay (until
+  the retention prune) so `since` reports the close to a client that was away.
 - `answerable` — can an answer be delivered **right now**? For
   permission/question/elicitation: a decision hook is connected and waiting.
   For needs_input/waiting: the ask is open.
@@ -177,12 +193,42 @@ ranges, string lengths and formats) with the same rules the form card uses.
 
 Typed into the session followed by Enter (a stopped session is woken first).
 For `needs_input` this is exactly `POST /api/board/{id}/reply`: it also clears
-the card's "needs your input" state.
+the card's "needs your input" state. It is delivered only to the session that
+asked, on a card that still waits for it: if the card was moved to another
+session, closed, discarded, or stopped waiting, the answer is refused with
+`409 ask_not_open` and the ask is closed (`board` / `reassigned`, …) — nothing
+is typed anywhere.
+
+A `needs_input` ask follows its card. It closes when the card's "needs your
+input" state goes away — a board reply, the agent going back to work, the card
+done, deleted, discarded or reassigned — and not merely because the agent got
+a new prompt (a teammate's message or a scheduled prompt is not an answer).
 
 Responses: `200` with the closed ask; `400` for an answer that does not fit the
 ask; `404` unknown id; `409 ask_not_open` when it already closed (someone else
-answered, or the agent moved on); `409 ask_not_answerable` when no decision hook
-is waiting (see [Limits](#limits)) — answer it in the terminal.
+answered, the agent moved on or asked something else); `409 ask_not_answerable`
+when no decision hook is waiting (see [Limits](#limits)) — answer it in the
+terminal.
+
+#### Delivered is not applied
+
+For `permission` / `question` / `elicitation`, a `200` means the answer was
+**delivered to the waiting hook**, not that Claude applied it. Claude Code does
+not end that hook when the human answers at the keyboard first: after a
+terminal "Yes" the ask stays open and answerable for as long as the approved
+tool runs, and no hook fires at the moment of the "Yes". An API `deny` sent in
+that window is printed by the hook and ignored by Claude — the tool runs.
+
+supermux corrects the record as soon as it can know: when that call's
+`PostToolUse` / `PostToolUseFailure` arrives (same `tool_use_id`), an ask
+answered `deny` — or a question answered with different labels than the call
+finished with — is rewritten from `answered` to `resolved` /
+`{by: "terminal", outcome: "tool_ran" | "tool_failed", overridden: <the API
+resolution>}`, published as an `updated` frame with a new rev. A deny that did
+take effect fires no PostToolUse (verified), so it stays `answered`. Clients
+that report an outcome ("denied") should say "sent" on the `200` and settle on
+the ask's final state. The correction lives in memory: across a supermux
+restart in that window it is lost.
 
 ### `POST /api/asks/{id}/dismiss`
 
@@ -199,8 +245,9 @@ event: asks
 data: {"op":"opened","rev":17,"ask":{…}}
 ```
 
-`op` is `opened`, `updated` (detail changed, a hook attached/detached) or
-`closed`. `rev` is a single counter across all asks: every insert or update
+`op` is `opened`, `updated` (a hook attached/detached, an answer that was
+reopened because it could not be typed in, or an `answered` ask corrected to
+the terminal's outcome) or `closed`. `rev` is a single counter across all asks: every insert or update
 takes the next value, and a value is never handed out twice (not even after a
 row is pruned).
 
@@ -240,8 +287,18 @@ so it needs no per-version keystroke maps. The terminal stays in charge:
 - When the terminal says "No" (or Esc / an interrupt), Claude Code kills the
   hook. The hook closes its connection, and the ask closes as
   `hook`/`cancelled` after a short grace.
-- When supermux restarts, the hook reconnects (every 2 s, for ~90 s) and the
-  ask becomes answerable again — same id, same row.
+- When supermux restarts, the PermissionRequest hook reconnects (every 2 s,
+  for ~90 s) and the ask becomes answerable again — same id, same row. The
+  Elicitation hook does not reconnect and gives up on an unreachable server
+  within 1 s: Claude Code draws the form only after that hook returns.
+- **Only an attended Claude Code waits.** The hook sends
+  `$CLAUDE_CODE_SESSION_ATTENDED` (and `$CLAUDE_CODE_ENTRYPOINT` as a
+  fallback). A headless `claude -p` or SDK run started inside a supermux pane
+  inherits the pane's hook env and reaches the same endpoint; it cannot show a
+  dialog, so it gets "no decision" at once (Claude then denies, as without
+  supermux) and no ask is recorded. A background subagent of an interactive
+  session does draw its dialog in the lead's terminal, so its requests wait
+  like the lead's.
 - An empty answer — no decision, an HTTP error, a server that predates this
   endpoint, a pane outside supermux — prints nothing, which Claude Code treats
   as "the hook has no opinion".
@@ -292,8 +349,19 @@ After `hold_secs` the hook stops waiting: the ask stays `open` with
   lapses the form appears in the terminal.
 - **Questions are answered through `PermissionRequest`, never `PreToolUse`.**
   A waiting PreToolUse hook would hide the question dialog from the terminal.
-- **Background agents.** A request from a subagent that cannot show a dialog
-  waits for an API answer (up to `hold_secs`) instead of being denied at once.
+- **Delivered, not applied** — see [above](#delivered-is-not-applied): a
+  terminal "Yes" leaves the ask answerable until the tool finishes; an API
+  answer in that window is corrected afterwards, not refused up front (nothing
+  tells supermux that the terminal decided until the tool ends). An "always
+  allow" (`permissions`) sent with an `allow` in that window is not applied
+  and not detected.
+- **Unattended Claude Code** (`claude -p`, the SDK) is never held and raises no
+  permission/question/elicitation asks. A Claude Code that exports neither
+  `CLAUDE_CODE_SESSION_ATTENDED` nor `CLAUDE_CODE_ENTRYPOINT=cli` is treated as
+  unattended.
+- **Identical parallel calls in one agent** (same tool, same input, same
+  Claude session and subagent, pending at the same time) share one ask: the
+  PermissionRequest payload carries no `tool_use_id` to tell them apart.
 - **Remote hosts** need `sh`, `curl` and `mktemp` on the remote, as the existing
   hooks already do.
 
@@ -314,6 +382,12 @@ Verified in scratch sessions on **Claude Code 2.1.293 and 2.1.300**, macOS,
 | Elicitation hook still running → form drawn? | No — "running Elicitation hooks…"; a hook `accept` answers the form |
 | Hook `timeout: 86400` | Honoured: still waiting after 14 min (default would be 600 s); a decision then still lands |
 | AskUserQuestion in `bypassPermissions` mode | PermissionRequest still fires for it |
+| Hook env, interactive session (2.1.300) | `CLAUDE_CODE_SESSION_ATTENDED=1`, `CLAUDE_CODE_ENTRYPOINT=cli` |
+| Hook env, `claude -p` — also when started from inside an interactive Claude Code (2.1.300) | `CLAUDE_CODE_SESSION_ATTENDED=0`, `CLAUDE_CODE_ENTRYPOINT=sdk-cli` |
+| `claude -p` with a Bash permission, pane env pointing at this server | Denied at once, run finished in 6 s, no ask recorded (before the attended check: still waiting at 150 s) |
+| A background subagent (interactive lead) needs a permission | The dialog is drawn in the lead's terminal ("Bash command · from the general-purpose agent"); PermissionRequest payload carries `agent_id` |
+| Hook prints `deny` (dialog up, no keypress) | Only the PermissionRequest hook fires — no PostToolUse, PostToolUseFailure or PermissionDenied |
+| Terminal "Yes" on a 40 s command, then an API `deny` 4 s later | `200`, ask `answered`/`deny`; the command still ran; at its PostToolUse the ask became `resolved`/`terminal`/`tool_ran` with `overridden.outcome = "deny"` |
 
 How 2.1.300 draws the dialogs (for clients that still read the screen): the
 Bash permission dialog has four rows — `1. Yes`, `2. Yes, and always allow
@@ -331,7 +405,9 @@ versions; the hook path above does not depend on any of them.
 2. The new hook commands are written to `~/.claude/settings.json` (and each
    remote host's) on the next session start, replacing supermux's own marked
    entries in place. Restart running sessions to be sure they load the
-   decision hook (until then their asks are recorded, not answerable).
+   decision hook (until then their asks are recorded, not answerable). A
+   decision hook that does not send the `attended` flag is treated as
+   unattended and is answered at once.
 3. Nothing to configure; `[asks]` is optional.
 
 Rolling back: like any migration, `0046` makes the database newer than the old

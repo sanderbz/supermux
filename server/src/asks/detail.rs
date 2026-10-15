@@ -62,14 +62,17 @@ pub fn is_question(raw: &Value) -> bool {
 /// live `permission_request` field carries, plus whether Claude offered
 /// "always allow" style updates (their content is only served live, see
 /// [`live_input`]) and which subagent asked, when one did.
+///
+/// `suggestions_sig` is a hash of the offered updates. An answer picks them BY
+/// INDEX (`permissions: [0]`), so the detail must change whenever their
+/// content does: a changed detail mints a new ask id (see
+/// `asks::open_or_refresh`), and an id therefore always names one set of
+/// choices.
 pub fn permission(raw: &Value) -> Option<Value> {
     let payload = HookPayload::deserialize(raw).unwrap_or_default();
     let ask = activity::permission_ask(&payload)?;
-    let suggestions = raw
-        .get("permission_suggestions")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+    let offered = raw.get("permission_suggestions").and_then(Value::as_array);
+    let suggestions = offered.map(Vec::len).unwrap_or(0);
     let mut d = json!({
         "tool": ask.tool,
         "summary": ask.summary,
@@ -77,6 +80,11 @@ pub fn permission(raw: &Value) -> Option<Value> {
         "mode": ask.mode,
         "suggestions": suggestions,
     });
+    if let Some(list) = offered.filter(|l| !l.is_empty()) {
+        let canon =
+            serde_json::to_string(&canonical(&Value::Array(list.clone()))).unwrap_or_default();
+        d["suggestions_sig"] = json!(hash_hex(&["suggestions", &canon]));
+    }
     if let Some(a) = payload
         .agent_type
         .as_deref()
@@ -208,12 +216,23 @@ fn hash_hex(parts: &[&str]) -> String {
 }
 
 /// The match key of a tool-call ask (permission / question): the tool name,
-/// the subagent that asked (if any) and the canonical tool input — minus the
-/// `answers` an AskUserQuestion carries once it has been answered, so the
+/// WHO asked — Claude's `session_id` (an in-process teammate has its own,
+/// under the lead's pane token) and the subagent's `agent_id` (subagents share
+/// their parent's session id) — and the canonical tool input, minus the
+/// `answers` an AskUserQuestion carries once it has been answered. So the
 /// question's PreToolUse, its PermissionRequest and its PostToolUse all map to
-/// the same key. A hash: no content reaches the row.
+/// the same key, while the same command asked by the lead and by a teammate
+/// are two asks. A hash: no content reaches the row.
+///
+/// The `PermissionRequest` payload carries no `tool_use_id` (Claude Code
+/// 2.1.300), so it cannot be part of the key.
 pub fn tool_key(raw: &Value) -> String {
     let tool = tool_name(raw).unwrap_or_default();
+    let session = raw
+        .get("session_id")
+        .or_else(|| raw.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let agent = raw
         .get("agent_id")
         .and_then(Value::as_str)
@@ -223,7 +242,13 @@ pub fn tool_key(raw: &Value) -> String {
         m.remove("answers");
     }
     let input = serde_json::to_string(&canonical(&input)).unwrap_or_default();
-    hash_hex(&["tool", tool, agent, &input])
+    hash_hex(&["tool", tool, session, agent, &input])
+}
+
+/// The `answers` an answered AskUserQuestion's payload carries (its
+/// PostToolUse `tool_input.answers`), when present.
+pub fn question_answers(raw: &Value) -> Option<&Map<String, Value>> {
+    raw.get("tool_input")?.get("answers")?.as_object()
 }
 
 /// The match key of an elicitation: Claude's own `elicitation_id` when the
@@ -342,6 +367,13 @@ mod tests {
         assert_eq!(qs[0]["options"][2]["label"], json!("Cherry"));
         assert_eq!(qs[1]["multi_select"], json!(false));
         assert_eq!(qs[1]["options"].as_array().unwrap().len(), 2);
+        assert!(question_answers(&p(LIVE_QUESTION)).is_none());
+        let mut answered = p(LIVE_QUESTION);
+        answered["tool_input"]["answers"] = json!({"Which color?": "Red"});
+        assert_eq!(
+            question_answers(&answered).unwrap()["Which color?"],
+            json!("Red")
+        );
     }
 
     #[test]
@@ -361,7 +393,7 @@ mod tests {
         let mut answered = pre.clone();
         answered["tool_input"]["answers"] = json!({"Which color?": "Red"});
         let reordered = p(
-            r#"{"tool_input":{"questions":[{"multiSelect":true,"header":"Fruits","question":"Which fruits do you like?","options":[{"description":"Apple","label":"Apple"},{"label":"Banana","description":"Banana"},{"label":"Cherry","description":"Cherry"}]},{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Red"},{"label":"Green","description":"Green"}],"multiSelect":false}]},"tool_name":"AskUserQuestion"}"#,
+            r#"{"session_id":"b9aab2cc","tool_input":{"questions":[{"multiSelect":true,"header":"Fruits","question":"Which fruits do you like?","options":[{"description":"Apple","label":"Apple"},{"label":"Banana","description":"Banana"},{"label":"Cherry","description":"Cherry"}]},{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Red"},{"label":"Green","description":"Green"}],"multiSelect":false}]},"tool_name":"AskUserQuestion"}"#,
         );
         assert_eq!(tool_key(&pre), tool_key(&answered));
         assert_eq!(tool_key(&pre), tool_key(&reordered));
@@ -371,6 +403,50 @@ mod tests {
         let k1 = tool_key(&other);
         other["tool_input"]["command"] = json!("touch probe2.txt");
         assert_ne!(k1, tool_key(&other));
+    }
+
+    #[test]
+    fn the_same_call_from_another_claude_session_or_agent_is_another_key() {
+        // The lead and an in-process teammate (own session_id, same pane token)
+        // asking the very same command are two pending requests, not one.
+        let lead = p(LIVE_PERMISSION);
+        let mut mate = lead.clone();
+        mate["session_id"] = json!("teammate-1");
+        assert_ne!(tool_key(&lead), tool_key(&mate));
+        // A subagent shares its parent's session_id; its agent_id tells it apart.
+        let mut sub = lead.clone();
+        sub["agent_id"] = json!("a7ff6f317c2b6cb05");
+        assert_ne!(tool_key(&lead), tool_key(&sub));
+        // The PostToolUse of the same call (no suggestions, extra fields) keeps
+        // the key.
+        let mut post = lead.clone();
+        post.as_object_mut()
+            .unwrap()
+            .remove("permission_suggestions");
+        post["hook_event_name"] = json!("PostToolUse");
+        post["tool_use_id"] = json!("toolu_1");
+        post["tool_response"] = json!({"stdout": ""});
+        assert_eq!(tool_key(&lead), tool_key(&post));
+    }
+
+    #[test]
+    fn the_permission_detail_changes_when_the_offered_updates_do() {
+        let a = permission(&p(LIVE_PERMISSION)).unwrap();
+        let mut other = p(LIVE_PERMISSION);
+        other["permission_suggestions"][0] = json!({"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"userSettings"});
+        let b = permission(&other).unwrap();
+        assert_eq!(a["suggestions"], b["suggestions"], "same count");
+        assert_ne!(a, b, "but not the same choices: {a} vs {b}");
+        // Key order inside an update does not matter.
+        let mut reordered = p(LIVE_PERMISSION);
+        reordered["permission_suggestions"][0] =
+            json!({"destination":"session","directories":["/w"],"type":"addDirectories"});
+        assert_eq!(a, permission(&reordered).unwrap());
+        let mut none = p(LIVE_PERMISSION);
+        none.as_object_mut()
+            .unwrap()
+            .remove("permission_suggestions");
+        assert!(permission(&none).unwrap().get("suggestions_sig").is_none());
     }
 
     #[test]

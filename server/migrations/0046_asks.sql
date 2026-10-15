@@ -13,7 +13,11 @@
 -- holds it in memory only for as long as it is waiting.
 CREATE TABLE asks (
     id            TEXT PRIMARY KEY,
-    session       TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE ON UPDATE CASCADE,
+    -- NULL once the session is deleted. Not CASCADE: supermux closes a deleted
+    -- session's open asks first (each close takes a rev), and the closed rows
+    -- must survive so a client resuming with `since` learns they closed. The
+    -- retention prune removes them later like any closed ask.
+    session       TEXT REFERENCES sessions(name) ON DELETE SET NULL ON UPDATE CASCADE,
     kind          TEXT NOT NULL CHECK (kind IN ('permission','question','elicitation','needs_input','waiting')),
     state         TEXT NOT NULL CHECK (state IN ('open','answered','dismissed','resolved')),
     -- Identity of the thing being asked about, so a re-fired hook (Claude

@@ -646,6 +646,9 @@ async fn patch_handler(
     if session_changed {
         maybe_notify_assignee(&state, &id).await?;
     }
+    // A needs_input ask follows its card: closed by the human (done) or moved
+    // to another agent, the question is no longer the asker's to be answered.
+    crate::asks::sync_needs_input(&state, &id, "board", "input_cleared").await;
     emit_board(&state).await;
     Ok(ok(view_of(&state, &id).await?))
 }
@@ -660,6 +663,7 @@ async fn delete_handler(
     }
     // Audit: record the soft-delete.
     db::audit::log(&state.pool, "user", "issue.delete", &id, json!({})).await?;
+    crate::asks::sync_needs_input(&state, &id, "board", "input_cleared").await;
     emit_board(&state).await;
     Ok(Json(json!({ "ok": true, "deleted": id })))
 }
@@ -1048,7 +1052,7 @@ async fn reply_handler(
     Path(id): Path<String>,
     Json(input): Json<ReplyInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    reply_to_issue(&state, &id, &input.text, "user").await?;
+    reply_to_issue(&state, &id, &input.text, "user", None).await?;
     // Answered through the board: the card's needs-input ask is closed too.
     crate::asks::close_needs_input(&state, &id, "answered", "board", "reply").await;
     Ok(Json(json!({ "ok": true })))
@@ -1058,16 +1062,28 @@ async fn reply_handler(
 /// asks API (`POST /api/asks/{id}/answer` on a `needs_input` ask): type `text`
 /// into the card's linked live session and clear `awaiting_input`. Returns the
 /// session it was delivered to.
+///
+/// `expect_session`: the asks API passes the session that ASKED; a card that
+/// is linked to any other session by now is a 409, never a reply typed into an
+/// agent that did not ask the question.
 pub(crate) async fn reply_to_issue(
     state: &AppState,
     id: &str,
     text: &str,
     actor: &str,
+    expect_session: Option<&str>,
 ) -> Result<String, AppError> {
     let issue = require_issue(state, id).await?;
     let text = text.trim();
     if text.is_empty() {
         return Err(AppError::BadRequest("text is required".into()));
+    }
+    if let Some(want) = expect_session {
+        if issue.session.as_deref() != Some(want) {
+            return Err(AppError::Conflict(format!(
+                "card {id} is no longer linked to {want}: not delivering its answer elsewhere"
+            )));
+        }
     }
     // Resolve the linked session and require it to be live (existing, non-archived)
     // — there is no point delivering into a dangling/archived link.
@@ -1115,6 +1131,7 @@ async fn discard_handler(
     require_issue(&state, &id).await?;
     db::board::patch_issue(&state.pool, &id, &[IssueField::Archived(1)]).await?;
     db::audit::log(&state.pool, "user", "issue.discard", &id, json!({})).await?;
+    crate::asks::sync_needs_input(&state, &id, "board", "input_cleared").await;
     emit_board(&state).await;
     Ok(Json(json!({ "ok": true, "discarded": id })))
 }

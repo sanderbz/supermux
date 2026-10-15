@@ -14,6 +14,22 @@
 //!    answer, a release (the ask closed some other way) or the client hanging
 //!    up (Claude killed the hook because it cancelled the request).
 //!
+//! **Only an attended session waits.** The hook reports whether its Claude
+//! Code session is attended (`attended=` from `$CLAUDE_CODE_SESSION_ATTENDED`,
+//! `entry=` from `$CLAUDE_CODE_ENTRYPOINT` as the fallback for a Claude Code
+//! that does not export the former). A headless `claude -p` — or an SDK run —
+//! started inside a supermux pane inherits the pane's `SUPERMUX_*` hook env, so
+//! its hooks land here too; it has no dialog to show, so a hook that waits
+//! would only stall it (up to `hold_secs`) where Claude would otherwise deny
+//! the request at once. Such a request gets "no decision" immediately and no
+//! ask is recorded for it (nothing can answer or display it). Verified on
+//! Claude Code 2.1.300: an interactive session's hooks see
+//! `CLAUDE_CODE_SESSION_ATTENDED=1` / `CLAUDE_CODE_ENTRYPOINT=cli`; a
+//! `claude -p` run's hooks see `0` / `sdk-cli`, also when it was started from
+//! inside an interactive Claude Code. A background subagent of an attended
+//! session DOES draw its dialog in the lead's terminal (same probe), so its
+//! requests wait like the lead's.
+//!
 //! The answer is the response body, verbatim: a `hookSpecificOutput` decision,
 //! or an EMPTY body for "no decision" — which Claude Code treats as "the hook
 //! has nothing to say", leaving the terminal dialog exactly as it was. That is
@@ -61,6 +77,27 @@ struct DecideQuery {
     /// away (restart) or the connection dropped.
     #[serde(default)]
     attempt: u32,
+    /// `$CLAUDE_CODE_SESSION_ATTENDED` of the Claude Code that ran the hook
+    /// (`1` / `0`), empty when it does not export it.
+    #[serde(default)]
+    attended: Option<String>,
+    /// `$CLAUDE_CODE_ENTRYPOINT`, normalised by the hook to `cli` / `other` /
+    /// empty — the fallback when `attended` is empty.
+    #[serde(default)]
+    entry: Option<String>,
+}
+
+/// Can the Claude Code session that sent this request show (and therefore
+/// wait on) a dialog? Absent flags — a hook command written by an older
+/// supermux — count as NOT attended: such a hook gets an immediate "no
+/// decision" (the pre-asks behaviour) until the session restarts and picks up
+/// the new command.
+fn is_attended(q: &DecideQuery) -> bool {
+    match q.attended.as_deref().map(str::trim) {
+        Some("1") => true,
+        Some("0") => false,
+        _ => q.entry.as_deref().map(str::trim) == Some("cli"),
+    }
 }
 
 /// Which events may wait for a decision, and for how long.
@@ -131,7 +168,14 @@ async fn decide_handler(
         tracing::debug!(session = %session, event = %q.event, attempt = q.attempt, "decision hook reconnected");
     }
 
-    let ask_id = crate::hooks::ingest(&state, &session, &pane, &q.event, payload.clone()).await;
+    // Unattended: ingest the event (status, live card) like the observe hook,
+    // but neither record an ask nor wait — see the module docs.
+    let attended = is_attended(&q);
+    let ask_id =
+        crate::hooks::ingest(&state, &session, &pane, &q.event, payload.clone(), attended).await;
+    if !attended {
+        return Ok(no_decision());
+    }
     let hold = hold_for(&state, &q.event);
     let Some(id) = ask_id.filter(|_| !hold.is_zero()) else {
         return Ok(no_decision());
