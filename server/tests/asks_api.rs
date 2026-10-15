@@ -120,6 +120,43 @@ impl Rig {
         assert_eq!(r.status(), 200);
     }
 
+    /// What the observe hook sends when Claude's payload is bigger than its
+    /// 16 KB cap: the envelope (with the attended flags) and a payload cut off
+    /// mid-token — an invalid body the server salvages.
+    async fn observe_capped(&self, event: &str, attended: &str, payload: &str) {
+        let body = format!(
+            "{{\"session\":\"{SESSION}\",\"event\":\"{event}\",\"pane\":\"%1\",\"attended\":\"{attended}\",\"entry\":\"\",\"payload\":{payload}}}"
+        );
+        let body = body.as_bytes()[..body.len().min(16384 + 160)].to_vec();
+        let r = self
+            .http
+            .post(format!("{}/api/_internal/hook", self.url))
+            .header("Content-Type", "application/json")
+            .header("X-Supermux-Hook-Token", TOKEN)
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+
+    /// The observe hook as a Claude Code that reports `attended` / `entry`.
+    async fn observe_as(&self, event: &str, attended: &str, entry: &str, payload: Value) {
+        let r = self
+            .http
+            .post(format!("{}/api/_internal/hook", self.url))
+            .header("Content-Type", "application/json")
+            .header("X-Supermux-Hook-Token", TOKEN)
+            .body(
+                json!({ "session": SESSION, "event": event, "pane": "%1", "attended": attended, "entry": entry, "payload": payload })
+                    .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+
     async fn get(&self, path: &str) -> (u16, Value) {
         let r = self
             .http
@@ -1355,4 +1392,106 @@ async fn an_identical_earlier_call_finishing_leaves_the_pending_dialog_open() {
         .unwrap();
     assert_eq!(body, "");
     assert_eq!(r.ask(&id).await["resolution"]["outcome"], json!("tool_ran"));
+}
+
+/// Claude Code's PostToolUse for a Bash call, in its own key order (measured
+/// on 2.1.291: `tool_use_id` comes AFTER the response), with a response long
+/// enough that the observe hook's 16 KB cap cuts it off.
+fn big_post_tool(cmd: &str) -> String {
+    format!(
+        "{{\"session_id\":\"cc-1\",\"transcript_path\":\"/t.jsonl\",\"cwd\":\"/w\",\"hook_event_name\":\"PostToolUse\",\
+         \"tool_name\":\"Bash\",\"tool_input\":{{\"command\":\"{cmd}\",\"description\":\"Run the next step\"}},\
+         \"tool_response\":{{\"stdout\":\"{}\"}},\"tool_use_id\":\"toolu_big\"}}",
+        "x".repeat(40_000)
+    )
+}
+
+#[tokio::test]
+async fn a_terminal_yes_on_a_call_with_a_huge_output_still_releases_the_hook() {
+    // The review's HIGH: the finished call's payload was cut at 16 KB, losing
+    // the tool_use_id at its end, and the salvage used to drop the whole
+    // payload — so the held ask was never closed after a terminal "Yes".
+    let r = rig().await;
+    let payload = bash_permission("seq 1 99999");
+    r.observe("pre_tool", json!({ "session_id": "cc-1", "tool_name": "Bash", "tool_use_id": "toolu_big", "tool_input": payload["tool_input"] }))
+        .await;
+    let hook = r.decide("permission_request", payload.clone());
+    let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    r.observe_capped("post_tool", "1", &big_post_tool("seq 1 99999")).await;
+    let (code, body) = tokio::time::timeout(Duration::from_secs(5), hook)
+        .await
+        .expect("the hook was released")
+        .unwrap();
+    assert_eq!((code, body.as_str()), (200, ""), "released with NO decision");
+    let a = r.ask(&id).await;
+    assert_eq!(a["state"], json!("resolved"));
+    assert_eq!(a["resolution"]["by"], json!("terminal"));
+    assert_eq!(a["resolution"]["outcome"], json!("tool_ran"));
+}
+
+#[tokio::test]
+async fn a_truncated_finish_releases_a_held_ask_only_when_it_is_the_only_one_for_its_tool() {
+    // A Write with a huge input: even `tool_input` is cut, only the scalars
+    // survive. With two held Bash asks the finished call cannot be told apart
+    // — neither is closed; with one left, it is.
+    let r = rig().await;
+    let h1 = r.decide("permission_request", bash_permission("make a"));
+    let h2 = r.decide("permission_request", bash_permission("make b"));
+    r.wait_open(2, |a| a["answerable"] == json!(true)).await;
+    let huge_input = format!(
+        "{{\"session_id\":\"cc-1\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{{\"command\":\"{}\"}}}}",
+        "y".repeat(40_000)
+    );
+    r.observe_capped("post_tool", "1", &huge_input).await;
+    assert_eq!(r.open_asks().await.len(), 2, "ambiguous: nothing closed");
+    h2.abort();
+    // The aborted hook's ask closes after the grace (it hung up).
+    r.wait_open(1, |_| true).await;
+    r.observe_capped("post_tool", "1", &huge_input).await;
+    let (code, body) = tokio::time::timeout(Duration::from_secs(5), h1)
+        .await
+        .expect("the remaining hook was released")
+        .unwrap();
+    assert_eq!((code, body.as_str()), (200, ""));
+    assert!(r.open_asks().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_headless_run_in_the_pane_does_not_touch_its_asks() {
+    // A `claude -p` inside the pane inherits its hook env; its events report
+    // attended=0 and must neither open nor close the pane's asks.
+    let r = rig().await;
+    r.observe("notification", json!({ "notification_type": "idle_prompt", "message": "Claude is waiting for your input" }))
+        .await;
+    r.wait_open(1, |a| a["kind"] == json!("waiting")).await;
+    r.observe_as("user_prompt", "0", "other", json!({ "hook_event_name": "UserPromptSubmit", "prompt": "headless" }))
+        .await;
+    r.observe_as("stop", "", "other", json!({ "hook_event_name": "Stop" })).await;
+    r.observe_as("notification", "0", "other", json!({ "notification_type": "idle_prompt", "message": "Claude is waiting for your input" }))
+        .await;
+    let asks = r.open_asks().await;
+    assert_eq!(asks.len(), 1, "the headless run changed nothing: {asks:?}");
+    // The pane's own agent (attended, or an older hook without flags) still does.
+    r.observe_as("user_prompt", "1", "cli", json!({ "hook_event_name": "UserPromptSubmit", "prompt": "go on" }))
+        .await;
+    assert!(r.open_asks().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_answer_says_it_was_delivered_not_applied() {
+    let r = rig().await;
+    let hook = r.decide("permission_request", bash_permission("cargo publish"));
+    let id = r.wait_open(1, |a| a["answerable"] == json!(true)).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, v) = r
+        .post(&format!("/api/asks/{id}/answer"), json!({ "decision": "deny" }))
+        .await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["delivery"], json!({ "state": "delivered", "final": false }));
+    hook.await.unwrap();
 }

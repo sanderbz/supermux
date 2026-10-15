@@ -204,7 +204,7 @@ input" state goes away — a board reply, the agent going back to work, the card
 done, deleted, discarded or reassigned — and not merely because the agent got
 a new prompt (a teammate's message or a scheduled prompt is not an answer).
 
-Responses: `200` with the closed ask; `400` for an answer that does not fit the
+Responses: `200` with the closed ask and `delivery: {state: "delivered", final}` (`final: false` for `permission` / `question` / `elicitation`, see below); `400` for an answer that does not fit the
 ask; `404` unknown id; `409 ask_not_open` when it already closed (someone else
 answered, the agent moved on or asked something else); `409 ask_not_answerable`
 when no decision hook is waiting (see [Limits](#limits)) — answer it in the
@@ -227,8 +227,28 @@ finished with — is rewritten from `answered` to `resolved` /
 resolution>}`, published as an `updated` frame with a new rev. A deny that did
 take effect fires no PostToolUse (verified), so it stays `answered`. Clients
 that report an outcome ("denied") should say "sent" on the `200` and settle on
-the ask's final state. The correction lives in memory: across a supermux
+the ask's final state. The `200` says so itself: `delivery.final` is `false` for these
+kinds. The correction lives in memory: across a supermux
 restart in that window it is lost.
+
+When the finished call's hook payload is larger than the observe hook's
+16 KB cap (a long command output), its tail — `tool_use_id` included — is cut
+off. supermux keeps the head Claude writes first (`tool_name`, and
+`tool_input` when it is whole) and matches the ask on that; when even
+`tool_input` was too big, a held ask is released only if it is the only open
+ask for that tool. The `overridden` correction needs the `tool_use_id`, so it
+does not happen for such a call.
+
+#### Headless runs inside a pane
+
+A `claude -p` (or SDK) run started inside a supermux pane inherits the pane's
+hook environment. Both hooks report whether their Claude Code is attended
+(`$CLAUDE_CODE_SESSION_ATTENDED`, `$CLAUDE_CODE_ENTRYPOINT`): the decision
+hook answers such a run's request with no decision at once, and the observe
+hook's events from it (`Stop`, `UserPromptSubmit`, `SessionStart` / `SessionEnd`,
+tool events) neither open nor close the pane's asks. A session picks up the
+observe hook's new flags at its next start; until then its events count as
+attended, as before.
 
 ### `POST /api/asks/{id}/dismiss`
 
@@ -364,6 +384,15 @@ After `hold_secs` the hook stops waiting: the ask stays `open` with
   PermissionRequest payload carries no `tool_use_id` to tell them apart.
 - **Remote hosts** need `sh`, `curl` and `mktemp` on the remote, as the existing
   hooks already do.
+- **Known gaps, not handled yet:**
+  - The `overridden` correction is skipped when supermux did not see the
+    call's PreToolUse, or restarted between the answer and the PostToolUse.
+  - Agent Teams teammates (`teammateMode` tmux, `--agent-id`) are expected to
+    report themselves attended like a subagent; not verified live.
+  - A supermux that accepts the decision hook's connection and then hangs
+    still holds the hook until the hold lapses.
+  - Board paths that change a card's session or status without running the
+    needs-input sync leave its `needs_input` ask open until the next sync.
 
 ## Evidence: how Claude Code behaves
 

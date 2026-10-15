@@ -539,6 +539,9 @@ async fn close_for_tool(
         .collect();
     let outcome = if failed { "tool_failed" } else { "tool_ran" };
     let tid = tool_use_id(raw);
+    // Rebuilt by `hooks::salvage_payload_head` from a payload the hook's size
+    // cap cut off: the head is Claude's own, the tail (`tool_use_id`) is gone.
+    let truncated = raw.get(crate::hooks::TRUNCATED_PAYLOAD_KEY) == Some(&Value::Bool(true));
     // The keys this call is known by: the one its PreToolUse was seen with
     // (correlated by `tool_use_id`, robust to anything that rewrote the input on
     // the way), and the one its own input hashes to.
@@ -580,17 +583,38 @@ async fn close_for_tool(
         // The key's pending dialog belongs to another, identical call.
         (Some(_), _) => None,
         (None, _) => match detail::tool_name(raw) {
-            Some(tool) => unhooked
-                .iter()
-                .find(|r| {
+            Some(tool) => {
+                let for_tool = |r: &AskRow| {
                     let d: Value = serde_json::from_str(&r.detail).unwrap_or_default();
                     if tool == detail::ASK_USER_QUESTION {
                         r.kind == KIND_QUESTION
                     } else {
                         r.kind == KIND_PERMISSION && d["tool"].as_str() == Some(tool)
                     }
-                })
-                .map(|r| (*r).clone()),
+                };
+                unhooked
+                    .iter()
+                    .find(|r| for_tool(r))
+                    .map(|r| (*r).clone())
+                    .or_else(|| {
+                        // A payload the hook had to truncate lost its tail, and
+                        // with it the `tool_use_id` (Claude writes it after the
+                        // response) — and, for a huge input, the `tool_input`
+                        // the key hashes. A hooked ask can then never be matched,
+                        // so a terminal "Yes" would leave its hook held and an
+                        // API answer "deliverable" for a call that already ran.
+                        // When it is the ONLY open ask for this tool, the call
+                        // that just finished is its call: release it.
+                        if !truncated {
+                            return None;
+                        }
+                        let mut cands = open.iter().filter(|r| for_tool(r));
+                        match (cands.next(), cands.next()) {
+                            (Some(only), None) => Some(only.clone()),
+                            _ => None,
+                        }
+                    })
+            }
             // A payload the hook had to truncate: no tool name to match on. The
             // oldest open unhooked tool ask is the one a finished call most
             // plausibly belonged to (the in-memory card makes the same call).
@@ -1516,7 +1540,21 @@ async fn answer_handler(
         client_label(req.client.as_deref()),
     )
     .await?;
-    Ok(Json(json!({ "ok": true, "data": view(&row) })))
+    Ok(Json(json!({ "ok": true, "data": view(&row), "delivery": delivery(&row.kind) })))
+}
+
+/// What a `200` from `POST /api/asks/{id}/answer` proves, spelled out next to
+/// the ask so a client cannot mistake "delivered" for "applied".
+///
+/// A decision delivered to a waiting hook (`permission` / `question` /
+/// `elicitation`) is not final: when the human answered at the terminal first,
+/// Claude ignores it, and the ask is rewritten to `resolved` / `terminal` with
+/// `overridden` once the call finishes — an `updated` frame with a new rev.
+/// A text answer (`needs_input` / `waiting`) is typed into the agent and has no
+/// such second verdict.
+fn delivery(kind: &str) -> Value {
+    let settles_later = matches!(kind, KIND_PERMISSION | KIND_QUESTION | KIND_ELICITATION);
+    json!({ "state": "delivered", "final": !settles_later })
 }
 
 #[derive(Debug, Default, Deserialize)]

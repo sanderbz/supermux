@@ -636,6 +636,12 @@ fn decision_command(event_token: &str) -> String {
 /// `hook_success` attachment, so without it every hook fire injected a noise
 /// line (measured: 832 of 3397 lines (~25%) of a live transcript).
 ///
+/// **Attended.** The body carries `"attended"` / `"entry"` — the same
+/// normalised flags the decision hook sends — so a headless `claude -p` run
+/// inside a pane (which inherits the pane's hook env) can be told apart from
+/// the pane's own agent: its events never open or close the pane's asks
+/// (`hooks::explicitly_unattended`).
+///
 /// **Pane attribution.** The body also carries `"pane":"$TMUX_PANE"` — the ONE
 /// field that tells the server WHICH pane of a session fired the hook. It costs
 /// nothing (tmux exports it into every pane; it expands to the empty string
@@ -661,13 +667,20 @@ fn hook_command(event_token: &str) -> String {
     // authoritative signal, never receives a single event. That dead-hooks state
     // is what made the heartbeat the de-facto only signal and let typing-echo
     // flip a session to busy. Sending the header makes the hooks actually land.
+    //
+    // `attended` / `entry` are normalised in the shell exactly like the
+    // decision hook's (`1`/`0`/empty, `cli`/`other`/empty), so no raw env value
+    // reaches the body, and they sit BEFORE `payload` so a truncated payload
+    // never costs them (`hooks::salvage_truncated_body` keeps the envelope).
     format!(
         ": {MARKER}; D=$(head -c 16384); [ -z \"$D\" ] && D='{{}}'; \
+         case \"$CLAUDE_CODE_SESSION_ATTENDED\" in 1) A=1;; 0) A=0;; *) A=;; esac; \
+         case \"$CLAUDE_CODE_ENTRYPOINT\" in cli) E=cli;; '') E=;; *) E=other;; esac; \
          curl -fsS -o /dev/null --max-time 1 -X POST \
          -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          \"$SUPERMUX_URL/api/_internal/hook\" \
-         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"pane\\\":\\\"$TMUX_PANE\\\",\\\"payload\\\":$D}}\" || true"
+         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"pane\\\":\\\"$TMUX_PANE\\\",\\\"attended\\\":\\\"$A\\\",\\\"entry\\\":\\\"$E\\\",\\\"payload\\\":$D}}\" || true"
     )
 }
 
@@ -927,6 +940,17 @@ mod tests {
             assert!(cmd.contains("head -c 16384"), "{event} must size-cap the payload");
             assert!(cmd.contains("D='{}'"), "{event} must default empty stdin to {{}}");
             assert!(cmd.contains("\\\"payload\\\":$D"), "{event} must splice the payload");
+            // Attended flags, normalised in the shell and placed BEFORE the
+            // payload so a truncated payload never costs them.
+            assert!(
+                cmd.contains("\\\"attended\\\":\\\"$A\\\",\\\"entry\\\":\\\"$E\\\",\\\"payload\\\":$D"),
+                "{event} must report attended/entry ahead of the payload"
+            );
+            assert!(
+                cmd.contains("in 1) A=1;; 0) A=0;; *) A=;; esac")
+                    && cmd.contains("in cli) E=cli;; '') E=;; *) E=other;; esac"),
+                "{event} must normalise the attended flags (no raw env value in the body)"
+            );
             // S2 (§R2.2): the pane discriminator. `$TMUX_PANE` is exported by
             // tmux into every pane and is EMPTY outside tmux, so this is the one
             // field that separates a teammate's hook from the lead's on a team
@@ -1382,6 +1406,67 @@ mod tests {
             String::from_utf8_lossy(&out.stdout)
         );
         assert!(out.status.success(), "the hook must always exit 0");
+    }
+
+    /// The observe hook reports whether its Claude Code is attended, normalised
+    /// in the shell: RUNS the real command against a capturing server and
+    /// parses the body it sent. A raw `$CLAUDE_CODE_ENTRYPOINT` (here one that
+    /// would break the JSON) never reaches the body.
+    #[tokio::test]
+    async fn observe_hook_reports_whether_the_session_is_attended() {
+        use axum::routing::post;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let app = axum::Router::new().route(
+            "/api/_internal/hook",
+            post({
+                let seen = seen.clone();
+                move |body: axum::body::Bytes| {
+                    let seen = seen.clone();
+                    async move {
+                        seen.lock().unwrap().push(serde_json::from_slice(&body).expect("valid JSON body"));
+                        "{\"ok\":true}"
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cases: [(&[(&str, &str)], &str, &str); 4] = [
+            (&[("CLAUDE_CODE_SESSION_ATTENDED", "1"), ("CLAUDE_CODE_ENTRYPOINT", "cli")], "1", "cli"),
+            (&[("CLAUDE_CODE_SESSION_ATTENDED", "0"), ("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")], "0", "other"),
+            (&[("CLAUDE_CODE_ENTRYPOINT", "x\"},\"evil\":{\"")], "", "other"),
+            (&[], "", ""),
+        ];
+        for (env, attended, entry) in cases {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg(hook_command("stop"))
+                .env("SUPERMUX_URL", &url)
+                .env("SUPERMUX_HOOK_TOKEN", "t")
+                .env("SUPERMUX_SESSION", "s")
+                .env_remove("CLAUDE_CODE_SESSION_ATTENDED")
+                .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                .env_remove("TMUX_PANE")
+                .stdin(std::process::Stdio::piped());
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+            let mut child = cmd.spawn().expect("spawn the hook");
+            {
+                use tokio::io::AsyncWriteExt;
+                let mut i = child.stdin.take().unwrap();
+                i.write_all(b"{\"hook_event_name\":\"Stop\"}").await.unwrap();
+            }
+            assert!(child.wait().await.unwrap().success(), "the hook must always exit 0");
+            let body = seen.lock().unwrap().pop().expect("the hook posted");
+            assert_eq!(body["attended"], json!(attended), "{env:?}");
+            assert_eq!(body["entry"], json!(entry), "{env:?}");
+            assert_eq!(body["event"], json!("stop"));
+            assert_eq!(body["payload"]["hook_event_name"], json!("Stop"));
+            assert!(body.get("evil").is_none(), "a raw env value leaked into the body");
+        }
+        server.abort();
     }
 
     #[tokio::test]
