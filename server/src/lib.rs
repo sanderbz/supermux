@@ -5,6 +5,7 @@
 //! definition.
 
 pub mod agents;
+pub mod asks;
 pub mod audit;
 pub mod auth;
 pub mod auth_human;

@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 
 use crate::config::Config;
 
+pub mod asks;
 pub mod audit;
 pub mod board;
 pub mod boards;
@@ -123,8 +124,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 44,
-            "expected forty-four applied migrations (0001-0005, 0007-0045)"
+            applied, 45,
+            "expected forty-five applied migrations (0001-0005, 0007-0046)"
         );
 
         // 0037 applied cleanly: the new nullable company_id column exists and a

@@ -169,6 +169,32 @@ async fn hook_handler(
     // existence oracle); an empty stored token can never authenticate.
     verify_hook_token(&state, &body.session, &headers).await?;
 
+    ingest(
+        &state,
+        &body.session,
+        &body.pane,
+        &body.event,
+        body.payload.unwrap_or(Value::Null),
+    )
+    .await;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Everything an AUTHENTICATED hook event does, shared by the observe-only
+/// hook ([`hook_handler`]) and the decision hook
+/// ([`crate::asks::hook`], which replaces it for `PermissionRequest` /
+/// `Elicitation` and must therefore do all of the same). Returns the id of the
+/// ask this event opened or refreshed, if any.
+pub(crate) async fn ingest(
+    state: &AppState,
+    session: &str,
+    pane: &str,
+    event: &str,
+    raw_payload: Value,
+) -> Option<String> {
+    let state = state.clone();
+    let body = IngestEvent { session, pane, event };
     // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
     // reached us), so flag it: the detector now treats the turn state machine +
     // content bank as authoritative and suppresses the raw PTY-heartbeat `Active`
@@ -185,8 +211,7 @@ async fn hook_handler(
     // The raw `Value` is kept beside the typed parse (deserialized BY REFERENCE,
     // so nothing is cloned): the `Elicitation` payload's `requested_schema` is
     // an arbitrary JSON Schema, which `elicitation::parse` reads structurally
-    // rather than through a fixed struct.
-    let raw_payload = body.payload.unwrap_or(Value::Null);
+    // rather than through a fixed struct. (`raw_payload` is this fn's argument.)
 
     // Is this POST the LEAD's own event, or one fired by an in-process teammate
     // running under the same pane token? Decided ONCE per POST (the predicate is
@@ -240,6 +265,11 @@ async fn hook_handler(
         &raw_payload,
         foreign_agent,
     );
+
+    // The DURABLE side of the same event: open / refresh / close the session's
+    // asks (`crate::asks`). After `apply_payload`, so the live card and the
+    // ask row never disagree about which came first.
+    let ask_id = crate::asks::observe(&state, body.session, body.event, &raw_payload, foreign_agent).await;
 
     // A live agent file-write becomes a `files` SSE frame, so a file a bot
     // wrote seconds ago appears in the Files surface without a reload. Only the
@@ -304,7 +334,15 @@ async fn hook_handler(
     // SessionEnd → stopped) is broadcast within ~1s, not at the next tier edge.
     state.wake_detector(&body.session);
 
-    Ok(Json(json!({ "ok": true })))
+    ask_id
+}
+
+/// The envelope fields [`ingest`] reads, under the names the handler body has
+/// always used.
+struct IngestEvent<'a> {
+    session: &'a str,
+    pane: &'a str,
+    event: &'a str,
 }
 
 /// The tools whose `PostToolUse` payload names a file the agent just wrote.
@@ -831,12 +869,13 @@ fn apply_payload(
         // why an MCP-using session used to park here forever wearing a green
         // Idle dot (`mcp.elicitation_form`).
         //
-        // OBSERVE-ONLY, and the whole feature depends on it staying that way:
-        // this hook's STDOUT is how a hook DECIDES the elicitation
-        // (`hookSpecificOutput.action`), and exit code 2 declines it outright.
-        // supermux's installed command is `-o /dev/null … || true`, pinned by
-        // `claude_config`'s inertness tests — so it can watch the ask and can
-        // never answer it on the user's behalf.
+        // This hook's STDOUT is how a hook DECIDES the elicitation
+        // (`hookSpecificOutput.action`). supermux's entry is the decision hook
+        // (`crate::asks::hook`): it prints an answer only when a
+        // bearer-authenticated client answered the ask through
+        // `POST /api/asks/{id}/answer`, and only when the operator opted in to
+        // holding the form (`[asks] elicitation_hold_secs`) — never a decision
+        // of supermux's own. This arm only raises the live card.
         "elicitation" | "Elicitation" => match elicitation::parse(raw) {
             Some(ask) => {
                 // Named push, like the permission dialog's: the sentence a
