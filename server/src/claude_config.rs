@@ -558,13 +558,17 @@ const DECISION_RETRIES: u32 = 45;
 /// * exit 7/52/56 (could not connect / empty reply / connection reset — the
 ///   server restarted) → reconnect every 2s, `attempt=$n`, so the ask stays
 ///   answerable across a supermux restart. Anything else → give up quietly.
+///   The retry budget counts only QUICK failures: an attempt that stayed
+///   connected for over 30s resets it, so a proxy that drops idle
+///   connections (a remote host behind a tunnel) cannot exhaust it over a
+///   long hold.
 /// * Always `exit 0`.
 fn decision_command(event_token: &str) -> String {
     format!(
         ": {MARKER}; D=$(cat); [ -n \"$SUPERMUX_URL\" ] || exit 0; [ -z \"$D\" ] && D='{{}}'; \
          T=$(mktemp 2>/dev/null) || exit 0; C=; \
          trap '[ -n \"$C\" ] && kill $C 2>/dev/null; rm -f \"$T\"; exit 0' TERM INT HUP; \
-         n=0; while :; do \
+         n=0; while :; do t0=$(date +%s); \
          printf '%s' \"$D\" | curl -sf -o \"$T\" --max-time {DECISION_CURL_MAX_TIME} -X POST \
          -H 'Content-Type: application/json' \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
@@ -572,6 +576,7 @@ fn decision_command(event_token: &str) -> String {
          -H \"X-Supermux-Pane: $TMUX_PANE\" \
          --data-binary @- \"$SUPERMUX_URL/api/_internal/ask?event={event_token}&attempt=$n\" & C=$!; \
          wait $C; r=$?; C=; \
+         [ $(( $(date +%s) - t0 )) -gt 30 ] && n=0; \
          case $r in 0) cat \"$T\"; break;; 7|52|56) n=$((n+1)); [ $n -gt {DECISION_RETRIES} ] && break; sleep 2;; *) break;; esac; \
          done; rm -f \"$T\"; exit 0"
     )
