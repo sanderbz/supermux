@@ -224,15 +224,27 @@ export function answersOnTap(qs: readonly AskQuestion[]): boolean {
  *
  *   · a question with ONE question → its "Type something" answer — the free-text
  *     row the terminal dialog offers, which a paste could never reach;
- *   · a permission → "No, and tell Claude what to do instead": a deny carrying
- *     the message, the turn continues;
+ *   · a permission → the terminal's "No, and tell Claude what to do instead":
+ *     deny AND stop the turn, then send the sentence as an ordinary message
+ *     (`followUp`). NOT a deny `message`: Claude reads a hook's deny text as
+ *     coming from the tool, not the user, and declines to act on it — measured
+ *     live ("That came back from the tool, not from you, so I haven't created
+ *     third.txt either");
  *   · several questions or a form → `null`; a sentence cannot fill those.
  */
-export function composerReply(ask: Ask | null, questions: readonly AskQuestion[], text: string): AskAnswer | null {
+export interface ComposerReply {
+  answer: AskAnswer
+  /** Sent as the user's next message once the answer is delivered. */
+  followUp?: string
+}
+
+export function composerReply(ask: Ask | null, questions: readonly AskQuestion[], text: string): ComposerReply | null {
   const t = text.trim()
   if (!ask || !t) return null
-  if (ask.kind === 'question' && questions.length === 1) return { answers: { '0': { selected: [], other: t } } }
-  if (ask.kind === 'permission') return { decision: 'deny', message: t }
+  if (ask.kind === 'question' && questions.length === 1) {
+    return { answer: { answers: { '0': { selected: [], other: t } } } }
+  }
+  if (ask.kind === 'permission') return { answer: { decision: 'deny', interrupt: true }, followUp: t }
   return null
 }
 
@@ -242,7 +254,7 @@ export function composerReply(ask: Ask | null, questions: readonly AskQuestion[]
 export function deliveredLine(ask: Ask, answer: AskAnswer): string {
   if ('decision' in answer) {
     if (answer.decision === 'allow') return permissionTool(ask) === 'ExitPlanMode' ? 'Plan approved.' : 'Allowed.'
-    return answer.message && !answer.interrupt ? 'Declined — Claude has your note.' : 'Declined.'
+    return 'Declined.'
   }
   if ('answers' in answer) return 'Answered.'
   if ('action' in answer) return answer.action === 'accept' ? 'Form sent.' : 'Form declined.'

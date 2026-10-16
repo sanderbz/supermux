@@ -423,23 +423,6 @@ export default function ChatPanel({
         : null,
     [askAnswer.ask, askAnswer.questions, askAnswer.queued, askAnswer.busy, askAnswer.error, answerAsk],
   )
-  // What a composer send MEANS while that ask is up: the question's own
-  // free-text answer, or "No, and tell Claude what to do instead". `null` when a
-  // sentence cannot answer it (several questions, a form) — the gate then
-  // refuses as before and points at the card.
-  const askReply = React.useMemo(() => {
-    const ask = askAnswer.ask
-    if (!ask) return undefined
-    return {
-      kind: ask.kind,
-      answer: async (text: string) => {
-        const body = composerReply(ask, askAnswer.questions, text)
-        if (!body) return false
-        return answerAsk(body)
-      },
-      accepts: (text: string) => composerReply(ask, askAnswer.questions, text) != null,
-    }
-  }, [askAnswer.ask, askAnswer.questions, answerAsk])
 
   // ── Signing in (AREA 3) ────────────────────────────────────────────────────
   // `/login` is the one needs-input state chat could not answer: it is pty-only
@@ -468,8 +451,11 @@ export default function ChatPanel({
   // this surface must keep refusing.
   const loginOwnsScreen = loginOwns(login)
   // A native ask answers the dialog the lens may be declining to — its "chat
-  // can't answer this" row would contradict the live card under it.
-  const dialogAttention = loginOwnsScreen || askAnswer.ask ? null : dialog.attention
+  // can't answer this" row would contradict the live card under it, and for the
+  // beat after an answer (the lens still sees the dialog it already closed) it
+  // would contradict the "Allowed." line.
+  const dialogAttention =
+    loginOwnsScreen || askAnswer.ask || askAnswer.delivered ? null : dialog.attention
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
@@ -519,6 +505,30 @@ export default function ChatPanel({
       if (retryAttachmentsUnchanged(staged.attachments, send.attachmentPrefix)) staged.reset()
     }, [staged]),
   })
+  // What a composer send MEANS while that ask is up: the question's own
+  // free-text answer, or "No, and tell Claude what to do instead". `null` when a
+  // sentence cannot answer it (several questions, a form) — the gate then
+  // refuses as before and points at the card.
+  const askReply = React.useMemo(() => {
+    const ask = askAnswer.ask
+    if (!ask) return undefined
+    return {
+      kind: ask.kind,
+      answer: async (text: string) => {
+        const reply = composerReply(ask, askAnswer.questions, text)
+        if (!reply || !(await answerAsk(reply.answer))) return false
+        // The sentence itself goes as the user's own message, through the
+        // tracked plane, so a failed send gets the usual inline Retry row.
+        if (reply.followUp) {
+          void pending.input
+            .submit(reply.followUp, { composer: { draft: text, attachmentPrefix: '' } })
+            .catch(() => {})
+        }
+        return true
+      },
+      accepts: (text: string) => composerReply(ask, askAnswer.questions, text) != null,
+    }
+  }, [askAnswer.ask, askAnswer.questions, answerAsk, pending.input])
   // ── The `@`-hand-off plane (fase B4 T4) ────────────────────────────────────
   // A draft that OPENS with `@colleague` is a hand-off, not a message, and the
   // send control says so before Enter is pressed. Dispatch is a real

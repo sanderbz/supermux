@@ -221,9 +221,15 @@ describe('question answers', () => {
 /* ── the composer ────────────────────────────────────────────────────────── */
 
 describe('a composer send while an ask is up is its answer', () => {
-  test('one question → its free-text answer; a permission → deny with the note; otherwise none', () => {
-    expect(composerReply(questionAsk([COLOR]), [COLOR], ' teal ')).toEqual({ answers: { '0': { selected: [], other: 'teal' } } })
-    expect(composerReply(ask(), [], 'use staging')).toEqual({ decision: 'deny', message: 'use staging' })
+  test('one question → its free-text answer; a permission → No + the sentence as a real message; otherwise none', () => {
+    expect(composerReply(questionAsk([COLOR]), [COLOR], ' teal ')).toEqual({
+      answer: { answers: { '0': { selected: [], other: 'teal' } } },
+    })
+    // NOT a deny `message`: Claude reads hook text as the tool's, not the user's.
+    expect(composerReply(ask(), [], 'use staging')).toEqual({
+      answer: { decision: 'deny', interrupt: true },
+      followUp: 'use staging',
+    })
     expect(composerReply(questionAsk([FRUITS, COLOR]), [FRUITS, COLOR], 'x')).toBeNull()
     expect(composerReply(ask({ kind: 'elicitation' }), [], 'x')).toBeNull()
     expect(composerReply(ask(), [], '   ')).toBeNull()
@@ -232,7 +238,7 @@ describe('a composer send while an ask is up is its answer', () => {
 
   test('delivered lines and refusals are in the card’s voice', () => {
     expect(deliveredLine(ask(), { decision: 'allow' })).toBe('Allowed.')
-    expect(deliveredLine(ask(), { decision: 'deny', message: 'no' })).toBe('Declined — Claude has your note.')
+    expect(deliveredLine(ask(), { decision: 'deny', interrupt: true })).toBe('Declined.')
     expect(deliveredLine(questionAsk([COLOR]), { answers: {} })).toBe('Answered.')
     expect(answerFailure(new ApiError(409, 'ask_not_open: ask x is answered'))).toContain('Already answered')
     expect(answerFailure(new ApiError(409, 'ask_not_answerable: no decision hook'))).toContain('terminal')

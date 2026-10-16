@@ -339,10 +339,12 @@ terminal is drawing) and renders it as the answerable card:
 - a form is the form card with live Accept / Decline / Cancel.
 
 A message typed in the composer while such an ask is up is its answer, not a
-paste into the dialog: a single question's free-text answer, or a permission's
-deny with that message ("No, and tell Claude what to do instead"). Several
-questions or a form cannot be answered with a sentence; the composer refuses
-and points at the card.
+paste into the dialog: a single question's free-text answer, or — for a
+permission — the terminal's "No, and tell Claude what to do instead": deny with
+`interrupt: true`, then the sentence is sent as an ordinary user message.
+(Not a deny `message`: Claude reads a hook's deny text as coming from the tool,
+not the user, and declines to act on it.) Several questions or a form cannot be
+answered with a sentence; the composer refuses and points at the card.
 
 When no answerable ask exists — a session whose hooks predate the decision
 hook, or a hold that lapsed — chat falls back to its older key-pressing cards.

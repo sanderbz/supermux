@@ -233,7 +233,9 @@ function QuestionBlock({
 /** Each option's description, as prose under the question — the model writes
  *  one under every label and the terminal prints it. */
 function Meanings({ q }: { q: AskQuestion }) {
-  const rows = q.options.filter((o) => o.description)
+  // A description that only repeats its label says nothing (models do write
+  // `Apple — Apple`), so it is not drawn.
+  const rows = q.options.filter((o) => o.description && o.description.trim() !== o.label.trim())
   if (!rows.length) return null
   return (
     <dl className="mt-[9px] space-y-[3px]">
