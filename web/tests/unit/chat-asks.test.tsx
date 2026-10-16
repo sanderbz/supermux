@@ -404,8 +404,9 @@ describe('a terminal draft can be moved into chat instead of only refused', () =
     }
     const name = `adopt-${Math.random().toString(36).slice(2)}`
     const keys: string[] = []
-    // Before the send: a draft. Before the move: the same. After the keys: empty.
-    const reads = ['half a sentence', 'half a sentence', null]
+    // Before the send: a draft. Before the move: the same. Straight after the
+    // keys the terminal has not redrawn yet; the next re-read is empty.
+    const reads = ['half a sentence', 'half a sentence', 'half a sentence', null]
     const lens = (d: string | null) => ({ composerDraft: d, composerDraftVerified: true, dialog: null, modal: null }) as never
     let handle: ComposerHandle
     function Probe() {
@@ -427,7 +428,10 @@ describe('a terminal draft can be moved into chat instead of only refused', () =
     await flush(() => setDraft(name, 'my message'))
     await flush(() => handle!.submit())
     expect(handle!.notice?.kind).toBe('tui-draft')
-    await flush(() => handle!.adoptTerminalDraft?.())
+    await React.act(async () => {
+      handle!.adoptTerminalDraft?.()
+      await new Promise((r) => setTimeout(r, 450))
+    })
     expect(keys).toEqual(['End', 'C-u'])
     expect(getDraft(name)).toBe('half a sentence\nmy message')
     expect(handle!.notice).toBeNull()

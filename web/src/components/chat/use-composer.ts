@@ -734,7 +734,14 @@ export function useComposer({
         setDraft(name, mine.trim() ? `${moved}\n${mine}` : moved)
         await input.sendKey('End')
         await input.sendKey('C-u')
-        const after = await peek.refresh()
+        // The terminal redraws a beat after the key — measured live, one read
+        // straight after `C-u` still saw the old line. A few short re-reads
+        // before concluding the draft is still there.
+        let after = await peek.refresh()
+        for (let i = 0; i < 4 && after?.composerDraft; i++) {
+          await new Promise((r) => setTimeout(r, 300))
+          after = await peek.refresh()
+        }
         setNotice(after?.composerDraft ? { kind: 'tui-draft', detail: after.composerDraft } : null)
       } catch (err) {
         setNotice({ kind: 'send-failed', detail: err instanceof Error ? err.message : undefined })
