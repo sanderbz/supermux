@@ -323,6 +323,30 @@ so it needs no per-version keystroke maps. The terminal stays in charge:
   endpoint, a pane outside supermux — prints nothing, which Claude Code treats
   as "the hook has no opinion".
 
+## In the chat
+
+The web chat is a client of this API (`web/src/components/chat/ask-cards.tsx`,
+`use-ask-answer.ts`). For the focused session it takes the **oldest** open,
+answerable `permission` / `question` / `elicitation` ask (the dialog the
+terminal is drawing) and renders it as the answerable card:
+
+- a permission shows the real command from the live `input`, "Yes", each of
+  Claude's own `permission_suggestions` by name ("Yes, and always allow
+  `Bash(npm test:*)` in this project"), and "No" (deny + interrupt, like the
+  terminal's No);
+- a question shows every question; one single-select question answers on tap,
+  otherwise toggles plus free text and one Send;
+- a form is the form card with live Accept / Decline / Cancel.
+
+A message typed in the composer while such an ask is up is its answer, not a
+paste into the dialog: a single question's free-text answer, or a permission's
+deny with that message ("No, and tell Claude what to do instead"). Several
+questions or a form cannot be answered with a sentence; the composer refuses
+and points at the card.
+
+When no answerable ask exists — a session whose hooks predate the decision
+hook, or a hold that lapsed — chat falls back to its older key-pressing cards.
+
 ## Configuration
 
 `~/.supermux/config.toml`, all optional:
