@@ -435,6 +435,13 @@ export interface ComposerHandle {
   dismissNotice: () => void
   submit: () => void
   stop: () => void
+  /**
+   * Take the terminal's unsent draft (the `tui-draft` refusal) INTO this box and
+   * clear it from the terminal's prompt, so the send can go. Verified: the
+   * prompt is re-read after the keys, and a draft that is still there is said
+   * again rather than assumed gone. Absent → no peek to verify with.
+   */
+  adoptTerminalDraft?: () => void
   insert: (text: string) => void
   /**
    * The draft currently reads as a hand-off (fase B4 T4.4), so Enter will go to
@@ -704,6 +711,40 @@ export function useComposer({
     })()
   }, [askReply, dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
 
+  // THE TERMINAL'S DRAFT, MOVED RATHER THAN REFUSED. The refusal is right — a
+  // send would be pasted onto that half-typed sentence — but it left the user
+  // nothing to do here except walk to the terminal. This is the walk: the
+  // draft's text goes into the chat box first (so nothing can be lost), then
+  // `End` + `C-u` clear the prompt, and the prompt is READ AGAIN. Only an empty
+  // prompt counts as moved; anything else is the same refusal, with what is
+  // still there. Never while a dialog is up (`C-u` would edit its field).
+  const adoptTerminalDraft = React.useCallback(() => {
+    if (!peek || notice?.kind !== 'tui-draft' || !notice.detail || sendingRef.current) return
+    const moved = notice.detail
+    void (async () => {
+      sendingRef.current = true
+      setSending(true)
+      try {
+        const before = await peek.refresh()
+        if (before?.dialog || before?.composerDraft !== moved) {
+          setNotice(before?.composerDraft ? { kind: 'tui-draft', detail: before.composerDraft } : null)
+          return
+        }
+        const mine = getDraft(name)
+        setDraft(name, mine.trim() ? `${moved}\n${mine}` : moved)
+        await input.sendKey('End')
+        await input.sendKey('C-u')
+        const after = await peek.refresh()
+        setNotice(after?.composerDraft ? { kind: 'tui-draft', detail: after.composerDraft } : null)
+      } catch (err) {
+        setNotice({ kind: 'send-failed', detail: err instanceof Error ? err.message : undefined })
+      } finally {
+        sendingRef.current = false
+        setSending(false)
+      }
+    })()
+  }, [input, name, notice, peek])
+
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the
     // allowlist carries it, so this is the same key the terminal renderer's
@@ -882,6 +923,7 @@ export function useComposer({
     dismissNotice,
     submit,
     stop,
+    adoptTerminalDraft: peek ? adoptTerminalDraft : undefined,
     insert,
     handoff: handoffState,
     handoffPending,

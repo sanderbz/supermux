@@ -382,6 +382,53 @@ describe('the composer answers the ask instead of typing into its dialog', () =>
   })
 })
 
+/* ── the terminal's draft, moved (JSDOM) ─────────────────────────────────── */
+
+describe('a terminal draft can be moved into chat instead of only refused', () => {
+  test('the text comes into the box, the prompt is cleared with End + C-u, and re-read', async () => {
+    dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' })
+    for (const [key, value] of Object.entries({
+      window: dom.window,
+      document: dom.window.document,
+      navigator: dom.window.navigator,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    })) {
+      prior.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+      Object.defineProperty(globalThis, key, { configurable: true, value })
+    }
+    const name = `adopt-${Math.random().toString(36).slice(2)}`
+    const keys: string[] = []
+    // Before the send: a draft. Before the move: the same. After the keys: empty.
+    const reads = ['half a sentence', 'half a sentence', null]
+    const lens = (d: string | null) => ({ composerDraft: d, composerDraftVerified: true, dialog: null, modal: null }) as never
+    let handle: ComposerHandle
+    function Probe() {
+      handle = useComposer({
+        name,
+        input: { submit: async () => {}, sendKey: async (k) => void keys.push(k) },
+        peek: { refresh: async () => lens(reads.shift() ?? null) },
+        active: false,
+      })
+      return null
+    }
+    root = createRoot(dom.window.document.getElementById('root')!)
+    await React.act(() => root!.render(<Probe />))
+    const flush = (fn: () => void) =>
+      React.act(async () => {
+        fn()
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    await flush(() => setDraft(name, 'my message'))
+    await flush(() => handle!.submit())
+    expect(handle!.notice?.kind).toBe('tui-draft')
+    await flush(() => handle!.adoptTerminalDraft?.())
+    expect(keys).toEqual(['End', 'C-u'])
+    expect(getDraft(name)).toBe('half a sentence\nmy message')
+    expect(handle!.notice).toBeNull()
+    await flush(() => setDraft(name, ''))
+  })
+})
+
 // Typed against the union so a drift in the API shape fails the build here.
 const _shapes: AskAnswer[] = [{ decision: 'allow', permissions: [0] }, { answers: { '0': ['a'] } }, { action: 'decline' }]
 void _shapes

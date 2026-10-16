@@ -231,6 +231,7 @@ export function ChatComposer({
     stop,
     notice,
     dismissNotice,
+    adoptTerminalDraft,
     onChange,
     onKeyDown,
     onSelect,
@@ -602,6 +603,7 @@ export function ChatComposer({
       <ComposerBanner
         notice={notice}
         onOpenTerminal={onOpenTerminal}
+        onAdoptDraft={adoptTerminalDraft}
         onDismiss={dismissNotice}
         reduce={reduce}
       />
@@ -1192,11 +1194,13 @@ function TrailingButton({
 function ComposerBanner({
   notice,
   onOpenTerminal,
+  onAdoptDraft,
   onDismiss,
   reduce,
 }: {
   notice: ComposerNotice | null
   onOpenTerminal?: () => void
+  onAdoptDraft?: () => void
   onDismiss: () => void
   reduce: boolean
 }) {
@@ -1279,6 +1283,18 @@ function ComposerBanner({
             </>
           )}
           <span className="ml-auto flex items-center gap-2">
+            {/* The way out that does not leave chat: the terminal's sentence
+                comes into this box, and its prompt is cleared and re-read. */}
+            {onAdoptDraft && notice.kind === 'tui-draft' && notice.detail && (
+              <button
+                type="button"
+                data-testid="chat-composer-adopt-draft"
+                onClick={onAdoptDraft}
+                className="rounded-full px-2 py-1 text-[12.6px] font-medium text-ink underline underline-offset-2"
+              >
+                Move it here
+              </button>
+            )}
             {/* A NOTE is not a refusal: the message went. Offering the terminal
                 beside it would imply something still has to be done there.
                 Neither hand-off receipt offers it either — a delegation
