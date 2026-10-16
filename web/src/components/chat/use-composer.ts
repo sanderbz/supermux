@@ -111,6 +111,10 @@ export interface ComposerNotice {
      *  server's own sentence ("prompt may not contain supermux wrapper
      *  markup"), which is written to be read. */
     | 'handoff-failed'
+    /** A native ask is up (docs/ASKS.md) and a sentence cannot answer it —
+     *  several questions at once, or a form. The card above answers it; the
+     *  message was not sent (it would be typed into the dialog). */
+    | 'ask-card'
   /** The evidence: the terminal's own draft, the command, or the error. */
   detail?: string
 }
@@ -367,6 +371,18 @@ export interface UseComposerOptions {
    * an ordinary message and nothing changes. A bench render and every existing
    * test therefore keep their exact behaviour by omitting this.
    */
+  /**
+   * A native ask is up (docs/ASKS.md): a send is its ANSWER, not a message —
+   * the question's free-text row, or a permission's "No, and tell Claude what
+   * to do instead". `accepts` says whether this text can be one; `answer`
+   * delivers it and resolves true once the server took it. Absent → the
+   * composer sends and gates exactly as before.
+   */
+  askReply?: {
+    kind: string
+    accepts: (text: string) => boolean
+    answer: (text: string) => Promise<boolean>
+  }
   handoff?: {
     /** Lowercased known name → slug. The same index the chips use. */
     mentions: ReadonlyMap<string, string>
@@ -459,6 +475,7 @@ export function useComposer({
   dialogCard = false,
   formCard = false,
   handoff,
+  askReply,
   onInterrupt,
   getOutgoingPrefix,
   onSent,
@@ -578,6 +595,33 @@ export function useComposer({
       })()
       return
     }
+    // THE ASK BRANCH. While a native ask is up the terminal is showing its
+    // dialog, so a paste would land in the dialog (a0 §3: ignored, and the Enter
+    // behind it picks the highlighted row). The asks API is the one way a
+    // sentence reaches that dialog's own free-text answer — so it goes there,
+    // and the draft clears only once the server took it. A failure is told on
+    // the card (one owner per failure); the words stay in the box.
+    if (askReply) {
+      const reply = prefix + text
+      if (!askReply.accepts(reply)) {
+        setNotice({ kind: 'ask-card' })
+        return
+      }
+      void (async () => {
+        sendingRef.current = true
+        setSending(true)
+        try {
+          if (await askReply.answer(reply)) {
+            setDraft(name, draftAfterSend(getDraft(name), raw))
+            onSent?.()
+          }
+        } finally {
+          sendingRef.current = false
+          setSending(false)
+        }
+      })()
+      return
+    }
     // THE SLASH GATE (fase A4 T9), before the peek because it needs no network
     // — and therefore it cannot fail open when the session or the command list
     // is unreachable, which is the one property a gate has to have.
@@ -658,7 +702,7 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
+  }, [askReply, dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the

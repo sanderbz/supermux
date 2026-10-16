@@ -100,6 +100,9 @@ export interface ChatComposerProps {
   name: string
   /** What the placeholder says out loud: display name, then slug. */
   label: string
+  /** Replaces `Message <label>` while a send means something else — the answer
+   *  to the ask above (`use-composer.ts` `askReply`). */
+  placeholder?: string
   handle: ComposerHandle
   surface?: 'desktop' | 'phone'
   /** A turn is running: the trailing control is Stop, and a bare Escape stops. */
@@ -197,6 +200,7 @@ export interface ChatComposerProps {
 export function ChatComposer({
   name,
   label,
+  placeholder,
   handle,
   surface = 'desktop',
   active = false,
@@ -686,7 +690,7 @@ export function ChatComposer({
       )}
       <Composer
         size={phone ? 'mobile' : 'desktop'}
-        placeholder={`Message ${label}`}
+        placeholder={placeholder ?? `Message ${label}`}
         grown={grown}
         leading={
           // ONE CLEAN LEADING CONTROL, TWO SHAPES.
@@ -1373,6 +1377,8 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // The draft is still in the box, and saying so is the point — the user's
   // instinct after a failed send is to check whether they lost the sentence.
   'handoff-failed': 'That hand-off didn’t go through — your message is still here.',
+  // The card above CAN answer this one — it just takes more than a sentence.
+  'ask-card': 'Answer the card above — a message can’t fill in this one, so it wasn’t sent.',
 }
 
 /** Send — an upward arrow, the one glyph every messenger agrees on. */

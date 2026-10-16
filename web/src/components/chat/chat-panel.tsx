@@ -63,6 +63,9 @@ import { useDelaySend } from './use-delay-send'
 import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
 import { useQuestionAnswer } from './use-question-answer'
+import { useAskAnswer } from './use-ask-answer'
+import { composerReply } from './ask-answer'
+import { useSessionAsks } from '@/hooks/use-asks'
 import { LoginCard, ProviderAuthCard } from './login-card'
 import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
@@ -394,6 +397,50 @@ export default function ChatPanel({
   // of that feature — the card has always drawn the options; this makes them act.
   const question = useQuestionAnswer({ ask: session?.question_request, input: plane })
 
+  // ── Answering through the asks API (docs/ASKS.md) ──────────────────────────
+  // THE NATIVE PATH, and the one every card above falls back from. When this
+  // session's decision hook is waiting, a permission / question / form is
+  // answered by a POST whose answer Claude Code's own hook prints — so every
+  // option works on every Claude Code build (multi-select, several questions,
+  // "Yes, and always allow …", the free-text row), and nothing is typed into a
+  // pty nobody is looking at. The key-pressing hooks above stay for a session
+  // whose hooks predate the decision hook; they are not consulted while a
+  // native ask is up.
+  const sessionAsks = useSessionAsks(name)
+  const askAnswer = useAskAnswer(sessionAsks)
+  const answerAsk = askAnswer.answer
+  const nativeAsk = React.useMemo(
+    () =>
+      askAnswer.ask
+        ? {
+            ask: askAnswer.ask,
+            questions: askAnswer.questions,
+            queued: askAnswer.queued,
+            busy: askAnswer.busy,
+            error: askAnswer.error,
+            onAnswer: (body: Parameters<typeof answerAsk>[0]) => void answerAsk(body),
+          }
+        : null,
+    [askAnswer.ask, askAnswer.questions, askAnswer.queued, askAnswer.busy, askAnswer.error, answerAsk],
+  )
+  // What a composer send MEANS while that ask is up: the question's own
+  // free-text answer, or "No, and tell Claude what to do instead". `null` when a
+  // sentence cannot answer it (several questions, a form) — the gate then
+  // refuses as before and points at the card.
+  const askReply = React.useMemo(() => {
+    const ask = askAnswer.ask
+    if (!ask) return undefined
+    return {
+      kind: ask.kind,
+      answer: async (text: string) => {
+        const body = composerReply(ask, askAnswer.questions, text)
+        if (!body) return false
+        return answerAsk(body)
+      },
+      accepts: (text: string) => composerReply(ask, askAnswer.questions, text) != null,
+    }
+  }, [askAnswer.ask, askAnswer.questions, answerAsk])
+
   // ── Signing in (AREA 3) ────────────────────────────────────────────────────
   // `/login` is the one needs-input state chat could not answer: it is pty-only
   // (the transcript records the slash command and nothing else), so the READ has
@@ -420,7 +467,9 @@ export default function ChatPanel({
   // is open would be pasted into a credential field, which is the one place
   // this surface must keep refusing.
   const loginOwnsScreen = loginOwns(login)
-  const dialogAttention = loginOwnsScreen ? null : dialog.attention
+  // A native ask answers the dialog the lens may be declining to — its "chat
+  // can't answer this" row would contradict the live card under it.
+  const dialogAttention = loginOwnsScreen || askAnswer.ask ? null : dialog.attention
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
@@ -434,7 +483,15 @@ export default function ChatPanel({
   // it ("answer the thing above") instead of naming the terminal. EITHER source
   // counts: the hook fires ≪1s ahead of the poll, and the lens sees dialogs the
   // hook never fires for at all (the plan family).
-  const dialogCard = session?.permission_request != null || dialog.card != null
+  // `question_request` counts too: the structured question card is on screen for
+  // it (it used to be missing here, so a send under a question card said "the
+  // terminal is showing a prompt chat can't answer" with the answer buttons in
+  // plain view). So does a native ask.
+  const dialogCard =
+    session?.permission_request != null ||
+    session?.question_request != null ||
+    dialog.card != null ||
+    askAnswer.ask != null
   // An MCP server's form is up. Kept separate from `dialogCard` because it is a
   // different KIND of blindness: the lens sees the dialogs above and simply has
   // not fingerprinted this one — it cannot see an elicitation at all.
@@ -503,6 +560,7 @@ export default function ChatPanel({
     dialogCard,
     formCard,
     handoff,
+    askReply,
     // The honest half of Stop: after a delivered interrupt, drop the client's
     // live-turn anchor so a stuck-`active` "thinking" state clears instead of
     // firing an Escape into a pty with nothing to interrupt (a silent no-op).
@@ -746,6 +804,8 @@ export default function ChatPanel({
       onAnswerQuestion={question.onAnswer}
       questionChosen={question.chosen}
       dialogResolved={loginOwnsScreen ? null : dialog.resolved}
+      nativeAsk={nativeAsk}
+      askDelivered={askAnswer.delivered}
       // The sign-in card is what is asking on this frame, so it is what the
       // screen reader is told about (`ASK_SAY`).
       signIn={login.sighting != null}
@@ -799,6 +859,13 @@ export default function ChatPanel({
         <ChatComposer
           name={name}
           label={session?.display_name?.trim() ? session.display_name : name}
+          placeholder={
+            askAnswer.ask?.kind === 'permission'
+              ? 'Or tell Claude what to do instead…'
+              : askAnswer.ask?.kind === 'question' && askAnswer.questions.length === 1
+                ? 'Or type your own answer…'
+                : undefined
+          }
           handle={composer}
           surface={phone ? 'phone' : 'desktop'}
           // The reconciled live turn (see `turnLive`): the Stop control shows

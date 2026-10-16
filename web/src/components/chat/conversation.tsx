@@ -57,6 +57,7 @@ import { buildTranscript } from './grouping'
 import { SessionHeaderPill, type HeaderWorkflow } from './header-pill'
 import { BrowserPairingButton } from '../browser-feedback/browser-pairing'
 import { LiveLayer } from './live-layer'
+import type { NativeAskView } from './ask-cards'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem, type ScheduleRef } from './transcript-item'
 import { Bubble, DownIcon, MessageRow, SystemLine } from './ui'
@@ -264,6 +265,11 @@ export interface ChatConversationProps {
   questionChosen?: number | null
   /** The line the card became once an answer landed. */
   dialogResolved?: string | null
+  /** The ask chat answers natively — straight through to the live band
+   *  (`live-layer.tsx` `nativeAsk`). */
+  nativeAsk?: NativeAskView | null
+  /** The line a delivered native answer leaves (`live-layer.tsx`). */
+  askDelivered?: string | null
   /** The pty's stall line, straight through to the live band's working row
    *  (`live-layer.tsx` `stalled`). */
   stalled?: string | null
@@ -372,6 +378,8 @@ export function ChatConversation({
   onAnswerQuestion,
   questionChosen,
   dialogResolved,
+  nativeAsk,
+  askDelivered,
   stalled,
   compacting,
   onRetryPending,
@@ -737,6 +745,8 @@ export function ChatConversation({
             onAnswerQuestion={onAnswerQuestion}
             questionChosen={questionChosen}
             dialogResolved={dialogResolved}
+            nativeAsk={nativeAsk}
+            askDelivered={askDelivered}
             stalled={stalled}
             compacting={compacting}
             attention={
