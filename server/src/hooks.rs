@@ -122,6 +122,34 @@ struct HookBody {
     /// (pre-upgrade sessions) → treated as `{}`.
     #[serde(default)]
     payload: Option<Value>,
+    /// `$CLAUDE_CODE_SESSION_ATTENDED` of the Claude Code that ran the hook,
+    /// normalised by the hook command to `1` / `0` / empty — the same flag the
+    /// decision hook sends (`crate::asks::hook`). Empty on a hook command
+    /// written by an older supermux.
+    #[serde(default)]
+    attended: String,
+    /// `$CLAUDE_CODE_ENTRYPOINT`, normalised to `cli` / `other` / empty — the
+    /// fallback when `attended` is empty.
+    #[serde(default)]
+    entry: String,
+}
+
+/// Did the hook come from a Claude Code that is EXPLICITLY not attended — a
+/// headless `claude -p` (or an SDK run) started inside a supermux pane, which
+/// inherits the pane's `SUPERMUX_*` hook env? Its `Stop`, `UserPromptSubmit`,
+/// `SessionStart`/`SessionEnd` and tool events describe that throwaway run, not
+/// the pane's agent, so they must not open or close the pane's asks.
+///
+/// Absent flags (a hook command written before the flags existed) count as
+/// attended — the opposite default of the decision hook's, on purpose: there
+/// an unknown hook must not WAIT, here an unknown hook must keep recording the
+/// asks it always recorded, until the session restarts onto the new command.
+fn explicitly_unattended(attended: &str, entry: &str) -> bool {
+    match attended.trim() {
+        "0" => true,
+        "1" => false,
+        _ => entry.trim() == "other",
+    }
 }
 
 /// Ingest one hook event. 401 on any auth failure; 200 even for an unknown event
@@ -157,7 +185,8 @@ async fn hook_handler(
                     session = %b.session,
                     event = %b.event,
                     bytes = raw.len(),
-                    "hook payload was truncated mid-token; salvaged the envelope, dropping the payload"
+                    kept_payload_head = b.payload.is_some(),
+                    "hook payload was truncated mid-token; salvaged the envelope and what the payload head still holds"
                 );
                 b
             }
@@ -169,6 +198,39 @@ async fn hook_handler(
     // existence oracle); an empty stored token can never authenticate.
     verify_hook_token(&state, &body.session, &headers).await?;
 
+    let record_asks = !explicitly_unattended(&body.attended, &body.entry);
+    ingest(
+        &state,
+        &body.session,
+        &body.pane,
+        &body.event,
+        body.payload.unwrap_or(Value::Null),
+        record_asks,
+    )
+    .await;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Everything an AUTHENTICATED hook event does, shared by the observe-only
+/// hook ([`hook_handler`]) and the decision hook
+/// ([`crate::asks::hook`], which replaces it for `PermissionRequest` /
+/// `Elicitation` and must therefore do all of the same). Returns the id of the
+/// ask this event opened or refreshed, if any.
+///
+/// `record_asks: false` skips the asks side entirely — the decision hook's
+/// request from an UNATTENDED Claude Code (a `claude -p` inside a pane), which
+/// can neither show nor wait on a dialog.
+pub(crate) async fn ingest(
+    state: &AppState,
+    session: &str,
+    pane: &str,
+    event: &str,
+    raw_payload: Value,
+    record_asks: bool,
+) -> Option<String> {
+    let state = state.clone();
+    let body = IngestEvent { session, pane, event };
     // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
     // reached us), so flag it: the detector now treats the turn state machine +
     // content bank as authoritative and suppresses the raw PTY-heartbeat `Active`
@@ -185,8 +247,7 @@ async fn hook_handler(
     // The raw `Value` is kept beside the typed parse (deserialized BY REFERENCE,
     // so nothing is cloned): the `Elicitation` payload's `requested_schema` is
     // an arbitrary JSON Schema, which `elicitation::parse` reads structurally
-    // rather than through a fixed struct.
-    let raw_payload = body.payload.unwrap_or(Value::Null);
+    // rather than through a fixed struct. (`raw_payload` is this fn's argument.)
 
     // Is this POST the LEAD's own event, or one fired by an in-process teammate
     // running under the same pane token? Decided ONCE per POST (the predicate is
@@ -240,6 +301,15 @@ async fn hook_handler(
         &raw_payload,
         foreign_agent,
     );
+
+    // The DURABLE side of the same event: open / refresh / close the session's
+    // asks (`crate::asks`). After `apply_payload`, so the live card and the
+    // ask row never disagree about which came first.
+    let ask_id = if record_asks {
+        crate::asks::observe(&state, body.session, body.event, &raw_payload, foreign_agent).await
+    } else {
+        None
+    };
 
     // A live agent file-write becomes a `files` SSE frame, so a file a bot
     // wrote seconds ago appears in the Files surface without a reload. Only the
@@ -304,7 +374,15 @@ async fn hook_handler(
     // SessionEnd → stopped) is broadcast within ~1s, not at the next tier edge.
     state.wake_detector(&body.session);
 
-    Ok(Json(json!({ "ok": true })))
+    ask_id
+}
+
+/// The envelope fields [`ingest`] reads, under the names the handler body has
+/// always used.
+struct IngestEvent<'a> {
+    session: &'a str,
+    pane: &'a str,
+    event: &'a str,
 }
 
 /// The tools whose `PostToolUse` payload names a file the agent just wrote.
@@ -563,9 +641,10 @@ fn attribute_pointer(pane: &str, lead_pane: Option<&str>, tmux_runtime: bool) ->
 ///
 /// The cap only ever cuts the TAIL, and `payload` is the last field, so the
 /// prefix `{"session":…,"event":…` is always intact: re-close it and parse.
-/// `payload` then defaults to `None`, which the handler already treats as `{}`
-/// — the "a clipped payload is a no-op, never a 400" contract this module
-/// documents. Returns `None` for a body that is malformed for any other
+/// The payload itself is then salvaged as far as it is still whole
+/// ([`salvage_payload_head`]), else `None`, which the handler already treats
+/// as `{}` — the "a clipped payload is a no-op, never a 400" contract this
+/// module documents. Returns `None` for a body that is malformed for any other
 /// reason, which stays a 400.
 fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
     const PAYLOAD_KEY: &[u8] = b",\"payload\":";
@@ -573,19 +652,65 @@ fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
     // A session name could itself contain the literal `,"payload":`, so try
     // every occurrence and keep the first that yields a parseable envelope.
     while from < raw.len() {
-        let rel = raw[from..]
-            .windows(PAYLOAD_KEY.len())
-            .position(|w| w == PAYLOAD_KEY)?;
-        let cut = from + rel;
+        let cut = from + find(&raw[from..], PAYLOAD_KEY)?;
         let mut candidate = Vec::with_capacity(cut + 1);
         candidate.extend_from_slice(&raw[..cut]);
         candidate.push(b'}');
-        if let Ok(body) = serde_json::from_slice::<HookBody>(&candidate) {
+        if let Ok(mut body) = serde_json::from_slice::<HookBody>(&candidate) {
+            body.payload = salvage_payload_head(&raw[cut + PAYLOAD_KEY.len()..]);
             return Some(body);
         }
         from = cut + 1;
     }
     None
+}
+
+/// Set on a payload [`salvage_payload_head`] rebuilt from a truncated one: its
+/// tail — and with it `tool_use_id` — is gone, so a consumer that correlates by
+/// `tool_use_id` must fall back to what the head still carries.
+pub(crate) const TRUNCATED_PAYLOAD_KEY: &str = "_supermux_truncated";
+
+/// What a payload cut off by the hook's 16 KB cap still says.
+///
+/// Claude Code writes the small fields FIRST — measured on 2.1.291, a
+/// `PostToolUse` is `session_id, transcript_path, cwd, prompt_id,
+/// permission_mode, effort, hook_event_name, tool_name, tool_input,
+/// tool_response, tool_use_id, duration_ms` — so a cap that lands in a big
+/// `tool_response` (a 40 KB command output) still leaves the whole head up to
+/// and including `tool_input`. Dropping that head cost the asks their
+/// release: a permission dialog answered "Yes" at the terminal was never
+/// closed because its finished call's `tool_name` / `tool_input` were thrown
+/// away with the tail.
+///
+/// Re-closes the object before the first big field that leaves a parseable
+/// head (`tool_response`, a failure's `error`), else before `tool_input` (a
+/// huge Write/Edit input: only the scalars survive). Every key that survives
+/// is one Claude sent, verbatim; [`TRUNCATED_PAYLOAD_KEY`] marks the result.
+/// `None` when not even the scalar head parses.
+fn salvage_payload_head(payload: &[u8]) -> Option<Value> {
+    const CUTS: [&[u8]; 3] = [b",\"tool_response\":", b",\"error\":", b",\"tool_input\":"];
+    for key in CUTS {
+        let mut from = 0usize;
+        // A nested object inside `tool_input` may itself carry such a key; that
+        // cut leaves unbalanced braces and fails to parse, so try the next one.
+        while let Some(rel) = find(&payload[from..], key) {
+            let cut = from + rel;
+            let mut head = Vec::with_capacity(cut + 1);
+            head.extend_from_slice(&payload[..cut]);
+            head.push(b'}');
+            if let Ok(Value::Object(mut m)) = serde_json::from_slice::<Value>(&head) {
+                m.insert(TRUNCATED_PAYLOAD_KEY.to_string(), Value::Bool(true));
+                return Some(Value::Object(m));
+            }
+            from = cut + 1;
+        }
+    }
+    None
+}
+
+/// Byte offset of the first `needle` in `hay`.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Record a CHILD's hook against its own per-agent row, when this hook actually
@@ -831,12 +956,13 @@ fn apply_payload(
         // why an MCP-using session used to park here forever wearing a green
         // Idle dot (`mcp.elicitation_form`).
         //
-        // OBSERVE-ONLY, and the whole feature depends on it staying that way:
-        // this hook's STDOUT is how a hook DECIDES the elicitation
-        // (`hookSpecificOutput.action`), and exit code 2 declines it outright.
-        // supermux's installed command is `-o /dev/null … || true`, pinned by
-        // `claude_config`'s inertness tests — so it can watch the ask and can
-        // never answer it on the user's behalf.
+        // This hook's STDOUT is how a hook DECIDES the elicitation
+        // (`hookSpecificOutput.action`). supermux's entry is the decision hook
+        // (`crate::asks::hook`): it prints an answer only when a
+        // bearer-authenticated client answered the ask through
+        // `POST /api/asks/{id}/answer`, and only when the operator opted in to
+        // holding the form (`[asks] elicitation_hold_secs`) — never a decision
+        // of supermux's own. This arm only raises the live card.
         "elicitation" | "Elicitation" => match elicitation::parse(raw) {
             Some(ask) => {
                 // Named push, like the permission dialog's: the sentence a
@@ -3230,5 +3356,74 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod salvage_tests {
+    //! The hook's 16 KB cap cuts big payloads mid-token; these pin what the
+    //! salvage keeps (Claude writes its small fields first) and the attended
+    //! rule the observe hook's new flags feed.
+    use super::*;
+
+    /// A capped observe-hook body, built the way the hook command builds it.
+    fn capped(payload: &str) -> Vec<u8> {
+        let body = format!(
+            "{{\"session\":\"s\",\"event\":\"post_tool\",\"pane\":\"%1\",\"attended\":\"1\",\"entry\":\"cli\",\"payload\":{payload}}}"
+        );
+        let cut = body.len().min(16384 + 120);
+        body.as_bytes()[..cut].to_vec()
+    }
+
+    /// Claude Code's PostToolUse key order (measured on 2.1.291).
+    fn post_tool(input: &str, response_len: usize) -> String {
+        format!(
+            "{{\"session_id\":\"cc-1\",\"transcript_path\":\"/t.jsonl\",\"cwd\":\"/w\",\"hook_event_name\":\"PostToolUse\",\
+             \"tool_name\":\"Bash\",\"tool_input\":{input},\"tool_response\":{{\"stdout\":\"{}\"}},\"tool_use_id\":\"toolu_9\"}}",
+            "x".repeat(response_len)
+        )
+    }
+
+    #[test]
+    fn a_cut_in_the_response_keeps_the_tool_name_and_input() {
+        let raw = capped(&post_tool(r#"{"command":"ls","nested":{"error":1}}"#, 40_000));
+        assert!(serde_json::from_slice::<HookBody>(&raw).is_err(), "the capped body is invalid JSON");
+        let body = salvage_truncated_body(&raw).expect("salvaged");
+        assert_eq!((body.session.as_str(), body.event.as_str()), ("s", "post_tool"));
+        assert_eq!((body.attended.as_str(), body.entry.as_str()), ("1", "cli"));
+        let p = body.payload.expect("the head survives");
+        assert_eq!(p["tool_name"], json!("Bash"));
+        assert_eq!(p["tool_input"], json!({ "command": "ls", "nested": { "error": 1 } }));
+        assert_eq!(p["session_id"], json!("cc-1"));
+        assert_eq!(p[TRUNCATED_PAYLOAD_KEY], json!(true));
+        assert!(p.get("tool_use_id").is_none(), "the tail is gone, not invented");
+    }
+
+    #[test]
+    fn a_cut_in_a_huge_input_keeps_only_the_scalars() {
+        let big_input = format!("{{\"file_path\":\"/a.rs\",\"content\":\"{}\"}}", "y".repeat(40_000));
+        let raw = capped(&post_tool(&big_input, 10));
+        let p = salvage_truncated_body(&raw).expect("salvaged").payload.expect("head");
+        assert_eq!(p["tool_name"], json!("Bash"));
+        assert!(p.get("tool_input").is_none());
+        assert_eq!(p[TRUNCATED_PAYLOAD_KEY], json!(true));
+    }
+
+    #[test]
+    fn an_unrecognisable_payload_is_still_dropped_not_guessed() {
+        let raw = capped(&format!("{{\"blob\":\"{}\"}}", "z".repeat(40_000)));
+        let body = salvage_truncated_body(&raw).expect("the envelope is salvaged");
+        assert!(body.payload.is_none());
+    }
+
+    #[test]
+    fn only_an_explicitly_unattended_run_is_skipped() {
+        assert!(explicitly_unattended("0", ""));
+        assert!(explicitly_unattended("0", "cli"));
+        assert!(explicitly_unattended("", "other"));
+        assert!(!explicitly_unattended("1", "other"));
+        assert!(!explicitly_unattended("", "cli"));
+        // A hook command written before the flags existed: as before.
+        assert!(!explicitly_unattended("", ""));
     }
 }

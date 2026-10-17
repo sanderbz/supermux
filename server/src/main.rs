@@ -207,6 +207,9 @@ async fn main() -> anyhow::Result<()> {
     // Background tasks. The workflows tick (and its crash reaper) run here.
     workflows::spawn(state.clone());
     supermux_server::browser_feedback::spawn(state.clone());
+    // Asks: clear the previous run's hook attachments (awaited, before the
+    // listener binds), then prune daily.
+    supermux_server::asks::start(&state).await;
     // "Keep me signed in": the shared browser's keep-alive sweep. A no-op — and
     // NO chrome start — while no tab has the toggle on, so the lazy-start
     // invariant holds. It is also the only thing in the codebase that rehydrates

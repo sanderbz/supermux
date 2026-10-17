@@ -52,6 +52,7 @@ A design reference for contributors. Setup and deploy live in [`README.md`](READ
 | `log_redact.rs` | tracing layer that strips sensitive fields. |
 | `external_edit.rs` | Bridges `$EDITOR` to the browser; SSE `external-edit` events drive the editor sheet. |
 | `hooks.rs` | Session→server hook endpoints (status pings, etc). |
+| `asks/` | Durable "agent waiting on a human" records: permission dialogs, AskUserQuestion, MCP forms, board needs-input, needs-you notifications. `GET /api/asks` + SSE `asks`, and answering through Claude Code's PermissionRequest decision hook (`/api/_internal/ask` long-poll). See [`docs/ASKS.md`](docs/ASKS.md). |
 | `push.rs` | VAPID keypair, subscriptions, send fan-out (web-push + reqwest rustls). |
 | `prefs.rs` | Snippets + kbd-groups CRUD. |
 | `claude_config.rs` | Writes `~/.claude/settings.json` for the service user. |
@@ -96,7 +97,7 @@ A new module is one `mod` declaration in `lib.rs`, one `router_for(state)`, and 
 
 - **HTTP REST** — every API route returns either an envelope `{ok: true, data}` or `{ok: false, error}`. Bearer in `Authorization: Bearer <token>`; `?_token=...` query param accepted for `<video>` and EventSource only.
 - **WebSocket** — pty bytes streamed binary, in-band first-frame auth (`{"type":"auth","token":"..."}`), 2s deadline before close 1008. Close 1013 (subscriber-too-slow) triggers a silent reconnect on the next `visibilitychange → visible`.
-- **SSE** — `GET /api/events` is the single live channel for everything that isn't a pty stream. Named events the server emits: `sessions`, `status`, `alerts`, `board`, `boards`, `teams`, `prefs`, `settings`, `external-edit`. Clients invalidate TanStack Query caches keyed by event type.
+- **SSE** — `GET /api/events` is the single live channel for everything that isn't a pty stream. Named events the server emits: `sessions`, `status`, `alerts`, `board`, `boards`, `teams`, `prefs`, `settings`, `external-edit`, `asks` (every ask change, carrying a global `rev` that `GET /api/asks?since=` resumes from). Clients invalidate TanStack Query caches keyed by event type.
 
 ---
 
@@ -154,6 +155,7 @@ For a sweep by hand there is `supermux-server swarm-reaper [--dry-run] [--grace-
 - `issues` + `acceptance_items` + `issue_links` + `issue_tags` + `boards` + `delegations` — the board.
 - `schedules` + `schedule_runs` + `schedule_run_keys` — scheduler + idempotency.
 - `audit_log` — every mutation. Append-only.
+- `asks` + `ask_rev` — the asks inbox (migration 0046); one row per ask, every change stamped with the next global rev. Never holds raw hook payloads.
 - `push_subscriptions` + `notif_prefs` — VAPID-encrypted subscriptions + per-category mute prefs.
 - `hosts` — remote host registry.
 - `steering_queue` — single-flight per-session steering messages.

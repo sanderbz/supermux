@@ -107,6 +107,12 @@ export const SSE_NAMED_EVENTS = [
   // `max(seq seen) − lastRead`, which is idempotent whichever half arrives
   // first. `components/chat/group-chat/use-group-chat.ts` subscribes.
   'groupchat',
+  // An ask changed (`server/src/asks`, docs/ASKS.md) — payload
+  // `{ op: 'opened'|'updated'|'closed', rev, ask }`. Owner-only (unstamped).
+  // No surface in this app reads it yet: the session card keeps its live
+  // `permission_request` / `question_request` fields; it is subscribed so the
+  // channel is never a silent orphan.
+  'asks',
   // A 10s keep-alive — it only resets the staleness clock.
   'ping',
 ] as const

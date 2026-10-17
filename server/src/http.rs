@@ -63,6 +63,10 @@ pub fn router(state: AppState) -> Router {
         // Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Supermux-Hook-Token` validated in the handler.
         .merge(hooks::router_for(state.clone()))
+        // The DECISION hook (`/api/_internal/ask`): the long-poll Claude Code's
+        // PermissionRequest / Elicitation hook waits on for an API answer. NO
+        // bearer layer; same per-session `X-Supermux-Hook-Token` auth as above.
+        .merge(crate::asks::hook::router_for(state.clone()))
         // The `$EDITOR` bridge's open/result endpoints
         // — NO bearer layer; SAME per-session `X-Supermux-Hook-Token` auth as the
         // status hook (the bridge runs inside the pane, never holds the bearer).
@@ -203,6 +207,9 @@ fn protected_router(state: AppState) -> Router {
         // allowlist entry (spec §5.1) rather than a blanket owner-only layer.
         .merge(crate::workflows::router_for(state.clone()))
         .merge(sse::router_for(state.clone())) // GET /api/events SSE stream
+        // The asks inbox (`/api/asks*`): owner/admin only — not on the member
+        // allowlist, so a scoped member gets the uniform 404.
+        .merge(crate::asks::router_for(state.clone()))
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
         // Claude tools registry + MCP CRUD — P3d owner/admin-only. The MCP

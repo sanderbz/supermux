@@ -779,6 +779,10 @@ pub struct AppState {
     /// [`set_oauth_url_policy_for_tests`](Self::set_oauth_url_policy_for_tests) —
     /// never config, never env.
     pub oauth_url_policy: Arc<arc_swap::ArcSwap<crate::connectors::oauth_code::UrlPolicy>>,
+    /// The asks registry (`crate::asks`): per-session locks, the connected
+    /// decision hooks waiting for an answer, and the `[asks]` config. The asks
+    /// themselves live in the `asks` table.
+    pub asks: Arc<crate::asks::AskRegistry>,
 }
 
 impl AppState {
@@ -789,6 +793,7 @@ impl AppState {
         // — never the raw env, so a test harness lands in its own temp dir).
         let browser_pool = pool.clone();
         let browser_cfg = crate::connectors::browser::BrowserConfig::for_data_dir(&config.data_dir);
+        let asks = Arc::new(crate::asks::AskRegistry::new(crate::asks::AsksConfig::load(&config.data_dir)));
         let (sse_tx, _rx) = broadcast::channel(SSE_CHANNEL_CAP);
         // Build the pty streamer before `config` is moved into the Arc.
         let pty = Arc::new(PtyStreamer::new(
@@ -888,6 +893,7 @@ impl AppState {
             oauth_url_policy: Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::connectors::oauth_code::UrlPolicy::default(),
             )),
+            asks,
         }
     }
 

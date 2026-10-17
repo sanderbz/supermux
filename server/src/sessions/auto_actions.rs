@@ -1913,6 +1913,8 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
                     ],
                 )
                 .await?;
+                // The card's needs-input ask comes down with its badge.
+                crate::asks::sync_needs_input(state, &issue.id, "agent", "resumed").await;
                 crate::board::emit_board(state).await;
             }
         }
@@ -2433,6 +2435,34 @@ mod board_reaction_tests {
         react_to_transition(&state, "worker-2", Status::Active).await.unwrap();
         let issue = db::board::get_issue(&state.pool, "B-1").await.unwrap().unwrap();
         assert_eq!(issue.awaiting_input, 0, "→active clears awaiting_input");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The card's needs-input ask (`crate::asks`) follows its badge: when the
+    /// agent resumes and the board clears `awaiting_input`, the ask closes too,
+    /// so an answerable ask never outlives a card that stopped asking.
+    #[tokio::test]
+    async fn resuming_closes_the_cards_needs_input_ask_with_its_badge() {
+        let (state, dir) = test_state().await;
+        seed_session_with_doing_issue(&state, "worker-2", "B-1").await;
+        db::board::patch_issue(&state.pool, "B-1", &[db::board::IssueField::AwaitingInput(1)])
+            .await
+            .unwrap();
+        crate::asks::open_needs_input(&state, "worker-2", "B-1", "eu or us?").await;
+        let open = db::asks::open_for_issue(&state.pool, "B-1").await.unwrap();
+        assert_eq!(open.len(), 1);
+
+        react_to_transition(&state, "worker-2", Status::Active).await.unwrap();
+
+        assert!(db::asks::open_for_issue(&state.pool, "B-1").await.unwrap().is_empty());
+        let row = db::asks::get(&state.pool, &open[0].id).await.unwrap().unwrap();
+        assert_eq!(row.state, "resolved");
+        let res: serde_json::Value =
+            serde_json::from_str(row.resolution.as_deref().unwrap()).unwrap();
+        assert_eq!(res["by"], "agent");
+        assert_eq!(res["outcome"], "resumed");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

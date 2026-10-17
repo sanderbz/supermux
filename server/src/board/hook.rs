@@ -167,6 +167,10 @@ async fn status_handler(
         json!({ "status": status }),
     )
     .await?;
+    // The agent finished the card: a question it left open on it is moot.
+    if status == "done" {
+        crate::asks::close_needs_input(&state, &issue.id, "resolved", "agent", "issue_done").await;
+    }
     emit_board(&state).await;
     Ok(Json(json!({ "ok": true, "issue": issue.id, "status": status })))
 }
@@ -219,6 +223,8 @@ async fn needs_input_handler(
         json!({ "comment_id": comment_id }),
     )
     .await?;
+    // …and the durable, answerable ask for it (`crate::asks`).
+    crate::asks::open_needs_input(&state, &req.session, &issue.id, question).await;
 
     // Web push to the human — best-effort, spawned so the hook response is not
     // blocked on the push service; no-ops cheaply when nobody is subscribed.

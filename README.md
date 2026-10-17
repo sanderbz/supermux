@@ -221,6 +221,7 @@ The **Supermux · Point & tell** Chrome extension lets you select an element, ci
 ### Notifications that find you
 - **Real push notifications** when Claude finishes, asks a question, or stops. Works on iOS too: install the PWA, allow notifications, walk away from your machine.
 - **Per-category mute**: silence "waiting for input", keep "agent finished" loud, never miss "stopped unexpectedly".
+- **An asks API for your own inbox**: every permission prompt, question (multi-select too), MCP form and needs-input is a durable record with a stable id, streamed over SSE and answerable over HTTP — through Claude Code's own hook decisions, not keystrokes. See [docs/ASKS.md](docs/ASKS.md).
 
 ### Stay organized at scale
 - **Custom groups**: drag tiles between groups, name them whatever (`production`, `experiments`, `Claude Boy and Friends`).

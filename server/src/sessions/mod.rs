@@ -1143,6 +1143,7 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         Some(true) => {}
     }
 
+    crate::asks::close_for_session_removed(state, name).await;
     let removed = db::sessions::purge_archived(&state.pool, name).await?;
     if removed == 0 {
         // Raced with another purge/unarchive between the guard and the DELETE.
@@ -1587,6 +1588,9 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     if is_native {
         native::remove_session_data(name, &state.config.data_dir);
     }
+    // Close its open asks first (rev + `closed` frame each); the closed rows
+    // outlive the session row so `GET /api/asks?since=` replays the close.
+    crate::asks::close_for_session_removed(state, name).await;
     db::sessions::delete(&state.pool, name).await?;
 
     // Audit row — every destructive HTTP call records an entry. `delete` is
