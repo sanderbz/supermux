@@ -79,7 +79,13 @@ const DIST = join(DIST_ROOT, 'assets')
 // Per this file's own policy (the "161" entry above: honest fix = ceil(measured)
 // with the measurement attached, not clawing unrelated bytes off the hero path):
 // ceil(163.09) = 164. Still the tightest gate in this file.
-const BUDGET_ENTRY_JS = 164 * KB
+// RATCHETED 164 -> 165 for #204 (answering asks from chat). Measured in CI, where
+// the gate runs (bun 1.3.10; a local 1.3.14 build reads ~0.2 KB smaller): main
+// after #203 163.97, #204 alone 164.04 (+0.07 — the shared choice-card's pressed
+// state rides the hero path), #205 alone 163.98 (+0.01). Combined ≈ 164.05: no
+// single PR is the regression, the gate was at 99.98% before either. Same policy
+// as the two entries above: ceil(measured) = 165, measurement attached.
+const BUDGET_ENTRY_JS = 165 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
