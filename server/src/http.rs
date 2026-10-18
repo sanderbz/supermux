@@ -269,6 +269,8 @@ fn protected_router(state: AppState) -> Router {
         // gate as the rest of /api — auto-update is admin-equivalent. P3d
         // owner/admin-only.
         .merge(updates::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
+        // Restart this Mac or supermux-server from the app — owner/admin only.
+        .merge(crate::host_power::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
         // ── P3d DENY-BY-DEFAULT MEMBER BACKSTOP ──
         // The class fix: a route-layer over EVERY merged protected route, INNER to
         // the `auth_context_middleware` below (so `AuthContext` is already stamped
