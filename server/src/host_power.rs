@@ -19,10 +19,14 @@
 //!
 //! **Where it works.** The Mac restart is macOS-only: the Linux systemd unit
 //! runs with `NoNewPrivileges=true`, under which `sudo` cannot work by design.
-//! Restarting the server needs a supervisor that brings it back (launchd
-//! `KeepAlive`, systemd `Restart=always`); a bare binary would just stop, so
-//! there the button is not offered. Session panes survive either way — their
-//! pty holders are detached from the server (the same path every deploy takes).
+//! Restarting the server needs a supervisor that brings it back; a bare binary
+//! would just stop, so there the button is not offered. Under systemd it is a
+//! SIGTERM to ourselves (`Restart=always`). Under launchd it is NOT left to
+//! `KeepAlive`: on a Mac whose login session is locked and stuck, launchd parks
+//! that respawn and the server would stay down. A helper in its own session
+//! runs `kickstart -k` and kicks the job again until it is running
+//! ([`launchd_restart_script`]). Session panes survive either way: their pty
+//! holders are detached from the server (the same path every deploy takes).
 //!
 //! The countdown is broadcast as a `host-power` SSE frame (owner-only, being
 //! unstamped), so every open app shows it with a Cancel button.
@@ -404,15 +408,78 @@ async fn restart_server_handler(
         json!({}),
     )
     .await?;
-    // Answer first, then stop: SIGTERM is exactly what `launchctl kickstart -k`
-    // and `systemctl restart` send, and the supervisor starts us again. Session
-    // panes keep running — their pty holders are not our children's group.
-    tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        tracing::warn!("restarting supermux-server (requested from the app)");
-        let _ = nix::sys::signal::kill(nix::unistd::Pid::this(), nix::sys::signal::Signal::SIGTERM);
-    });
+    // Answer first, then restart. Session panes keep running either way: their
+    // pty holders are setsid-detached, not in this process's group.
+    match launchd_label(std::env::var("XPC_SERVICE_NAME").ok().as_deref()) {
+        Some(label) => spawn_launchd_restart(&label)
+            .map_err(|e| AppError::Conflict(format!("could not start the restart helper: {e}")))?,
+        // systemd's `Restart=always` brings us back after a SIGTERM, the same
+        // signal `systemctl restart` sends.
+        None => {
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                tracing::warn!("restarting supermux-server (requested from the app)");
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::this(),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
+            });
+        }
+    }
     Ok(Json(json!({ "ok": true, "data": { "restarting": true } })))
+}
+
+/// The launchd job label to kickstart, when we run under one and the label is
+/// safe to put in a shell command (launchd labels are reverse-DNS). Pure.
+pub fn launchd_label(xpc_service: Option<&str>) -> Option<String> {
+    let l = xpc_service?.trim();
+    let ok = !l.is_empty()
+        && l != "0"
+        && l.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    ok.then(|| l.to_string())
+}
+
+/// The helper script for a launchd restart. `kickstart -k` stops and restarts
+/// the job, but launchd can PARK the restart (`pended nondemand spawn =
+/// speculative`, seen on a Mac whose login session is locked and stuck), which
+/// leaves the server down. So the helper checks for about 20 s and kickstarts
+/// the job explicitly while it is not running; an explicit kickstart is not
+/// parked.
+pub fn launchd_restart_script(target: &str) -> String {
+    format!(
+        "sleep 1; launchctl kickstart -k {target}; \
+         for i in 1 2 3 4 5 6 7 8 9 10; do sleep 2; \
+         launchctl print {target} 2>/dev/null | grep -q 'state = running' && exit 0; \
+         launchctl kickstart {target}; done"
+    )
+}
+
+/// Start the launchd restart helper in its OWN session, so launchd tearing
+/// down this job's process group does not take the helper with it.
+fn spawn_launchd_restart(label: &str) -> std::io::Result<()> {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let target = format!("gui/{}/{label}", unsafe { libc::getuid() });
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(launchd_restart_script(&target))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe; it runs in the forked child before exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn()?;
+    tracing::warn!(target = %target, "restarting supermux-server (requested from the app)");
+    // Reap it if this process is still around when it ends (normally it is not).
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -429,6 +496,22 @@ mod tests {
         assert!(!server_restart_support_from(None, None, false).supported);
         // Docker's restart policy is unknown — never offered.
         assert!(!server_restart_support_from(Some("x"), Some("y"), true).supported);
+    }
+
+    #[test]
+    fn the_launchd_restart_is_checked_and_its_label_is_shell_safe() {
+        assert_eq!(
+            launchd_label(Some("com.supermux.server")).as_deref(),
+            Some("com.supermux.server")
+        );
+        assert_eq!(launchd_label(Some("0")), None);
+        assert_eq!(launchd_label(Some("x; rm -rf /")), None);
+        assert_eq!(launchd_label(None), None);
+        let s = launchd_restart_script("gui/501/com.supermux.server");
+        assert!(s.contains("launchctl kickstart -k gui/501/com.supermux.server"));
+        // The helper does not trust launchd's own respawn: it re-checks and kicks.
+        assert!(s.contains("state = running"));
+        assert!(s.contains("launchctl kickstart gui/501/com.supermux.server; done"));
     }
 
     #[test]
