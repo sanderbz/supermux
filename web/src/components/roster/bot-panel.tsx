@@ -82,6 +82,7 @@ import {
   type LastSend,
 } from '@/components/focus-mode/last-send-recall'
 import { NotifPolicyControl } from '@/components/focus-mode/notif-policy-control'
+import { CompanyInboxField } from '@/components/roster/company-inbox-field'
 import {
   DescEditor,
   TagsEditor,
@@ -1138,7 +1139,8 @@ function Group({ children }: { children: React.ReactNode }) {
  *   1 · Behavior   — the role, the model, the core notes it always carries.
  *   2 · Connectors — the real per-bot action surface.
  *   3 · Memory     — what the bot has LEARNED across runs.
- *   4 · Delivery   — how it notifies you, then the Advanced internals. */
+ *   4 · Delivery   — how it notifies you, whether companies may message it
+ *                    (HQ bots, owner only), then the Advanced internals. */
 function SetupTab({
   name,
   session,
@@ -1181,6 +1183,7 @@ function SetupTab({
         <Field label="Notifications">
           <NotifPolicyControl name={name} value={session?.notif} />
         </Field>
+        <CompanyInboxField name={name} session={session} />
         <LaunchInternals session={session} />
       </Group>
     </div>

@@ -20,6 +20,7 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod company_inbox;
 pub mod connect_ask;
 pub mod connector_config;
 pub mod elicitation;
@@ -126,6 +127,14 @@ pub fn router_for(state: AppState) -> Router {
         // the P3b funnel below. Sits next to `config` because it, too, returns
         // `restart_required`.
         .route("/api/sessions/{name}/company", post(move_company::handler))
+        // Let ONE HQ bot accept `/supermux-message` from company bots (opt-in;
+        // closed by default). Owner/admin-all only — the guard is inside.
+        .route(
+            "/api/sessions/{name}/company-inbox",
+            get(company_inbox::get_handler)
+                .put(company_inbox::put_handler)
+                .delete(company_inbox::delete_handler),
+        )
         // ── tmux lifecycle ──
         .route("/api/sessions/{name}/start", post(start_handler))
         .route("/api/sessions/{name}/stop", post(stop_handler))
