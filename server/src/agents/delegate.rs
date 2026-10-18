@@ -171,19 +171,75 @@ pub fn wraps_for_provider(provider: &str) -> bool {
 /// so it holds for BOTH the web-composer path and a raw `curl` — the @-picker is
 /// only defense-in-depth, never the fence.
 ///
-/// Three cases, in order:
+/// Four cases, in order:
 ///  1. `from` is a main bot (`None`) ⇒ ALLOW — the PA reaches anyone, any
 ///     company or main. This is the only way a cross-company edge is ever born.
 ///  2. same non-null company (`from == to`, both `Some`) ⇒ ALLOW.
-///  3. otherwise (a company bot aimed at a *different* company, OR at a
+///  3. a company bot aimed at a main/`None` target whose `company_inbox` row
+///     admits the sender's company (`to_inbox_admits`) ⇒ ALLOW. Opt-in per HQ
+///     bot, set by the owner; no row is the default and falls to case 4.
+///  4. otherwise (a company bot aimed at a *different* company, OR at a closed
 ///     main/`None` target) ⇒ REFUSE. The caller turns a refusal into a silent
 ///     404 — the same shape a non-existent slug gets — and writes NOTHING.
 ///
-/// The whole predicate collapses to "the sender is omniscient, or the two share
-/// a company": `from_company.is_none() || from_company == to_company`. Spelled
-/// out here so the security-relevant table is one a later reader verifies by eye.
-pub fn delegation_gate_allows(from_company: Option<i64>, to_company: Option<i64>) -> bool {
-    from_company.is_none() || from_company == to_company
+/// The predicate is "the sender is omniscient, or the two share a company, or
+/// the target is an HQ bot that opened its inbox to the sender". Case 3 checks
+/// `to_company.is_none()` itself, so an inbox row on a bot that later moved into
+/// a company can never open a cross-company edge. Spelled out here so the
+/// security-relevant table is one a later reader verifies by eye.
+pub fn delegation_gate_allows(
+    from_company: Option<i64>,
+    to_company: Option<i64>,
+    to_inbox_admits: bool,
+) -> bool {
+    from_company.is_none()
+        || from_company == to_company
+        || (to_company.is_none() && to_inbox_admits)
+}
+
+/// Whether `to` is a main bot whose `company_inbox` admits `from_company` —
+/// case 3 of [`delegation_gate_allows`]. Only read for a company sender aimed
+/// at a company-less target; every other pair answers `false` without a query.
+pub async fn inbox_admits(
+    state: &AppState,
+    from_company: Option<i64>,
+    to: &str,
+    to_company: Option<i64>,
+) -> Result<bool, AppError> {
+    let (Some(fc), None) = (from_company, to_company) else {
+        return Ok(false);
+    };
+    Ok(db::company_inbox::get(&state.pool, to)
+        .await?
+        .is_some_and(|a| a.admits(fc)))
+}
+
+/// Who a company bot can message: its same-company peers (minus itself and its
+/// company's Router, which no bot may wake) and the HQ bots whose inbox admits
+/// its company. Both sorted. A main bot reaches everyone and gets two empty
+/// lists — nothing to enumerate.
+///
+/// The one roster for the briefing and the hook route's 404, so what a bot is
+/// told it can reach and what the gate admits come from the same rules.
+pub async fn reachable_from(
+    state: &AppState,
+    company_id: Option<i64>,
+    me: &str,
+) -> Result<(Vec<String>, Vec<String>), AppError> {
+    let Some(cid) = company_id else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let slug = db::companies::get(&state.pool, cid).await?.map(|c| c.slug);
+    let mut peers = db::companies::names_in_company(&state.pool, cid).await?;
+    peers.retain(|n| {
+        n != me
+            && !slug
+                .as_deref()
+                .is_some_and(|s| crate::companies::groupchat::is_router(s, n))
+    });
+    peers.sort();
+    let hq = db::company_inbox::hq_bots_admitting(&state.pool, cid).await?;
+    Ok((peers, hq))
 }
 
 /// Audit-log actor string for a delegation. `"human"` is the composer path.
@@ -280,7 +336,8 @@ pub async fn deliver_delegation(
 
     // THE COMPANY GATE. After both sessions are known to exist and BEFORE any
     // delivery / keystroke / delegation edge / audit row: a company bot may only
-    // reach its own company; a main/PA bot (`company_id IS NULL`) reaches anyone.
+    // reach its own company, plus an HQ bot that opened its inbox to that company;
+    // a main/PA bot (`company_id IS NULL`) reaches anyone.
     // A refusal is a SILENT 404 — byte-identical to a non-existent slug, so a
     // company bot cannot even probe another company's roster by name — and it
     // returns here, before `record_delegation`, `send_harness_text`, or
@@ -288,7 +345,8 @@ pub async fn deliver_delegation(
     // the raw-curl and the hook-token paths too, since it lives here rather than
     // in the web @-picker (which is only defense-in-depth). See
     // [`delegation_gate_allows`] for the decision table.
-    if !delegation_gate_allows(from_row.company_id, to_row.company_id) {
+    let to_inbox_admits = inbox_admits(state, from_row.company_id, to, to_row.company_id).await?;
+    if !delegation_gate_allows(from_row.company_id, to_row.company_id, to_inbox_admits) {
         return Err(AppError::NotFound(format!("session '{to}'")));
     }
 
@@ -535,29 +593,38 @@ mod tests {
     #[test]
     fn same_company_delegate_allowed() {
         // Two bots sharing a non-null company reach each other.
-        assert!(delegation_gate_allows(Some(7), Some(7)));
+        assert!(delegation_gate_allows(Some(7), Some(7), false));
     }
 
     #[test]
     fn main_bot_bypass_reaches_any_company() {
         // A main/PA bot (`from` NULL) reaches ANY target — a company or another
         // main bot. This is the one origin of a legitimate cross-company edge.
-        assert!(delegation_gate_allows(None, Some(1)));
-        assert!(delegation_gate_allows(None, Some(99)));
-        assert!(delegation_gate_allows(None, None));
+        assert!(delegation_gate_allows(None, Some(1), false));
+        assert!(delegation_gate_allows(None, Some(99), false));
+        assert!(delegation_gate_allows(None, None, false));
     }
 
     #[test]
     fn company_bot_to_other_company_is_refused_by_gate() {
         // Different non-null companies ⇒ the gate says no.
-        assert!(!delegation_gate_allows(Some(1), Some(2)));
+        assert!(!delegation_gate_allows(Some(1), Some(2), false));
     }
 
     #[test]
     fn company_bot_to_main_bot_is_refused_by_gate() {
-        // A company bot cannot reach a main/NULL target either — only the PA
-        // crosses the fence, and only outward.
-        assert!(!delegation_gate_allows(Some(1), None));
+        // A company bot cannot reach a closed main/NULL target — the default.
+        assert!(!delegation_gate_allows(Some(1), None, false));
+    }
+
+    #[test]
+    fn company_bot_reaches_an_hq_bot_only_through_its_open_inbox() {
+        // Case 3: the HQ bot's inbox admits the sender's company.
+        assert!(delegation_gate_allows(Some(1), None, true));
+        // An "admits" answer can never open a COMPANY target: the inbox is for
+        // company-less bots only, so a stale row on a bot that moved into a
+        // company stays inert.
+        assert!(!delegation_gate_allows(Some(1), Some(2), true));
     }
 
     // ── the gate as it actually fires inside delegate() ──────────────────────
@@ -615,6 +682,99 @@ mod tests {
             matches!(err, AppError::NotFound(_)),
             "company→main refusal must be a silent 404, got {err:?}"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// An HQ bot that opened its inbox to the sender's company receives the
+    /// message, edge and all; one that opened it to ANOTHER company does not.
+    #[tokio::test]
+    async fn company_bot_reaches_an_hq_bot_whose_inbox_admits_its_company() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        let globex = seed_company(&state, "globex").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "globex-bot", Some(globex)).await;
+        seed_session(&state, "max", None).await;
+        db::company_inbox::set(
+            &state.pool,
+            "max",
+            &db::company_inbox::Accepts::Only(vec![acme]),
+        )
+        .await
+        .unwrap();
+
+        delegate(
+            axum::extract::State(state.clone()),
+            crate::scope::OptCtx(None),
+            axum::Json(deleg_input("acme-bot", "max")),
+        )
+        .await
+        .expect("an admitted company reaches the HQ bot");
+        assert_eq!(count(&state, "SELECT COUNT(*) FROM delegations").await, 1);
+
+        let err = delegate(
+            axum::extract::State(state.clone()),
+            crate::scope::OptCtx(None),
+            axum::Json(deleg_input("globex-bot", "max")),
+        )
+        .await
+        .expect_err("a company the inbox does not list is refused");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+        assert_eq!(count(&state, "SELECT COUNT(*) FROM delegations").await, 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `*` admits every company; closing the inbox restores the default refusal.
+    #[tokio::test]
+    async fn an_open_to_all_inbox_admits_any_company_until_it_is_closed() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "max", None).await;
+        db::company_inbox::set(&state.pool, "max", &db::company_inbox::Accepts::All)
+            .await
+            .unwrap();
+        delegate(
+            axum::extract::State(state.clone()),
+            crate::scope::OptCtx(None),
+            axum::Json(deleg_input("acme-bot", "max")),
+        )
+        .await
+        .expect("open to all");
+
+        assert!(db::company_inbox::clear(&state.pool, "max").await.unwrap());
+        let err = delegate(
+            axum::extract::State(state.clone()),
+            crate::scope::OptCtx(None),
+            axum::Json(deleg_input("acme-bot", "max")),
+        )
+        .await
+        .expect_err("a closed inbox is the default refusal again");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// An inbox row on a bot that is (now) in a company opens nothing: the
+    /// company fence between two companies stays where it was.
+    #[tokio::test]
+    async fn an_inbox_row_on_a_company_bot_does_not_open_a_cross_company_edge() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        let globex = seed_company(&state, "globex").await;
+        seed_session(&state, "acme-bot", Some(acme)).await;
+        seed_session(&state, "globex-bot", Some(globex)).await;
+        db::company_inbox::set(&state.pool, "globex-bot", &db::company_inbox::Accepts::All)
+            .await
+            .unwrap();
+        let err = delegate(
+            axum::extract::State(state.clone()),
+            crate::scope::OptCtx(None),
+            axum::Json(deleg_input("acme-bot", "globex-bot")),
+        )
+        .await
+        .expect_err("cross-company stays refused");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+        assert_eq!(count(&state, "SELECT COUNT(*) FROM delegations").await, 0);
         std::fs::remove_dir_all(dir).ok();
     }
 

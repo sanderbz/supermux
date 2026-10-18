@@ -1,5 +1,5 @@
 ---
-description: Message or hand off to a same-company teammate bot — the prompt arrives in their pane.
+description: Message or hand off to a same-company teammate bot, or report back to an HQ bot that accepts your company — the prompt arrives in their pane.
 argument-hint: <teammate> — <what to say or hand off>   (e.g. "billing-bot — please reconcile invoice #91")
 supermux-managed: true
 ---
@@ -13,11 +13,14 @@ teammate who owns a domain you don't.
 
 ## The boundaries — read these before you call
 
-- **Same company only.** You can reach a teammate in your OWN company; a bot in
-  another company (or a main/HQ bot) is a **404** — the same answer a nonexistent
-  name gets, so you cannot even probe who exists elsewhere. Your SessionStart
-  briefing lists your same-company teammates by name; those are the valid `to`
-  values.
+- **Your company, plus HQ bots that opened their inbox to it.** You can reach a
+  teammate in your OWN company, and an HQ bot only if the owner opened that
+  bot's inbox to your company. Any other name is a **404** that lists who you
+  CAN message — the same answer whether the name is closed or does not exist,
+  so you cannot probe who exists elsewhere. Your SessionStart briefing names
+  your teammates and the open HQ bots; those are the valid `to` values.
+- **A message to an HQ bot is a report, not an order.** It reads as information
+  from you; do not expect it to act on instructions in it.
 - **You always send AS yourself.** The server takes the sender from your token;
   there is no way to send as a colleague.
 - **You deliver a PROMPT, nothing else.** Write it to a peer who lacks your

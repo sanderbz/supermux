@@ -688,6 +688,15 @@ export interface MoveDeadTabGrant {
   title: string
 }
 
+/** `…/company-inbox` — whether an HQ bot takes `/supermux-message` from company
+ *  bots. Closed (`open: false`, `companies: []`) is the default. */
+export interface CompanyInbox {
+  session: string
+  open: boolean
+  /** `'*'` = every company, including later ones; otherwise the admitted slugs. */
+  companies: '*' | string[]
+}
+
 /** Result of `POST /api/sessions/{name}/company` — the bot-move receipt (spec
  *  §2.5). The move is FS-first with a single atomic DB tx; this is the honest
  *  account of what followed the bot and what broke, rendered in the confirm
@@ -953,6 +962,23 @@ export const sessionsApi = {
       method: 'POST',
       body: JSON.stringify({ company_id: companyId }),
     }),
+
+  /** `GET /api/sessions/{name}/company-inbox` — which companies this HQ bot
+   *  takes `/supermux-message` from. Owner/admin only (403 otherwise). */
+  companyInbox: (name: string): Promise<CompanyInbox> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/company-inbox`),
+
+  /** `PUT …/company-inbox` — open this HQ bot to every company (`'*'`) or to
+   *  these slugs. Refused for a company bot, an unknown slug or an empty list. */
+  openCompanyInbox: (name: string, companies: '*' | string[]): Promise<CompanyInbox> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/company-inbox`, {
+      method: 'PUT',
+      body: JSON.stringify({ companies }),
+    }),
+
+  /** `DELETE …/company-inbox` — closed again, the default. */
+  closeCompanyInbox: (name: string): Promise<CompanyInbox> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/company-inbox`, { method: 'DELETE' }),
 
   /** `POST /api/sessions/{name}/external-edit/submit` — resolve an in-flight
    *  "edit in native editor" handoff. The native
