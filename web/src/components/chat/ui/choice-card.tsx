@@ -55,6 +55,13 @@ export interface ChoiceOption {
   /** Why it is inert, or what the grant actually covers — the control's own
    *  tooltip, so the sentence is where the finger is. */
   hint?: string
+  /**
+   * A TOGGLE rather than an answer: a multi-select question's option, picked
+   * and un-picked before one Submit. Set (true or false) → the pill carries
+   * `aria-pressed` and the accent while on. Unset → an ordinary answer pill,
+   * byte-identical to before.
+   */
+  pressed?: boolean
 }
 
 export interface ChoiceCardProps {
@@ -100,16 +107,30 @@ export function ChoiceCard({
   return (
     <DialogShell eyebrow={eyebrow} question={question} detail={detail} why={why} className={className}>
       <div className="mt-[13px] flex flex-wrap gap-2">
-        {options.map((option, i) => (
-          <ChoiceButton
-            key={option.label}
-            option={option}
-            selected={selectedIndex === i}
-            onClick={onChoose ? () => onChoose(i) : undefined}
-          />
-        ))}
+        <ChoicePills options={options} selectedIndex={selectedIndex} onChoose={onChoose} />
       </div>
     </DialogShell>
+  )
+}
+
+/** The pills alone, for a card that lays out its own rows (a multi-question
+ *  ask draws one row per question inside one shell). */
+export function ChoicePills({
+  options,
+  selectedIndex,
+  onChoose,
+}: Pick<ChoiceCardProps, 'options' | 'selectedIndex' | 'onChoose'>) {
+  return (
+    <>
+      {options.map((option, i) => (
+        <ChoiceButton
+          key={option.label}
+          option={option}
+          selected={selectedIndex === i}
+          onClick={onChoose ? () => onChoose(i) : undefined}
+        />
+      ))}
+    </>
   )
 }
 
@@ -206,10 +227,11 @@ function ChoiceButton({
       // `aria-pressed`/`aria-checked`: nothing is pressed or checked yet — this
       // is a cursor over answers, the same thing `RosterRow` uses it for.
       aria-current={selected || undefined}
-      data-selected={selected || undefined}
+      aria-pressed={option.pressed}
+      data-selected={selected || option.pressed || undefined}
       data-disabled={option.disabled || undefined}
       style={
-        selected
+        selected || option.pressed
           ? {
               borderColor: 'color-mix(in oklab, var(--sm-accent) 55%, transparent)',
               backgroundColor: 'color-mix(in oklab, var(--sm-accent) 8%, transparent)',

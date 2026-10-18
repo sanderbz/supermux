@@ -79,7 +79,13 @@ const DIST = join(DIST_ROOT, 'assets')
 // Per this file's own policy (the "161" entry above: honest fix = ceil(measured)
 // with the measurement attached, not clawing unrelated bytes off the hero path):
 // ceil(163.09) = 164. Still the tightest gate in this file.
-const BUDGET_ENTRY_JS = 164 * KB
+// RATCHETED 164 -> 165 for #204 (answering asks from chat). Measured in CI, where
+// the gate runs (bun 1.3.10; a local 1.3.14 build reads ~0.2 KB smaller): main
+// after #203 163.97, #204 alone 164.04 (+0.07 — the shared choice-card's pressed
+// state rides the hero path), #205 alone 163.98 (+0.01). Combined ≈ 164.05: no
+// single PR is the regression, the gate was at 99.98% before either. Same policy
+// as the two entries above: ceil(measured) = 165, measurement attached.
+const BUDGET_ENTRY_JS = 165 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
@@ -1404,7 +1410,27 @@ const BUDGET_ENTRY_JS = 164 * KB
 // Re-measured after the rebase onto the uploads ratchet (oauth return + uploads
 // + this branch, one build on this box): 468.78 KB. Policy: 468.78 x 1.02 =
 // 478.2 -> 478.
-const BUDGET_APP_JS = 478 * KB
+//
+// RATCHETED 478 -> 488 by chat answering through the asks API
+// (`feat/chat-answers-no-terminal`, stacked on the asks API). Measured the same
+// way on the same box:
+//
+//   parent origin/maxmax/asks-api       474.87 KB  <- 3.13 KB of headroom
+//   this branch                         478.94 KB  <- +4.07 KB
+//
+// ALL of it is the lazy `chat-panel` chunk (48.97 -> 53.02); every other chunk
+// moved by hash churn only, and the entry gate is green and unmoved in
+// substance (163.72 -> 163.78 / 164, import-map churn). What the 4 KB buys:
+// the permission / question / form cards answer through Claude Code's own
+// decision hook instead of keys pressed into the pty — every option on every
+// build, multi-select, several questions, the free-text row, Claude's own
+// "Yes, and always allow …" offers by name — plus the live asks list it reads
+// (`hooks/use-asks`, `lib/api/asks`) and the composer routing a typed sentence
+// into the open ask. The key-pressing paths stay as the fallback for sessions
+// whose hooks predate the decision hook, so nothing was removable yet.
+//
+// Policy: 478.94 x 1.02 = 488.5 -> 488.
+const BUDGET_APP_JS = 488 * KB
 // RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:
