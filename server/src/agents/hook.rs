@@ -16,7 +16,7 @@
 //! a small per-session rate limit stops a loop from spamming the phone. Secrets
 //! are never logged.
 //!
-//! ## `POST /api/hook/delegate` — message a SAME-COMPANY peer
+//! ## `POST /api/hook/delegate` — message a SAME-COMPANY peer (or an open HQ bot)
 //!
 //! Body `{ session, to, prompt }`. Closes the auth-model gap the audit flagged:
 //! `/api/agents/delegate` is bearer-only, so a bot's hook token 401s there and a
@@ -26,9 +26,11 @@
 //! `delegate::deliver_delegation` the bearer route uses, so the company gate
 //! (`delegation_gate_allows`), the wrapper-markup refusal, the size cap and the
 //! delegation-edge/audit bookkeeping are ONE implementation. A company bot may
-//! reach only its own company; a cross-company (or company→main) `to` collapses
-//! to a uniform 404 — byte-identical to a nonexistent slug, so a bot cannot even
-//! probe another company's roster. The bearer route is untouched.
+//! reach only its own company, plus an HQ bot whose owner-set `company_inbox`
+//! admits that company; a cross-company (or closed company→main) `to` collapses
+//! to a uniform 404 — the same sentence a nonexistent slug gets, built from the
+//! SENDER's own reach (who it CAN message), so a bot cannot probe another
+//! company's roster. The bearer route is untouched.
 //!
 //! Bodies are read `Content-Type`-agnostically via [`crate::extract::LenientJson`]
 //! (the docs a bot copies use `curl -d`, which defaults to
@@ -217,7 +219,8 @@ struct DelegateBody {
 /// the session, forces `from` to it, and hands the rest to the shared
 /// `delegate::deliver_delegation` so the company gate + wrapper refusal + size
 /// cap + edge/audit are the SAME code the bearer route runs. A cross-company (or
-/// company→main) target is a uniform 404 (no roster oracle).
+/// closed company→main) target is a uniform 404 that lists what the sender CAN
+/// reach ([`unreachable`]) — no roster oracle.
 async fn delegate_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -229,16 +232,65 @@ async fn delegate_handler(
     // `from` is the AUTHENTICATED session, never a payload field — the delivery
     // helper enforces the company gate off both rows' `company_id`. `actor: None`
     // audits as `agent:<from>` (this is never the human composer path).
-    let id = crate::agents::delegate::deliver_delegation(
-        &state,
-        &session,
-        body.to.trim(),
-        &body.prompt,
-        None,
-    )
-    .await?;
+    let to = body.to.trim();
+    let id =
+        match crate::agents::delegate::deliver_delegation(&state, &session, to, &body.prompt, None)
+            .await
+        {
+            Err(AppError::NotFound(_)) => return Err(unreachable(&state, &session, to).await),
+            other => other?,
+        };
 
     Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+/// The 404 for a `to` that does not exist OR that the gate refused. ONE
+/// sentence for both, built only from the SENDER's side (its peers and the HQ
+/// bots open to its company), so it is still no roster oracle — but it names
+/// who the bot CAN reach, instead of leaving it to hunt for a side door.
+async fn unreachable(state: &AppState, from: &str, to: &str) -> AppError {
+    let company = db::sessions::get(&state.pool, from)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.company_id);
+    let (peers, hq) = crate::agents::delegate::reachable_from(state, company, from)
+        .await
+        .unwrap_or_default();
+    AppError::NotFound(unreachable_message(
+        from,
+        to,
+        company.is_some(),
+        &peers,
+        &hq,
+    ))
+}
+
+/// Pure half of [`unreachable`]. A main bot reaches everyone, so for it a 404
+/// can only mean the name does not exist — the plain message.
+fn unreachable_message(
+    from: &str,
+    to: &str,
+    in_company: bool,
+    peers: &[String],
+    hq: &[String],
+) -> String {
+    if !in_company {
+        return format!("session '{to}'");
+    }
+    let mut can = Vec::new();
+    if !peers.is_empty() {
+        can.push(format!("{} (your company)", peers.join(", ")));
+    }
+    if !hq.is_empty() {
+        can.push(format!("{} (HQ)", hq.join(", ")));
+    }
+    let reach = if can.is_empty() {
+        "nobody — your company has no other bots and no HQ bot accepts messages from it".to_string()
+    } else {
+        can.join("; ")
+    };
+    format!("session '{to}' is not reachable from '{from}'. You can message: {reach}")
 }
 
 #[cfg(test)]
@@ -576,6 +628,91 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delegate_reaches_an_hq_bot_whose_inbox_admits_the_company() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        seed_bot(&state, "acme-a", "tok-a", Some(acme)).await;
+        seed_bot(&state, "max", "tok-max", None).await;
+        state
+            .session_runtimes
+            .insert("max".to_string(), Arc::new(LiveStub));
+        db::company_inbox::set(
+            &state.pool,
+            "max",
+            &db::company_inbox::Accepts::Only(vec![acme]),
+        )
+        .await
+        .unwrap();
+
+        let out = delegate_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            delegate_body("acme-a", "max", "deploy is done"),
+        )
+        .await
+        .expect("an open HQ inbox takes the report");
+        assert_eq!(out.0["ok"], json!(true));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_404_names_who_the_bot_can_reach_and_is_the_same_for_a_missing_name() {
+        let (state, dir) = test_state().await;
+        let acme = seed_company(&state, "acme").await;
+        seed_bot(&state, "acme-a", "tok-a", Some(acme)).await;
+        seed_bot(&state, "acme-b", "tok-b", Some(acme)).await;
+        seed_bot(&state, "max", "tok-max", None).await;
+        seed_bot(&state, "closed-hq", "tok-c", None).await;
+        db::company_inbox::set(&state.pool, "max", &db::company_inbox::Accepts::All)
+            .await
+            .unwrap();
+
+        let msg = |res: Result<Json<Value>, AppError>| match res {
+            Err(AppError::NotFound(m)) => m,
+            other => panic!("expected a 404, got {other:?}"),
+        };
+        let refused = msg(delegate_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            delegate_body("acme-a", "closed-hq", "hi"),
+        )
+        .await);
+        let missing = msg(delegate_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            delegate_body("acme-a", "nobody-here", "hi"),
+        )
+        .await);
+        assert_eq!(
+            refused.replace("closed-hq", "X"),
+            missing.replace("nobody-here", "X"),
+            "a refused and a nonexistent name must read the same"
+        );
+        assert!(
+            refused.contains("acme-b (your company); max (HQ)"),
+            "{refused}"
+        );
+        assert!(
+            !refused.contains("closed-hq is"),
+            "a closed HQ bot is never listed: {refused}"
+        );
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_bot_with_nobody_to_reach_is_told_so() {
+        let m = unreachable_message("solo", "max", true, &[], &[]);
+        assert!(m.contains("You can message: nobody"), "{m}");
+        // A main bot reaches everyone, so its 404 only ever means "no such name".
+        assert_eq!(
+            unreachable_message("max", "ghost", false, &[], &[]),
+            "session 'ghost'"
+        );
     }
 
     #[tokio::test]

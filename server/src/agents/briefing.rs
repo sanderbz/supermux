@@ -60,33 +60,37 @@ pub async fn build(state: &AppState, session: &Session) -> String {
         session.name.trim()
     };
 
-    // Company name + same-company peers (slugs — the exact addressees
-    // `/supermux-message` and the delegate hook take as `to`). Best-effort: any
-    // read failure collapses to "no company", never blocks the launch.
-    let (company, peers) = match session.company_id {
-        Some(cid) => {
-            let company_name = db::companies::get(&state.pool, cid)
-                .await
-                .ok()
-                .flatten()
-                .map(|c| {
-                    if c.display_name.trim().is_empty() {
-                        c.slug
-                    } else {
-                        c.display_name
-                    }
-                });
-            let mut peers = db::companies::names_in_company(&state.pool, cid)
-                .await
-                .unwrap_or_default();
-            peers.retain(|n| n != name);
-            peers.sort();
-            (company_name, peers)
-        }
-        None => (None, Vec::new()),
+    // Company name + who it can message (slugs — the exact addressees
+    // `/supermux-message` and the delegate hook take as `to`): same-company
+    // peers, and the HQ bots whose inbox admits this company. Same roster the
+    // hook's 404 names ([`crate::agents::delegate::reachable_from`]).
+    // Best-effort: any read failure collapses to "no company", never blocks the
+    // launch.
+    let company = match session.company_id {
+        Some(cid) => db::companies::get(&state.pool, cid)
+            .await
+            .ok()
+            .flatten()
+            .map(|c| {
+                if c.display_name.trim().is_empty() {
+                    c.slug
+                } else {
+                    c.display_name
+                }
+            }),
+        None => None,
     };
+    let (peers, hq) = crate::agents::delegate::reachable_from(state, session.company_id, name)
+        .await
+        .unwrap_or_default();
 
-    render(name, company.as_deref(), &peers, browser_facts(state, name).await.as_ref())
+    render(
+        name,
+        company.as_deref(),
+        &peers,
+        &hq,
+        browser_facts(state, name).await.as_ref(),
+    )
 }
 
 /// This bot's browser facts, or `None` when it holds no `shared-browser` grant.
@@ -126,11 +130,13 @@ async fn browser_facts(state: &AppState, name: &str) -> Option<BrowserFacts> {
 /// The peer/message line appears ONLY when the bot is in a company AND has at
 /// least one same-company peer to address — an HQ/company-less bot, or the sole
 /// bot in its company, gets the core five lines and no addressee-less message
-/// line.
+/// line. The HQ line likewise appears only for a company bot that at least one
+/// HQ bot opened its inbox to.
 pub fn render(
     name: &str,
     company: Option<&str>,
     peers: &[String],
+    hq: &[String],
     browser: Option<&BrowserFacts>,
 ) -> String {
     let mut s = String::new();
@@ -187,6 +193,12 @@ pub fn render(
             peers.join(", ")
         ));
     }
+    if company.is_some() && !hq.is_empty() {
+        s.push_str(&format!(
+            "- HQ bots that accept messages from your company: {}. Report back to one with /supermux-message.\n",
+            hq.join(", ")
+        ));
+    }
     s.push_str("Use these on your own initiative when they fit; don't ask the human to do them for you.\n");
     s.push_str("</system-reminder>\n");
     s
@@ -202,6 +214,7 @@ mod tests {
             "crm-bot",
             Some("Acme"),
             &["billing-bot".to_string(), "support-bot".to_string()],
+            &[],
             None,
         );
         assert!(out.contains("You are the supermux agent \"crm-bot\" in company \"Acme\"."));
@@ -223,7 +236,7 @@ mod tests {
     fn hq_bot_briefing_omits_company_and_peer_lines() {
         // A company-less HQ/PA bot: no company clause, no message line (no roster
         // to address), but still every core affordance.
-        let out = render("pa", None, &[], None);
+        let out = render("pa", None, &[], &[], None);
         assert!(out.contains("You are the supermux agent \"pa\". "));
         assert!(!out.contains("company"));
         assert!(!out.contains("/supermux-message"));
@@ -236,17 +249,30 @@ mod tests {
     fn lone_company_bot_gets_no_addressee_less_message_line() {
         // In a company but the only bot in it: the message line would have no
         // addressee, so it is omitted while the company identity clause stays.
-        let out = render("solo-bot", Some("Globex"), &[], None);
+        let out = render("solo-bot", Some("Globex"), &[], &[], None);
         assert!(out.contains("company \"Globex\""));
         assert!(!out.contains("/supermux-message"));
         assert!(!out.contains("teammates"));
     }
 
     #[test]
+    fn a_company_bot_is_told_which_hq_bots_take_its_messages() {
+        let out = render("solo-bot", Some("Globex"), &[], &["max".to_string()], None);
+        assert!(
+            out.contains("HQ bots that accept messages from your company: max."),
+            "{out}"
+        );
+        assert!(out.contains("/supermux-message"));
+        // A closed HQ (no inbox) adds nothing.
+        let closed = render("solo-bot", Some("Globex"), &[], &[], None);
+        assert!(!closed.contains("HQ bots"));
+    }
+
+    #[test]
     fn a_bot_with_no_browser_grant_is_told_nothing_about_the_browser() {
         // Zero tokens for the majority of bots — and, more to the point, no
         // promise of tools the launch did not wire.
-        let out = render("pa", None, &[], None);
+        let out = render("pa", None, &[], &[], None);
         assert!(!out.contains("browser"));
     }
 
@@ -255,6 +281,7 @@ mod tests {
         let out = render(
             "folderwijzer",
             None,
+            &[],
             &[],
             Some(&BrowserFacts { tabs: vec!["tb_abc — Google Search Console".into()] }),
         );
@@ -271,7 +298,7 @@ mod tests {
 
     #[test]
     fn a_browser_bot_with_no_tab_is_told_to_ask_for_a_tab_not_a_connector() {
-        let out = render("pa", None, &[], Some(&BrowserFacts::default()));
+        let out = render("pa", None, &[], &[], Some(&BrowserFacts::default()));
         assert!(out.contains("NO tab is lent to you yet"));
         assert!(
             out.contains("not a connector, there is no card for this"),
@@ -290,6 +317,7 @@ mod tests {
             "crm-bot",
             Some("Acme"),
             &["billing-bot".to_string(), "support-bot".to_string()],
+            &[],
             None,
         );
         assert!(out.len() / 4 < 240, "briefing token estimate too high: {}", out.len() / 4);
@@ -301,6 +329,7 @@ mod tests {
             "crm-bot",
             Some("Acme"),
             &["billing-bot".to_string()],
+            &[],
             Some(&BrowserFacts { tabs: vec!["tb_abc — Mail".into()] }),
         );
         assert!(
