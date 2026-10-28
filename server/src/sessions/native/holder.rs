@@ -122,6 +122,10 @@ const SOCKET_MODE: u32 = 0o600;
 /// buggy peer cannot aim `SIGSTOP`/`SIGCONT`/`SIGUSR*`/realtime signals at an
 /// agent's process group.
 const SIGNAL_ALLOWLIST: [i32; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGTERM, libc::SIGKILL];
+/// How long a foreground job that outlived the shell after a terminate request
+/// gets before `SIGKILL` (see [`signal_session`]). Matches the daemon's own
+/// `KILL_GRACE`.
+const FOREGROUND_KILL_GRACE: Duration = Duration::from_secs(3);
 
 /// Parsed `supermux-server pty-holder …` command line.
 #[derive(Debug, Clone)]
@@ -501,6 +505,9 @@ struct Inner {
     cols: u16,
     rows: u16,
     exited: bool,
+    /// The terminal's foreground job group at the last terminate request, when
+    /// it was not the shell's own group (see [`signal_session`]).
+    kill_fg: Option<i32>,
 }
 
 struct Holder {
@@ -740,7 +747,7 @@ async fn run_with_log(args: Args, log: Arc<HolderLog>) -> Result<()> {
         master: master.clone(),
         log: log.clone(),
         next_conn: AtomicU64::new(1),
-        inner: Mutex::new(Inner { spool, live: None, cols, rows, exited: false }),
+        inner: Mutex::new(Inner { spool, live: None, cols, rows, exited: false, kill_fg: None }),
     });
     log.line(&format!("child pid={pid} started"));
 
@@ -819,6 +826,10 @@ async fn run_with_log(args: Args, log: Arc<HolderLog>) -> Result<()> {
         }
     };
     let code = status.code().unwrap_or(-1);
+    let straggler = holder.inner().kill_fg;
+    if let Some(fg) = straggler {
+        reap_foreground(&log, fg).await;
+    }
     let _ = tokio::time::timeout(DRAIN, pump.done).await;
 
     {
@@ -1107,7 +1118,7 @@ async fn handle_frame(holder: &Arc<Holder>, kind: u8, payload: Vec<u8>) {
             }
         }
         proto::SIGNAL => match proto::parse_i32(&payload) {
-            Some(sig) if SIGNAL_ALLOWLIST.contains(&sig) => signal_child(holder.pid, sig),
+            Some(sig) if SIGNAL_ALLOWLIST.contains(&sig) => signal_session(holder, sig),
             Some(sig) => holder.log.line(&format!(
                 "refusing signal {sig} (outside the allowlist) for session={}",
                 holder.session,
@@ -1140,6 +1151,66 @@ fn signal_child(pid: u32, sig: i32) {
     // SAFETY: plain libc call; a stale pid yields ESRCH, which we ignore.
     unsafe {
         libc::killpg(pid as i32, sig);
+    }
+}
+
+/// Deliver a signal from the daemon: to the child's process group, and for a
+/// terminate signal also to the terminal's FOREGROUND job group.
+///
+/// The child is an interactive shell with job control, so the agent `start`
+/// types into it (`claude …`) runs in its OWN process group and `killpg` on the
+/// shell's group never reaches it. On `SIGHUP` the shell exits and passes the
+/// hangup on, which a wedged agent ignores; the holder then saw its child gone
+/// and exited before the daemon's `SIGKILL`, and the agent lived on as an
+/// orphan under init, still holding its conversation (erecentrum on the mini,
+/// 28 Oct). So the foreground group is signalled too and remembered, and
+/// [`reap_foreground`] escalates it to `SIGKILL` once the shell has gone.
+fn signal_session(holder: &Holder, sig: i32) {
+    if matches!(sig, libc::SIGHUP | libc::SIGTERM | libc::SIGKILL) {
+        let shell = holder.pid as i32;
+        // The live foreground group, or the one remembered from an earlier
+        // request: after the shell has exited the terminal has none left.
+        let fg = foreground_pgrp(holder.master.get_ref().as_raw_fd())
+            .filter(|&fg| fg != shell)
+            .or(holder.inner().kill_fg);
+        if let Some(fg) = fg {
+            holder.inner().kill_fg = Some(fg);
+            // SAFETY: plain libc call; a group that is gone yields ESRCH.
+            unsafe {
+                libc::killpg(fg, sig);
+            }
+        }
+    }
+    signal_child(holder.pid, sig);
+}
+
+/// The terminal's foreground process group, read on the pty MASTER (Linux and
+/// macOS both answer `TIOCGPGRP` there with the slave's foreground group).
+fn foreground_pgrp(master: RawFd) -> Option<i32> {
+    // SAFETY: plain libc call on a live fd; failure is -1.
+    let pg = unsafe { libc::tcgetpgrp(master) };
+    (pg > 0).then_some(pg)
+}
+
+/// After the shell has exited on a terminate request: give the foreground job
+/// group it left behind [`FOREGROUND_KILL_GRACE`] to go, then `SIGKILL` it.
+///
+/// The group was observed live moments ago and a group id cannot be reused
+/// while any member is alive, so `killpg(fg, 0)` succeeding inside this window
+/// means the same job is still there.
+async fn reap_foreground(log: &HolderLog, fg: i32) {
+    // SAFETY: plain libc call; signal 0 only probes for existence.
+    let alive = || unsafe { libc::killpg(fg, 0) } == 0;
+    let deadline = std::time::Instant::now() + FOREGROUND_KILL_GRACE;
+    while alive() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if alive() {
+        log.line(&format!("foreground job group {fg} outlived the shell; SIGKILL"));
+        // SAFETY: as above.
+        unsafe {
+            libc::killpg(fg, libc::SIGKILL);
+        }
     }
 }
 
