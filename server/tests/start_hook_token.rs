@@ -73,6 +73,11 @@ async fn a_fresh_spawn_rotates_the_token_and_a_start_on_a_live_terminal_keeps_it
         eprintln!("skipping: tmux not on PATH");
         return;
     }
+    // Server logs into the test output, so a failing start says why.
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
     let (state, app, dir) = setup().await;
     let name = format!("tok{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     assert_eq!(
