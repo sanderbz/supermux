@@ -1511,11 +1511,32 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// The foreground process-group id of the terminal `pid` is attached to
-/// (`tpgid`, field 8 of `/proc/<pid>/stat`). `None` when unreadable, or when the
-/// terminal has no foreground group.
-///
-/// The `comm` field can contain spaces AND parentheses, so the fixed fields are
-/// parsed from after the LAST `)` — the standard way to read this file.
+/// (`tpgid`). `None` when unreadable, or when the terminal has no foreground
+/// group.
+#[cfg(target_os = "macos")]
+pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
+    // No /proc on macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` carries the same
+    // `tpgid`. Without this the double-launch guard in `start` read "unknown"
+    // here and typed the launch command into a live agent.
+    // SAFETY: a zeroed POD struct of exactly the size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (n == size && info.e_tpgid > 0).then_some(info.e_tpgid)
+}
+
+/// Linux: field 8 of `/proc/<pid>/stat`. The `comm` field can contain spaces
+/// AND parentheses, so the fixed fields are parsed from after the LAST `)` —
+/// the standard way to read this file.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
