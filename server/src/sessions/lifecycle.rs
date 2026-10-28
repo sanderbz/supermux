@@ -4,10 +4,12 @@
 //! [`AppState::lock_for`] so concurrent sends/starts/stops never race tmux
 //! commands. Read-only ops (`peek`) skip the lock per the detector rule.
 //!
-//! **Hook-token rotation.** Every `start` mints a fresh `SUPERMUX_HOOK_TOKEN`
-//! (32 bytes, OsRng) and injects it — with `SUPERMUX_SESSION`/`SUPERMUX_URL`/
-//! `TMUX_SESSION_NAME` — into the tmux pane env. The dashboard bearer is NEVER
-//! placed in the session environment.
+//! **Hook-token rotation.** Every `start` that spawns a new terminal mints a
+//! fresh `SUPERMUX_HOOK_TOKEN` (32 bytes, OsRng) and injects it — with
+//! `SUPERMUX_SESSION`/`SUPERMUX_URL`/`TMUX_SESSION_NAME` — into the pane env. A
+//! start on a terminal that is already up keeps the stored token, because the
+//! process already running there holds it. The dashboard bearer is NEVER placed
+//! in the session environment.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -2805,8 +2807,23 @@ async fn start_locked_inner(
     // column, built exactly as `Tmux::new(name)` built it here before.
     let rt = state.runtime_for(name).await?;
 
-    // Rotate the hook token on every start to avoid long-lived env secrets.
-    let hook_token = super::gen_hook_token();
+    // Rotate the hook token on a start that will spawn a new terminal, to avoid
+    // long-lived env secrets. The token reaches the agent ONLY through the
+    // spawn environment (`$SUPERMUX_HOOK_TOKEN`, which every hook command
+    // reads), so a start on a terminal that is already up must keep the stored
+    // one: rotating there leaves the running agent with a token the server no
+    // longer accepts, and every hook 401s until the next real restart (no
+    // activity, no asks, and a conversation pointer frozen across `/clear`, so
+    // the next restart resumes an old conversation).
+    let kept_token = if rt.alive().await {
+        db::sessions::runtime(&state.pool, name)
+            .await?
+            .map(|r| r.hook_token)
+            .filter(|t| !t.is_empty())
+    } else {
+        None
+    };
+    let hook_token = kept_token.unwrap_or_else(super::gen_hook_token);
     db::sessions::ensure_runtime(&state.pool, name, &hook_token).await?;
     state.hook_tokens.insert(name.to_string(), hook_token.clone());
 
