@@ -1511,11 +1511,32 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// The foreground process-group id of the terminal `pid` is attached to
-/// (`tpgid`, field 8 of `/proc/<pid>/stat`). `None` when unreadable, or when the
-/// terminal has no foreground group.
-///
-/// The `comm` field can contain spaces AND parentheses, so the fixed fields are
-/// parsed from after the LAST `)` — the standard way to read this file.
+/// (`tpgid`). `None` when unreadable, or when the terminal has no foreground
+/// group.
+#[cfg(target_os = "macos")]
+pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
+    // No /proc on macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` carries the same
+    // `tpgid`. Without this the double-launch guard in `start` read "unknown"
+    // here and typed the launch command into a live agent.
+    // SAFETY: a zeroed POD struct of exactly the size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (n == size && info.e_tpgid > 0).then_some(info.e_tpgid)
+}
+
+/// Linux: field 8 of `/proc/<pid>/stat`. The `comm` field can contain spaces
+/// AND parentheses, so the fixed fields are parsed from after the LAST `)` —
+/// the standard way to read this file.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
@@ -2461,6 +2482,62 @@ Caused by:
         session.kill().await.unwrap();
         holder.abort();
         crate::sessions::native::forget("fg");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A foreground job that ignores the polite signals must not outlive a
+    /// kill. The interactive shell runs it in its OWN process group, so
+    /// signalling the shell's group alone let the shell exit and left a wedged
+    /// agent orphaned under init (erecentrum on the mini, 28 Oct).
+    #[tokio::test]
+    async fn kill_takes_down_a_foreground_job_that_ignores_hangup() {
+        let dir = data_dir("fgkill");
+        let args = super::super::holder::Args {
+            session: "fgkill".to_string(),
+            dir: spool::session_dir(&dir, "fgkill"),
+            socket: spool::socket_path(&dir, "fgkill"),
+            cols: 80,
+            rows: 24,
+            command: "bash --norc -i".to_string(),
+        };
+        let holder = tokio::spawn(async move {
+            let _ = super::super::holder::run(args).await;
+        });
+        let session = NativeSession::new("fgkill", &dir);
+        assert!(wait_until!(Duration::from_secs(10), session.attached()));
+        // Let the shell reach its prompt (`shell_is_foreground` reads /proc, so
+        // it cannot be the gate on macOS).
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Ignored dispositions survive `exec`, so this `sleep` ignores both.
+        let secs = 3000 + std::process::id() % 1000;
+        session
+            .send_text(&format!("bash -c 'trap \"\" HUP TERM; exec sleep {secs}'"))
+            .await
+            .unwrap();
+        tokio::time::sleep(SUBMIT_GAP).await;
+        session.send_key("Enter").await.unwrap();
+        let pgrep = || {
+            std::process::Command::new("pgrep")
+                .args(["-f", &format!("^sleep {secs}$")])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.lines().next().and_then(|l| l.trim().parse::<i32>().ok()))
+        };
+        assert!(wait_until!(Duration::from_secs(10), pgrep().is_some()), "the job never started");
+        let job = pgrep().expect("the foreground job is running");
+
+        session.kill().await.unwrap();
+        // SAFETY: signal 0 only probes for existence.
+        let alive = || unsafe { libc::kill(job, 0) } == 0;
+        assert!(
+            wait_until!(Duration::from_secs(10), !alive()),
+            "the foreground job must not outlive the kill",
+        );
+
+        holder.abort();
+        crate::sessions::native::forget("fgkill");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
