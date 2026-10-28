@@ -5,7 +5,8 @@
 //! nothing, so rotating there left the running agent with a token the server no
 //! longer accepted: every hook 401'd until the next real restart, the
 //! conversation pointer froze across `/clear`, and that restart then resumed an
-//! old conversation. Spawns a REAL tmux shell session; skips without tmux.
+//! old conversation. Spawns a REAL native session (pty holder from the built
+//! server binary, running a shell).
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
 use supermux_server::state::AppState;
@@ -69,20 +70,13 @@ async fn token(state: &AppState, name: &str) -> String {
 
 #[tokio::test]
 async fn a_fresh_spawn_rotates_the_token_and_a_start_on_a_live_terminal_keeps_it() {
-    if which::which("tmux").is_err() {
-        eprintln!("skipping: tmux not on PATH");
-        return;
-    }
-    // Server logs into the test output, so a failing start says why.
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(tracing::Level::DEBUG)
-        .try_init();
+    // A real holder: the test binary itself cannot host `pty-holder`.
+    std::env::set_var("SUPERMUX_HOLDER_BIN", env!("CARGO_BIN_EXE_supermux-server"));
     let (state, app, dir) = setup().await;
     let name = format!("tok{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     assert_eq!(
         api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
-            "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux"
+            "name": name, "provider": "shell", "dir": "/tmp", "runtime": "native"
         })))
         .await,
         StatusCode::CREATED
@@ -106,8 +100,5 @@ async fn a_fresh_spawn_rotates_the_token_and_a_start_on_a_live_terminal_keeps_it
     );
 
     let _ = api(&app, Method::POST, &format!("/api/sessions/{name}/stop"), None).await;
-    let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &format!("supermux-{name}")])
-        .output();
     let _ = std::fs::remove_dir_all(dir);
 }
