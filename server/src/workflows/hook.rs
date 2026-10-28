@@ -71,11 +71,27 @@
 //! nothing the agent can read. See the extractor's module doc for why accepting
 //! it is not a CSRF hole (the auth header is not CORS-simple).
 //!
+//! ## `list` / `disable` / `delete` — an agent tidying its own calendar
+//!
+//! Without these, a recurring workflow an agent armed for a finished job kept
+//! firing until a human found it in the Schedules sheet (Menno-Marketeer's
+//! 12-hourly check ran for weeks past the test week it was for). Each is
+//! scoped exactly like the legacy done route: the workflow's `session` must be
+//! the authenticated one, and another session's id is a 401.
+//!
+//! - **`list`** returns the workflows that target this session.
+//! - **`disable`** pauses one. It is reversible (the owner re-enables it from
+//!   the app) and grants less than `create` already does, so it applies to any
+//!   workflow targeting the session, whoever set it up.
+//! - **`delete`** is not reversible from the app, so it is narrower: only a
+//!   workflow this session CREATED itself (its ledger create row's actor is
+//!   `agent:<session>`, see [`db::workflows::creator`]). One the owner set up
+//!   answers 403 with a pointer to `disable`. A missing ledger row fails closed.
+//!
 //! What is NOT here, and is recorded as a known limitation rather than an
 //! oversight: an agent still cannot DELEGATE with its hook token
-//! (`/api/agents/delegate` is bearer-only), and it cannot patch, enable or
-//! delete any workflow — not even its own. Creation and step-done are the whole
-//! of it.
+//! (`/api/agents/delegate` is bearer-only), and it cannot patch or (re-)enable
+//! any workflow — not even its own. Re-arming is the owner's.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -107,6 +123,9 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/hook/workflow/create", post(create_handler))
         .route("/api/hook/schedule/done", post(legacy_done_handler))
         .route("/api/hook/schedule/create", post(create_handler))
+        .route("/api/hook/workflow/list", post(list_handler))
+        .route("/api/hook/workflow/disable", post(disable_handler))
+        .route("/api/hook/workflow/delete", post(delete_handler))
         .with_state(state)
 }
 
@@ -394,6 +413,149 @@ async fn create_handler(
         axum::http::StatusCode::CREATED,
         Json(json!({ "ok": true, "data": created })),
     ))
+}
+
+// ── list / disable / delete ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ListBody {
+    session: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManageBody {
+    session: String,
+    #[serde(default)]
+    id: String,
+}
+
+/// Whether `session` created workflow `id` itself (see the module doc).
+async fn created_by(state: &AppState, id: &str, session: &str) -> Result<bool, AppError> {
+    let creator = db::workflows::creator(&state.pool, id).await?;
+    Ok(creator.as_deref() == Some(format!("agent:{session}").as_str()))
+}
+
+/// Load a workflow the authenticated session may act on: it must exist and
+/// target that session. Another session's workflow is a 401, as on the legacy
+/// done route.
+async fn own_workflow(
+    state: &AppState,
+    session: &str,
+    id: &str,
+) -> Result<db::workflows::Workflow, AppError> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(AppError::BadRequest(
+            "'id' is required — `supermux-schedule list` shows your workflow ids".into(),
+        ));
+    }
+    let wf = db::workflows::get(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("workflow '{id}'")))?;
+    if wf.session != session {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(wf)
+}
+
+/// `POST /api/hook/workflow/list` — the workflows that target this session.
+async fn list_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    LenientJson(body): LenientJson<ListBody>,
+) -> Result<Json<Value>, AppError> {
+    let session = body.session.trim().to_string();
+    authenticate(&state, &headers, &session).await?;
+
+    let mut out = Vec::new();
+    for wf in db::workflows::list_for_session(&state.pool, &session).await? {
+        let steps = db::workflows::steps_for(&state.pool, &wf.id).await?;
+        let created_by_you = created_by(&state, &wf.id, &session).await?;
+        out.push(json!({
+            "id": wf.id,
+            "title": wf.title,
+            "enabled": wf.enabled != 0,
+            "trigger": wf.trigger_kind,
+            "schedule_expr": wf.schedule_expr,
+            "next_run": wf.next_run,
+            "last_run": wf.last_run,
+            "run_count": wf.run_count,
+            "created_by_you": created_by_you,
+            "steps": steps
+                .iter()
+                .map(|s| json!({ "title": s.title, "command": s.command, "prompt": s.prompt }))
+                .collect::<Vec<_>>(),
+        }));
+    }
+    Ok(Json(json!({ "ok": true, "data": out })))
+}
+
+/// `POST /api/hook/workflow/disable` — pause one of this session's workflows.
+/// Idempotent: an already-paused workflow answers 200 with `changed: false`.
+async fn disable_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    LenientJson(body): LenientJson<ManageBody>,
+) -> Result<Json<Value>, AppError> {
+    let session = body.session.trim().to_string();
+    authenticate(&state, &headers, &session).await?;
+    let wf = own_workflow(&state, &session, &body.id).await?;
+
+    let changed = wf.enabled != 0;
+    if changed {
+        db::workflows::set_enabled(&state.pool, &wf.id, false).await?;
+        let _ = db::audit::log(
+            &state.pool,
+            &format!("agent:{session}"),
+            "workflow.disable",
+            &wf.id,
+            json!({ "session": session, "title": wf.title }),
+        )
+        .await;
+        if let Some(updated) = db::workflows::get(&state.pool, &wf.id).await? {
+            super::emit_workflows(&state, &updated, "updated");
+        }
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "data": { "id": wf.id, "title": wf.title, "enabled": false, "changed": changed },
+    })))
+}
+
+/// `POST /api/hook/workflow/delete` — delete a workflow this session created
+/// itself. One the owner set up is a 403: the agent may only pause it.
+async fn delete_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    LenientJson(body): LenientJson<ManageBody>,
+) -> Result<Json<Value>, AppError> {
+    let session = body.session.trim().to_string();
+    authenticate(&state, &headers, &session).await?;
+    let wf = own_workflow(&state, &session, &body.id).await?;
+
+    if !created_by(&state, &wf.id, &session).await? {
+        return Err(AppError::Forbidden(format!(
+            "workflow '{}' was not created by this session, so only the owner can delete it — \
+             you can pause it with `supermux-schedule disable {}`",
+            wf.id, wf.id
+        )));
+    }
+    if db::workflows::soft_delete(&state.pool, &wf.id).await? == 0 {
+        return Err(AppError::NotFound(format!("workflow '{}'", wf.id)));
+    }
+    let _ = db::audit::log(
+        &state.pool,
+        &format!("agent:{session}"),
+        "workflow.delete",
+        &wf.id,
+        json!({ "session": session, "title": wf.title }),
+    )
+    .await;
+    super::emit_workflows(&state, &wf, "deleted");
+    Ok(Json(json!({
+        "ok": true,
+        "data": { "id": wf.id, "title": wf.title, "deleted": true },
+    })))
 }
 
 /// Resolve the two spellings of "what happens when it finishes" into the ONE
