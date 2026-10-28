@@ -225,11 +225,29 @@ fn plan_task(argv: &[String], session: &str) -> Result<Call> {
 /// `supermux-schedule <title> <schedule_expr> <prompt…>` → `/api/hook/schedule/create`.
 /// Those three are the whole of what the create handler requires; anything else
 /// it accepts (`done_action`, a step chain) goes through `--json`.
+///
+/// `list`, `disable <id>` and `delete <id>` manage the session's own workflows.
+/// They match only at their exact arity, so a create whose title happens to be
+/// "list" (three or more arguments) stays a create.
 fn plan_schedule(argv: &[String], session: &str) -> Result<Call> {
     const USAGE: &str =
-        "usage: supermux-schedule <title> <schedule_expr> <prompt…>   (e.g. supermux-schedule 'Deploy check' 'every weekday at 08:00' Check the 08:00 deploy)";
+        "usage: supermux-schedule <title> <schedule_expr> <prompt…>   (e.g. supermux-schedule 'Deploy check' 'every weekday at 08:00' Check the 08:00 deploy)\n       supermux-schedule list | disable <id> | delete <id>";
     if let Some(body) = json_escape_hatch(argv, session)? {
         return Ok(Call { path: "/api/hook/schedule/create", body });
+    }
+    match (argv.first().map(String::as_str), argv.len()) {
+        (Some("list"), 1) => {
+            return Ok(Call { path: "/api/hook/workflow/list", body: json!({ "session": session }) })
+        }
+        (Some(verb @ ("disable" | "delete")), 2) => {
+            let path = if verb == "disable" {
+                "/api/hook/workflow/disable"
+            } else {
+                "/api/hook/workflow/delete"
+            };
+            return Ok(Call { path, body: json!({ "session": session, "id": argv[1] }) });
+        }
+        _ => {}
     }
     let title = argv
         .first()
@@ -644,6 +662,27 @@ mod tests {
                 "prompt": "Check the deploy",
             })
         );
+    }
+
+    #[test]
+    fn schedule_list_disable_and_delete_match_only_at_their_exact_arity() {
+        let call = plan("supermux-schedule", &args(&["list"]), "acme-a").unwrap();
+        assert_eq!(call.path, "/api/hook/workflow/list");
+        assert_eq!(call.body, json!({ "session": "acme-a" }));
+
+        let call = plan("supermux-schedule", &args(&["disable", "WF-1"]), "acme-a").unwrap();
+        assert_eq!(call.path, "/api/hook/workflow/disable");
+        assert_eq!(call.body, json!({ "session": "acme-a", "id": "WF-1" }));
+
+        let call = plan("supermux-schedule", &args(&["delete", "WF-1"]), "acme-a").unwrap();
+        assert_eq!(call.path, "/api/hook/workflow/delete");
+        assert_eq!(call.body, json!({ "session": "acme-a", "id": "WF-1" }));
+
+        // A create whose title is one of the verbs stays a create.
+        let call = plan("supermux-schedule", &args(&["list", "in 20m", "Tidy", "up"]), "acme-a")
+            .unwrap();
+        assert_eq!(call.path, "/api/hook/schedule/create");
+        assert_eq!(call.body["title"], json!("list"));
     }
 
     #[test]

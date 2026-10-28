@@ -231,6 +231,20 @@ pub async fn count_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result
     .await
 }
 
+/// Who created a workflow, from the ledger: the actor of its first create row
+/// (`workflow.create`, or `schedule.create` for a row ported from the scheduler,
+/// which kept its `SCHED-…` id). `None` when the ledger has no such row.
+pub async fn creator(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT actor FROM audit_log
+         WHERE target = ? AND action IN ('workflow.create', 'schedule.create')
+         ORDER BY id LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// The company a bot belongs to. NULL for the main bot AND for a session that
 /// does not exist — a missing session is not an error here, it is a NULL.
 pub async fn derive_company_id(pool: &SqlitePool, session: &str) -> sqlx::Result<Option<i64>> {

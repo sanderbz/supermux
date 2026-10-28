@@ -27,7 +27,9 @@ the deploy"), or a reminder to yourself before you hand back.
   the human. Anything else is a 400.
 - **There is a cap of 20 live schedules per session.** Over it you get a 429.
   That is not a retry — delete one first, or tell the human you are at the limit.
-- **A rejected request is a 400, a 401 or a 429 with a readable message.**
+- **You can pause any schedule that targets you, and delete the ones you
+  created** — see "Pausing or removing your own schedules" below.
+- **A rejected request is a 400, a 401, a 403 or a 429 with a readable message.**
   Surface it to the human. Do not retry the same call hoping for a different
   answer; the server is deterministic.
 
@@ -125,9 +127,29 @@ a duplicate schedule.** A `Created schedule ⏱ <title>` line appears in this
 session's transcript by itself — you do not need to announce it separately. **Tell the human what you scheduled and when it will
 first fire**, in one sentence, so they can correct you before it runs.
 
-To change or remove a schedule, the human does it from the Schedules sheet in
-the app (tap the `⏱` chip in the transcript). You cannot edit or delete
-schedules — including your own — and you should say that rather than trying.
+## Pausing or removing your own schedules
+
+When a schedule has outlived its purpose (the test week it was checking is
+over, the follow-up is no longer needed), stop it yourself rather than letting
+it fire on:
+
+```bash
+supermux-schedule list               # the schedules that target this session, with their ids
+supermux-schedule disable WF-1a2b3c4d   # pause one
+supermux-schedule delete WF-1a2b3c4d    # remove one you created yourself
+```
+
+- **`list`** shows every schedule that targets this session, with `id`,
+  `title`, `enabled`, `schedule_expr`, `next_run` and `created_by_you`.
+- **`disable`** pauses any of them, including one the human set up for you.
+  It is reversible: the human can switch it back on in the app. Disabling an
+  already-paused schedule is a no-op (`changed: false`).
+- **`delete`** works only on a schedule **you created yourself**
+  (`created_by_you: true`). One the human set up is a 403: pause it instead.
+- A schedule of another session is a 401, the same as everywhere else.
+- You cannot edit a schedule or switch one back on. Tell the human what you
+  paused and why, in one sentence; they re-enable or edit it from the Schedules
+  sheet in the app (tap the `⏱` chip in the transcript).
 
 ## Under the hood
 
@@ -141,6 +163,9 @@ curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
   "$SUPERMUX_URL/api/hook/schedule/create" \
   -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"…","schedule_expr":"every weekday at 08:00"}'
 ```
+
+`list`, `disable` and `delete` POST `{session}` or `{session,id}` to
+`$SUPERMUX_URL/api/hook/workflow/list`, `…/disable` and `…/delete` the same way.
 
 Use the `curl` only if the wrapper is missing from an old pane; it costs a
 permission prompt that nobody may be there to answer.

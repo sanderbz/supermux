@@ -766,6 +766,10 @@ mod tests {
         assert!(md.contains("YOUR OWN session"), "must state the scoping rule");
         assert!(md.contains("`disable` or `notify`"), "must state the done_action rule");
         assert!(md.contains("20 live schedules"), "must state the cap");
+        for verb in ["supermux-schedule list", "supermux-schedule disable", "supermux-schedule delete"] {
+            assert!(md.contains(verb), "must teach {verb}");
+        }
+        assert!(md.contains("created yourself"), "must state that delete is creator-only");
         assert!(
             md.contains("429") && md.contains("400"),
             "must name the statuses a rejection arrives as"
