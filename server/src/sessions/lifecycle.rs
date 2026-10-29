@@ -806,6 +806,31 @@ fn build_launch_command(
     // per-session `allowedTools` grant (`Bash(supermux-memory *)`) auto-approves.
     // Harmless for non-bot panes (an extra dir on PATH); the CLI errors cleanly if
     // BOT_MEMORY_* is unset.
+    //
+    // `$HOME/.local/bin` is APPENDED as a last-resort fallback, and it is what
+    // makes a CONFINED pane boot on a host whose `/etc/profile` resets PATH
+    // (Debian does; Ubuntu and macOS keep the daemon's PATH). There the profile
+    // sources above are what put the user-scoped bin dir back on PATH
+    // (Debian's `~/.profile` prepends it), and in a company pane they do not
+    // run: `ConfinePlan::for_company` does not allow-list the home dotfiles,
+    // so the pane's bash prints `~/.bash_profile: Permission denied`,
+    // `source ~/.profile 2>/dev/null` swallows the same EACCES, and PATH keeps
+    // only `<data_dir>/bin` + the system dirs. A native-installer `claude`
+    // lives at `~/.local/bin/claude` (a symlink into
+    // `~/.local/share/claude/versions/<ver>`), which the jail DOES grant
+    // RO+exec — the binary was reachable the whole time, it was simply never
+    // on PATH, so every company pane died on `bash: claude: command not found`
+    // and fell back to a bare shell (seen on a Debian 13 host: 6/6 company
+    // panes across two companies).
+    // LAST, not first: a pane whose PATH is intact keeps resolving exactly as
+    // before. On macOS `path_helper` moves `~/.local/bin` behind Homebrew, so
+    // `claude` resolves to the Homebrew install; a prepended copy would
+    // silently switch every pane to the native install and let any tool in
+    // `~/.local/bin` shadow Homebrew and the system. Unconditional, since a
+    // trailing duplicate or an absent dir changes nothing. Written as the
+    // shell word `$HOME/...` (double-quoted, like the codex installer arm
+    // above) rather than a Rust-resolved path so it follows the PANE's `$HOME`
+    // and never bakes the daemon's home into the line.
     let bin_dir = config.data_dir.join("bin");
     let bin_dir = bin_dir.display();
     // Per-session Claude login (migration 0041). A session can be pointed at a
@@ -816,7 +841,8 @@ fn build_launch_command(
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
          source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
-         export PATH='{bin_dir}':\"$PATH\"; {config_dir_export}{agent}"
+         export PATH='{bin_dir}':\"$PATH\":\"$HOME/.local/bin\"; \
+         {config_dir_export}{agent}"
     );
     (command, resume_intended)
 }
@@ -6102,6 +6128,115 @@ mod build_env_tests {
         let plain = Session { config_dir: String::new(), ..base.clone() };
         let (command, _resume) = build_launch_command(&config, &plain, &[]);
         assert!(!command.contains("CLAUDE_CONFIG_DIR"), "{command}");
+    }
+
+    /// `$HOME/.local/bin` is on the launch line's own PATH export, so a pane
+    /// finds a native-installer `claude`/`codex` WITHOUT the profile sources.
+    /// This is the confined-pane boot fix: `ConfinePlan::for_company` does not
+    /// allow-list the home dotfiles, `source ~/.profile 2>/dev/null` eats the
+    /// EACCES, and the user-scoped bin dir — the only place a native install
+    /// puts the provider — never reached PATH, so every company pane died on
+    /// `bash: claude: command not found`.
+    ///
+    /// Asserted on the EVALUATED result, not the spelling: the data dir still
+    /// wins (supermux's own wrappers outrank a user binary of the same name),
+    /// the inherited PATH follows unchanged (so an intact PATH resolves exactly
+    /// as before), `.local/bin` comes LAST as the fallback, and `$HOME`
+    /// expands in the PANE rather than being baked in by the daemon.
+    #[test]
+    fn the_launch_line_puts_the_user_bin_dir_on_path_without_the_profiles() {
+        let config = cfg();
+        let bin_dir = config.data_dir.join("bin").display().to_string();
+        let session = Session {
+            name: "jailed".into(),
+            display_name: "Jailed".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            flags: String::new(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+            company_id: Some(1),
+            runtime: "native".into(),
+            mark_pin: None,
+            notif: "inherit".into(),
+            seen_ts: None,
+            seen_count: None,
+            seen_epoch: None,
+            model: String::new(),
+            memory: String::new(),
+            skills: "[]".into(),
+            role_id: None,
+            archive_on_stop: 0,
+            config_dir: String::new(),
+        };
+
+        let (command, _resume) = build_launch_command(&config, &session, &[]);
+
+        // The export sits AFTER the (possibly failing) profile sources and
+        // BEFORE the agent, so neither a profile nor the provider can lose it.
+        let profile_at = command.find("source ~/.profile").expect("profile sourced");
+        let path_at = command.find("export PATH=").expect("PATH exported");
+        let agent_at = command.find("claude --name jailed").expect("agent launched");
+        assert!(
+            profile_at < path_at && path_at < agent_at,
+            "PATH export must sit between the profile sources and the agent: {command}"
+        );
+
+        // `$HOME` must survive into the pane unexpanded — a daemon-resolved
+        // home would point a remote/other-user pane at the wrong tree.
+        assert!(
+            command.contains("\"$HOME/.local/bin\""),
+            "user bin dir must be the pane's own $HOME, quoted: {command}"
+        );
+
+        // Evaluate JUST the export with a known HOME and a stripped PATH: this
+        // is the behaviour the pane gets, free of this test host's environment.
+        let export_end = command[path_at..]
+            .find("; ")
+            .map(|i| path_at + i)
+            .expect("export is one statement");
+        let export = &command[path_at..export_end];
+        let out = std::process::Command::new("bash")
+            .args(["-c", &format!("{export}; printf %s \"$PATH\"")])
+            .env("HOME", "/home/tester")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("bash must be available to evaluate the PATH export");
+        assert!(out.status.success(), "PATH export must run: {export}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("{bin_dir}:/usr/bin:/bin:/home/tester/.local/bin"),
+            "data dir wins, inherited PATH next, user bin dir last: {export}"
+        );
+
+        // The whole line still parses as shell.
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "launch line must parse as shell: {command}");
     }
 
     /// The export decision lives in the launch arms, so it cannot disagree with
