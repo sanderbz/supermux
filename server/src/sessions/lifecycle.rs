@@ -807,22 +807,27 @@ fn build_launch_command(
     // Harmless for non-bot panes (an extra dir on PATH); the CLI errors cleanly if
     // BOT_MEMORY_* is unset.
     //
-    // `$HOME/.local/bin` RIDES ALONG, and it is what makes a CONFINED pane boot
-    // at all. Before the explicit PATH export below, the profile sources above
-    // were the only thing that put the user-scoped bin dir on PATH (Debian's `~/.profile` prepends it), and in a
-    // company pane they do not run: `ConfinePlan::for_company` does not
-    // allow-list the home dotfiles, so the pane's bash prints
-    // `~/.bash_profile: Permission denied`, `source ~/.profile 2>/dev/null`
-    // swallows the same EACCES, and PATH keeps only `<data_dir>/bin` + the
-    // system dirs. A native-installer `claude` lives at `~/.local/bin/claude`
-    // (a symlink into `~/.local/share/claude/versions/<ver>`), which the jail
-    // DOES grant RO+exec — the binary was reachable the whole time, it was
-    // simply never on PATH, so every company pane died on
-    // `bash: claude: command not found` and fell back to a bare shell (live on
-    // the Strato box, 2026-10-07: 6/6 company panes across both companies).
-    // Unconditional on purpose: an unconfined pane already has the dir first
-    // from `~/.profile`, so the duplicate changes nothing there, and a host
-    // without the dir just carries one absent entry on PATH. Written as the
+    // `$HOME/.local/bin` is APPENDED as a last-resort fallback, and it is what
+    // makes a CONFINED pane boot on a host whose `/etc/profile` resets PATH
+    // (Debian does; Ubuntu and macOS keep the daemon's PATH). There the profile
+    // sources above are what put the user-scoped bin dir back on PATH
+    // (Debian's `~/.profile` prepends it), and in a company pane they do not
+    // run: `ConfinePlan::for_company` does not allow-list the home dotfiles,
+    // so the pane's bash prints `~/.bash_profile: Permission denied`,
+    // `source ~/.profile 2>/dev/null` swallows the same EACCES, and PATH keeps
+    // only `<data_dir>/bin` + the system dirs. A native-installer `claude`
+    // lives at `~/.local/bin/claude` (a symlink into
+    // `~/.local/share/claude/versions/<ver>`), which the jail DOES grant
+    // RO+exec — the binary was reachable the whole time, it was simply never
+    // on PATH, so every company pane died on `bash: claude: command not found`
+    // and fell back to a bare shell (seen on a Debian 13 host: 6/6 company
+    // panes across two companies).
+    // LAST, not first: a pane whose PATH is intact keeps resolving exactly as
+    // before. On macOS `path_helper` moves `~/.local/bin` behind Homebrew, so
+    // `claude` resolves to the Homebrew install; a prepended copy would
+    // silently switch every pane to the native install and let any tool in
+    // `~/.local/bin` shadow Homebrew and the system. Unconditional, since a
+    // trailing duplicate or an absent dir changes nothing. Written as the
     // shell word `$HOME/...` (double-quoted, like the codex installer arm
     // above) rather than a Rust-resolved path so it follows the PANE's `$HOME`
     // and never bakes the daemon's home into the line.
@@ -836,7 +841,7 @@ fn build_launch_command(
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
          source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
-         export PATH='{bin_dir}':\"$HOME/.local/bin\":\"$PATH\"; \
+         export PATH='{bin_dir}':\"$PATH\":\"$HOME/.local/bin\"; \
          {config_dir_export}{agent}"
     );
     (command, resume_intended)
@@ -6135,7 +6140,8 @@ mod build_env_tests {
     ///
     /// Asserted on the EVALUATED result, not the spelling: the data dir still
     /// wins (supermux's own wrappers outrank a user binary of the same name),
-    /// `.local/bin` comes next, the inherited PATH keeps its tail, and `$HOME`
+    /// the inherited PATH follows unchanged (so an intact PATH resolves exactly
+    /// as before), `.local/bin` comes LAST as the fallback, and `$HOME`
     /// expands in the PANE rather than being baked in by the daemon.
     #[test]
     fn the_launch_line_puts_the_user_bin_dir_on_path_without_the_profiles() {
@@ -6221,8 +6227,8 @@ mod build_env_tests {
         assert!(out.status.success(), "PATH export must run: {export}");
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            format!("{bin_dir}:/home/tester/.local/bin:/usr/bin:/bin"),
-            "data dir wins, user bin dir next, inherited PATH kept: {export}"
+            format!("{bin_dir}:/usr/bin:/bin:/home/tester/.local/bin"),
+            "data dir wins, inherited PATH next, user bin dir last: {export}"
         );
 
         // The whole line still parses as shell.
