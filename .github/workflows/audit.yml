@@ -45,4 +45,6 @@ jobs:
         with:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
-      - run: bun audit
+      # GHSA-gcqx-w48m-w2h4 (deepmerge <= 4.3.1, low, no patched release): build-only,
+      # via vite-plugin-pwa -> workbox-build -> @rollup/plugin-node-resolve; not shipped.
+      - run: bun audit --ignore=GHSA-gcqx-w48m-w2h4

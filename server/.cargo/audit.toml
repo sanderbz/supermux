@@ -1,0 +1,18 @@
+# cargo-audit config for the server (read by `cargo audit` run from server/,
+# as the weekly audit workflow does).
+#
+# Both ignores below come in via jwt-simple 0.12, which web-push 0.11 (its newest
+# release) pins. No semver bump removes them. Revisit both as soon as web-push
+# is on jwt-simple >= 0.14; then drop the ignore that no longer applies.
+
+[advisories]
+ignore = [
+    # rsa 0.9 — Marvin attack (timing side channel). It needs operations with
+    # the private key. supermux only verifies OIDC ID tokens (RS256) with the
+    # provider's public key (auth_human/oidc.rs), so we expose no private-key
+    # RSA operation. No fixed rsa release exists.
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5 — timing advisory, reached via elliptic-curve 0.13. Our
+    # only use is the ES256 signature over VAPID JWTs (push.rs, via web-push).
+    "RUSTSEC-2026-0387",
+]
