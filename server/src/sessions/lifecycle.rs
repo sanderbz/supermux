@@ -808,8 +808,8 @@ fn build_launch_command(
     // BOT_MEMORY_* is unset.
     //
     // `$HOME/.local/bin` RIDES ALONG, and it is what makes a CONFINED pane boot
-    // at all. The profile sources above are the ONLY thing that puts the
-    // user-scoped bin dir on PATH (Debian's `~/.profile` prepends it), and in a
+    // at all. Before the explicit PATH export below, the profile sources above
+    // were the only thing that put the user-scoped bin dir on PATH (Debian's `~/.profile` prepends it), and in a
     // company pane they do not run: `ConfinePlan::for_company` does not
     // allow-list the home dotfiles, so the pane's bash prints
     // `~/.bash_profile: Permission denied`, `source ~/.profile 2>/dev/null`
