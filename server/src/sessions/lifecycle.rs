@@ -892,7 +892,8 @@ fn agent_busy(capture: &str) -> bool {
 /// picker/trust/selection screens are refused ABOVE this on the current screen,
 /// so reading agent-presence wide can only widen an ADMIT, never a refusal.
 fn agent_footer_live(capture: &str) -> bool {
-    let c = capture.to_lowercase();
+    // A typographic apostrophe folds to a plain one, so `don’t ask on` matches too.
+    let c = capture.to_lowercase().replace('’', "'");
     // Deliberately NOT `? for shortcuts` / `esc to interrupt`: those also appear in
     // the SCROLLBACK of a session that has since exited to a shell, and admitting on
     // them would defeat `pty_ready_for_send_ignores_stale_scrollback_above_a_bare_shell`.
@@ -900,8 +901,14 @@ fn agent_footer_live(capture: &str) -> bool {
     // BOTTOM of the live agent UI every frame — a bare shell or a foreign program
     // never carries them, so their presence means an agent owns the pane right now,
     // even when its composer has been pushed above the tail by the roster beneath it.
+    // Every permission mode draws one; default mode is the only one without (MaxMax hit
+    // this with `don't ask on`). Matched on `… on`, so a permission menu's
+    // `don't ask again` row is not mistaken for the footer.
     c.contains("bypass permissions") // the ⏵⏵ mode footer (persistent, live)
         || c.contains("auto mode on")
+        || c.contains("accept edits on")
+        || c.contains("plan mode on")
+        || c.contains("don't ask on")
         || c.contains("view teammates:") // the swarm roster header, drawn live at the bottom
 }
 
@@ -5144,6 +5151,70 @@ $ ";
             send_block(&status::prepare_capture(screen)),
             None,
             "a live agent whose composer/footer sit above a teammate roster must admit",
+        );
+    }
+
+    /// REGRESSION (MaxMax, 31 Oct): the same roster push, but on an IDLE agent in
+    /// `dontAsk` mode on a narrow (phone) window. Idle means no `esc to interrupt`,
+    /// and the mode footer reads `don't ask on`, which the live-footer check did not
+    /// know, so a healthy agent at its composer was refused `NoAgent`. Every
+    /// permission mode's footer is live agent chrome and must admit.
+    #[test]
+    fn an_idle_agent_in_any_permission_mode_under_a_roster_still_admits() {
+        let screen = |footer: &str| {
+            format!(
+                "  supermux-sessie gemeld.\n\
+                 \n\
+                 ✻ Sautéed for 4s · done 8:52 AM\n\
+                 \n\
+                 ────────────────────────────────────────────── max ─\n\
+                 ❯ \n\
+                 ────────────────────────────────────────────────────\n\
+                 \x20 {footer} (shift+tab to cycle) · ← for ag…\n\
+                 \n\
+                 \x20 ⏺ main\n\
+                 \x20 ◯ general-purpose  Mail triage              4m\n\
+                 \x20 ◯ general-purpose  Agenda sync              3m\n\
+                 \x20 ◯ general-purpose  Inbox labels             2m\n\
+                 \x20 ◯ general-purpose  Drafts                   1m\n\
+                 \x20 ◯ general-purpose  Follow-ups              45s\n\
+                 \x20 ◯ general-purpose  Reminders               12s\n\
+                 \x20 ↓ 3 more"
+            )
+        };
+        for footer in [
+            "⏵⏵ don't ask on",
+            "⏵⏵ don’t ask on", // a typographic apostrophe
+            "⏵⏵ accept edits on",
+            "⏸ plan mode on",
+            "⏵⏵ auto mode on",
+            "⏵⏵ bypass permissions on",
+        ] {
+            let capture = status::prepare_capture(&screen(footer));
+            assert!(
+                !current_screen_tail(&capture).contains('❯'),
+                "the fixture must push the composer out of the tail — that is the whole point",
+            );
+            assert_eq!(
+                send_block(&capture),
+                None,
+                "an idle agent behind `{footer}` must admit"
+            );
+        }
+
+        // The widened admit never reaches a keypress screen: `don't ask AGAIN` is a
+        // permission-menu row, not the mode footer, and the menu still refuses.
+        let menu = "Do you want to proceed?\n\
+                    ❯ 1. Yes\n\
+                    \x20 2. Yes, and don't ask again for git push\n\
+                    \x20 3. No";
+        assert_eq!(send_block(menu), Some(SendBlock::Selection));
+        // And that menu row, scrolled up above a bare shell, admits nothing.
+        let output: String = (0..12).map(|i| format!("  pushed ref {i}\n")).collect();
+        let shell = format!("{menu}\n{output}user@host project % ");
+        assert_eq!(
+            send_block(&status::prepare_capture(&shell)),
+            Some(SendBlock::NoAgent)
         );
     }
 
