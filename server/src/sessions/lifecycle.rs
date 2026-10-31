@@ -2240,9 +2240,61 @@ fn checked_submit_state(capture: &str, provider: &str, prompt: &str) -> SubmitSt
 
 fn composer_holds_prompt(capture: &str, provider: &str, prompt: &str) -> bool {
     composer_text(capture, provider).is_some_and(|text| {
-        squash(&text) == squash(prompt)
-            || (provider == "codex"
-                && text == format!("[Pasted Content {} chars]", prompt.chars().count()))
+        squash(&text) == squash(prompt) || paste_placeholder_of(&text, provider, prompt)
+    })
+}
+
+/// Is `text` the provider's COLLAPSED form of a paste of `prompt`? A long paste is
+/// drawn as a placeholder, not as its text, so `squash` equality never sees it:
+///   * Codex: `[Pasted Content <chars> chars]`;
+///   * Claude: `[Pasted text #<n> +<m> lines]`, `m` counting the paste's line
+///     breaks, or `[Pasted text #<n>]` when it has none.
+/// Missing the Claude form is how a delegation sat unsent behind Max's prompt
+/// (MaxMax, 31 Oct): our own paste read as foreign, so no retry Enter was sent.
+fn paste_placeholder_of(text: &str, provider: &str, prompt: &str) -> bool {
+    if provider == "codex" {
+        return text == format!("[Pasted Content {} chars]", prompt.chars().count());
+    }
+    let Some(rest) = text
+        .strip_prefix("[Pasted text #")
+        .and_then(|r| r.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let (id, lines) = match rest.split_once(" +") {
+        Some((id, n)) => (
+            id,
+            n.strip_suffix(" lines")
+                .or_else(|| n.strip_suffix(" line"))
+                .and_then(|n| n.parse().ok()),
+        ),
+        None => (rest, Some(0)),
+    };
+    // A trailing line break may or may not be counted; either count is this paste.
+    let breaks = |s: &str| s.matches('\n').count();
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_digit())
+        && lines.is_some_and(|n: usize| {
+            n == breaks(prompt) || n == breaks(prompt.trim_end_matches(['\r', '\n']))
+        })
+}
+
+/// Any provider's collapsed-paste placeholder, whoever pasted it.
+fn is_paste_placeholder(text: &str) -> bool {
+    (text.starts_with("[Pasted text #") || text.starts_with("[Pasted Content "))
+        && text.ends_with(']')
+}
+
+/// The refusal for a composer that still holds an EARLIER paste whose Enter was
+/// lost. Names the paste instead of guessing at a shell: the agent is right there,
+/// it just has someone's unsent message in its way.
+fn unsent_paste_refusal(name: &str, draft: &str) -> Option<String> {
+    is_paste_placeholder(draft).then(|| {
+        format!(
+            "session '{name}' still has an earlier paste unsent in its terminal composer \
+             ({draft}) — its Enter was lost, so this message was NOT delivered. Submit or \
+             clear that paste in the terminal, then resend.",
+        )
     })
 }
 
@@ -3702,7 +3754,16 @@ pub async fn send_harness_text(
                 // question, which is neither, and which is now admitted. See
                 // `send_block`.
                 if let Some(block) = send_block(&status::prepare_capture(&raw)) {
-                    return Err(AppError::Conflict(block.sentence(name)));
+                    // A collapsed paste in the composer can also hide the footer
+                    // (Claude draws its "paste again to expand" hint there), so
+                    // a stuck earlier paste reads as NoAgent: name it instead.
+                    let stuck = (block == SendBlock::NoAgent)
+                        .then(|| composer_text(&raw, &provider))
+                        .flatten()
+                        .and_then(|draft| unsent_paste_refusal(name, &draft));
+                    return Err(AppError::Conflict(
+                        stuck.unwrap_or_else(|| block.sentence(name)),
+                    ));
                 }
             }
             // FAIL CLOSED. A send guard that cannot read the current screen must
@@ -3724,9 +3785,11 @@ pub async fn send_harness_text(
         let raw = rt.capture_screen_ansi().await?;
         match read_composer(&raw, &provider) {
             ComposerRead::Text(draft) if draft.is_empty() => {},
-            ComposerRead::Text(_) => return Err(AppError::Conflict(format!(
-                "session '{name}' has an unsent terminal draft; submit or clear it in the terminal before sending another message",
-            ))),
+            ComposerRead::Text(draft) => return Err(AppError::Conflict(
+                unsent_paste_refusal(name, &draft).unwrap_or_else(|| format!(
+                    "session '{name}' has an unsent terminal draft; submit or clear it in the terminal before sending another message",
+                )),
+            )),
             // A current busy footer may have no composer at all. A visible but
             // unreadable composer is never empty, even while the agent is busy.
             ComposerRead::NotVisible if agent_busy(&current_screen_tail(&status::prepare_capture(&raw))) => {},
@@ -7309,6 +7372,10 @@ mod write_runtime_tests {
     struct InputSimulation {
         provider: &'static str,
         current_codex_chrome: bool,
+        /// Claude's real long-paste chrome under a roster: the composer shows
+        /// `[Pasted text #1 +N lines]`, the "paste again to expand" hint takes
+        /// the footer's row, and background agents push the composer out of the tail.
+        claude_collapsed_paste: bool,
         draft: String,
         last_paste: String,
         pasted_at: Option<tokio::time::Instant>,
@@ -7377,6 +7444,20 @@ mod write_runtime_tests {
                 if sim.provider == "codex" && sim.current_codex_chrome {
                     return current_codex_screen(&sim.draft);
                 }
+                if sim.claude_collapsed_paste {
+                    let (input, footer) = if sim.draft.is_empty() {
+                        (String::new(), "⏵⏵ bypass permissions on")
+                    } else {
+                        let breaks = sim.draft.matches('\n').count();
+                        (format!("[Pasted text #1 +{breaks} lines]"), "paste again to expand")
+                    };
+                    let roster: String =
+                        (0..6).map(|i| format!("  ◯ general-purpose  task {i}   {i}m\n")).collect();
+                    return format!(
+                        "❯ {input}\n{}\n  {footer}\n\n  ⏺ main\n{roster}  ↓ 3 more",
+                        "─".repeat(52)
+                    );
+                }
                 let (caret, footer) = if sim.provider == "codex" {
                     ("›", "gpt-5-codex · /tmp/project")
                 } else {
@@ -7397,6 +7478,7 @@ mod write_runtime_tests {
             *rt.simulation.lock().unwrap() = Some(InputSimulation {
                 provider,
                 current_codex_chrome: false,
+                claude_collapsed_paste: false,
                 draft: String::new(),
                 last_paste: String::new(),
                 pasted_at: None,
@@ -7959,6 +8041,61 @@ mod write_runtime_tests {
         let prompt = "x".repeat(1200);
         assert_eq!(checked_submit_state("› [Pasted Content 1200 chars]\ngpt-5-codex · /tmp", "codex", &prompt), SubmitState::Stuck);
         assert_eq!(checked_submit_state("❯ fix this input bug", "claude", "fix this input bug"), SubmitState::Stuck);
+    }
+
+    /// Claude's collapsed paste is OUR text when its line-break count matches, and
+    /// nothing else is: a different count, extra typing, or a stray bracket.
+    #[test]
+    fn a_claude_paste_placeholder_is_ours_only_when_it_matches_the_prompt() {
+        let three_lines = "<supermux-delegation from=\"a\">\nB1 done\n</supermux-delegation>";
+        assert!(paste_placeholder_of("[Pasted text #56 +2 lines]", "claude", three_lines));
+        assert!(paste_placeholder_of("[Pasted text #56 +2 lines]", "claude", &format!("{three_lines}\n")));
+        assert!(!paste_placeholder_of("[Pasted text #56 +3 lines]", "claude", three_lines));
+        assert!(!paste_placeholder_of("[Pasted text #56 +2 lines] and more", "claude", three_lines));
+        assert!(!paste_placeholder_of("[Pasted text # +2 lines]", "claude", three_lines));
+        assert!(paste_placeholder_of("[Pasted text #3]", "claude", &"x".repeat(900)));
+        assert!(!paste_placeholder_of("[Pasted text #3]", "claude", three_lines));
+        // Codex keeps its own form, and neither provider reads the other's.
+        assert!(paste_placeholder_of("[Pasted Content 900 chars]", "codex", &"x".repeat(900)));
+        assert!(!paste_placeholder_of("[Pasted text #3]", "codex", &"x".repeat(900)));
+    }
+
+    /// REGRESSION (MaxMax, 30 + 31 Oct): a delegation collapsed into
+    /// `[Pasted text #N +M lines]` whose Enter was swallowed stayed in the composer.
+    /// The placeholder did not read as ours, and with the roster pushing the
+    /// composer out of the tail and the paste hint covering the mode footer, the
+    /// pre-Enter check refused ("changed to a dialog or an unreadable screen")
+    /// without pressing Enter at all. Now it is ours: Enter, a retry, submitted.
+    #[tokio::test(start_paused = true)]
+    async fn a_collapsed_claude_paste_whose_enter_was_swallowed_is_retried() {
+        let rt = StubRuntime::simulating("claude", true, false);
+        rt.simulation.lock().unwrap().as_mut().unwrap().claude_collapsed_paste = true;
+        let prompt = "<supermux-delegation from=\"VoltLogger-G-Ads\">\nB1 uitgevoerd via de API\n</supermux-delegation>";
+        assert_eq!(send_text_checked(rt.as_ref(), "claude", prompt, true).await.unwrap(), Some(true));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2, "the swallowed Enter, then one retry");
+    }
+
+    /// A LATER send that finds someone's paste still stuck says so, instead of
+    /// guessing that the agent exited to a shell — and types nothing.
+    #[tokio::test]
+    async fn a_send_into_a_stuck_earlier_paste_names_the_paste() {
+        let roster: String = (0..6).map(|i| format!("  ◯ general-purpose  task {i}\n")).collect();
+        let stuck = format!(
+            "❯ [Pasted text #56 +2 lines]\n{}\n  paste again to expand\n\n  ⏺ main\n{roster}  ↓ 3 more",
+            "─".repeat(52)
+        );
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "max", "/tmp", "claude").await.unwrap();
+        let rt = StubRuntime::parked_at(&stuck);
+        state.session_runtimes.insert("max".into(), rt.clone());
+        let err = send_chat_text(&state, "max", "next message", None).await.unwrap_err().to_string();
+        assert!(err.contains("earlier paste unsent"), "names the stuck paste: {err}");
+        assert!(err.contains("[Pasted text #56 +2 lines]"), "and shows which one: {err}");
+        assert!(!err.contains("shell"), "no shell guess: {err}");
+        assert_eq!(rt.text_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test(start_paused = true)]
