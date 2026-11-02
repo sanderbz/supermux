@@ -47,4 +47,9 @@ jobs:
       - run: bun install --frozen-lockfile
       # GHSA-gcqx-w48m-w2h4 (deepmerge <= 4.3.1, low, no patched release): build-only,
       # via vite-plugin-pwa -> workbox-build -> @rollup/plugin-node-resolve; not shipped.
-      - run: bun audit --ignore=GHSA-gcqx-w48m-w2h4
+      # GHSA-g3hv-75wg-m249 (minimatch < 11.0.1, moderate) and GHSA-3g3m-2fjr-6pw4
+      # (glob 9.0.0-14.0.1, moderate): dev tooling only, via eslint, typescript-eslint,
+      # eslint-plugin-jsx-a11y and vite-plugin-pwa -> workbox-build. Not shipped, and the
+      # globs come from our own config, never from user input. No release of those
+      # packages accepts the patched majors yet, and forcing them breaks jsx-a11y (minimatch 3 API).
+      - run: bun audit --ignore=GHSA-gcqx-w48m-w2h4 --ignore=GHSA-g3hv-75wg-m249 --ignore=GHSA-3g3m-2fjr-6pw4
