@@ -5658,6 +5658,7 @@ mod company_confinement_gate_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         }
     }
 
@@ -5960,6 +5961,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session, &[]);
@@ -6028,6 +6030,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -6103,6 +6106,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: "/home/agent/.claude-second".into(),
+            settings_file: String::new(),
         };
 
         let (command, _resume) = build_launch_command(&config, &base, &[]);
@@ -6190,6 +6194,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session, &[]);
@@ -6292,6 +6297,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: "/home/agent/.claude-second".into(),
+            settings_file: String::new(),
         };
         // `shell` is deliberately absent: `start` settles a shell session
         // without ever calling this builder, so there is no launch line to
@@ -6354,6 +6360,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session, &[]);
@@ -6589,6 +6596,7 @@ mod build_env_tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         }
     }
 

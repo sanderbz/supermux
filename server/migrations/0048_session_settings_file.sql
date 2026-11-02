@@ -1,0 +1,18 @@
+-- migrations/0048_session_settings_file.sql
+-- Per-session Claude Code settings file, merged into the session's overlay.
+--
+-- A caller that boots unattended sessions (an operator dispatcher, say) wants
+-- them on leaner Claude Code settings than the owner's interactive panes: no
+-- personal CLAUDE.md, no plugins, fewer tool schemas. A second `--settings` in
+-- `flags` cannot carry that, because the launch appends the overlay's own
+-- `--settings` after the caller's flags and Claude Code keeps only the last
+-- one. So the path is stored here and `connector_config::finish` merges the
+-- file into the overlay on every launch, which is also the one settings path a
+-- lead's teammates inherit.
+--
+-- The empty string is "no settings file", so every existing row keeps exactly
+-- today's launch. Same shape and reasoning as config_dir (0041): NOT NULL +
+-- DEFAULT '' keeps every explicit column list valid, and the path rules
+-- (absolute, existing regular file, charset) live in `sessions::create`, which
+-- can answer 400 with the reason.
+ALTER TABLE sessions ADD COLUMN settings_file TEXT NOT NULL DEFAULT '';

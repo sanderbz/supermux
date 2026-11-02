@@ -56,6 +56,7 @@ async fn insert_session(state: &supermux_server::state::AppState, name: &str, ar
         model: String::new(),
         archive_on_stop,
         config_dir: String::new(),
+        settings_file: String::new(),
     };
     db::sessions::create(&state.pool, &new).await.unwrap();
 }

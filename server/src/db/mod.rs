@@ -125,8 +125,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 46,
-            "expected forty-six applied migrations (0001-0005, 0007-0047)"
+            applied, 47,
+            "expected forty-seven applied migrations (0001-0005, 0007-0048)"
         );
 
         // 0037 applied cleanly: the new nullable company_id column exists and a
@@ -226,6 +226,7 @@ mod tests {
             model: String::new(),
             archive_on_stop: false,
             config_dir: "/home/agent/.claude-second".into(),
+            settings_file: String::new(),
         };
         sessions::create(&pool, &new).await.unwrap();
 
@@ -456,6 +457,7 @@ mod tests {
             model: String::new(),
             archive_on_stop: false,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
         sessions::create(&pool, &ns).await.unwrap();
         let got = sessions::get(&pool, "bot-a").await.unwrap().unwrap();
@@ -485,6 +487,7 @@ mod tests {
             model: String::new(),
             archive_on_stop: false,
             config_dir: String::new(),
+            settings_file: String::new(),
         };
         sessions::create(&pool, &main).await.unwrap();
         let got_main = sessions::get(&pool, "main-a").await.unwrap().unwrap();

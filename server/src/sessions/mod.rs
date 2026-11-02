@@ -923,6 +923,33 @@ pub(crate) fn valid_config_dir(raw: &str) -> Result<String, String> {
     Ok(cleaned.to_string())
 }
 
+/// Validate a `settings_file` (migration 0048): an absolute path over
+/// `[A-Za-z0-9._/-]`, at most 512 chars, naming an existing regular file on this
+/// host. Same charset as `config_dir`, so nothing shell-meta can reach the
+/// overlay or a log line. The content is NOT checked here: the file is re-read
+/// on every launch, and a file that is unreadable or not a JSON object then is
+/// logged and skipped (the launch goes on as without it), so a later edit can
+/// never stop a session from starting. Returns the trimmed value or the reason
+/// to put in the 400.
+pub(crate) fn valid_settings_file(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('/') {
+        return Err(format!("settings_file '{trimmed}' must be an absolute path"));
+    }
+    if !CONFIG_DIR_RE.is_match(trimmed) {
+        return Err(
+            "invalid settings_file (allowed: letters, digits, '.', '_', '/', '-'; max 512 chars)"
+                .to_string(),
+        );
+    }
+    // `is_file` follows symlinks and answers false for a missing path or a
+    // directory, so this one call covers "must exist" and "must be a file".
+    if !std::path::Path::new(trimmed).is_file() {
+        return Err(format!("settings_file '{trimmed}' is not an existing regular file"));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn valid_provider(provider: &str) -> bool {
     PROVIDERS.contains(&provider)
 }
@@ -1266,6 +1293,16 @@ pub struct CreateInput {
     /// [`lifecycle::launches_claude`]).
     #[serde(default)]
     pub config_dir: Option<String>,
+    /// A Claude Code settings file merged into this session's `--settings`
+    /// overlay on every launch (migration 0048), which is also the settings
+    /// path its teammates inherit. Absolute path to an existing regular file,
+    /// charset `[A-Za-z0-9._/-]`; anything else is a 400 (see
+    /// [`valid_settings_file`]). LOCAL sessions only, for the same reason as
+    /// `config_dir`. Absent or blank means no file, which is what every existing
+    /// client body does. The file's values win over the overlay's; see
+    /// `connector_config::merge_session_settings`.
+    #[serde(default)]
+    pub settings_file: Option<String>,
     /// The company a new session is created into (migration 0032). Absent /
     /// null => a main bot (`company_id` NULL). When set, the create path forces
     /// `dir` under the company's `root_dir/<name>/`, IGNORING (overriding, never
@@ -1414,6 +1451,21 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
             valid_config_dir(raw).map_err(AppError::BadRequest)?
         }
     };
+    // Per-session settings file (migration 0048), same rules and the same
+    // local-only reasoning as config_dir above.
+    let settings_file = match input.settings_file.as_deref().map(str::trim) {
+        None | Some("") => String::new(),
+        Some(raw) => {
+            if input.host_id.is_some() {
+                return Err(AppError::BadRequest(
+                    "settings_file is only supported for local sessions: a remote host's file \
+                     cannot be validated from here; drop host_id or drop settings_file"
+                        .into(),
+                ));
+            }
+            valid_settings_file(raw).map_err(AppError::BadRequest)?
+        }
+    };
 
     if db::sessions::exists(&state.pool, &name).await? {
         return Err(AppError::Conflict(format!(
@@ -1509,6 +1561,9 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         // Empty = the daemon default Claude config dir; a non-empty value is
         // the validated absolute path this session's Claude boots on.
         config_dir,
+        // Empty = no settings file; otherwise the validated absolute path that
+        // finish() merges into the overlay on every launch.
+        settings_file,
     };
     db::sessions::create(&state.pool, &new).await?;
     // End of the guarded section: the row exists now, so a concurrent spawn on
@@ -3076,6 +3131,33 @@ mod tests {
             .chain(std::iter::repeat('a').take(512))
             .collect();
         assert!(valid_config_dir(&too_long).unwrap_err().contains("512"));
+    }
+
+    /// `valid_settings_file` takes an absolute path to an existing regular file
+    /// and nothing else: a relative path, a directory, a missing file and a
+    /// shell-meta character are all a 400 reason.
+    #[test]
+    fn valid_settings_file_wants_an_existing_regular_file() {
+        let dir = std::env::temp_dir().join(format!("supermux-sf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("operator-settings.json");
+        std::fs::write(&file, "{}").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        assert_eq!(valid_settings_file(&format!("  {path}  ")).unwrap(), path);
+        assert!(valid_settings_file("operator-settings.json")
+            .unwrap_err()
+            .contains("absolute"));
+        assert!(valid_settings_file(&dir.to_string_lossy())
+            .unwrap_err()
+            .contains("regular file"));
+        assert!(valid_settings_file(&format!("{path}.missing"))
+            .unwrap_err()
+            .contains("regular file"));
+        assert!(valid_settings_file("/tmp/a;b.json")
+            .unwrap_err()
+            .contains("invalid settings_file"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── runtime seam: the `runtime` column, end to end ───────────────────────

@@ -89,6 +89,7 @@ async fn insert_session(state: &AppState, name: &str) {
         model: String::new(),
         archive_on_stop: false,
         config_dir: String::new(),
+        settings_file: String::new(),
     };
     db::sessions::create(&state.pool, &new).await.unwrap();
 }

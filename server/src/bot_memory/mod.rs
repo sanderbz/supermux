@@ -359,6 +359,7 @@ mod tests {
             role_id: None,
             archive_on_stop: 0,
             config_dir: String::new(),
+            settings_file: String::new(),
         }
     }
 

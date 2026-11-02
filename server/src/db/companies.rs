@@ -226,6 +226,28 @@ pub async fn active_session_count(pool: &SqlitePool, id: i64) -> sqlx::Result<i6
 /// `company` scope on the delegation-graph read; the omniscient owner default
 /// never calls it. One query, so a scoped caller filters against a set rather
 /// than a per-edge lookup.
+/// The company's sessions that someone can still talk to: not archived, and not
+/// stopped. What a bot is TOLD about its peers (the SessionStart briefing, the
+/// delegate hook's 404 hint), as opposed to [`names_in_company`], which is
+/// membership and stays the full set. A company whose dispatcher boots a fresh
+/// session per run collects hundreds of archived rows, and listing every one of
+/// them turned the briefing into a 25 KB name list (538 names on 2026-11-02).
+/// A session with no runtime row counts as live, the same lean as
+/// `live_with_prefix`.
+pub async fn live_names_in_company(pool: &SqlitePool, company: i64) -> sqlx::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT s.name FROM sessions s
+         LEFT JOIN session_runtime r ON r.name = s.name
+         WHERE s.company_id = ?
+           AND s.archived = 0
+           AND COALESCE(r.last_status, '') != 'stopped'",
+    )
+    .bind(company)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
 pub async fn names_in_company(pool: &SqlitePool, company: i64) -> sqlx::Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM sessions WHERE company_id = ?")
         .bind(company)
@@ -265,6 +287,36 @@ mod tests {
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (pool, dir)
+    }
+
+    /// What a bot is told about its peers leaves out archived and stopped
+    /// sessions; membership (`names_in_company`) still counts every row.
+    #[tokio::test]
+    async fn live_names_leave_out_archived_and_stopped_sessions() {
+        let (pool, dir) = test_pool().await;
+        let c = create(&pool, "acme", "Acme", "/srv/acme").await.unwrap();
+        for name in ["live", "no-runtime", "archived", "stopped"] {
+            crate::db::sessions::insert_minimal(&pool, name, "/srv/acme", "claude").await.unwrap();
+            crate::db::sessions::set_company_id(&pool, name, Some(c.id)).await.unwrap();
+        }
+        for name in ["live", "archived", "stopped"] {
+            crate::db::sessions::ensure_runtime(&pool, name, "t").await.unwrap();
+        }
+        sqlx::query("UPDATE session_runtime SET last_status = 'idle' WHERE name IN ('live', 'archived')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE session_runtime SET last_status = 'stopped' WHERE name = 'stopped'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::db::sessions::set_archived(&pool, "archived", true).await.unwrap();
+
+        let mut live = live_names_in_company(&pool, c.id).await.unwrap();
+        live.sort();
+        assert_eq!(live, vec!["live".to_string(), "no-runtime".to_string()]);
+        assert_eq!(names_in_company(&pool, c.id).await.unwrap().len(), 4);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

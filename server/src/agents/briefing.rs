@@ -132,6 +132,9 @@ async fn browser_facts(state: &AppState, name: &str) -> Option<BrowserFacts> {
 /// bot in its company, gets the core five lines and no addressee-less message
 /// line. The HQ line likewise appears only for a company bot that at least one
 /// HQ bot opened its inbox to.
+/// How many same-company peers the briefing names before it says "and N more".
+pub const MAX_BRIEFING_PEERS: usize = 40;
+
 pub fn render(
     name: &str,
     company: Option<&str>,
@@ -188,9 +191,18 @@ pub fn render(
         }
     }
     if company.is_some() && !peers.is_empty() {
+        // Bounded: the briefing is paid once per session, but a company that
+        // keeps many live bots would otherwise push it past what a hook can
+        // inject inline.
+        let shown = peers.len().min(MAX_BRIEFING_PEERS);
+        let more = if peers.len() > shown {
+            format!(" (and {} more)", peers.len() - shown)
+        } else {
+            String::new()
+        };
         s.push_str(&format!(
-            "- Same-company teammates: {}. Message or hand off to one: /supermux-message.\n",
-            peers.join(", ")
+            "- Same-company teammates: {}{more}. Message or hand off to one: /supermux-message.\n",
+            peers[..shown].join(", ")
         ));
     }
     if company.is_some() && !hq.is_empty() {
@@ -207,6 +219,17 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A company with more live peers than the cap names the first
+    /// MAX_BRIEFING_PEERS and says how many more there are.
+    #[test]
+    fn peer_roster_is_capped() {
+        let peers: Vec<String> = (0..MAX_BRIEFING_PEERS + 5).map(|i| format!("bot-{i:03}")).collect();
+        let out = render("crm-bot", Some("Acme"), &peers, &[], None);
+        assert!(out.contains(&format!("bot-{:03}", MAX_BRIEFING_PEERS - 1)));
+        assert!(!out.contains(&format!("bot-{:03}", MAX_BRIEFING_PEERS)));
+        assert!(out.contains("(and 5 more)"));
+    }
 
     #[test]
     fn company_bot_briefing_names_identity_company_and_peers() {

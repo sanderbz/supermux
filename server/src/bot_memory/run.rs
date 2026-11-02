@@ -30,6 +30,14 @@ const ENV_DIR: &str = "BOT_MEMORY_DIR";
 /// so this lean subcommand entrypoint stays dependency-thin.
 const ENV_BRIEFING_FILE: &str = "SUPERMUX_BRIEFING_FILE";
 
+/// The most the recall hook prints in one fire, in bytes. Claude Code injects a
+/// hook's stdout inline only up to a limit and replaces anything larger with a
+/// 2 KB preview plus a file path, which an agent then reads in full with `cat`:
+/// the opposite of a bounded recall. The notes already have a token budget
+/// (`recall::TOKEN_BUDGET`); this bounds the briefing plus the notes together,
+/// cut on a line boundary.
+pub const RECALL_OUTPUT_CAP: usize = 8_000;
+
 /// `UserPromptSubmit`/`SessionStart` hook body. Never errors out loud: any
 /// failure yields no output and a clean exit so a broken store can never wedge a
 /// prompt.
@@ -51,11 +59,13 @@ pub fn run_recall_hook() -> Result<()> {
     // The capability briefing is paid ONCE per session: emit it on SessionStart
     // only, never on UserPromptSubmit (zero per-turn cost). It is pre-rendered by
     // the launch and read verbatim; a missing/empty file just means no briefing.
+    let mut out = String::new();
     if input.session_start {
         if let Some(text) = read_briefing() {
             let text = text.trim_end();
             if !text.is_empty() {
-                println!("{text}");
+                out.push_str(text);
+                out.push('\n');
             }
         }
     }
@@ -66,11 +76,34 @@ pub fn run_recall_hook() -> Result<()> {
     } else {
         Some(role_dir(&root, &role))
     };
-    let out = recall::recall(&bot, role_path.as_deref(), &input.prompt, chrono::Utc::now());
+    out.push_str(&recall::recall(&bot, role_path.as_deref(), &input.prompt, chrono::Utc::now()));
+    let out = cap_output(&out, RECALL_OUTPUT_CAP);
     if !out.is_empty() {
         print!("{out}");
     }
     Ok(())
+}
+
+/// `text` cut to at most `cap` bytes on a line boundary, with a closing line
+/// saying it was cut. Unchanged when it fits.
+fn cap_output(text: &str, cap: usize) -> std::borrow::Cow<'_, str> {
+    if text.len() <= cap {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    const NOTE: &str = "[supermux recall output cut at the size cap]\n";
+    // One byte kept back for the newline a cut inside a long line adds.
+    let room = cap.saturating_sub(NOTE.len() + 1);
+    let mut end = room.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = text[..end].rfind('\n').map(|i| i + 1).unwrap_or(end);
+    let mut s = text[..end].to_string();
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s.push_str(NOTE);
+    std::borrow::Cow::Owned(s)
 }
 
 /// What the recall hook needs off its stdin: the prompt (empty on SessionStart)
@@ -196,7 +229,29 @@ fn env_root() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_session_start;
+    use super::{cap_output, is_session_start};
+
+    #[test]
+    fn output_under_the_cap_is_untouched() {
+        assert_eq!(cap_output("a\nb\n", 100), "a\nb\n");
+    }
+
+    #[test]
+    fn output_over_the_cap_is_cut_on_a_line_and_says_so() {
+        let text: String = (0..200).map(|i| format!("line {i:04}\n")).collect();
+        let out = cap_output(&text, 300);
+        assert!(out.len() <= 300, "{} bytes", out.len());
+        assert!(out.ends_with("[supermux recall output cut at the size cap]\n"));
+        let body = out.trim_end_matches("[supermux recall output cut at the size cap]\n");
+        assert!(body.lines().all(|l| l.starts_with("line ") && l.len() == 9), "{body}");
+    }
+
+    #[test]
+    fn a_cut_never_splits_a_character() {
+        let text = "é".repeat(400);
+        let out = cap_output(&text, 101);
+        assert!(out.len() <= 101);
+    }
     use serde_json::json;
 
     #[test]

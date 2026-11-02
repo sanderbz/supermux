@@ -131,6 +131,7 @@ async fn make_session(h: &Harness, name: &str, provider: &str, host_id: Option<i
             company_id: None,
             archive_on_stop: false,
             config_dir: String::new(),
+            settings_file: String::new(),
         },
     )
     .await

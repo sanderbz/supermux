@@ -83,6 +83,7 @@ fn new_session(name: &str, dir: &std::path::Path) -> db::sessions::NewSession {
         company_id: None,
         archive_on_stop: false,
         config_dir: String::new(),
+        settings_file: String::new(),
     }
 }
 

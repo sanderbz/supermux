@@ -133,6 +133,13 @@ pub struct Session {
     /// (`sessions::valid_config_dir`), never mutated afterwards.
     #[serde(default)]
     pub config_dir: String,
+    /// A Claude Code settings file merged into this session's `--settings`
+    /// overlay on every launch (migration 0048). The empty string means none,
+    /// which is every pre-0048 row and every session created without the field.
+    /// Validated on create (`sessions::valid_settings_file`), never mutated
+    /// afterwards; the file itself is re-read on every launch.
+    #[serde(default)]
+    pub settings_file: String,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -444,6 +451,9 @@ pub struct NewSession {
     /// here, so this is already an absolute path over `[A-Za-z0-9._/-]` that
     /// exists on disk.
     pub config_dir: String,
+    /// The session's settings file (migration 0048), or the empty string for
+    /// none. Validated by `sessions::create` BEFORE it reaches here.
+    pub settings_file: String,
 }
 
 /// Insert a full session config row. `created_at` is set to now.
@@ -453,8 +463,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
              worktree, worktree_repo, host_id, company_id, runtime, model, archive_on_stop,
-             config_dir, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             config_dir, settings_file, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.display_name)
@@ -474,6 +484,7 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(&s.model)
     .bind(s.archive_on_stop as i64)
     .bind(&s.config_dir)
+    .bind(&s.settings_file)
     .bind(now)
     .execute(pool)
     .await?;
@@ -542,10 +553,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, company_id, runtime, notif, mark_pin, model, memory, skills, config_dir, created_at)
+             host_id, company_id, runtime, notif, mark_pin, model, memory, skills, config_dir, settings_file, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, company_id, runtime, notif, mark_pin, model, memory, skills, config_dir, ?
+                host_id, company_id, runtime, notif, mark_pin, model, memory, skills, config_dir, settings_file, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

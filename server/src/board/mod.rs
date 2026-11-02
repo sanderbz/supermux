@@ -975,6 +975,7 @@ async fn start_handler(
                 max_quiet_secs: None,
                 // Boots on the daemon default Claude login.
                 config_dir: None,
+                settings_file: None,
             };
             crate::sessions::create(&state, create_input).await?;
             // Boot it so the steering deliver-loop has a live pane to talk to.

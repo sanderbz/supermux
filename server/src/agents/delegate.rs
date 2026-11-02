@@ -230,7 +230,9 @@ pub async fn reachable_from(
         return Ok((Vec::new(), Vec::new()));
     };
     let slug = db::companies::get(&state.pool, cid).await?.map(|c| c.slug);
-    let mut peers = db::companies::names_in_company(&state.pool, cid).await?;
+    // Live peers only: this list is what a bot is told it can reach, and an
+    // archived or stopped session is not reachable in any useful sense.
+    let mut peers = db::companies::live_names_in_company(&state.pool, cid).await?;
     peers.retain(|n| {
         n != me
             && !slug

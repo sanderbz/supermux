@@ -131,6 +131,10 @@ pub struct SessionConfig {
     /// True once any tier contributed something requiring the overlay. Gates the
     /// whole thing off for a plain session (byte-identical launch).
     active: bool,
+    /// The session's own settings file (migration 0048), parsed, minus its
+    /// `supermux` key. `finish` merges it into `settings` LAST, so its values
+    /// win; see [`merge_session_settings`].
+    session_settings: Option<Map<String, Value>>,
 }
 
 impl SessionConfig {
@@ -144,6 +148,7 @@ impl SessionConfig {
             mcp_servers: Map::new(),
             allow_rules: Vec::new(),
             active: false,
+            session_settings: None,
         }
     }
 
@@ -321,6 +326,49 @@ impl SessionConfig {
         self.active
     }
 
+    // ── session settings file (migration 0048) ────────────────────────────────
+    /// Load this session's settings file for `finish` to merge, and answer
+    /// whether the memory recall hook stays on. The file is a Claude Code
+    /// settings object plus one optional key Claude Code never sees:
+    /// `"supermux": {"memoryRecall": false}` turns the recall hook (and the
+    /// SessionStart briefing it carries) off for this session, while the rest
+    /// of the memory tier (the write CLI grant, the `BOT_MEMORY_*` env) stays.
+    /// The key is removed before the merge.
+    ///
+    /// Best-effort, like every other tier: a file that cannot be read, is not
+    /// JSON, or is not an object is logged and skipped, and the launch goes on
+    /// exactly as without it. The path was validated at create, but the file is
+    /// re-read on every launch and can have changed since.
+    pub fn apply_session_settings(&mut self, path: &Path) -> bool {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "session settings_file unreadable; launching without it");
+                return true;
+            }
+        };
+        let mut obj = match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) => {
+                tracing::warn!(path = %path.display(), "session settings_file is not a JSON object; launching without it");
+                return true;
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "session settings_file is not valid JSON; launching without it");
+                return true;
+            }
+        };
+        let recall = !matches!(
+            obj.remove("supermux")
+                .as_ref()
+                .and_then(|v| v.get("memoryRecall")),
+            Some(Value::Bool(false))
+        );
+        self.active = true;
+        self.session_settings = Some(obj);
+        recall
+    }
+
     // ── memory-phase seam ─────────────────────────────────────────────────────
     /// Wire this session's BOT MEMORY into the SAME per-session config dir the
     /// connector tier uses (design §3). This is ONE more entry in the union — it
@@ -337,18 +385,28 @@ impl SessionConfig {
     ///   * exports `BOT_MEMORY_NAME` / `BOT_MEMORY_ROLE` / `BOT_MEMORY_DIR` so the
     ///     hook + CLI resolve this bot's private + role tiers.
     pub fn apply_memory(&mut self, params: crate::bot_memory::MemoryParams) {
+        self.apply_memory_with(params, true);
+    }
+
+    /// [`Self::apply_memory`] with the recall hook optional: `recall: false` (a
+    /// session settings file saying `"supermux": {"memoryRecall": false}`) wires
+    /// the write CLI grant and the env but no hooks, so nothing is injected into
+    /// the session's context.
+    pub fn apply_memory_with(&mut self, params: crate::bot_memory::MemoryParams, recall: bool) {
         self.active = true;
 
         // hooks: fire the recall wrapper on both context-injecting events.
-        let hook_cmd = params.hook_bin.to_string_lossy().into_owned();
-        let group = json!([{ "hooks": [ { "type": "command", "command": hook_cmd } ] }]);
-        let hooks = self
-            .settings
-            .entry("hooks".to_string())
-            .or_insert_with(|| json!({}));
-        if let Some(obj) = hooks.as_object_mut() {
-            obj.insert("UserPromptSubmit".to_string(), group.clone());
-            obj.insert("SessionStart".to_string(), group);
+        if recall {
+            let hook_cmd = params.hook_bin.to_string_lossy().into_owned();
+            let group = json!([{ "hooks": [ { "type": "command", "command": hook_cmd } ] }]);
+            let hooks = self
+                .settings
+                .entry("hooks".to_string())
+                .or_insert_with(|| json!({}));
+            if let Some(obj) = hooks.as_object_mut() {
+                obj.insert("UserPromptSubmit".to_string(), group.clone());
+                obj.insert("SessionStart".to_string(), group);
+            }
         }
 
         // permissions.allow: MERGE the write-CLI grant into the shared allow list
@@ -507,6 +565,12 @@ impl SessionConfig {
         // fleet's messaging behaviour is the server's call, not a per-pane one.
         self.settings
             .insert("crossSessionInbound".to_string(), Value::String("accept".to_string()));
+
+        // The session's own settings file goes LAST, so its values win over
+        // everything above (see `merge_session_settings` for arrays).
+        if let Some(own) = self.session_settings.take() {
+            merge_session_settings(&mut self.settings, own);
+        }
 
         let settings_path = self.settings_dir.join(SETTINGS_FILE);
         write_json_atomic(&settings_path, &Value::Object(self.settings)).await?;
@@ -706,6 +770,17 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
         }
     }
 
+    // ── session settings file (migration 0048) ──────────────────────────────────
+    // Loaded before the memory tier because the file can switch the recall hook
+    // off. A session without one keeps a byte-identical launch.
+    let mut recall = true;
+    if let Some(session) = crate::db::sessions::get(&state.pool, session_name).await? {
+        let file = session.settings_file.trim();
+        if !file.is_empty() {
+            recall = cfg.apply_session_settings(Path::new(file));
+        }
+    }
+
     // ── memory tier ─────────────────────────────────────────────────────────────
     // The bot-memory recall hook + write-CLI grant + BOT_MEMORY_* env, merged into
     // the SAME config dir. Gated on `session_has_memory` so a plain (non-bot) pane
@@ -713,10 +788,10 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
     // with zero connector grants. Best-effort: a missing session row just skips it.
     if let Some(session) = crate::db::sessions::get(&state.pool, session_name).await? {
         if crate::bot_memory::session_has_memory(&session, &state.config.data_dir) {
-            cfg.apply_memory(crate::bot_memory::memory_params(
-                &session,
-                &state.config.data_dir,
-            ));
+            cfg.apply_memory_with(
+                crate::bot_memory::memory_params(&session, &state.config.data_dir),
+                recall,
+            );
 
             // SessionStart capability briefing (fase C). Render it here (this is
             // the seam that has the pool for the company + peer roster) and write
@@ -724,7 +799,12 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
             // `SUPERMUX_BRIEFING_FILE` and emits it ONCE at SessionStart, so it is
             // zero per-turn cost. Best-effort: a write failure just omits the env
             // var (the hook then emits no briefing) rather than failing the launch.
-            let briefing = crate::agents::briefing::build(state, &session).await;
+            // No recall hook, no vehicle for the briefing: skip rendering it.
+            let briefing = if recall {
+                crate::agents::briefing::build(state, &session).await
+            } else {
+                String::new()
+            };
             if !briefing.is_empty() {
                 let dir = state
                     .config
@@ -978,6 +1058,33 @@ pub fn with_remote_transport(mut emit: Value) -> Value {
         }
     }
     emit
+}
+
+/// Merge a session's own settings file over the overlay, the file winning.
+///
+/// Objects merge key by key, recursively. Arrays are a union, the overlay's
+/// entries first and then the file's that are not already there: an array in
+/// the overlay is a list of grants (`permissions.allow`) or hook groups that the
+/// launch needs, so a file listing its own `permissions.allow` or `hooks.Stop`
+/// adds to them instead of silently dropping the connector and hook-CLI grants.
+/// Every other value (scalars, and a type mismatch such as an object over a
+/// string) is replaced by the file's.
+fn merge_session_settings(base: &mut Map<String, Value>, own: Map<String, Value>) {
+    for (key, value) in own {
+        match (base.get_mut(&key), value) {
+            (Some(Value::Object(b)), Value::Object(o)) => merge_session_settings(b, o),
+            (Some(Value::Array(b)), Value::Array(o)) => {
+                for v in o {
+                    if !b.contains(&v) {
+                        b.push(v);
+                    }
+                }
+            }
+            (_, v) => {
+                base.insert(key, v);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2079,6 +2186,100 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The session's own settings file merges into the overlay LAST: its
+    /// scalars and objects win (crossSessionInbound included), its arrays add to
+    /// the overlay's (the hook-wrapper grants survive a file that lists its own
+    /// allow rules), and keys the overlay never sets come through as written.
+    #[tokio::test]
+    async fn session_settings_file_merges_over_the_overlay() {
+        let dir = temp_dir();
+        let file = dir.join("operator-settings.json");
+        std::fs::write(
+            &file,
+            serde_json::to_string(&json!({
+                "claudeMdExcludes": ["/home/x/CLAUDE.md"],
+                "enabledPlugins": { "superpowers@official": false },
+                "idleCompaction": false,
+                "crossSessionInbound": "ask",
+                "permissions": { "allow": ["Bash(ls *)"], "deny": ["Workflow"] },
+                "supermux": { "memoryRecall": false }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut cfg = SessionConfig::new(&dir, "operator");
+        let recall = cfg.apply_session_settings(&file);
+        assert!(!recall, "memoryRecall false switches the recall hook off");
+        let fin = cfg.finish().await.unwrap().expect("a settings file activates the overlay");
+        let overlay = settings_flag(&fin).expect("overlay rides --settings");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
+        assert_eq!(v["claudeMdExcludes"], json!(["/home/x/CLAUDE.md"]));
+        assert_eq!(v["enabledPlugins"]["superpowers@official"], json!(false));
+        assert_eq!(v["idleCompaction"], json!(false));
+        assert_eq!(v["crossSessionInbound"], json!("ask"), "the file wins a scalar");
+        assert_eq!(v["permissions"]["deny"], json!(["Workflow"]));
+        let allow = v["permissions"]["allow"].as_array().unwrap();
+        assert!(allow.contains(&json!("Bash(ls *)")));
+        assert!(allow.contains(&json!("Bash(supermux-message *)")), "overlay grants kept: {allow:?}");
+        assert!(v.get("supermux").is_none(), "the supermux key never reaches Claude Code");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `memoryRecall: false` keeps the memory tier's grant and env but wires no
+    /// recall hooks; without the key the hooks are there as before.
+    #[tokio::test]
+    async fn memory_recall_switch_drops_only_the_hooks() {
+        let dir = temp_dir();
+        let mut off = SessionConfig::new(&dir, "off");
+        off.apply_memory_with(mem_params(&dir, "off", "r"), false);
+        let fin = off.finish().await.unwrap().expect("active");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(settings_flag(&fin).unwrap()).unwrap()).unwrap();
+        assert!(v.get("hooks").is_none(), "no recall hooks: {v}");
+        assert!(v["permissions"]["allow"].as_array().unwrap().contains(&json!("Bash(supermux-memory *)")));
+        assert!(fin.env.contains_key("BOT_MEMORY_NAME"));
+
+        let mut on = SessionConfig::new(&dir, "on");
+        on.apply_memory(mem_params(&dir, "on", "r"));
+        let fin = on.finish().await.unwrap().expect("active");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(settings_flag(&fin).unwrap()).unwrap()).unwrap();
+        assert!(v["hooks"]["SessionStart"].is_array());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A settings file that is missing, not JSON, or not an object is skipped:
+    /// the recall stays on and nothing is activated by it.
+    #[test]
+    fn a_bad_session_settings_file_is_skipped() {
+        let dir = temp_dir();
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        let arr = dir.join("arr.json");
+        std::fs::write(&arr, "[1]").unwrap();
+        for path in [dir.join("missing.json"), bad, arr] {
+            let mut cfg = SessionConfig::new(&dir, "s");
+            assert!(cfg.apply_session_settings(&path));
+            assert!(!cfg.is_active(), "{} must not activate the overlay", path.display());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_unions_arrays_and_lets_the_file_win_the_rest() {
+        let mut base = json!({ "a": 1, "o": { "k": "base", "keep": true }, "arr": [1, 2] })
+            .as_object()
+            .unwrap()
+            .clone();
+        let own = json!({ "a": 2, "o": { "k": "own" }, "arr": [2, 3], "new": "x" })
+            .as_object()
+            .unwrap()
+            .clone();
+        merge_session_settings(&mut base, own);
+        assert_eq!(
+            Value::Object(base),
+            json!({ "a": 2, "o": { "k": "own", "keep": true }, "arr": [1, 2, 3], "new": "x" })
+        );
     }
 
     #[test]

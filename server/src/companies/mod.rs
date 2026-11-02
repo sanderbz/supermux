@@ -389,6 +389,7 @@ async fn provision_group_chat(state: &AppState, company: &Company) {
             max_quiet_secs: None,
             // Boots on the daemon default Claude login.
             config_dir: None,
+            settings_file: None,
         },
     )
     .await;

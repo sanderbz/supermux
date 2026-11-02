@@ -295,6 +295,7 @@ pub async fn start_team(
             max_quiet_secs: None,
             // Boots on the daemon default Claude login.
             config_dir: None,
+            settings_file: None,
         },
     )
     .await?;

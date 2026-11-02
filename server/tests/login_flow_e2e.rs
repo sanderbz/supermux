@@ -150,6 +150,7 @@ impl Harness {
                 company_id: None,
                 archive_on_stop: false,
                 config_dir: String::new(),
+                settings_file: String::new(),
             },
         )
         .await
