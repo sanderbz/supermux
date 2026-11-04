@@ -74,6 +74,11 @@ const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 /// exits inside this window reads `Stopped` once the window has passed.
 const AGENT_START_GRACE_SECS: i64 = 60;
 
+/// How long a `SessionEnd`-forced stop outranks the screen while the agent exits.
+/// Claude gives its `SessionEnd` hooks 1.5s by default. An agent still in the pty
+/// after this, with no `SessionStart`, did not exit, so the detector decides again.
+const FORCED_STOP_HOLD: Duration = Duration::from_secs(5);
+
 /// How many trailing lines the tile preview surfaces.
 /// Sized to feed BOTH preview modes from one capture: the static tile shows
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
@@ -610,14 +615,15 @@ pub async fn tick(
     }
 
     // hooks-10x lifecycle: a `SessionEnd` hook may have forced this session
-    // `Stopped` (a clean exit the capture classifier cannot infer). Apply +
-    // consume the override and end the tick here: `SessionEnd` fires while the
-    // agent is still exiting, so a capture taken now shows its live screen and
-    // would commit `active` 50ms after the hook's `stopped`. `force_stopped` already
-    // wrote and broadcast the status. By the next tick the agent has left the pty,
-    // which `agent_left_pane` below holds. `SessionStart` clears the override so a
-    // re-launched session is re-evaluated freely.
-    if let Some(forced) = state.take_forced_status(name) {
+    // `Stopped` (a clean exit the capture classifier cannot infer). Hold it and end
+    // the tick here: `SessionEnd` fires while the agent is still exiting, and more
+    // hooks wake this loop right after it, so a capture taken now shows the live
+    // screen and would commit `active` 100ms after the hook's `stopped`.
+    // `force_stopped` already wrote and broadcast the status. Once the hold lapses
+    // the agent has left the pty, which `agent_left_pane` below keeps at `Stopped`.
+    // `SessionStart` clears the override so `/clear` and a re-launched session are
+    // re-evaluated at once.
+    if let Some(forced) = state.held_forced_status(name, FORCED_STOP_HOLD) {
         detector.force(forced);
         state.record_recency(name, forced);
         return Ok(forced);
@@ -859,6 +865,11 @@ pub async fn tick(
         // settle. A transient flap (e.g. a stale-by-now hook) that reverts is
         // suppressed; only a status that still holds is broadcast.
         tokio::time::sleep(FLAP_DEBOUNCE).await;
+        // The foreground is one of those fresh signals. A `Stopped` commits here
+        // and can archive a disposable session, so a shell that held the pty only
+        // for a moment must not reach that on one stale read.
+        let gone = agent_left_pane(state, name, rt.shell_is_foreground().await).await;
+        detector.set_agent_gone(gone);
         let confirmed = detector.detect_with_subagents(
             &capture,
             state.last_pty(name),
@@ -2830,12 +2841,24 @@ mod dead_holder_tests {
     }
 
     #[tokio::test]
-    async fn a_session_end_holds_stopped_for_its_tick() {
+    async fn a_session_end_holds_stopped_while_the_agent_exits() {
         let (state, _dir) = test_state().await;
         native_row(&state, "ender", "active").await;
         state.set_forced_status("ender", Status::Stopped);
+        // More hooks wake the loop right after the first tick, agent still up.
         assert_eq!(one_tick(&state, "ender", Status::Active).await, Status::Stopped);
-        assert_eq!(state.take_forced_status("ender"), None, "the override is consumed");
+        assert_eq!(one_tick(&state, "ender", Status::Active).await, Status::Stopped);
+
+        assert_eq!(state.held_forced_status("ender", Duration::ZERO), None, "the hold lapses");
+        assert_eq!(state.take_forced_status("ender"), None, "and is gone with it");
+    }
+
+    #[tokio::test]
+    async fn a_session_start_ends_the_hold_at_once() {
+        let (state, _dir) = test_state().await;
+        state.set_forced_status("cleared", Status::Stopped);
+        state.clear_forced_status("cleared");
+        assert_eq!(state.held_forced_status("cleared", FORCED_STOP_HOLD), None);
     }
 
     #[tokio::test]

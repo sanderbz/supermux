@@ -577,12 +577,12 @@ pub struct AppState {
     /// empty on `Stop`/`SessionEnd` and dropped on session delete/rename.
     pub session_activity: Arc<DashMap<String, SessionActivity>>,
     /// Per-session LIFECYCLE-forced status override. A `SessionEnd`
-    /// hook forces `Stopped`; the detector loop reads this each tick and
-    /// `force`s it into its classifier (then clears it), so the lifecycle signal
-    /// — which the capture classifier cannot infer — sticks instead of being
-    /// re-derived to `active` on the next tick. `SessionStart` clears any pending
-    /// override so the detector re-evaluates freely.
-    pub forced_status: Arc<DashMap<String, Status>>,
+    /// hook forces `Stopped`; the detector loop holds it for a bounded window
+    /// while the agent exits (see [`Self::held_forced_status`]), so the lifecycle
+    /// signal — which the capture classifier cannot infer — sticks instead of
+    /// being re-derived to `active`. `SessionStart` clears any pending override so
+    /// the detector re-evaluates freely. The instant is when it was forced.
+    pub forced_status: Arc<DashMap<String, (Status, Instant)>>,
     /// Per-session PER-LAUNCH "force Agent Teams ON" flag ("Start a team").
     /// The global `experimental.agent_teams` pref is the app-wide gate; this is
     /// a NARROWER, explicit per-session opt-in set by the `POST /api/teams/start`
@@ -1900,18 +1900,29 @@ impl AppState {
     }
 
     /// Force `name`'s status via the lifecycle override: the detector
-    /// loop reads + applies this on its next tick (then clears it), so a
+    /// loop holds it (see [`Self::held_forced_status`]), so a
     /// `SessionEnd`-driven `Stopped` sticks instead of being re-derived. Wakes
     /// the loop so the change surfaces within ~1s, not at the next tier edge.
     pub fn set_forced_status(&self, name: &str, status: Status) {
-        self.forced_status.insert(name.to_string(), status);
+        self.forced_status.insert(name.to_string(), (status, Instant::now()));
         self.wake_detector(name);
     }
 
-    /// Take (consume) any pending lifecycle-forced status for `name`. Called by
-    /// the detector loop each tick; `None` when nothing is pending.
+    /// The forced status for `name` while it is younger than `hold`. An older one
+    /// is dropped and reads `None`, so the detector decides again. Called by the
+    /// detector loop each tick; `None` when nothing is pending.
+    pub fn held_forced_status(&self, name: &str, hold: Duration) -> Option<Status> {
+        let (status, at) = *self.forced_status.get(name)?;
+        if at.elapsed() < hold {
+            return Some(status);
+        }
+        self.forced_status.remove(name);
+        None
+    }
+
+    /// Take (consume) any pending lifecycle-forced status for `name`.
     pub fn take_forced_status(&self, name: &str) -> Option<Status> {
-        self.forced_status.remove(name).map(|(_, s)| s)
+        self.forced_status.remove(name).map(|(_, (s, _))| s)
     }
 
     /// Clear any pending lifecycle-forced status (e.g. on `SessionStart`, so a
