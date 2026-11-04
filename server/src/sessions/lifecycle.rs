@@ -1318,6 +1318,40 @@ fn codex_footer_boundary(raw: &str, visible: &str, separated: bool) -> bool {
     foreground
 }
 
+/// Codex's footer row while a turn runs and the composer holds a draft: `tab to
+/// queue message` (`tab to queue` when narrow, `· Plan mode` in plan mode), the
+/// context indicator right-aligned after it. Codex draws it IN PLACE of the
+/// status line the moment a paste lands on a busy turn (upstream snapshot
+/// `footer_status_line_yields_to_queue_hint`), so without this boundary the hint
+/// read as a wrapped line of the draft, our own paste no longer matched, and
+/// the send 409'd after pasting. Separated from the input by a blank row, like
+/// [`codex_footer_boundary`].
+fn codex_queue_hint(visible: &str, separated: bool) -> bool {
+    let t = visible.trim().to_ascii_lowercase();
+    let Some(rest) = t.strip_prefix("tab to queue") else {
+        return false;
+    };
+    let rest = rest.strip_prefix(" message").unwrap_or(rest);
+    separated
+        && (rest.is_empty()
+            || rest.starts_with(" ·")
+            || rest.starts_with("  ")
+            || rest.ends_with("context left")
+            || rest.ends_with(" used"))
+}
+
+/// A Codex turn is running, so Enter does not submit the composer and Tab
+/// queues it (Codex 0.163, `tab to queue message`). Besides the working footer
+/// ([`agent_busy`]) Codex draws two rows only during a turn: the queue hint
+/// under a draft and `edit last queued message` under the queued list. Both sit
+/// at the bottom, where a queued list pushes the working footer far up. This
+/// only picks the submit key: on an idle Codex Tab submits a message like Enter.
+fn codex_turn_running(screen: &str) -> bool {
+    agent_busy(screen)
+        || screen.lines().any(|l| codex_queue_hint(l, true))
+        || screen.to_ascii_lowercase().contains("edit last queued message")
+}
+
 enum ComposerRead {
     Text(String),
     NotVisible,
@@ -1378,6 +1412,8 @@ fn read_composer(raw: &str, provider: &str) -> ComposerRead {
                             t,
                             lines[index - 1].trim().is_empty(),
                         ))
+                    || (provider == "codex"
+                        && codex_queue_hint(t, lines[index - 1].trim().is_empty()))
                     || t.starts_with("⏵")
                     || t.starts_with("View teammates:")))
         {
@@ -2118,16 +2154,15 @@ async fn send_text_checked_mode(
         return Ok(None);
     }
 
-    let pre_busy = rt
-        .capture_plain(status::CAPTURE_LINES)
-        .await
-        .map(|c| agent_busy(&c))
-        .unwrap_or(false);
+    let pre = rt.capture_plain(status::CAPTURE_LINES).await.ok();
+    let pre_busy = pre.as_deref().is_some_and(agent_busy);
+    // A busy Codex leaves Enter's text in the composer; Tab queues it.
+    let mut queue = provider == "codex" && pre.as_deref().is_some_and(codex_turn_running);
 
     if idle_only {
         let raw = rt.capture_screen_ansi().await?;
         let screen = status::prepare_capture(&raw);
-        if pre_busy || agent_busy(&screen) || send_block(&screen).is_some()
+        if pre_busy || queue || agent_busy(&screen) || send_block(&screen).is_some()
             || composer_text(&raw, provider).as_deref() != Some("") {
             return Err(AppError::Conflict("feedback target changed before input could be written".into()));
         }
@@ -2153,12 +2188,18 @@ async fn send_text_checked_mode(
         } else {
             screen
         };
-        if (idle_only && agent_busy(&checked))
+        queue |= provider == "codex" && codex_turn_running(&checked);
+        if (idle_only && (agent_busy(&checked) || queue))
             || send_block(&checked).is_some_and(|b| b != SendBlock::NoAgent || !owned) {
             return Err(AppError::Conflict(
                 "input was pasted, but the terminal changed to a dialog or an unreadable screen; open the terminal to recover it".into(),
             ));
         }
+    }
+    if queue {
+        tracing::info!("deliver_prompt: Codex is mid-turn; queueing the prompt with Tab");
+        rt.send_key("Tab").await?;
+        return confirm_queued(rt, provider, prompt).await;
     }
     rt.send_key("Enter").await?;
 
@@ -2213,6 +2254,61 @@ async fn send_text_checked_mode(
         Ok(None)
     } else {
         Ok(Some(last == SubmitState::Unknown))
+    }
+}
+
+/// After the Tab that queues a prompt on a busy Codex: did OUR text leave the
+/// composer? Same window as the Enter check, at most one extra Tab, and only
+/// while the composer still holds exactly our text (on an empty composer Codex
+/// ignores a Tab, so the retry cannot queue twice). `Ok(Some(false))` = still
+/// there after the retry; `Ok(None)` = never readable, the old unverified queue.
+async fn confirm_queued(
+    rt: &dyn SessionRuntime,
+    provider: &str,
+    prompt: &str,
+) -> Result<Option<bool>, AppError> {
+    let mut retried = false;
+    let mut last = SubmitState::Unknown;
+    for _ in 0..VERIFY_POLLS {
+        tokio::time::sleep(VERIFY_POLL).await;
+        let Ok(cap) = rt.capture_screen_ansi().await else {
+            continue;
+        };
+        last = queued_state(&cap, provider, prompt);
+        match last {
+            SubmitState::Submitted => return Ok(Some(true)),
+            SubmitState::Stuck if !retried => {
+                retried = true;
+                tracing::info!("deliver_prompt: Codex composer still holds the prompt, Tab again");
+                rt.send_key("Tab").await?;
+            }
+            SubmitState::Stuck | SubmitState::Unknown => {}
+        }
+    }
+    Ok((last == SubmitState::Stuck).then_some(false))
+}
+
+/// [`checked_submit_state`] for a QUEUE: the busy footer was on screen before the
+/// Tab and stays after it, so it proves nothing here and the composer alone
+/// decides. Empty = queued (or submitted, if the turn just ended). Exactly our
+/// text = Stuck, unless a dialog or picker now owns the screen: then Unknown,
+/// which never presses a key.
+fn queued_state(capture: &str, provider: &str, prompt: &str) -> SubmitState {
+    match composer_text(capture, provider) {
+        Some(text) if text.is_empty() => SubmitState::Submitted,
+        Some(_) if composer_holds_prompt(capture, provider, prompt) => {
+            let without_echo = status::prepare_capture(capture)
+                .lines()
+                .filter(|l| !line_is_prompt_echo(l, prompt))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if send_block(&without_echo).is_some_and(|b| b != SendBlock::NoAgent) {
+                SubmitState::Unknown
+            } else {
+                SubmitState::Stuck
+            }
+        }
+        _ => SubmitState::Unknown,
     }
 }
 
@@ -3694,7 +3790,8 @@ pub async fn send_harness_text(
         }
         match rt.capture_plain(status::CAPTURE_LINES).await {
             Ok(raw) => {
-                pre_busy = agent_busy(&raw);
+                pre_busy =
+                    agent_busy(&raw) || (provider == "codex" && codex_turn_running(&raw));
                 // THE REFUSAL NAMES WHAT IS ACTUALLY IN THE WAY (owner report).
                 // It used to say "parked at a prompt that is not the agent's …
                 // likely sitting on a resume picker or a folder-trust dialog"
@@ -7292,6 +7389,11 @@ mod write_runtime_tests {
         key_calls: AtomicUsize,
         capture_calls: AtomicUsize,
         simulation: Mutex<Option<InputSimulation>>,
+        /// Every key name sent, in order (`key_calls` only counts them).
+        keys: Mutex<Vec<String>>,
+        /// `Some(queued)` = a busy Codex 0.163 with that queued list: Enter leaves
+        /// the draft in the composer, Tab moves it to the list.
+        codex_queue: Mutex<Option<Vec<String>>>,
     }
 
     // Sanitized observed Codex0.160.1 footer: model/status spans use foreground
@@ -7304,6 +7406,42 @@ mod write_runtime_tests {
             draft
         };
         format!("\x1b[0;1m›\x1b[0m {input}\n{CURRENT_CODEX_FOOTER}")
+    }
+
+    // Trimmed from a real busy Codex 0.163 pane (rr-codex, 3 Nov). The queued
+    // list sits between the working footer and the composer, so `esc to
+    // interrupt` is far above the 10-row tail the send guard reads.
+    const BUSY_CODEX_TOP: &str = "\
+• Ran git pull --ff-only
+  └ Already up to date.
+
+• Working (1m 58s • esc to interrupt)
+
+• Queued follow-up inputs
+  ↳ \x1b[2;3mVan Max, correctie op het bericht hierboven: de 3 extra sessies draaien nog NIET, rr-web kon\x1b[0m
+    \x1b[2;3mze niet starten (geen bubblewrap op Strato). Start ze zelf, naast je huidige werk: 3x codex\x1b[0m
+    \x1b[2;3mexec met dezelfde rechten als jij, elk met de klaarliggende opdracht van rr-web (s1 Hoi An +\x1b[0m
+    \x1b[2;3m…\x1b[0m
+  ↳ \x1b[2;3mVan rr-web: laat /tmp/rr-collages-20261103/venv en rr-images/collages/export_measure.py\x1b[0m
+    \x1b[2;3mstaan. rr-codex-2 en rr-codex-3 meten daarmee nog LPIPS voor hun lijsten. Dank voor b9450a5,\x1b[0m
+    \x1b[2;3mik koppel hem nu.\x1b[0m";
+    const BUSY_CODEX_STATUS_LINE: &str = "  \x1b[38;2;246;226;183mGPT-6-Astra xhigh\x1b[0m · /opt/projects/companies/reisreporter.nl/rr-co…  ⚠ 2 warnings · f2 to view";
+    const BUSY_CODEX_QUEUE_HINT: &str =
+        "  tab to queue message                                         98% context left";
+
+    /// That pane with `queued` added to its list and `draft` in the composer.
+    /// With a draft, Codex swaps the status line for the queue hint.
+    fn busy_codex_screen(queued: &[String], draft: &str) -> String {
+        let mut screen = BUSY_CODEX_TOP.to_string();
+        for q in queued {
+            screen.push_str(&format!("\n  ↳ \x1b[2;3m{q}\x1b[0m"));
+        }
+        let (input, footer) = if draft.is_empty() {
+            ("\x1b[2mAsk Codex to do anything\x1b[22m", BUSY_CODEX_STATUS_LINE)
+        } else {
+            (draft, BUSY_CODEX_QUEUE_HINT)
+        };
+        format!("{screen}\n    shift+← edit last queued message\n\n› {input}\n\n{footer}")
     }
 
     struct InputSimulation {
@@ -7328,6 +7466,8 @@ mod write_runtime_tests {
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
                 simulation: Mutex::new(None),
+                keys: Mutex::new(Vec::new()),
+                codex_queue: Mutex::new(None),
             })
         }
         /// A runtime whose `capture_plain` always fails — exercises the send
@@ -7342,6 +7482,8 @@ mod write_runtime_tests {
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
                 simulation: Mutex::new(None),
+                keys: Mutex::new(Vec::new()),
+                codex_queue: Mutex::new(None),
             })
         }
         /// A native-shaped runtime that reports it is sitting at a BARE SHELL
@@ -7357,6 +7499,8 @@ mod write_runtime_tests {
                 key_calls: AtomicUsize::new(0),
                 capture_calls: AtomicUsize::new(0),
                 simulation: Mutex::new(None),
+                keys: Mutex::new(Vec::new()),
+                codex_queue: Mutex::new(None),
             })
         }
         /// A pane that shows each of `screens` in turn, then holds the last one.
@@ -7370,6 +7514,9 @@ mod write_runtime_tests {
             if let Some(sim) = self.simulation.lock().unwrap().as_ref() {
                 if sim.modal_after_paste && sim.pasted_at.is_some() {
                     return "Do you want to run this command?\n› 1. Yes\n  2. No\nPress enter to confirm".into();
+                }
+                if let Some(queued) = self.codex_queue.lock().unwrap().as_ref() {
+                    return busy_codex_screen(queued, &sim.draft);
                 }
                 if sim.submitted {
                     return "◦ Working (1s • esc to interrupt)".into();
@@ -7423,9 +7570,18 @@ mod write_runtime_tests {
             self.text_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
+        async fn send_key(&self, k: &str) -> anyhow::Result<()> {
             self.key_calls.fetch_add(1, Ordering::SeqCst);
+            self.keys.lock().unwrap().push(k.to_string());
             if let Some(sim) = self.simulation.lock().unwrap().as_mut() {
+                if let Some(queued) = self.codex_queue.lock().unwrap().as_mut() {
+                    if sim.swallow_once {
+                        sim.swallow_once = false;
+                    } else if k == "Tab" && !sim.draft.is_empty() {
+                        queued.push(std::mem::take(&mut sim.draft));
+                    }
+                    return Ok(());
+                }
                 if sim.swallow_once {
                     sim.swallow_once = false;
                 } else if sim.provider == "codex"
@@ -7779,6 +7935,7 @@ mod write_runtime_tests {
             .expect("a send during a busy turn is a queue, not a refusal");
         assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "the queued text is typed");
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "and submitted with Enter");
+        assert_eq!(*rt.keys.lock().unwrap(), ["Enter"], "a busy Claude keeps Enter");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
@@ -7932,6 +8089,124 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
         assert!(state.send_dedup.uncertain("race", "race-1"));
         assert!(db::sessions::get(&state.pool, "race").await.unwrap().unwrap().last_send_text.is_empty());
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const QUEUED_PROMPT: &str = "Van Max: push ook de hotelbeelden van Puri Dajuma";
+
+    /// bouw-162. A paste onto a busy Codex swaps the status line for `tab to queue
+    /// message`. That row is chrome, not a wrapped line of the draft: read as the
+    /// draft, our own paste stopped matching and, with the working footer pushed
+    /// out of the tail by the queued list, the send 409'd after pasting.
+    #[test]
+    fn busy_codex_queue_hint_is_footer_not_draft() {
+        let screen = busy_codex_screen(&[], QUEUED_PROMPT);
+        assert_eq!(composer_text(&screen, "codex").as_deref(), Some(QUEUED_PROMPT));
+        assert!(composer_holds_prompt(&screen, "codex", QUEUED_PROMPT));
+        let plain = status::prepare_capture(&screen);
+        assert!(!agent_busy(&current_screen_tail(&plain)), "fixture: footer out of the tail");
+        assert!(codex_turn_running(&plain));
+        let checked = plain
+            .lines()
+            .filter(|l| !line_is_prompt_echo(l, QUEUED_PROMPT))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // NoAgent with our own text in the composer is what the strict check admits.
+        assert_eq!(send_block(&checked), Some(SendBlock::NoAgent));
+        assert!(!codex_turn_running(&status::prepare_capture(&current_codex_screen(QUEUED_PROMPT))));
+
+        for hint in [
+            "tab to queue",
+            "tab to queue message",
+            "tab to queue message · Plan mode        98% context left",
+            "tab to queue message 98% context left",
+            "tab to queue          1.2M used",
+        ] {
+            assert!(codex_queue_hint(hint, true), "{hint}");
+            assert!(!codex_queue_hint(hint, false), "{hint}");
+        }
+        assert!(!codex_queue_hint("tab to queue messages for later", true));
+        let typed = "keep this\n\n  tab to queue later";
+        assert_eq!(
+            composer_text(&busy_codex_screen(&[], typed), "codex").as_deref(),
+            Some("keep this\ntab to queue later")
+        );
+
+        // After the Tab only the composer decides: ours = Stuck, empty = queued.
+        assert_eq!(queued_state(&screen, "codex", QUEUED_PROMPT), SubmitState::Stuck);
+        let queued = busy_codex_screen(&[QUEUED_PROMPT.to_string()], "");
+        assert_eq!(queued_state(&queued, "codex", QUEUED_PROMPT), SubmitState::Submitted);
+        let other = busy_codex_screen(&[], "someone else's draft");
+        assert_eq!(queued_state(&other, "codex", QUEUED_PROMPT), SubmitState::Unknown);
+    }
+
+    /// bouw-162. A message for a busy Codex with a queued list is admitted, queued
+    /// with Tab (Enter leaves it in the composer), confirmed by the composer
+    /// emptying, and recorded as sent. One swallowed Tab gets one more.
+    #[tokio::test]
+    async fn busy_codex_with_queued_list_is_admitted_and_queued_with_tab() {
+        for swallowed in [false, true] {
+            let (state, dir) = test_state().await;
+            db::sessions::insert_minimal(&state.pool, "rr-codex", "/tmp", "codex").await.unwrap();
+            let rt = StubRuntime::simulating("codex", swallowed, false);
+            *rt.codex_queue.lock().unwrap() = Some(Vec::new());
+            state.session_runtimes.insert("rr-codex".into(), rt.clone());
+            send_harness_text(&state, "rr-codex", QUEUED_PROMPT, None, None)
+                .await
+                .expect("a busy Codex queues the message");
+            let tabs: &[&str] = if swallowed { &["Tab", "Tab"] } else { &["Tab"] };
+            assert_eq!(*rt.keys.lock().unwrap(), tabs);
+            assert_eq!(
+                rt.codex_queue.lock().unwrap().as_deref(),
+                Some(&[QUEUED_PROMPT.to_string()][..])
+            );
+            assert_eq!(rt.text_calls.load(Ordering::SeqCst), 1, "never pasted twice");
+            assert_eq!(
+                db::sessions::get(&state.pool, "rr-codex").await.unwrap().unwrap().last_send_text,
+                QUEUED_PROMPT
+            );
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_codex_still_submits_with_enter() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "idle-codex", "/tmp", "codex").await.unwrap();
+        let rt = StubRuntime::simulating("codex", false, false);
+        rt.simulation.lock().unwrap().as_mut().unwrap().current_codex_chrome = true;
+        state.session_runtimes.insert("idle-codex".into(), rt.clone());
+        send_harness_text(&state, "idle-codex", QUEUED_PROMPT, None, None).await.unwrap();
+        assert_eq!(*rt.keys.lock().unwrap(), ["Enter"]);
+        assert!(rt.simulation.lock().unwrap().as_ref().unwrap().submitted);
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A real approval dialog on a busy Codex, queued list and all, is still a
+    /// keypress screen: refused, never read as a queue, and given no key.
+    #[tokio::test]
+    async fn busy_codex_dialog_is_still_refused() {
+        let dialog = format!(
+            "{BUSY_CODEX_TOP}\n    shift+← edit last queued message\n\n  Would you like to run the \
+             following command?\n\n  $ rm -rf rr-images/collages-s1/venv\n\n› 1. Yes, proceed (y)\n  \
+             2. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
+        );
+        assert_eq!(send_block(&status::prepare_capture(&dialog)), Some(SendBlock::Selection));
+        assert_eq!(queued_state(&dialog, "codex", QUEUED_PROMPT), SubmitState::Unknown);
+
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "race-codex", "/tmp", "codex").await.unwrap();
+        let rt = StubRuntime::simulating("codex", false, true);
+        *rt.codex_queue.lock().unwrap() = Some(Vec::new());
+        state.session_runtimes.insert("race-codex".into(), rt.clone());
+        assert!(matches!(
+            send_harness_text(&state, "race-codex", QUEUED_PROMPT, None, None).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert!(rt.keys.lock().unwrap().is_empty(), "neither Tab nor Enter into a dialog");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
