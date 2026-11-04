@@ -68,6 +68,12 @@ const FALLBACK_DELAY: Duration = Duration::from_secs(2);
 /// leaves. 50ms ≪ the 2s tick, so steady-state latency is unaffected.
 const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 
+/// How long after a start a shell at the foreground may still mean "the agent has
+/// not taken over yet". `start` holds the session lock until the agent UI shows or
+/// its wait gives up; this covers a slow boot after that give-up. An agent that
+/// exits inside this window reads `Stopped` once the window has passed.
+const AGENT_START_GRACE_SECS: i64 = 60;
+
 /// How many trailing lines the tile preview surfaces.
 /// Sized to feed BOTH preview modes from one capture: the static tile shows
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
@@ -605,12 +611,16 @@ pub async fn tick(
 
     // hooks-10x lifecycle: a `SessionEnd` hook may have forced this session
     // `Stopped` (a clean exit the capture classifier cannot infer). Apply +
-    // consume the override so the detector holds `Stopped` this tick instead of
-    // re-deriving `active`; `SessionStart` clears the override so a re-launched
-    // session is re-evaluated freely. We force BEFORE the capture so the held
-    // status flows through the normal change/broadcast path below.
+    // consume the override and end the tick here: `SessionEnd` fires while the
+    // agent is still exiting, so a capture taken now shows its live screen and
+    // would commit `active` 50ms after the hook's `stopped`. `force_stopped` already
+    // wrote and broadcast the status. By the next tick the agent has left the pty,
+    // which `agent_left_pane` below holds. `SessionStart` clears the override so a
+    // re-launched session is re-evaluated freely.
     if let Some(forced) = state.take_forced_status(name) {
         detector.force(forced);
+        state.record_recency(name, forced);
+        return Ok(forced);
     }
 
     let last_pty = state.last_pty(name);
@@ -712,6 +722,9 @@ pub async fn tick(
     {
         clear_holder_death_badge(state, name);
     }
+
+    let gone = agent_left_pane(state, name, rt.shell_is_foreground().await).await;
+    detector.set_agent_gone(gone);
 
     // Heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
     // the detector's heartbeat branch fires) and is normally spawned on the
@@ -916,6 +929,15 @@ pub async fn tick(
         // — never every tick. The send is spawned so the detector tick is not
         // blocked on network I/O to the push service.
         maybe_push_on_transition(state, name, s);
+        // `SessionEnd` normally archives a disposable session. Its hook is a
+        // best-effort `--max-time 1` curl, so a lost one must not strand the shell.
+        if s == Status::Stopped && detector.agent_gone() {
+            let state = state.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                crate::sessions::lifecycle::maybe_archive_on_stop(&state, &name).await;
+            });
+        }
     }
 
     // ── A2 chat tail for the tile (zero new requests: it rides this delta) ────
@@ -1026,6 +1048,32 @@ pub(crate) fn expire_blank_hold(name: &str) {
 /// the focus header with no new wire field; the frontend labels it
 /// "Terminal died" and puts the full reason in the tooltip.
 pub const HOLDER_DIED: &str = "holder_died";
+
+/// Has the agent left a terminal that is still alive?
+///
+/// The pty's foreground program is the proof: the agent's own tool calls never
+/// hand the shell the foreground, so a shell there means nothing is running under
+/// it. Two windows do show a shell with an agent on its way, and both read `false`:
+/// a start in progress (it holds the session lock) and the grace after one.
+///
+/// A backend that can not tell (`None`, tmux) stays on the capture.
+async fn agent_left_pane(state: &AppState, name: &str, shell_foreground: Option<bool>) -> bool {
+    if shell_foreground != Some(true) {
+        return false;
+    }
+    if state.lock_for(name).try_lock().is_err() {
+        return false;
+    }
+    match db::sessions::get(&state.pool, name).await {
+        Ok(Some(s)) => agent_start_settled(&s.provider, chrono::Utc::now().timestamp() - s.last_started),
+        _ => false,
+    }
+}
+
+/// A `shell` session has no agent to leave, and a recent start has not settled.
+fn agent_start_settled(provider: &str, secs_since_start: i64) -> bool {
+    provider != "shell" && secs_since_start >= AGENT_START_GRACE_SECS
+}
 
 /// Force `session` to `Stopped` because its terminal is PROVABLY gone, pushing
 /// the flip through the same triplet every other lifecycle writer uses — DB,
@@ -2779,6 +2827,48 @@ mod dead_holder_tests {
         };
         crate::sessions::create(state, inp).await.expect("create");
         db::sessions::set_last_status(&state.pool, name, status).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_end_holds_stopped_for_its_tick() {
+        let (state, _dir) = test_state().await;
+        native_row(&state, "ender", "active").await;
+        state.set_forced_status("ender", Status::Stopped);
+        assert_eq!(one_tick(&state, "ender", Status::Active).await, Status::Stopped);
+        assert_eq!(state.take_forced_status("ender"), None, "the override is consumed");
+    }
+
+    #[tokio::test]
+    async fn only_a_shell_at_the_foreground_of_a_settled_session_means_the_agent_left() {
+        let (state, _dir) = test_state().await;
+        native_row(&state, "exited", "active").await;
+
+        assert!(agent_left_pane(&state, "exited", Some(true)).await);
+        assert!(!agent_left_pane(&state, "exited", Some(false)).await, "the agent owns the pty");
+        assert!(!agent_left_pane(&state, "exited", None).await, "tmux can not tell");
+
+        {
+            let lock = state.lock_for("exited");
+            let _start_in_progress = lock.lock().await;
+            assert!(
+                !agent_left_pane(&state, "exited", Some(true)).await,
+                "a running start has yet to type its launch command",
+            );
+        }
+
+        db::sessions::bump_start(&state.pool, "exited").await.unwrap();
+        assert!(
+            !agent_left_pane(&state, "exited", Some(true)).await,
+            "a fresh start gets its grace",
+        );
+    }
+
+    #[test]
+    fn the_start_grace_and_the_shell_provider_never_count_as_a_departed_agent() {
+        assert!(agent_start_settled("claude", AGENT_START_GRACE_SECS));
+        assert!(agent_start_settled("codex", AGENT_START_GRACE_SECS));
+        assert!(!agent_start_settled("claude", AGENT_START_GRACE_SECS - 1));
+        assert!(!agent_start_settled("shell", AGENT_START_GRACE_SECS * 100));
     }
 
     /// One detector tick, driven directly (the loop's cadence is not under test).
