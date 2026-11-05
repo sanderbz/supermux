@@ -526,6 +526,9 @@ pub struct StatusDetector {
     /// settles, while a just-restarted detector waits out the window so a real
     /// main turn's spinner has time to draw and take the seen path instead.
     watching_since: Instant,
+    /// The agent has left a terminal that is still alive, so the shell owns the
+    /// pty again. Set by the detector loop, see [`Self::set_agent_gone`].
+    agent_gone: bool,
 }
 
 impl Default for StatusDetector {
@@ -547,6 +550,7 @@ impl StatusDetector {
             provider: String::new(),
             spinner_last_seen: None,
             watching_since: Instant::now(),
+            agent_gone: false,
         }
     }
 
@@ -560,6 +564,7 @@ impl StatusDetector {
             provider: provider.to_string(),
             spinner_last_seen: None,
             watching_since: Instant::now(),
+            agent_gone: false,
         }
     }
 
@@ -572,6 +577,18 @@ impl StatusDetector {
     /// `Stopped` transition, which the capture classifier cannot infer).
     pub fn force(&mut self, status: Status) {
         self.last_status = status;
+    }
+
+    /// Tell the detector whether the agent has left its still-living terminal.
+    /// While this is set every classification reads `Stopped`, because the only
+    /// thing left to classify is the screen the departed agent left behind.
+    pub fn set_agent_gone(&mut self, gone: bool) {
+        self.agent_gone = gone;
+    }
+
+    /// What the last [`Self::set_agent_gone`] said.
+    pub fn agent_gone(&self) -> bool {
+        self.agent_gone
     }
 
     /// Classify the session from the fused signals and record the result.
@@ -683,6 +700,15 @@ impl StatusDetector {
         let spinner = ACTIVE_BANK.is_match(capture);
         if spinner {
             self.spinner_last_seen = Some(Instant::now());
+        }
+
+        // ── the agent has left the pane ──────────────────────────────────────
+        // `/exit` leaves Claude's last frame on the screen, spinner and
+        // `esc to interrupt` footer included, with a shell prompt under it. Every
+        // bank below would read that dead frame as a busy agent, for as long as
+        // the frame stays in view. So the pty's foreground program outranks them.
+        if self.agent_gone {
+            return Status::Stopped;
         }
 
         // ── 0. user-interrupt pre-emption ────────────────────────────────────
@@ -1220,6 +1246,39 @@ mod tests {
     /// bank/heartbeat path is exercised exactly as the golden fixtures expect.
     fn fresh(cap: &str) -> Status {
         StatusDetector::new().detect(cap, neutral_pty(), TurnState::default(), false)
+    }
+
+    /// The frame `/exit` really leaves behind (captured from Claude Code 2.1.318):
+    /// the spinner and the busy footer stay on screen above the shell prompt.
+    #[test]
+    fn a_departed_agents_last_frame_reads_stopped() {
+        let frame = "✳ Caramelizing…\n\
+                     ────────────────\n\
+                     ❯ \n\
+                     ────────────────\n\
+                     \u{20}\u{20}⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt\n\
+                     Resume this session with:\n\
+                     claude --resume ccdc7610-243c-4276-9a13-52ac4ae4b4b9\n\
+                     \u{20}\u{20}~/projects ❯   took 34m 59s at 22:26:39\n";
+        let mut detector = StatusDetector::for_provider("claude");
+        assert_eq!(
+            detector.detect(frame, neutral_pty(), TurnState::default(), true),
+            Status::Active,
+            "on its own, the frame reads as a busy agent",
+        );
+
+        detector.set_agent_gone(true);
+        // A turn whose `Stop` never came must not outrank it either.
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now(), HookEvent::UserPromptSubmit);
+        assert_eq!(detector.detect(frame, neutral_pty(), turn, true), Status::Stopped);
+
+        // A program took the pty back, so the normal signals decide again.
+        detector.set_agent_gone(false);
+        assert_eq!(
+            detector.detect(frame, neutral_pty(), TurnState::default(), true),
+            Status::Active,
+        );
     }
 
     /// Classify with a fresh Codex-bound detector (neutral pty so the bank
