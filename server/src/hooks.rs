@@ -1086,8 +1086,8 @@ fn apply_payload(
         // the tile flips immediately, mirroring lifecycle::stop's broadcast.
         "session_end" | "SessionEnd" => {
             // TRIGGER 4 (B5/T1.5) — error, and ONLY for a death the user did not
-            // cause. `clear` / `logout` / `prompt_input_exit` / `exit` are the
-            // human at the keyboard: `/clear`ing a conversation or typing
+            // cause. `clear` / `resume` / `logout` / `prompt_input_exit` / `exit`
+            // are the human at the keyboard: `/clear`ing a conversation or typing
             // `/exit` must never ring their own phone. An absent reason is a
             // real death (a killed pane reports nothing).
             //
@@ -1120,7 +1120,9 @@ fn apply_payload(
             // resident forever. Fire-and-forget; a session that never browsed is
             // a no-op.
             crate::connectors::browser::dispose_on_teardown(&state.browser, session);
-            force_stopped(state, session);
+            if !agent_stays_in_pane(payload) {
+                force_stopped(state, session);
+            }
             act_changed || sub_changed || perm_changed || dropped_rows
         }
         // A turn failed with an agent error → record `{type, message}` for the
@@ -1250,8 +1252,8 @@ fn is_foreign_agent_payload(raw: &Value, tracked_cc_id: Option<&str>) -> bool {
 
 /// Did this `SessionEnd` represent a death the user did NOT cause?
 ///
-/// `clear` / `logout` / `prompt_input_exit` / `exit` are the human at the
-/// keyboard — their own keystroke ringing their own phone is the single
+/// `clear` / `resume` / `logout` / `prompt_input_exit` / `exit` are the human at
+/// the keyboard — their own keystroke ringing their own phone is the single
 /// most-hated false positive. Everything else (`other`, or no reason at all,
 /// which is what a killed pane produces) is a real death.
 fn crashed_reason(payload: &HookPayload) -> bool {
@@ -1259,9 +1261,22 @@ fn crashed_reason(payload: &HookPayload) -> bool {
         None | Some("") => true,
         Some(r) => !matches!(
             r.to_ascii_lowercase().as_str(),
-            "clear" | "logout" | "prompt_input_exit" | "exit"
+            "clear" | "resume" | "logout" | "prompt_input_exit" | "exit"
         ),
     }
+}
+
+/// Did this `SessionEnd` end a conversation, with the agent staying in the pane?
+///
+/// `/clear` and `/resume` close one conversation and open the next in the same
+/// process, and its `SessionStart` follows within milliseconds (reasons captured
+/// from Claude Code 2.1.318). So there is no stop to report and nothing for a
+/// disposable session to archive itself over.
+fn agent_stays_in_pane(payload: &HookPayload) -> bool {
+    matches!(
+        payload.reason.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("clear" | "resume")
+    )
 }
 
 /// Force a session `Stopped` from a `SessionEnd` hook (lifecycle).
@@ -2230,6 +2245,44 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `/clear` and `/resume` end the conversation, not the agent. The turn and
+    /// its activity are over, but no stop is forced, and `force_stopped` is the
+    /// only way a `SessionEnd` broadcasts `stopped` or archives a disposable session.
+    #[tokio::test]
+    async fn a_clear_or_resume_forces_no_stop() {
+        let (state, dir) = test_state().await;
+        let s = "worker-1";
+
+        for reason in ["clear", "resume", "Clear"] {
+            apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Bash","tool_input":{"command":"sleep 1"}}"#), false);
+            assert!(state.session_activity(s).and_then(|a| a.activity).is_some());
+
+            let end = format!(r#"{{"reason":"{reason}"}}"#);
+            apply_payload(&state, s, "session_end", &p(&end), false);
+            assert_eq!(state.take_forced_status(s), None, "{reason} forces no stop");
+            assert!(
+                state.session_activity(s).and_then(|a| a.activity).is_none(),
+                "{reason} still ends the turn's activity"
+            );
+        }
+
+        for reason in [r#"{"reason":"prompt_input_exit"}"#, r#"{"reason":"logout"}"#, r#"{"reason":"other"}"#, "{}"] {
+            apply_payload(&state, s, "session_end", &p(reason), false);
+            assert_eq!(state.take_forced_status(s), Some(Status::Stopped), "{reason} is a real end");
+        }
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_resume_is_not_a_crash() {
+        let ended = |reason: &str| HookPayload { reason: Some(reason.into()), ..Default::default() };
+        assert!(!crashed_reason(&ended("resume")));
+        assert!(!crashed_reason(&ended("clear")));
+        assert!(crashed_reason(&ended("other")));
     }
 
     #[tokio::test]
