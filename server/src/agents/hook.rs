@@ -312,7 +312,12 @@ mod tests {
     /// company-scope gate + the recorded edge, not the pty mechanics (those are
     /// covered by `sessions::lifecycle`'s own send-guard tests). Registered into
     /// `state.session_runtimes`, which `AppState::runtime_for` consults first.
-    struct LiveStub;
+    /// A paste shows in the composer until the next key, because the send path
+    /// waits to see it there.
+    #[derive(Default)]
+    struct LiveStub {
+        draft: std::sync::Mutex<String>,
+    }
 
     #[async_trait]
     impl SessionRuntime for LiveStub {
@@ -329,9 +334,11 @@ mod tests {
             Ok(())
         }
         async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
+            self.draft.lock().unwrap().clear();
             Ok(())
         }
-        async fn paste(&self, _t: &str, _b: bool) -> anyhow::Result<()> {
+        async fn paste(&self, t: &str, _b: bool) -> anyhow::Result<()> {
+            *self.draft.lock().unwrap() = t.to_string();
             Ok(())
         }
         async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
@@ -346,7 +353,7 @@ mod tests {
             Ok("❯ \n\n? for shortcuts".to_string())
         }
         async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
-            Ok("❯ ".to_string())
+            Ok(crate::sessions::runtime::testing::composer_holding(&self.draft.lock().unwrap()))
         }
         async fn capture_full(&self) -> anyhow::Result<String> {
             Ok("❯ ".to_string())
@@ -572,7 +579,7 @@ mod tests {
         // → `record_delegation` path.
         state
             .session_runtimes
-            .insert("acme-b".to_string(), Arc::new(LiveStub));
+            .insert("acme-b".to_string(), Arc::new(LiveStub::default()));
 
         let out = delegate_handler(
             State(state.clone()),
@@ -638,7 +645,7 @@ mod tests {
         seed_bot(&state, "max", "tok-max", None).await;
         state
             .session_runtimes
-            .insert("max".to_string(), Arc::new(LiveStub));
+            .insert("max".to_string(), Arc::new(LiveStub::default()));
         db::company_inbox::set(
             &state.pool,
             "max",

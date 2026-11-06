@@ -2093,6 +2093,11 @@ const VERIFY_POLL: Duration = Duration::from_millis(500);
 /// idle or busy composer is a no-op; on a SELECTOR it is a confirmation, which is
 /// why [`submit_state`] stops the loop there.
 const MAX_EXTRA_ENTERS: usize = 3;
+/// How long a paste may take to show in the composer. Plain text lands at once,
+/// but Claude first reads the image paths in a paste: 7 images took 300 ms and 28
+/// took 1.2 s (2.1.300 and 2.1.318 on the mini), so the cap leaves room for a busy host.
+const PASTE_LAND_POLLS: usize = 200;
+const PASTE_LAND_POLL: Duration = Duration::from_millis(50);
 
 /// Type the opening prompt, then VERIFY it actually submitted and press Enter
 /// again — capped — when it did not.
@@ -2120,12 +2125,12 @@ const MAX_EXTRA_ENTERS: usize = 3;
 ///   a SHELL session (verification is built entirely on agent TUI signals; a shell
 ///   has no busy footer and echoes every command it runs, so every classification
 ///   would land on Stuck — firing retry Enters into the foreground process's stdin
-///   and reporting a false negative on a perfectly good start); a composer that was
-///   ALREADY BUSY before we typed (the double-launch guard delivers into a live
-///   agent, where the busy footer is on screen from the first poll no matter what
-///   our Enter did — the check would rubber-stamp a submit it never observed); and
-///   a window in which every capture failed (we never saw the pane, so the
-///   untouched `Unknown` must not be read as a cleared composer).
+///   and reporting a false negative on a perfectly good start); an agent that was
+///   ALREADY BUSY before we typed and whose composer never showed (its busy footer
+///   is on screen from the first poll no matter what our Enter did, so only the
+///   composer can tell, see [`confirm_left_composer`]); and a window in which every
+///   capture failed (we never saw the pane, so the untouched `Unknown` must not be
+///   read as a cleared composer).
 async fn deliver_prompt(
     rt: &dyn SessionRuntime,
     provider: &str,
@@ -2184,6 +2189,11 @@ async fn send_text_checked_mode(
     if provider == "codex" {
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
+    if !wait_for_paste(rt, provider).await && strict {
+        return Err(AppError::Conflict(
+            "input was pasted, but it never showed in the terminal composer, so nothing was submitted; open the terminal to recover it".into(),
+        ));
+    }
     if strict {
         let raw = rt.capture_screen_ansi().await.map_err(|_| {
             AppError::Conflict("input was pasted, but the screen could not be checked before submit; open the terminal to recover it".into())
@@ -2206,16 +2216,12 @@ async fn send_text_checked_mode(
     if queue {
         tracing::info!("deliver_prompt: Codex is mid-turn; queueing the prompt with Tab");
         rt.send_key("Tab").await?;
-        return confirm_queued(rt, provider, prompt).await;
+        return confirm_left_composer(rt, provider, prompt, "Tab", 1).await;
     }
     rt.send_key("Enter").await?;
 
     if pre_busy {
-        tracing::info!(
-            provider = %provider,
-            "deliver_prompt: agent was already mid-turn; prompt queued without verification",
-        );
-        return Ok(None);
+        return confirm_left_composer(rt, provider, prompt, "Enter", MAX_EXTRA_ENTERS).await;
     }
 
     let mut extra_enters = 0usize;
@@ -2264,39 +2270,75 @@ async fn send_text_checked_mode(
     }
 }
 
-/// After the Tab that queues a prompt on a busy Codex: did OUR text leave the
-/// composer? Same window as the Enter check, at most one extra Tab, and only
-/// while the composer still holds exactly our text (on an empty composer Codex
-/// ignores a Tab, so the retry cannot queue twice). `Ok(Some(false))` = still
-/// there after the retry; `Ok(None)` = never readable, the old unverified queue.
-async fn confirm_queued(
+/// Wait until a paste shows in the composer, because an Enter pressed before that
+/// is lost: while Claude reads the image paths in a paste it remembers a Return, and
+/// clears it again when the read ends (2.1.300 and 2.1.318). A fixed gap cannot
+/// cover that, and an empty composer would then read as "submitted". A line only has
+/// to END in an image extension for this, with or without a file behind it.
+///
+/// `false` = the composer stayed empty for the whole wait. An unreadable screen has
+/// nothing to wait for: `true`, and the checks after this decide.
+async fn wait_for_paste(rt: &dyn SessionRuntime, provider: &str) -> bool {
+    for _ in 0..PASTE_LAND_POLLS {
+        match rt.capture_screen_ansi().await.map(|raw| read_composer(&raw, provider)) {
+            Ok(ComposerRead::Text(text)) if text.is_empty() => {
+                tokio::time::sleep(PASTE_LAND_POLL).await;
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// After the key that queues a prompt on a busy agent (Tab on Codex, Enter on
+/// Claude): did OUR text leave the composer? Same window as the Enter check, with
+/// `max_retries` more presses, and only while the composer still holds exactly our
+/// text. `Ok(Some(false))` = text is still there, ours or text we cannot call ours;
+/// `Ok(None)` = the composer never showed, the old unverified queue.
+async fn confirm_left_composer(
     rt: &dyn SessionRuntime,
     provider: &str,
     prompt: &str,
+    key: &str,
+    max_retries: usize,
 ) -> Result<Option<bool>, AppError> {
-    let mut retried = false;
+    let mut retries = 0usize;
     let mut last = SubmitState::Unknown;
+    let mut other_text = false;
     for _ in 0..VERIFY_POLLS {
         tokio::time::sleep(VERIFY_POLL).await;
         let Ok(cap) = rt.capture_screen_ansi().await else {
             continue;
         };
         last = queued_state(&cap, provider, prompt);
+        other_text = last == SubmitState::Unknown
+            && composer_text(&cap, provider).is_some_and(|text| !text.is_empty());
         match last {
             SubmitState::Submitted => return Ok(Some(true)),
-            SubmitState::Stuck if !retried => {
-                retried = true;
-                tracing::info!("deliver_prompt: Codex composer still holds the prompt, Tab again");
-                rt.send_key("Tab").await?;
+            SubmitState::Stuck if retries < max_retries => {
+                retries += 1;
+                tracing::info!(
+                    provider = %provider,
+                    attempt = retries,
+                    "deliver_prompt: busy agent's composer still holds the prompt, pressing {key} again",
+                );
+                rt.send_key(key).await?;
             }
             SubmitState::Stuck | SubmitState::Unknown => {}
         }
     }
-    Ok((last == SubmitState::Stuck).then_some(false))
+    if last == SubmitState::Unknown && !other_text {
+        tracing::warn!(
+            provider = %provider,
+            "deliver_prompt: busy agent's composer never showed; prompt queued without verification",
+        );
+        return Ok(None);
+    }
+    Ok(Some(false))
 }
 
 /// [`checked_submit_state`] for a QUEUE: the busy footer was on screen before the
-/// Tab and stays after it, so it proves nothing here and the composer alone
+/// key and stays after it, so it proves nothing here and the composer alone
 /// decides. Empty = queued (or submitted, if the turn just ended). Exactly our
 /// text = Stuck, unless a dialog or picker now owns the screen: then Unknown,
 /// which never presses a key.
@@ -2343,8 +2385,54 @@ fn checked_submit_state(capture: &str, provider: &str, prompt: &str) -> SubmitSt
 
 fn composer_holds_prompt(capture: &str, provider: &str, prompt: &str) -> bool {
     composer_text(capture, provider).is_some_and(|text| {
-        squash(&text) == squash(prompt) || paste_placeholder_of(&text, provider, prompt)
+        squash(&text) == squash(prompt)
+            || paste_placeholder_of(&text, provider, prompt)
+            || (provider != "codex" && image_paste_of(&text, prompt))
     })
+}
+
+/// Is `text` what Claude leaves of a paste of `prompt` after turning its image
+/// paths into attachments? `[Image #1] [Image #2][Pasted text #3 +9 lines]`, wrapped
+/// at any space: the tokens, then a placeholder or whatever is left of the text.
+/// Which pieces become images depends on the Claude version, so this only asks that
+/// the prompt has enough image-like words and that the rest comes from the prompt.
+fn image_paste_of(text: &str, prompt: &str) -> bool {
+    let candidates = prompt
+        .split_whitespace()
+        .filter(|w| ends_in_image_extension(w.trim_matches(['"', '\''])))
+        .count();
+    let squashed = squash(text);
+    let mut rest = squashed.as_str();
+    let mut images = 0usize;
+    while let Some(after) = rest.strip_prefix("[Image#") {
+        let Some((id, tail)) = after.split_once(']') else {
+            return false;
+        };
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        images += 1;
+        rest = tail;
+    }
+    if images == 0 || images > candidates {
+        return false;
+    }
+    let breaks = prompt.matches('\n').count();
+    if let Some(placeholder) = rest.strip_prefix("[Pastedtext#").and_then(|r| r.strip_suffix(']')) {
+        let (id, lines) = placeholder.split_once('+').unwrap_or((placeholder, "0"));
+        let lines = lines.trim_end_matches("lines").trim_end_matches("line");
+        return !id.is_empty()
+            && id.chars().all(|c| c.is_ascii_digit())
+            && lines.parse::<usize>().is_ok_and(|n| n <= breaks);
+    }
+    let whole = squash(prompt);
+    let mut left = whole.chars();
+    rest.chars().all(|c| left.any(|p| p == c))
+}
+
+fn ends_in_image_extension(word: &str) -> bool {
+    let word = word.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|ext| word.ends_with(ext))
 }
 
 /// Is `text` the provider's COLLAPSED form of a paste of `prompt`? A long paste is
@@ -7585,6 +7673,13 @@ mod write_runtime_tests {
         /// `[Pasted text #1 +N lines]`, the "paste again to expand" hint takes
         /// the footer's row, and background agents push the composer out of the tail.
         claude_collapsed_paste: bool,
+        /// Claude reading image paths out of a paste: for this long the composer
+        /// stays empty and an Enter is lost, then it shows the attachments.
+        image_read: Option<Duration>,
+        /// A Claude turn is running: Enter queues the draft and the turn goes on.
+        claude_busy: bool,
+        /// Every Enter is lost.
+        swallow_all: bool,
         draft: String,
         last_paste: String,
         pasted_at: Option<tokio::time::Instant>,
@@ -7662,6 +7757,25 @@ mod write_runtime_tests {
                 if sim.provider == "codex" && sim.current_codex_chrome {
                     return current_codex_screen(&sim.draft);
                 }
+                if sim.claude_busy || sim.image_read.is_some() {
+                    let loading = sim
+                        .image_read
+                        .zip(sim.pasted_at)
+                        .is_some_and(|(read, at)| at.elapsed() < read);
+                    let rule = "─".repeat(52);
+                    // Real 2.1.300 frame: a draft takes `esc to interrupt` off the screen.
+                    if sim.draft.is_empty() || loading {
+                        let busy = if sim.claude_busy { " · esc to interrupt" } else { "" };
+                        return format!("{rule}\n❯ \n{rule}\n  ⏵⏵ auto mode on{busy}");
+                    }
+                    let breaks = sim.draft.matches('\n').count();
+                    let input = if sim.image_read.is_some() {
+                        format!("[Image #1] [Image #2] [Image\n  #3][Pasted text #4 +{breaks} lines]")
+                    } else {
+                        sim.draft.clone()
+                    };
+                    return format!("{rule}\n❯ {input}\n{rule}\n  ⏵⏵ auto mode on");
+                }
                 if sim.claude_collapsed_paste {
                     let (input, footer) = if sim.draft.is_empty() {
                         (String::new(), "⏵⏵ bypass permissions on")
@@ -7697,6 +7811,9 @@ mod write_runtime_tests {
                 provider,
                 current_codex_chrome: false,
                 claude_collapsed_paste: false,
+                image_read: None,
+                claude_busy: false,
+                swallow_all: false,
                 draft: String::new(),
                 last_paste: String::new(),
                 pasted_at: None,
@@ -7733,6 +7850,15 @@ mod write_runtime_tests {
                     } else if k == "Tab" && !sim.draft.is_empty() {
                         queued.push(std::mem::take(&mut sim.draft));
                     }
+                    return Ok(());
+                }
+                if sim.swallow_all
+                    || sim.image_read.zip(sim.pasted_at).is_some_and(|(read, at)| at.elapsed() < read)
+                {
+                    return Ok(());
+                }
+                if sim.claude_busy {
+                    sim.draft.clear();
                     return Ok(());
                 }
                 if sim.swallow_once {
@@ -7908,8 +8034,7 @@ mod write_runtime_tests {
             .await
             .unwrap();
 
-        let composer = "❯ \n  ? for shortcuts";
-        let rt = StubRuntime::parked_at(composer);
+        let rt = StubRuntime::simulating("claude", false, false);
         state
             .session_runtimes
             .insert("ready".to_string(), rt.clone());
@@ -7942,8 +8067,7 @@ mod write_runtime_tests {
             .await
             .unwrap();
 
-        let composer = "❯ \n  ? for shortcuts";
-        let rt = StubRuntime::parked_at(composer);
+        let rt = StubRuntime::simulating("claude", false, false);
         state.session_runtimes.insert("idem".to_string(), rt.clone());
 
         // First delivery with key k1: typed + Entered + recorded.
@@ -8186,9 +8310,9 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "one submit, no blind retries");
     }
 
-    /// The double-launch guard delivers into an agent that is already mid-turn:
-    /// its busy footer is on screen from the first poll whatever our Enter did, so
-    /// the check would rubber-stamp a submit it never observed. Deliver, and say so.
+    /// An agent already mid-turn with no composer on screen: its busy footer shows
+    /// from the first poll whatever our Enter did, and nothing else can be read, so
+    /// a submit was never observed. Deliver, and say so.
     #[tokio::test(start_paused = true)]
     async fn an_already_busy_agent_is_delivered_but_not_verified() {
         let rt = StubRuntime::parked_at("✻ Thinking… (esc to interrupt · 40s)");
@@ -8419,6 +8543,118 @@ mod write_runtime_tests {
         let prompt = "<supermux-delegation from=\"VoltLogger-G-Ads\">\nB1 uitgevoerd via de API\n</supermux-delegation>";
         assert_eq!(send_text_checked(rt.as_ref(), "claude", prompt, true).await.unwrap(), Some(true));
         assert_eq!(rt.key_calls.load(Ordering::SeqCst), 2, "the swallowed Enter, then one retry");
+    }
+
+    const IMAGE_PROMPT: &str = "<supermux-delegation from=\"a\">\nVoor 1: /tmp/1.png\nVoor 2: /tmp/2.png\nVoor 3: /tmp/3.png\n</supermux-delegation>";
+
+    fn image_paste_sim(claude_busy: bool, image_read: Duration) -> Arc<StubRuntime> {
+        let rt = StubRuntime::simulating("claude", false, false);
+        {
+            let mut sim = rt.simulation.lock().unwrap();
+            let sim = sim.as_mut().unwrap();
+            sim.claude_busy = claude_busy;
+            sim.image_read = Some(image_read);
+        }
+        rt
+    }
+
+    /// bouw-179, the frames of a real 2.1.300 and 2.1.318: tokens wrap at any space,
+    /// and what follows them is a placeholder or the part of the text that is left.
+    #[test]
+    fn an_image_paste_is_ours_only_when_it_fits_the_prompt() {
+        assert!(image_paste_of("[Image #1] [Image #2] [Image\n#3][Pasted text #4 +4 lines]", IMAGE_PROMPT));
+        assert!(image_paste_of("[Image #80] [Image #81]", IMAGE_PROMPT));
+        assert!(image_paste_of(
+            "[Image #1] [Image #2] [Image #3]<supermux-delegation from=\"a\">\n</supermux-delegation>",
+            IMAGE_PROMPT
+        ));
+        assert!(image_paste_of("[Image #1] Voor 1:\nVoor 2:\nVoor 3:", IMAGE_PROMPT));
+        // More images than the prompt can account for, or a prompt without any.
+        assert!(!image_paste_of("[Image #1] [Image #2] [Image #3] [Image #4]", IMAGE_PROMPT));
+        assert!(!image_paste_of("[Image #1]", "no pictures in here"));
+        // A placeholder longer than the paste, a second paste behind it, other text.
+        assert!(!image_paste_of("[Image #1][Pasted text #2 +5 lines]", IMAGE_PROMPT));
+        assert!(!image_paste_of("[Image #1][Pasted text #2 +4 lines][Image #3]", IMAGE_PROMPT));
+        assert!(!image_paste_of("[Image #1] iemand anders typt hier", IMAGE_PROMPT));
+        assert!(!image_paste_of("[Image #x]", IMAGE_PROMPT));
+        assert!(!image_paste_of("gewone tekst", IMAGE_PROMPT));
+    }
+
+    /// bouw-179, the lost Enter: Claude clears a Return pressed while it reads the
+    /// image paths in a paste. So the Enter waits for the paste to show.
+    #[tokio::test(start_paused = true)]
+    async fn enter_waits_for_a_paste_that_is_still_loading() {
+        let rt = image_paste_sim(false, Duration::from_millis(1200));
+        assert_eq!(send_text_checked(rt.as_ref(), "claude", IMAGE_PROMPT, true).await.unwrap(), Some(true));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1, "one Enter, and it was not lost");
+    }
+
+    /// The same on a busy agent, which is how M1 got its ok on 5 Nov.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_agent_gets_its_enter_after_the_paste_and_is_confirmed() {
+        let rt = image_paste_sim(true, Duration::from_millis(300));
+        assert_eq!(send_text_checked(rt.as_ref(), "claude", IMAGE_PROMPT, true).await.unwrap(), Some(true));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
+        assert!(rt.simulation.lock().unwrap().as_ref().unwrap().draft.is_empty());
+    }
+
+    /// bouw-179, the false ok: a busy agent whose composer keeps the message.
+    /// Retries stop at the cap, and it is reported as stuck.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_agent_that_keeps_the_message_in_its_composer_is_not_confirmed() {
+        let rt = image_paste_sim(true, Duration::ZERO);
+        rt.simulation.lock().unwrap().as_mut().unwrap().swallow_all = true;
+        assert_eq!(send_text_checked(rt.as_ref(), "claude", IMAGE_PROMPT, true).await.unwrap(), Some(false));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1 + MAX_EXTRA_ENTERS);
+    }
+
+    /// Text we cannot call ours is no proof that our message left the composer, and
+    /// it never gets a retry Enter: that could submit somebody else's words.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_agent_with_other_text_in_its_composer_is_not_confirmed() {
+        let rt = StubRuntime::simulating("claude", false, false);
+        {
+            let mut sim = rt.simulation.lock().unwrap();
+            let sim = sim.as_mut().unwrap();
+            sim.claude_busy = true;
+            sim.draft = "iemand anders typt hier".into();
+        }
+        let cap = rt.capture_screen_ansi().await.unwrap();
+        assert_eq!(queued_state(&cap, "claude", IMAGE_PROMPT), SubmitState::Unknown);
+        let out = confirm_left_composer(rt.as_ref(), "claude", IMAGE_PROMPT, "Enter", MAX_EXTRA_ENTERS).await.unwrap();
+        assert_eq!(out, Some(false));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// The whole path: no ok, no recorded send, for a message still in the composer.
+    #[tokio::test]
+    async fn a_chat_send_to_a_busy_agent_is_refused_while_the_message_stays_in_the_composer() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "busy", "/tmp", "claude").await.unwrap();
+        let rt = image_paste_sim(true, Duration::ZERO);
+        rt.simulation.lock().unwrap().as_mut().unwrap().swallow_all = true;
+        state.session_runtimes.insert("busy".into(), rt.clone());
+        let prompt = "Voor 1: /tmp/1.png\nVoor 2: /tmp/2.png\nVoor 3: /tmp/3.png";
+        let err = send_chat_text(&state, "busy", prompt, None).await.unwrap_err().to_string();
+        assert!(err.contains("still holds this message"), "{err}");
+        assert!(db::sessions::get(&state.pool, "busy").await.unwrap().unwrap().last_send_text.is_empty());
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A composer that stays empty proves nothing: pressing Enter would read as
+    /// submitted while the paste can still land. Chat refuses; a boot goes on as before.
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_that_never_shows_gets_no_enter() {
+        let rt = image_paste_sim(false, Duration::from_secs(3600));
+        assert!(matches!(
+            send_text_checked(rt.as_ref(), "claude", IMAGE_PROMPT, true).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 0);
+        let rt = image_paste_sim(false, Duration::from_secs(3600));
+        deliver_prompt(rt.as_ref(), "claude", IMAGE_PROMPT).await.unwrap();
+        assert_eq!(rt.key_calls.load(Ordering::SeqCst), 1);
     }
 
     /// A LATER send that finds someone's paste still stuck says so, instead of

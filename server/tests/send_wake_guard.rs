@@ -224,6 +224,8 @@ struct PickerStub {
     capture: String,
     text_calls: AtomicUsize,
     key_calls: AtomicUsize,
+    /// A paste shows in the composer until the next key: the send path waits to see it.
+    draft: std::sync::Mutex<String>,
 }
 
 impl PickerStub {
@@ -232,6 +234,7 @@ impl PickerStub {
             capture: capture.to_string(),
             text_calls: AtomicUsize::new(0),
             key_calls: AtomicUsize::new(0),
+            draft: std::sync::Mutex::new(String::new()),
         })
     }
 }
@@ -253,9 +256,11 @@ impl SessionRuntime for PickerStub {
     }
     async fn send_key(&self, _k: &str) -> anyhow::Result<()> {
         self.key_calls.fetch_add(1, Ordering::SeqCst);
+        self.draft.lock().unwrap().clear();
         Ok(())
     }
     async fn paste(&self, t: &str, _b: bool) -> anyhow::Result<()> {
+        *self.draft.lock().unwrap() = t.to_string();
         self.send_text(t).await
     }
     async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
@@ -268,7 +273,11 @@ impl SessionRuntime for PickerStub {
         Ok(self.capture.clone())
     }
     async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
-        Ok(self.capture.clone())
+        let draft = self.draft.lock().unwrap();
+        if draft.is_empty() {
+            return Ok(self.capture.clone());
+        }
+        Ok(format!("❯ {draft}\n  ? for shortcuts"))
     }
     async fn capture_full(&self) -> anyhow::Result<String> {
         Ok(self.capture.clone())
