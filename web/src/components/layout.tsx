@@ -62,6 +62,13 @@ const LazyCompanySwitcher = React.lazy(() =>
     default: m.CompanySwitcher,
   })),
 )
+// The restart countdown bar is LAZY for the same reason: it shows only while a
+// Mac restart is counting down (owner-only), so it must not cost the hero path.
+const LazyHostPowerBanner = React.lazy(() =>
+  import('@/components/status-banner/host-power-banner').then((m) => ({
+    default: m.HostPowerBanner,
+  })),
+)
 function NavScopeCircle({ shortcuts }: { shortcuts?: boolean }) {
   return (
     <React.Suspense fallback={<span className="gr-scope-circle" aria-hidden />}>
@@ -695,6 +702,9 @@ export function Layout() {
       <div data-shell-main="" className="flex h-full min-w-0 flex-1 flex-col">
         {!chromeless && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
+        <React.Suspense fallback={null}>
+          <LazyHostPowerBanner />
+        </React.Suspense>
         {/* The content column. `data-shell-content` raises it one step off the
             paper under the substrate; it is also the host `<ShellOverlay>`
             mounts into (see components/shell/use-shell-overlay.ts). */}
