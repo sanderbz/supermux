@@ -27,6 +27,9 @@ teammate who owns a domain you don't.
   context — say what you need and why, self-contained.
 - **Size + content limits.** The prompt is capped (64 KiB) and may not contain
   supermux wrapper markup (`<supermux-…>`); either is a 400.
+- **Put file paths in backticks.** A receiving Claude Code can turn a path to an
+  image into an attachment and take it out of the text, so the receiver may never
+  see the path. Written as `` `/path/to/shot.png` `` it arrives as text.
 
 ## Message a teammate
 

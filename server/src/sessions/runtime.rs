@@ -662,10 +662,18 @@ pub(crate) mod testing {
     /// row that is not a numbered menu row, and `? for shortcuts`).
     const COMPOSER_SCREEN: &str = "❯ \n  ? for shortcuts";
 
-    /// A runtime that is always alive, always shows an agent composer, and
-    /// swallows every write. See the module doc.
+    /// That composer holding `draft`, wrapped rows indented as Claude draws them.
+    pub(crate) fn composer_holding(draft: &str) -> String {
+        format!("❯ {}\n  ? for shortcuts", draft.replace('\n', "\n  "))
+    }
+
+    /// A runtime that is always alive and always shows an agent composer. A paste
+    /// shows in it until the next key, the way the send path expects to see it.
+    /// See the module doc.
     #[derive(Debug, Default)]
-    pub(crate) struct AgentAtComposer;
+    pub(crate) struct AgentAtComposer {
+        draft: std::sync::Mutex<String>,
+    }
 
     #[async_trait]
     impl SessionRuntime for AgentAtComposer {
@@ -685,9 +693,11 @@ pub(crate) mod testing {
             Ok(())
         }
         async fn send_key(&self, _k: &str) -> Result<()> {
+            self.draft.lock().unwrap().clear();
             Ok(())
         }
-        async fn paste(&self, _t: &str, _b: bool) -> Result<()> {
+        async fn paste(&self, t: &str, _b: bool) -> Result<()> {
+            *self.draft.lock().unwrap() = t.to_string();
             Ok(())
         }
         async fn resize(&self, _c: u16, _r: u16) -> Result<()> {
@@ -700,7 +710,7 @@ pub(crate) mod testing {
             Ok(COMPOSER_SCREEN.to_string())
         }
         async fn capture_screen_ansi(&self) -> Result<String> {
-            Ok(COMPOSER_SCREEN.to_string())
+            Ok(composer_holding(&self.draft.lock().unwrap()))
         }
         async fn capture_full(&self) -> Result<String> {
             Ok(COMPOSER_SCREEN.to_string())
@@ -741,7 +751,7 @@ pub(crate) mod testing {
     pub(crate) fn agent_at_composer(state: &crate::state::AppState, name: &str) {
         state
             .session_runtimes
-            .insert(name.to_string(), Arc::new(AgentAtComposer) as Arc<dyn SessionRuntime>);
+            .insert(name.to_string(), Arc::new(AgentAtComposer::default()) as Arc<dyn SessionRuntime>);
     }
 }
 

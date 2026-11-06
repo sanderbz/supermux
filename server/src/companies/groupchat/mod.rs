@@ -1703,6 +1703,7 @@ mod tests {
     struct RecordingStub {
         sent: std::sync::Mutex<Vec<String>>,
         keys: std::sync::Mutex<Vec<String>>,
+        draft: std::sync::Mutex<String>,
     }
 
     impl RecordingStub {
@@ -1733,10 +1734,12 @@ mod tests {
         }
         async fn send_key(&self, k: &str) -> anyhow::Result<()> {
             self.keys.lock().unwrap().push(k.to_string());
+            self.draft.lock().unwrap().clear();
             Ok(())
         }
         async fn paste(&self, t: &str, _b: bool) -> anyhow::Result<()> {
             // Record both input paths: agent delivery uses bracketed paste.
+            *self.draft.lock().unwrap() = t.to_string();
             self.send_text(t).await
         }
         async fn resize(&self, _c: u16, _r: u16) -> anyhow::Result<()> {
@@ -1749,7 +1752,7 @@ mod tests {
             Ok("❯ \n\n? for shortcuts".to_string())
         }
         async fn capture_screen_ansi(&self) -> anyhow::Result<String> {
-            Ok("❯ ".to_string())
+            Ok(crate::sessions::runtime::testing::composer_holding(&self.draft.lock().unwrap()))
         }
         async fn capture_full(&self) -> anyhow::Result<String> {
             Ok("❯ ".to_string())
