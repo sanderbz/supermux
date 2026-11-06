@@ -1218,6 +1218,9 @@ fn without_dim_text(raw: &str) -> String {
     let mut out = String::new();
     let mut chars = raw.chars().peekable();
     let mut dim = false;
+    let mut inverse = false;
+    // Where the last inverse cell went in `out`, while nothing has followed it.
+    let mut cursor_cell = None;
     while let Some(c) = chars.next() {
         if c == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
@@ -1229,8 +1232,22 @@ fn without_dim_text(raw: &str) -> String {
                         let mut i = 0;
                         while i < values.len() {
                             match values[i] {
-                                "" | "0" | "22" => dim = false,
-                                "2" => dim = true,
+                                "" | "0" => {
+                                    dim = false;
+                                    inverse = false;
+                                }
+                                "22" => dim = false,
+                                "27" => inverse = false,
+                                "7" => inverse = true,
+                                "2" => {
+                                    dim = true;
+                                    // The block cursor sits on the placeholder's first
+                                    // letter: `❯ [7mP[2mress up to edit queued messages`.
+                                    // A cursor cell running into dim text is that text.
+                                    if let Some(at) = cursor_cell.take() {
+                                        out.truncate(at);
+                                    }
+                                }
                                 "38" | "48" | "58" => {
                                     i += match values.get(i + 1).copied() {
                                         Some("2") => 4,
@@ -1248,6 +1265,7 @@ fn without_dim_text(raw: &str) -> String {
                 params.push(code);
             }
         } else if !dim || c == '\n' || c == '\r' {
+            cursor_cell = (inverse && !dim && c != '\n' && c != '\r').then_some(out.len());
             out.push(c);
         }
     }
@@ -8578,6 +8596,24 @@ mod write_runtime_tests {
         assert!(!image_paste_of("[Image #1] iemand anders typt hier", IMAGE_PROMPT));
         assert!(!image_paste_of("[Image #x]", IMAGE_PROMPT));
         assert!(!image_paste_of("gewone tekst", IMAGE_PROMPT));
+    }
+
+    /// bouw-179, a real 2.1.300 frame with a visible cursor: a message that went into
+    /// the queue leaves this hint behind. Its first letter is not dim, because the
+    /// cursor sits on it, and it read as text still in the composer. That gave a 409
+    /// for a delivered message.
+    #[test]
+    fn the_cursor_on_a_dim_hint_is_not_input() {
+        let queued = "\x1b[0;38;2;153;153;153m❯ \x1b[0;7mP\x1b[0;2mress up to edit queued messages\x1b[0m\n────────\n  ⏸ manual mode on · esc to interrupt";
+        assert_eq!(composer_text(queued, "claude").as_deref(), Some(""));
+        assert_eq!(queued_state(queued, "claude", IMAGE_PROMPT), SubmitState::Submitted);
+        // The empty composer with its cursor, and real text under or behind the cursor.
+        let empty = "\x1b[0m❯ \x1b[0;7m \x1b[0m\n  ? for shortcuts";
+        assert_eq!(composer_text(empty, "claude").as_deref(), Some(""));
+        let middle = "❯ ty\x1b[7mp\x1b[0med\n  ? for shortcuts";
+        assert_eq!(composer_text(middle, "claude").as_deref(), Some("typed"));
+        let end = "❯ typed\x1b[7m \x1b[0m\n  ? for shortcuts";
+        assert_eq!(composer_text(end, "claude").as_deref(), Some("typed"));
     }
 
     /// bouw-179, the lost Enter: Claude clears a Return pressed while it reads the
