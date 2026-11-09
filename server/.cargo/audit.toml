@@ -1,9 +1,10 @@
 # cargo-audit config for the server (read by `cargo audit` run from server/,
 # as the weekly audit workflow does).
 #
-# Both ignores below come in via jwt-simple 0.12, which web-push 0.11 (its newest
-# release) pins. No semver bump removes them. Revisit both as soon as web-push
-# is on jwt-simple >= 0.14; then drop the ignore that no longer applies.
+# The rsa and crypto-bigint ignores below come in via jwt-simple 0.12, which
+# web-push 0.11 (its newest release) pins. No semver bump removes them. Revisit
+# both as soon as web-push is on jwt-simple >= 0.14; then drop the ignore that
+# no longer applies.
 
 [advisories]
 ignore = [
@@ -15,4 +16,12 @@ ignore = [
     # crypto-bigint 0.5 — timing advisory, reached via elliptic-curve 0.13. Our
     # only use is the ES256 signature over VAPID JWTs (push.rs, via web-push).
     "RUSTSEC-2026-0387",
+    # libsqlite3-sys 0.30 (bundled SQLite < 3.54) — CVE-2026-119375: opening a
+    # database together with a crafted `-wal` file of a different page size can
+    # return uninitialized memory. The fix is libsqlite3-sys >= 0.39, but sqlx
+    # 0.8 pins ^0.30 and sqlx 0.9 (newest) caps it at < 0.38, so no update
+    # reaches it. The server only opens its own `<data_dir>/data.db` (db/mod.rs),
+    # which it creates and writes itself; whoever can plant a `-wal` file there
+    # already owns the data. Drop this once sqlx allows libsqlite3-sys >= 0.39.
+    "RUSTSEC-2026-0459",
 ]
