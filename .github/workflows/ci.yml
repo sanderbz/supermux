@@ -134,7 +134,13 @@ jobs:
   # three, or a "fix" gets shipped against a partial picture.
   build-server:
     name: server binary (debug, shared by the e2e shards)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04 (2026-11-10): ubuntu-latest moved to Ubuntu 26.04 and
+    # Playwright 1.60 cannot install Chromium there ("Playwright does not support
+    # chromium on ubuntu26.04-x64"). build-server is pinned with it because the
+    # e2e shards run its binary, and a binary linked on 26.04 needs a newer glibc.
+    # Revert both to ubuntu-latest (and drop -u2404 from the cache keys) once the
+    # Playwright version in web/package.json supports Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -158,7 +164,7 @@ jobs:
       - name: Cache key inputs
         id: bin-key
         run: |
-          echo "hash=${{ runner.os }}-e2e-bin-${{ hashFiles('server/src/**', 'server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/migrations/**', 'server/rust-toolchain.toml', 'extension/releases/supermux-browser-extension.zip') }}" >> "$GITHUB_OUTPUT"
+          echo "hash=${{ runner.os }}-u2404-e2e-bin-${{ hashFiles('server/src/**', 'server/Cargo.lock', 'server/Cargo.toml', 'server/build.rs', 'server/migrations/**', 'server/rust-toolchain.toml', 'extension/releases/supermux-browser-extension.zip') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         id: bin-cache
         with:
@@ -175,10 +181,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             server/target
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('server/Cargo.lock') }}
+          key: ${{ runner.os }}-u2404-cargo-e2e-${{ hashFiles('server/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-e2e-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-u2404-cargo-e2e-
       # The harness boots `server/target/debug/supermux-server`. Debug only —
       # CLAUDE.md forbids --release. No web bundle is embedded on purpose: the
       # harness serves the app from Vite, not from the binary's static assets.
@@ -197,7 +202,8 @@ jobs:
 
   e2e:
     name: e2e (smoke ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04 with build-server; see the note there.
+    runs-on: ubuntu-24.04
     needs: build-server
     # A shard is ~18 tests. With the first-run fix in place the whole suite's
     # measured passing time is ~570 s minus the 216 s now tagged `@extended`, so
