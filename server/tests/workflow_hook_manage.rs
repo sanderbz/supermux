@@ -305,3 +305,179 @@ async fn delete_removes_a_workflow_the_session_created_itself() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     h.cleanup();
 }
+
+// ── the cap counts armed workflows only ──────────────────────────────────────
+//
+// A bot that plans many one-off checks used to hit the 429 with nothing armed:
+// every finished one-shot (switched off by the engine) and every paused
+// workflow still counted, and only the owner could clear them.
+
+async fn agent_once(h: &Harness, session: &str, token: &str, title: &str) -> (StatusCode, Value) {
+    hook(
+        h,
+        CREATE,
+        token,
+        json!({ "session": session, "title": title, "prompt": "look", "schedule_expr": "in 20m" }),
+    )
+    .await
+}
+
+/// What the engine does when a one-shot fires: next_run NULL switches it off.
+async fn fire_once(h: &Harness, id: &str) {
+    db::workflows::record_fire(&h.state.pool, id, chrono::Utc::now(), None).await.unwrap();
+}
+
+async fn age_days(h: &Harness, id: &str, days: i64) {
+    let ts = (chrono::Utc::now() - chrono::Duration::days(days)).timestamp();
+    sqlx::query("UPDATE workflows SET updated = ? WHERE id = ?")
+        .bind(ts)
+        .bind(id)
+        .execute(&h.state.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn paused_and_finished_workflows_do_not_count_toward_the_cap() {
+    let h = spawn_harness().await;
+    let a = make_session(&h, "m-a").await;
+    let cap = supermux_server::workflows::MAX_WORKFLOWS_PER_SESSION;
+
+    let mut ids = Vec::new();
+    for i in 0..cap {
+        let (status, body) = agent_once(&h, "m-a", &a, &format!("check {i}")).await;
+        assert_eq!(status, StatusCode::CREATED, "#{i}: {body}");
+        ids.push(body["data"]["id"].as_str().unwrap().to_string());
+    }
+    // Full: twenty armed one-shots.
+    let (status, body) = agent_once(&h, "m-a", &a, "one too many").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(body.to_string().contains("pause or delete one"), "{body}");
+
+    // A one-shot that has run frees its slot.
+    fire_once(&h, &ids[0]).await;
+    assert_eq!(row(&h, &ids[0]).await.expect("kept").enabled, 0, "the engine switched it off");
+    let (status, body) = agent_once(&h, "m-a", &a, "after a finished one").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Full again; a paused one frees its slot too.
+    let (status, _) = agent_once(&h, "m-a", &a, "full again").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _) = hook(&h, DISABLE, &a, json!({ "session": "m-a", "id": ids[1] })).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = agent_once(&h, "m-a", &a, "after a paused one").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Nothing was deleted to make room: the finished and paused rows are still
+    // listed (they are days, not weeks, old).
+    assert!(row(&h, &ids[0]).await.is_some());
+    assert!(row(&h, &ids[1]).await.is_some());
+    let (_, body) = hook(&h, LIST, &a, json!({ "session": "m-a" })).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), cap + 2);
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn the_bearer_path_counts_armed_workflows_only_too() {
+    let h = spawn_harness().await;
+    make_session(&h, "m-a").await;
+    let cap = supermux_server::workflows::MAX_WORKFLOWS_PER_SESSION;
+    let bearer = [("Authorization", format!("Bearer {TOKEN}"))];
+    let mut first = String::new();
+    for i in 0..cap {
+        let id = owner_created(&h, "m-a", &format!("owner {i}")).await;
+        if i == 0 {
+            first = id;
+        }
+    }
+    let over = json!({ "title": "over", "session": "m-a", "steps": [{ "prompt": "x" }] });
+    let (status, _) = send(&h, Method::POST, "/api/workflows", &bearer, over.clone()).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    let (status, body) = send(
+        &h,
+        Method::PATCH,
+        &format!("/api/workflows/{first}"),
+        &bearer,
+        json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(&h, Method::POST, "/api/workflows", &bearer, over).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn only_the_sessions_own_week_old_finished_one_shots_are_tidied() {
+    let h = spawn_harness().await;
+    let a = make_session(&h, "m-a").await;
+    let b = make_session(&h, "m-b").await;
+
+    // Tidied: mine, a one-shot, ran, off for 8 days.
+    let (_, body) = agent_once(&h, "m-a", &a, "old finished").await;
+    let old_done = body["data"]["id"].as_str().unwrap().to_string();
+    fire_once(&h, &old_done).await;
+    age_days(&h, &old_done, 8).await;
+
+    // Kept: mine, finished, but only 2 days ago.
+    let (_, body) = agent_once(&h, "m-a", &a, "recent finished").await;
+    let recent_done = body["data"]["id"].as_str().unwrap().to_string();
+    fire_once(&h, &recent_done).await;
+    age_days(&h, &recent_done, 2).await;
+
+    // Kept: mine, a one-shot I paused before it ever ran.
+    let (_, body) = agent_once(&h, "m-a", &a, "paused never ran").await;
+    let paused_unrun = body["data"]["id"].as_str().unwrap().to_string();
+    hook(&h, DISABLE, &a, json!({ "session": "m-a", "id": paused_unrun })).await;
+    age_days(&h, &paused_unrun, 8).await;
+
+    // Kept: mine, a recurring one that is paused (the owner may switch it back on).
+    let paused_recurring = agent_created(&h, "m-a", &a, "paused recurring").await;
+    hook(&h, DISABLE, &a, json!({ "session": "m-a", "id": paused_recurring })).await;
+    age_days(&h, &paused_recurring, 8).await;
+
+    // Kept: the owner's finished one-shot for me.
+    let (status, body) = send(
+        &h,
+        Method::POST,
+        "/api/workflows",
+        &[("Authorization", format!("Bearer {TOKEN}"))],
+        json!({ "title": "owner once", "session": "m-a", "schedule_expr": "in 20m",
+                "steps": [{ "prompt": "x" }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let owners_done = body["data"]["id"].as_str().unwrap().to_string();
+    fire_once(&h, &owners_done).await;
+    age_days(&h, &owners_done, 8).await;
+
+    // Kept: another session's old finished one-shot.
+    let (_, body) = agent_once(&h, "m-b", &b, "B old finished").await;
+    let theirs = body["data"]["id"].as_str().unwrap().to_string();
+    fire_once(&h, &theirs).await;
+    age_days(&h, &theirs, 8).await;
+
+    // The tidy runs when m-a schedules its next check.
+    let (status, body) = agent_once(&h, "m-a", &a, "next check").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    assert!(row(&h, &old_done).await.is_none(), "my week-old finished one-shot is tidied");
+    for (id, what) in [
+        (&recent_done, "recent finished"),
+        (&paused_unrun, "paused, never ran"),
+        (&paused_recurring, "paused recurring"),
+        (&owners_done, "the owner's"),
+        (&theirs, "another session's"),
+    ] {
+        assert!(row(&h, id).await.is_some(), "{what} must survive");
+    }
+    // Soft delete only: the row and its history are still in the table.
+    let deleted: Option<i64> = sqlx::query_scalar("SELECT deleted FROM workflows WHERE id = ?")
+        .bind(&old_done)
+        .fetch_one(&h.state.pool)
+        .await
+        .unwrap();
+    assert!(deleted.is_some());
+    h.cleanup();
+}

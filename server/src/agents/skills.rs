@@ -769,7 +769,17 @@ mod tests {
             md.contains("`none` for a recurring"),
             "must say a recurring schedule keeps running by default"
         );
-        assert!(md.contains("20 live schedules"), "must state the cap");
+        assert!(md.contains("20 active schedules"), "must state the cap");
+        assert!(
+            md.contains("Paused schedules and one-shots that already ran do not count"),
+            "must say what the cap counts"
+        );
+        assert!(md.contains("Clean up after yourself"), "must tell the agent to tidy its own");
+        assert!(
+            !md.contains("cannot edit or delete"),
+            "the old 'you cannot delete' line made bots wait for the owner"
+        );
+        assert!(md.contains("supermux-schedule --version"), "must teach how to read the version");
         for verb in ["supermux-schedule list", "supermux-schedule disable", "supermux-schedule delete"] {
             assert!(md.contains(verb), "must teach {verb}");
         }

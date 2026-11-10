@@ -231,6 +231,52 @@ pub async fn count_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result
     .await
 }
 
+/// How many ARMED workflows a bot has: live (not deleted) and switched on. This
+/// is what the per-session cap counts. A paused workflow, or a one-shot that
+/// has already run (the engine switches it off), arms nothing, so it must not
+/// stop the bot from scheduling its next check.
+pub async fn count_armed_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM workflows WHERE session = ? AND deleted IS NULL AND enabled = 1",
+    )
+    .bind(session)
+    .fetch_one(pool)
+    .await
+}
+
+/// Soft-delete `session`'s finished one-shots that the session created ITSELF
+/// and that have sat switched off since before `before` (unix seconds).
+///
+/// "Finished" is narrow on purpose: `trigger_kind = 'once'`, has run at least
+/// once, and is off. A workflow the owner set up is never touched (its ledger
+/// creator is not `agent:<session>`), nor is a paused recurring one, nor a
+/// one-shot that never ran. Soft delete keeps the row and its run history; it
+/// only leaves the live set, exactly like `supermux-schedule delete`.
+pub async fn tidy_finished_agent_oneshots(
+    pool: &SqlitePool,
+    session: &str,
+    before: i64,
+) -> sqlx::Result<u64> {
+    let now = Utc::now().timestamp();
+    let res = sqlx::query(
+        "UPDATE workflows SET deleted = ?, updated = ?
+          WHERE session = ? AND deleted IS NULL AND enabled = 0
+            AND trigger_kind = 'once' AND run_count > 0 AND updated < ?
+            AND (SELECT actor FROM audit_log
+                  WHERE target = workflows.id
+                    AND action IN ('workflow.create', 'schedule.create')
+                  ORDER BY id LIMIT 1) = ?",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(session)
+    .bind(before)
+    .bind(format!("agent:{session}"))
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Who created a workflow, from the ledger: the actor of its first create row
 /// (`workflow.create`, or `schedule.create` for a row ported from the scheduler,
 /// which kept its `SCHED-…` id). `None` when the ledger has no such row.

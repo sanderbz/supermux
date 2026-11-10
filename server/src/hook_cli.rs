@@ -341,9 +341,22 @@ pub async fn run(argv: &[String]) -> Result<()> {
         .first()
         .cloned()
         .ok_or_else(|| anyhow!("__hook-cli needs a command name"))?;
+    // `<wrapper> --version`: which supermux this box runs. Offline (no env, no
+    // POST), so a bot can check it before relying on a feature its skill
+    // describes. The wrapper execs the installed binary, so this is that build.
+    if argv.get(1..) == Some(&["--version".to_string()][..]) {
+        println!("{}", version_line());
+        return Ok(());
+    }
     run_inner(&cmd, argv.get(1..).unwrap_or(&[]))
         .await
         .map_err(|e| anyhow!("{cmd}: {e}"))
+}
+
+/// `supermux v0.7.9 (abc1234)` — the tag and short sha `build.rs` baked in.
+fn version_line() -> String {
+    let sha = crate::updates::version::CURRENT_SHA;
+    format!("supermux {} ({})", crate::updates::version::CURRENT_TAG, &sha[..sha.len().min(7)])
 }
 
 /// Private per-invocation identity; callers cannot choose a different batch's
@@ -662,6 +675,20 @@ mod tests {
                 "prompt": "Check the deploy",
             })
         );
+    }
+
+    #[test]
+    fn version_line_names_the_build() {
+        let line = version_line();
+        assert!(line.starts_with("supermux "), "{line}");
+        assert!(line.contains(crate::updates::version::CURRENT_TAG), "{line}");
+    }
+
+    #[tokio::test]
+    async fn dash_dash_version_answers_without_env_or_server() {
+        // No SUPERMUX_* env is read: this must succeed in a bare shell.
+        let argv = args(&["supermux-schedule", "--version"]);
+        assert!(run(&argv).await.is_ok());
     }
 
     #[test]
