@@ -44,7 +44,10 @@
 //!   and so are `connector_send` and `message_bot`: a session token must not be
 //!   able to arm something that emails the world or types into another bot.
 //! - **There is a cap** ([`super::MAX_WORKFLOWS_PER_SESSION`]) answered with a
-//!   429 the agent can act on, so a loop cannot arm unbounded work.
+//!   429 the agent can act on, so a loop cannot arm unbounded work. It counts
+//!   switched-on workflows only: a paused or finished one arms nothing. The
+//!   session's own finished one-shots are soft-deleted a week after they ran
+//!   ([`super::FINISHED_ONESHOT_KEEP`]), so they do not pile up either.
 //! - **At most [`super::MAX_STEPS_VIA_HOOK`] steps.** v1 lets an agent chain its
 //!   own follow-ups; the single-prompt form stays the default.
 //! - **No natural-language parsing.** The agent brings a concrete
@@ -379,14 +382,23 @@ async fn create_handler(
         &body.schedule_expr,
     )?;
 
-    // The cap, BEFORE the insert. Counted over live rows for this session only —
-    // one agent filling its own quota must not stop another from scheduling.
-    let owned = db::workflows::count_for_session(&state.pool, &session).await? as usize;
-    if owned >= super::MAX_WORKFLOWS_PER_SESSION {
-        return Err(AppError::TooManyRequests(format!(
-            "this session already owns {owned} workflows (max {}) — delete one before creating another",
-            super::MAX_WORKFLOWS_PER_SESSION
-        )));
+    // Tidy first: this session's own one-shots that ran and have been off for
+    // a week leave the live set, so an agent that plans many checks does not
+    // bury the Schedules screen. Best-effort — a failure here must not block
+    // the create.
+    let before = (chrono::Utc::now() - super::FINISHED_ONESHOT_KEEP).timestamp();
+    match db::workflows::tidy_finished_agent_oneshots(&state.pool, &session, before).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(session = %session, tidied = n, "tidied finished one-shots"),
+        Err(e) => tracing::warn!(session = %session, error = %e, "one-shot tidy failed"),
+    }
+
+    // The cap, BEFORE the insert. Counted over ARMED rows for this session only
+    // — one agent filling its own quota must not stop another from scheduling,
+    // and a paused or finished workflow arms nothing.
+    let armed = db::workflows::count_armed_for_session(&state.pool, &session).await? as usize;
+    if armed >= super::MAX_WORKFLOWS_PER_SESSION {
+        return Err(AppError::TooManyRequests(super::cap_message(armed)));
     }
 
     // One validator, two callers: the expression grammar, the wrapper-markup
