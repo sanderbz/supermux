@@ -1,461 +1,259 @@
 <h1 align="center">supermux</h1>
 
-<p align="center"><strong>Hire a company of AI teammates — and run it from your phone.</strong></p>
-
-<p align="center">Named bots with real roles, their own files, and shared tools. They message each other, use a real browser, and keep working after you close your laptop. Open source, self-hosted, on your own Claude subscription.</p>
-
-<p align="center"><em>Close your laptop. Your company keeps working, and your phone buzzes the second a bot needs you.</em></p>
+<p align="center">Run Claude Code and Codex agents on your own server, and work with them from your browser or your phone.</p>
 
 <p align="center">
-  <!-- Bot Mode hero. Embedded as <img> so it autoplays everywhere GitHub renders
-       (web logged-out, iOS Safari, the GitHub mobile app, IDE previews) and
-       degrades to a clean static first frame. Click-through opens the HD MP4.
-       Every frame is the real UI, shot from the app's own mock/dev surfaces. -->
-  <a href="docs/hero.mp4"><img src="docs/hero.gif" width="900"
-     alt="supermux in use — a bot's thread on a phone with tool receipts ticking as it works; the desktop control room with every bot ranked by who needs you first; the company chat routing one question to two named bots; a lock-screen push the moment a bot needs a decision; taking the wheel in the company's shared browser; the thread still running on a phone after the laptop closes; and the one-line install on a server, ending on the address and the token command the installer actually prints"></a>
+  <img src="docs/screenshots/hero.png" width="900" alt="supermux on a desktop and a phone. On the desktop, a list of seven named bots on the left and one bot's thread on the right: tool calls, an attached screenshot, a message from another bot and an 'asking Patch' indicator. On the phone, the same thread with a test run still in progress.">
 </p>
-
-<p align="center"><sub>▶ <a href="docs/hero.mp4">Click for HD</a> · the loop above autoplays on GitHub</sub></p>
-
-<p align="center"><sub>An open-source, self-hosted AI company you run yourself.</sub></p>
 
 <p align="center">
-  <a href="https://github.com/sanderbz/supermux/releases/latest"><img src="https://img.shields.io/github/v/release/sanderbz/supermux" alt="latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
-  <a href="https://github.com/sanderbz/supermux/stargazers"><img src="https://img.shields.io/github/stars/sanderbz/supermux?style=social" alt="GitHub stars"></a>
-  <img src="https://img.shields.io/badge/single--binary-Rust-orange" alt="single binary — Rust">
-  <img src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20macOS-success" alt="runs on Linux | macOS">
+  <a href="https://github.com/sanderbz/supermux/releases/latest"><img src="https://img.shields.io/github/v/release/sanderbz/supermux" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
----
+<p align="center"><a href="#install">Install</a> · <a href="#a-look-around">Screenshots</a> · <a href="#how-it-compares">How it compares</a> · <a href="https://github.com/sanderbz/supermux/releases">Releases</a></p>
 
-## What this is
+supermux is a web app you install on a machine you own, such as a VPS, a Raspberry Pi or a Mac mini. It starts Claude Code and Codex sessions on that machine and keeps them running when you close your laptop. You follow and answer every session from one dashboard, in a desktop browser or as an app on your phone with push notifications.
 
-**Bot Mode turns supermux into a company of AI teammates you host yourself.** You hire named bots, give each one a role, its own folder, and the tools it's allowed to touch, then group them into companies where they share connectors, talk in a central chat, and hand work off to each other. It's [Claude Code](https://code.claude.com/docs/en/setup) under the hood — as capable, and as fallible, as the agent driving it — running on a box you own and steered from your phone.
+With Bot mode switched on, sessions become bots: each has a name, a role, its own folder and only the tools you grant it. You can group bots into a company that shares a chat, a set of connectors and a Chrome browser.
 
-If you've seen xAI's Grok bots — always-on AI teammates that get their own computer, sign into your tools, and keep working after you log off — **supermux is that idea, open source and self-hosted**: same shape, your box, your Claude subscription, no per-seat cloud.
+What makes it different:
 
----
+- Everything runs on your hardware. supermux is one MIT-licensed Rust binary with the web app built in. Your browser connects straight to your server (over Tailscale if you use it), with no vendor service in between, and the agents use your own Claude or ChatGPT login.
+- Bots work in companies. A company has a group chat where you ask once and a router passes the question to the right bots. Bots can also message each other and hand work over. Credentials sit in a vault on your server, connectors are granted per bot, and on Linux each company runs in a Landlock sandbox.
+- A company shares a real Chrome on your server. You sign in to a site once, lend tabs to bots, and take over yourself when a bot gets stuck at a login or a captcha.
+- It drives the real Claude Code and Codex command-line tools. The chat view shows each tool call as it happens, and you answer Claude's permission prompts and questions from chat. The full terminal stays one tap away.
 
-## Point to a website change
+## Install
 
-<!-- browser-feedback-showcase -->
-![Supermux browser feedback in Chrome: numbered notes, the visible page, and readable crops](docs/screenshots/browser-feedback.png)
-<!-- /browser-feedback-showcase -->
-
-The **Feedback Chrome Extension** sends the page detail you mean directly to your Claude Code or Codex agent. Click its toolbar icon, pick an element, circle a detail, or select an area, then add notes and send them directly from the annotation bar. Your agent receives a numbered overview, readable crops, and the exact page and DOM context. Notes follow page and nested scrolling; offscreen notes keep their saved crop and original capture coordinates.
-
-Open the screenshot or any crop to inspect it at full size before sending, and switch between the clean image and numbered notes. Each feedback includes both overviews, plus crops taken from the original capture at up to 1400 × 1000 pixels so your agent can read the detail. Saved crops retain their capture time, viewport, and note geometry after scrolling; pins follow both the page and nested containers. The toolbar and settings use Supermux’s canonical blue chevron branding.
-
-Open an agent’s **Settings → Feedback Chrome Extension** to download the ZIP, follow the install guide, and pair a website with a four-digit code. Each website can connect to a different agent. Install in desktop Chrome, then pair or manage connections from either desktop or your phone. The ZIP also lives at `/downloads/supermux-browser-extension.zip` on your Supermux server. [Installation, privacy, and delivery details](docs/BROWSER_FEEDBACK.md) · [Extension source and verification](extension/README.md).
-
-### Let your agent use the tab
-
-On a paired website, choose **Allow control** in the extension. Your Claude Code or Codex agent can now read the page, click, type, scroll, navigate within that website, run page JavaScript, and take screenshots in your actual Chrome tab, including its existing login. **Stop** gives control back immediately. There is no second pairing, local relay, or separate extension to install.
-
-Actions run together in the extension over the existing server connection. Compact page snapshots identify elements; screenshots are requested when needed. This reduces repeated network trips and image uploads. Control ends when you stop, close the tab, change its agent, leave the paired website, or lose the connection. Chrome 125 or newer is required; the extension uses Chrome’s debugger permission and displays its native debugging banner while attached. [Browser control and agent commands](docs/BROWSER_FEEDBACK.md#browser-control).
-
-![Supermux controlling a paired Chrome tab](docs/screenshots/browser-control.png)
-
----
-
-## Install in one line
-
-SSH into a fresh Ubuntu 22.04+ / Debian 12+ box and run:
+On a server with Ubuntu 22.04+ or Debian 12+ (x86_64 or arm64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo SUPERMUX_INSTALL_CLAUDE=1 bash
 ```
 
-Under a minute on a typical VPS. Downloads the prebuilt binary for your CPU, provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, prints your URL + auth token. Re-run any time to upgrade, sessions and data are preserved. Tailscale and Claude Code are auto-detected and offered. Full quickstart details and flags are [below](#full-quickstart).
+The installer downloads the release binary for your CPU and checks its checksum. It then creates an unprivileged `supermux` user, installs Claude Code for that user, and starts supermux as a sandboxed systemd service. If Tailscale is running, it serves supermux over HTTPS on your tailnet; otherwise supermux listens on `127.0.0.1:8824` for your own reverse proxy. At the end it prints the address and the command that shows your auth token. Run the same line again to upgrade; sessions and data are kept.
 
-Then stand up your first company:
+Then:
 
-```
-1. Open the printed URL, log in once with your Claude subscription.
-2. Enable Bot Mode in Settings → hire your first bot (name it, give it a role + folder).
-3. Group a few bots into a company, connect Gmail/GitHub, and give them a job.
-```
+1. Log Claude Code in once for the service user: `sudo -u supermux -i claude`, then `/login`. supermux uses your Claude subscription, not an API key.
+2. Open the address on your computer and on your phone. On the phone, add it to your home screen so push notifications work (on iOS this is required).
+3. Start a session, or switch on Bot mode under Settings → Experimental and hire your first bot.
 
----
+To read the script first, pin a version or do a dry run, see [install options](#install-options).
 
-## Meet your bots
-
-### A bot is a teammate with a role
-
-A bot has a name, an avatar, and a role you assign — *Ada the developer*, *Iris the marketer*, *Sol in sales*. Each one gets **its own folder** on the box (its filesystem, scoped to what it's allowed to touch) and **its own connectors**. It's a full Claude Code agent with a job, not a scratch chat window.
+## A look around
 
 <p align="center">
-  <a href="docs/screenshots/hire-sheet-phone.png"><img src="docs/screenshots/hire-sheet-phone.png" alt="The hire-a-teammate sheet on a phone: the bot named Ada above 'Tap the avatar to reroll', and under 'What should your teammate do?' the job typed into the focused field — 'Watch the nightly build and open a PR when it breaks.' — with an Advanced disclosure for engine, model and folder, and Cancel / Continue at the foot" width="300"></a>
+  <img src="docs/screenshots/overview-desktop.png" width="600" alt="The overview on a desktop: bots grouped under Needs you (a five-bot team and codex-app) and Active (build-runner and qa-astro), each with its status, engine and context use">
 </p>
-
-<p align="center"><sub><em>Hiring a bot is one sentence.</em></sub></p>
+<p align="center"><sub>The overview sorts every session by who needs you first.</sub></p>
 
 <p align="center">
-  <a href="docs/screenshots/chat-phone.png"><img src="docs/screenshots/chat-phone.png" alt="A bot's thread on a phone: two finished tool calls — Read money.rs and Grep parse_locale — with cargo test --lib money still spinning under a live timer, below the reply the owner just sent" width="300"></a>
+  <img src="docs/screenshots/chat-phone.png" width="290" alt="A bot's thread on a phone: two finished tool calls and a cargo test still running, below the message the owner just sent">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/permission-phone.png" width="290" alt="A permission prompt in a bot's chat on a phone: Run cargo publish --dry-run, with the buttons Yes, 'Yes, and always allow Bash(cargo publish:*) in this project' and No">
 </p>
+<p align="center"><sub>Left: tool calls as they run. Right: answering Claude's permission prompt from chat.</sub></p>
 
-<p align="center"><sub><em>Every tool call, as it happens.</em></sub></p>
+A push notification arrives when a session finishes, asks a question or stops, and tapping it opens that thread. Permission prompts, questions (including multi-select) and Claude's own "always allow" options are answered from chat through Claude Code's hooks; a message typed under a permission prompt is sent as "no, do this instead". The same records are available over HTTP as the [asks API](docs/ASKS.md).
+
+### Bot mode
 
 <p align="center">
-  <a href="docs/screenshots/chat-desktop.png"><img src="docs/screenshots/chat-desktop.png" alt="The same company on a desktop: a rail of seven named threads with Patch mid-reply and an unread dot on Quill; in the thread, the owner's question, the bot's four tool receipts (cargo check clean, 212 tests passed, v0.6.0 tagged, one image read), the screenshot it attached, then a 'Message from Patch' divider where another bot answers inside this thread, and a live 'asking Patch…' pill above the composer" width="900"></a>
+  <img src="docs/screenshots/hire-sheet-phone.png" width="290" alt="The 'Hire a teammate' sheet on a phone: a bot avatar, and the job typed into the field: 'Watch the nightly build and open a PR when it breaks.'">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/groupchat-phone.png" width="290" alt="A company's group chat on a phone: the owner asks a question, the Main Assistant routes it to @chat-dataplane and @render-bug, and chat-dataplane answers">
 </p>
+<p align="center"><sub>Left: hiring a bot starts with one sentence about its job. Right: the company chat, where the router passes your question on.</sub></p>
 
-<p align="center"><sub><em>Seven bots, one rail — and they can talk to each other.</em></sub></p>
-
-### Companies
-
-Group bots into a **company** and they share connectors, a central **company chat**, and a shared browser. Bots **message each other and hand tasks off**: the marketer asks the developer for the changelog, the developer drops it in the shared drive, the sales bot picks it up. You set the direction; they do the passing.
+Connectors come from a store: curated cards plus a slice of the public [PulseMCP](https://www.pulsemcp.com/) catalog. You grant each one to a single bot or to a whole company, and remote connectors sign in through OAuth. When a bot needs a key for a service, it asks with a Connect card in chat and the secret goes straight to the vault on your server.
 
 <p align="center">
-  <a href="docs/screenshots/groupchat-phone.png"><img src="docs/screenshots/groupchat-phone.png" alt="A company's group chat on a phone: the owner asks once, the Main Assistant fans the ask out to @chat-dataplane and @render-bug, and chat-dataplane is already answering below the unread divider" width="300"></a>
+  <img src="docs/screenshots/connector-store.png" width="800" alt="The connector store: category filters above cards for GitHub (21 tools), Notion (12 tools), Stripe, PayPal, Plaid and Square, each with a Connect button">
 </p>
 
-<p align="center"><sub><em>You ask once. The router picks who does it.</em></sub></p>
-
-### Connectors
-
-Plug bots into the tools you already use — Gmail, GitHub, your database, anything — **with or without an MCP server or API**, via the connect concierge and one-tap sign-in. Grants are per-bot: a bot only reaches the connectors you hand it.
+A workflow is a list of prompts a bot runs in order: by hand, once, or on a schedule such as `every weekday at 9am`. When it finishes it can notify you, message another bot, post in the group chat or send through a connector.
 
 <p align="center">
-  <a href="docs/screenshots/connector-store.png"><img src="docs/screenshots/connector-store.png" alt="The connector store with the Browse tab open and the All category chip selected: a row of category filters over two rows of cards — featured GitHub with 21 tools, Notion with 12 and Stripe, then PayPal, Plaid and Square — each with its own Connect button" width="900"></a>
+  <img src="docs/screenshots/workflow-runs.png" width="800" alt="A workflow's run history: today's run in progress, yesterday's run failed at step three with the reason and per-step timings, and an earlier run that finished">
 </p>
 
-<p align="center"><sub><em>A store of tools, granted per bot — not per box.</em></sub></p>
-
-### Workflows
-
-A **workflow** is an ordered list of prompts a bot runs on a trigger: chain the steps, run them on a schedule, and fire a completion action when it's done. Ship the weekly report every Monday without lifting a finger.
+The shared browser is a Chromium on your server that the company's bots use. Watch shows what a bot is doing; Drive lets you take over, sign in or solve a check, and hand the tab back.
 
 <p align="center">
-  <a href="docs/screenshots/workflow-runs.png"><img src="docs/screenshots/workflow-runs.png" alt="A workflow's run history: today's run still Running with step one done in 41 s and step two spinning, yesterday's run Failed at step three with the reason written out and per-step timings, and an earlier run marked Done" width="900"></a>
+  <img src="docs/screenshots/browser-drive.png" width="800" alt="The shared company browser in Drive mode: a row of company tabs, the address bar, 'Signed in, verified 6 min ago', and a sign-in page where the agent asks you to take over">
 </p>
 
-<p align="center"><sub><em>Give a bot a job and a time. It tells you what happened — including the failures.</em></sub></p>
+### Chrome extension
 
-### A shared company browser
-
-One real Chrome the company shares — **log in once**, then lend individual tabs to named bots. When a bot hits a login wall you can **take the wheel**, sign in, and hand the tab back.
+The Point & tell extension sends feedback on any website to an agent. You click an element, draw around a detail or select an area, add a note, and the agent receives a screenshot, crops and the page's DOM context. You can also let the agent read, click and type in that tab until you press Stop. Download the extension and pair it from an agent's settings under Feedback Chrome Extension. Each website can be paired with a different agent. More in [setup and privacy](docs/BROWSER_FEEDBACK.md).
 
 <p align="center">
-  <a href="docs/screenshots/browser-drive.png"><img src="docs/screenshots/browser-drive.png" alt="The company's shared browser with Drive engaged instead of Watch: a rail of company tabs — two pinned, then Pipeline · CRM, Analytics, a quarterly reseller report, Ads Manager and Handbook — the omnibox on mail.acme.example/inbox reading 'Signed in · verified 6 min ago', one other viewer on the tab, and the accent ring round the page that means a human has the wheel" width="900"></a>
+  <img src="docs/screenshots/browser-feedback.png" width="700" alt="The Chrome extension on a demo website: two numbered notes on page elements, the extension's toolbar at the bottom and an Allow control prompt at the top">
 </p>
 
-<p align="center"><sub><em>When it's stuck, take the wheel — then hand it back.</em></sub></p>
+## How it compares
 
----
+As of November 2026:
 
-## Why Bot Mode
+- Anthropic's [Remote Control](https://code.claude.com/docs/en/remote-control) serves Claude Code sessions from a machine you own to the Claude app, with push notifications. If you only want to reach Claude Code from your phone, it is the simplest option. Traffic goes through claude.ai, and it runs Claude Code only.
+- [Happy](https://github.com/slopus/happy) (MIT) and [amux](https://amux.io/) also run agents on your own hardware and come with phone apps. Happy syncs through an encrypted relay by default; amux is source-available (MIT with the Commons Clause).
+- xAI's [Grok Bot](https://x.ai/bot) is closest to Bot mode: always-on bots that share a computer, connectors and a browser. It runs in xAI's cloud and is closed source.
 
-You don't want *a chatbot*. You want the work done — the repo shipped, the leads emailed, the competitor teardown written, the weekly report out the door — while you're doing something else.
-
-A single Claude session is a genius with amnesia and one pair of hands. Bot Mode gives you a **team**: named bots, each with a role, its own folder, and the tools it's allowed to touch. Group them into a **company** and they share connectors, talk in a central chat, and hand tasks to each other — the marketer asks the developer for the changelog, the developer drops it in the shared drive, the sales bot picks it up. You set the direction; they do the passing.
-
-And it's **yours**. Not a seat in someone's cloud that costs $200/month and holds your logins. One Rust binary on a $5 VPS, a Raspberry Pi, or the Mac mini in your closet. Your Claude subscription. Your files, your browser session, your data — behind a systemd sandbox on a box you own. Close the laptop; the company keeps running; your phone buzzes when a bot needs a decision.
-
-### Bot Mode vs Grok Bot vs rolling your own
-
-The pitch that made Grok bots go viral — a team of agents that never sleeps — minus the vendor cloud and the $200 seat.
-
-| | **Supermux Bot Mode** | Grok Bot | DIY glue |
-|---|:---:|:---:|:---:|
-| Named bots with roles, own folder + tools | ✅ | ✅ | ⚠️ you build it |
-| Bots message each other + hand off work | ✅ | ✅ | ❌ |
-| Group bots into companies (shared connectors + chat) | ✅ | ⚠️ teams | ❌ |
-| Connect to your tools, MCP **or** no-MCP | ✅ | ✅ | ⚠️ |
-| Shared browser you log into once, lend per-tab | ✅ | ⚠️ | ❌ |
-| Workflows (scheduled multi-step chains) | ✅ | ✅ skills | ⚠️ cron |
-| Runs on **hardware you own** | ✅ | ❌ vendor cloud | ✅ |
-| Drive it all from your **phone** (real push) | ✅ | ✅ | ❌ |
-| Uses **your** Claude subscription, no per-seat SaaS | ✅ | ❌ $120–200/seat | ✅ |
-| Open source (MIT), self-hosted, your data | ✅ | ❌ | ✅ |
-
-<sub>⚠️ on Grok's cells = we can't verify their internals. Best-effort snapshot of fast-moving products — corrections welcome via PR. Supermux runs Claude Code (and Codex); **it is not affiliated with xAI**.</sub>
-
----
-
-## It's a real harness, not a toy
-
-Bot Mode runs on top of a real product. Underneath the companies is the thing supermux has always been: **the easiest way to run a roomful of Claude Code agents from your phone** — live overview, real push, resume, files, MCP/skills, remote hosts.
-
-<p align="center">
-  <a href="docs/screenshots/overview-desktop.png"><img src="docs/screenshots/overview-desktop.png" alt="The overview after clicking a row: the HQ bar with New bot, search, sort and density; the roster grouped NEEDS YOU (2) — a five-bot team and codex-app at 11% context — above ACTIVE (2), build-runner and qa-astro; and codex-app's panel open on the right with Open terminal and its Overview, Setup and Workflows tabs" width="900"></a>
-</p>
-
-<p align="center"><sub><em>Every bot, ranked by who needs you.</em></sub></p>
-
-<p align="center">
-  <a href="docs/screenshots/overview-phone.png"><img src="docs/screenshots/overview-phone.png" alt="The same roster on a phone, grouped the same way: two bots that need you above two that are working, one of them listening on 127.0.0.1:8823, with a context ring on the two running a model" width="300"></a>
-</p>
-
-<p align="center"><sub><em>The same control room, in your pocket.</em></sub></p>
-
-- **All your Claude sessions in one live view.** Color-true terminal previews, sub-second fresh. See who's typing, who's waiting on you, who's idle.
-- **Notifications when Claude needs you.** Real push (PWA, real iOS push) the second Claude asks a question, finishes a task, or stops. Per-category mute.
-- **Quick peek + type-in-place.** Hover a tile on desktop or long-press on mobile to read the latest output and reply without leaving the overview.
-- **A full lifecycle harness.** Start, stop, restart with a flag, resume an older conversation, rename inline, archive — all from the UI.
-- **Schedule recurring prompts.** Cron and "every Nm/Nh" jobs, an iCal feed, a live job list — routine work happens without you.
-- **A terminal made for Claude Code.** Attach a file or photo and it drops the path at Claude's prompt; Markdown and code render with real syntax highlighting; edit prompts in a native textarea; tap Claude-specific actions (cycle permission mode, rewind, approve) a plain SSH app can't know about.
-- **Mixed fleets welcome.** Claude Code is the default; the same overview runs [Codex CLI](https://developers.openai.com/codex/cli/) sessions side by side.
-
-### Point to a website change
-
-The **Supermux · Point & tell** Chrome extension lets you select an element, circle a detail, add notes, and send them with screenshots directly to a Claude or Codex chat. Install the extension once from **Feedback Chrome Extension** in any agent's settings. The same ZIP works across your accessible agents and companies; pair each website with its intended agent using a four-digit code. Company members can pair their own company's agents, including agents working in an existing project folder. Feedback waits until the agent is idle with an empty composer, preserving existing terminal drafts. The [ZIP is included in the repository](extension/releases/supermux-browser-extension.zip). See [installation, pairing, and recovery](docs/BROWSER_FEEDBACK.md).
-
-<p align="center">
-  <a href="docs/screenshots/terminal-focus.png"><img src="docs/screenshots/terminal-focus.png" alt="Focus mode on a desktop: Claude's own colour-true screen — an Update receipt with two green added lines, a Bash(bun run build) receipt, 212 tests passing, and a 'Brewed for 34s' timing line — then Claude's composer between its two rules with the next prompt already typed into it and the block cursor after the last character, all under the session's title and its ✎ use-sessions.ts · 3 agents activity, over a dock of Claude-specific keys: ⌘ palette, attach, edit-prompt, Esc, Tab, Ctrl-C, Ctrl-U and the permission-mode switch" width="900"></a>
-</p>
-
-<p align="center"><sub><em>A terminal that knows it is running Claude Code.</em></sub></p>
+supermux fits if you want all of it on your own server under an open-source license, Claude Code and Codex side by side, and bots organised into companies with their own chat, connectors and browser.
 
 <details>
-<summary><strong>The full feature list (overview, notifications, history, uploads, hosts, and more)</strong></summary>
+<summary><strong>All features</strong></summary>
 
-### See every agent, jump anywhere
-- **Live overview** with color-true terminal previews. Refresh tiers self-throttle: 1 s for hot-active sessions, 2 s for the rest active, 4 s idle.
-- **Quick peek**: hover a tile (desktop) or long-press it (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
-- **Focus mode**: tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
-- **⌘K command palette**: fuzzy search across sessions, slash commands, MCP tools, and Claude Code skills.
-- **Mixed fleets welcome**: Claude Code is the default, but the same overview runs [Codex CLI](https://developers.openai.com/codex/cli/) sessions side by side — same live status, push notifications, and prompt history.
+### Sessions
 
-### Notifications that find you
-- **Real push notifications** when Claude finishes, asks a question, or stops. Works on iOS too: install the PWA, allow notifications, walk away from your machine.
-- **Per-category mute**: silence "waiting for input", keep "agent finished" loud, never miss "stopped unexpectedly".
-- **An asks API for your own inbox**: every permission prompt, question (multi-select too), MCP form and needs-input is a durable record with a stable id, streamed over SSE and answerable over HTTP — through Claude Code's own hook decisions, not keystrokes. See [docs/ASKS.md](docs/ASKS.md).
+- Live overview with status per session, sorted by who needs you, with custom groups and six sort modes.
+- Chat view and full terminal for every session. The terminal has keys for Claude Code (permission mode, rewind, Esc, Ctrl-C) and an editor that lifts the prompt into a native text field, which is handy on a phone.
+- Claude Code and Codex side by side. Codex installs and logs in on its first start.
+- Resume any earlier conversation in a folder, and search the prompt history.
+- Uploads by drag and drop or from the phone's file picker (up to 10 GB, resumable); the path lands at Claude's prompt.
+- ⌘K command palette for sessions, slash commands, MCP tools and skills; ⌘1 to ⌘9 to jump between sessions.
+- Agent teams show up as one card. Issues per session that agents can read, comment on and close.
+- Sessions on other machines over SSH (Settings → Hosts).
+- Files browser with an editor, and per-session git status.
 
-### Stay organized at scale
-- **Custom groups**: drag tiles between groups, name them whatever (`production`, `experiments`, `Claude Boy and Friends`).
-- **Six sort modes per group**: Smart / Custom / Name / Status / Recent / Age. Persisted server-side, synced across devices.
-- **Agent Teams**: when an agent spawns a team, supermux detects the lead + members and collapses them into one TEAM CARD. Convert any session into a team in place.
-- **Hide-stopped, view-mode dropdown**: calm the noise on a busy day.
+### Bot mode
 
-### Pick up where you left off
-- **Rich prompt history**: every prompt you sent to a session, searchable, with the assistant's first-line reply paired in. Tabbed: just this session, or the whole project (every Claude Code transcript under this cwd). Press `⌘G` in focus mode.
-- **Slash-commands and teammate routings** show up as their own kinds in history with mini badges. Sub-agents and system events available behind toggles.
-- **Resume picker**: supermux reads Claude Code's own JSONL transcripts, so any past conversation in this cwd is one tap away from a `claude --resume`.
+- Bots with a name, avatar, role and folder; companies with a group chat, a shared drive and shared connectors.
+- Bots can message each other within a company, notify you, report on their issue and schedule their own follow-ups.
+- Connector store with per-bot grants, a credential vault, OAuth sign-in for remote connectors and a health check.
+- Workflows with schedules and completion actions.
+- Shared Chrome per company with Watch and Drive, and an option to keep sites signed in.
+- Invite colleagues through an in-app wizard: your own domain on Cloudflare with Google sign-in, or a temporary link.
+- A separate Claude account per session if you need one.
 
-### Edit prompts in a real textarea
-- **✎ Edit** in the dock lifts whatever you've typed at Claude's `❯` prompt into a browser-native textarea: iOS selection handles, autocorrect, dictation, paste-over-select.
-- **Done** writes back, you hit Enter when ready. **Send** writes back and submits.
-- Mobile gets a full-page edit surface with proper safe-area handling.
-- Built on Claude Code's own `chat:externalEditor` (Ctrl+G) bridge. No scraping, no keystroke replay.
+### Running it
 
-<p align="center"><a href="docs/screenshots/native-input.png"><img src="docs/screenshots/native-input.png" alt="The Edit prompt sheet on an iPhone: the prompt lifted out of Claude's ❯ prompt into a focused, browser-native textarea with the caret after the last character, Cancel / Send / Done in the sheet header, attach and dictation in the dock, and iOS's own keyboard accessory bar under it" width="260"></a></p>
-
-### Drag-and-drop uploads
-- **Drag a file onto the terminal pane** on desktop and supermux uploads it server-side, then pastes the resolved path at Claude's cursor.
-- **Native file picker** on mobile, with a tap-to-upload action sheet.
-- Image previews, paste-image-from-clipboard, the lot. The thing that always sucks over plain `ssh`.
-
-### Keep Claude working while you're away
-- **Scheduler**: cron and "every Nm/Nh" jobs. Schedule a daily `claude --resume` with a prompt. iCal feed. Live job list.
-- **Issue tracker**: session-scoped issues, read from the session that owns them (and from a team's card). Sessions can comment, mark issues done, attach commits, or ask for input via per-session hook tokens. Wire it into your agent flow and let Claude pull its own next task.
-- **Schedules and issue updates trigger push notifications** when something needs you.
-
-### Reach across machines
-- **Add any host you can SSH to** under Settings → Hosts (Tailscale, VPN, public DNS, reverse tunnel). supermux multiplexes one SSH ControlMaster per host.
-- **One-click bootstrap** installs the `authorized_keys` entry and verifies prereqs.
-- New sessions can target any host from the same sheet; remote tiles wear a discreet badge.
-
-### The rest
-- **Inline session rename**: live `tmux` rename + pty survival.
-- **Per-session git status**: branch, dirty, ahead/behind, on demand.
-- **Files browser**: path-jailed, with an editor.
-- **MCP & Skills** in the palette: toggle MCPs per session, tap-activate skills.
-- **Mode shift**: flip Claude Code's permission mode (normal / accept-edits / plan / bypass) without a relaunch.
-- **In-UI updater**: Settings → Updates. 1-click upgrade with live SSE progress and auto-rollback on failure. (Needs a source clone on the server; one-liner installs upgrade by re-running the installer.)
+- Push notifications per event type, with a test button in Settings → Notifications.
+- In-app updates with automatic rollback when supermux runs from a source checkout; installs from the one-liner upgrade by running it again.
+- Sessions survive a restart or upgrade of supermux.
 
 </details>
 
-### …and it's still the best way to run plain Claude Code sessions
+## Self-hosting
 
-Even before Bot Mode, supermux is the only Claude-Code runner that adds the whole **mobile + remote + push + self-host** dimension — your agents live on a server you own, not on the laptop in your bag.
+- One binary with the web app embedded, plus a SQLite database. At runtime the core needs `tmux` and Claude Code (or Codex). Some Bot mode features need more: `python3` for the `connect` helper and the mail connectors, `npx` or `uvx` for store connectors, a Chromium build for the shared browser, and `cloudflared` for temporary invite links. The installer does not install these.
+- The systemd unit runs as an unprivileged user with `ProtectSystem=strict`, `PrivateTmp`, a system-call filter, restricted address families and write access limited to the data directory, the service user's home and your project folders.
+- The dashboard API requires the owner token (`~/.supermux/auth_token`, mode 0600) or an invited person's login. The app page hands the token to browsers on trusted addresses such as localhost and your tailnet, so keep the port off the public internet.
+- The installer and updater support Linux (Ubuntu 22.04+, Debian 12+, x86_64 and aarch64). macOS, including a Mac mini, works with a manual build from source. Windows is not supported; WSL2 works as a Linux host.
 
-|  | **supermux** | Conductor<br>(Mac app) | Omnara<br>(cloud) | Happy<br>(mobile) | claude-squad<br>(TUI) |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Many agents in one live overview | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Sub-second "who's waiting on you" status | ✅ | ⚠️ | ⚠️ | ❌ | ❌ |
-| Mobile-first PWA (real iOS / Android) | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Real push when an agent needs you | ✅ | ❌ | ⚠️ via cloud | ⚠️ | ❌ |
-| Agents run server-side, survive the laptop closing | ✅ | ❌ | ❌ | ❌ | ⚠️ |
-| Runs on a VPS / Pi / Mac mini, not your laptop | ✅ | ❌ | ❌ | ❌ | ⚠️ |
-| Self-hosted, no vendor cloud in the path | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Full lifecycle harness (start/stop/restart/resume/schedule) | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| Issue tracker agents read & write | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Open source | ✅ MIT | ❌ | ⚠️ CLI only | ✅ | ✅ |
+## Limits
 
-<sub>Best-effort snapshot of fast-moving tools — corrections welcome via PR.</sub>
+- Bot mode is off by default. Switch it on under Settings → Experimental; everything else works without it.
+- Company isolation is best effort. It combines app-level scoping, the systemd sandbox and Landlock where the kernel supports it. Don't put companies that must not see each other on one server.
+- Answering from chat works for Claude Code sessions. MCP forms are answered in the terminal unless you switch that on, and sessions started before an upgrade fall back to the older cards until they restart.
+- Bot mode runs Claude Code. It can do what you could do at a keyboard and makes the mistakes an agent makes. Keep a person in the loop for anything that matters.
 
----
+<a id="install-options"></a>
+<details>
+<summary><strong>Install options</strong></summary>
 
-<a id="full-quickstart"></a>
+Read the script before running it:
 
-## Full quickstart
-
-The [one-liner above](#install-in-one-line) covers the common case. A few flavours for everything else:
-
-**Pinned version**: same one-liner with `SUPERMUX_VERSION=vX.Y.Z` added to the env (e.g. `… | sudo SUPERMUX_VERSION=v0.4.23 bash`).
-
-**Inspect before running**:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh -o install.sh
 less install.sh
 sudo bash install.sh
 ```
 
-**Dry run** (print the plan, change nothing): append `--dry-run` to the bash command.
+When you run it from a file like this, the installer asks whether to install Claude Code.
 
-**Tailscale**: if `tailscaled` is running on the box, supermux auto-exposes via `tailscale serve` on `:443`. Otherwise it binds to `127.0.0.1:8824` for your own reverse proxy.
+- Pin a version: `--version vX.Y.Z` or `SUPERMUX_VERSION=vX.Y.Z`.
+- Print the plan and change nothing: `--dry-run`.
+- Install without starting the service: `--no-start`.
+- Other settings: `SUPERMUX_INTERNAL_PORT` (default 8824), `SUPERMUX_PROJECT_DIRS` (folders agents may write to, default `~/projects` of the service user), `SUPERMUX_USE_TAILSCALE=0|1`, `SUPERMUX_INSTALL_CLAUDE=ask|1|0`.
 
-**Claude Code**: the installer offers to install it for the service user if missing (official native installer, no Node). Log in once with `sudo -u supermux -i claude` → `/login`.
+With Tailscale, rename the machine once (`sudo tailscale set --hostname=supermux`) to get an HTTPS address such as `https://supermux.<tailnet>.ts.net` on every device in your tailnet.
 
-**Turn on Bot Mode**: enable Bot Mode in Settings once you're logged in, then hire your first bot and group a few into a company. Bot Mode is a mode you switch on — the whole harness above works with it off.
+Other ways to run it:
 
-**Codex**: the New session panel keeps Claude as its default and offers OpenAI's Codex CLI alongside it. Its first start installs the official CLI (user-scoped) if needed and opens the login flow right in the terminal; later starts reuse that login. It gets the launch flags that keep its output readable in a supermux tile, and it feeds the same status detection — the tile knows when Codex is working, waiting on an approval, or done, just like Claude.
-
-**Chat and scrollback**: Claude Code and Codex use their own transcripts consistently for live messages, older pages, and expanded tool output. Codex follows the running agent's conversation, keeping concurrent agents in the same repository separate. Scrolling up pauses automatic following; older pages and expanding content preserve your reading position. Use the jump-to-latest button to follow new replies again. Reconnecting preserves older pages from the same conversation and discards responses from a previous conversation. Claude permission requests update the waiting state immediately; main-agent API failures end the turn and retain the error details. A child-agent failure does not end the parent turn.
-
-**Sending and retrying**: Chat protects unfinished prompts in the agent terminal. Codex's model footer and dim input suggestions do not count as a draft. If a message is refused, its text stays available to edit. Retry checks the current terminal again and reuses the same message; pressing Send again with unchanged text retries the failed bubble. A successful retry clears a matching composer draft and keeps edits made while sending. Retries keep their original idempotency key, and the server refuses a replay while submission is unresolved.
-
-**After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
-
-### Other paths
-
-- **From a clone**: `sudo bash install.sh` from a checkout still installs the latest *release* binary. It never builds your local code. For a source build use `scripts/dev.sh` (local dev) or [`scripts/deploy.sh`](scripts/deploy.sh) (native build + deploy).
-- **Deploy over SSH from your workstation** (advanced: fleet management of many boxes): see [`scripts/deploy.sh`](scripts/deploy.sh) and `bash scripts/setup.sh`.
-- **Local development** with HMR: `scripts/dev.sh` (Rust backend on `:8823`, Vite for the PWA).
-
----
-
-## Built for self-hosting
-
-- **One Rust binary, with the PWA embedded.** No Node, Docker, or Python at runtime. One file plus a SQLite DB.
-- **systemd-sandboxed by default**: runs as an unprivileged user with `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, restricted address families, and `ReadWritePaths` scoped to the data dir + your project dirs.
-- **Auth on every API route**: bearer token at `~/.supermux/auth_token` (mode `0600`). No localhost bypass.
-- **Tmux survival**: the tmux socket lives in the persistent data dir, so sessions outlive supermux restarts.
-- **In-UI 1-click updates**: `git fetch → build → install → verify → auto-rollback on failure`, exposed as a button. Preflight refuses unsafe upgrades. Needs a source clone on the server (clone-based installs); prebuilt-binary installs upgrade by re-running the one-line installer.
-
-### Supported platforms (for hosting)
-
-This is about where the *server* runs. The dashboard itself works in any modern browser on macOS, Windows, iPhone and Android.
-
-- **Linux**: Ubuntu 22.04+ / Debian 12+ with systemd, `x86_64` and `aarch64`. This is what the one-line installer, the systemd sandbox, and the in-UI updater target. Other distros with systemd generally work but aren't tested.
-- **macOS**: works, manual install. Nothing in supermux itself is Linux-only; a Mac mini in a closet makes a fine supermux box (that's a real deployment). Build from source (`bash scripts/build.sh`, see [`docs/TESTING.md`](docs/TESTING.md)) and run the binary; keep it alive with `launchd` or tmux. The one-line installer and the auto-updater don't cover macOS yet.
-- **Windows**: not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
-
-Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you). [Codex CLI](https://developers.openai.com/codex/cli/) is an optional additional provider; its first session bootstraps the service-user install and login.
-
-### Tailscale-ready
-
-If `tailscaled` is running on the target host, the installer auto-detects it and exposes supermux via `tailscale serve` on `:443`. Rename once (`sudo tailscale set --hostname=supermux`) and you have a clean, HTTPS, internal-only URL on every device on your tailnet.
-
----
-
-## Honest limits
-
-- **Bot Mode is a mode you enable**, not a separate product. The whole harness works with it off; you switch it on when you want companies and bots.
-- **Company isolation is best-effort, not a hard multi-tenant jail.** Separation is app-layer scoping plus the systemd sandbox (and best-effort Landlock where the kernel allows) — sandboxed isolation on a box you control, not fully isolated tenants. Don't host mutually-hostile companies on one instance. A company that legitimately needs more than the default allow-list gets it per company via `[[company_isolation]]` (see *Company isolation* under the deploy guide), never by switching the sandbox off for everyone.
-- **Letting outside humans into a company needs your own domain + OAuth.** Out of the box supermux is single-owner behind an auth token (and ideally Tailscale); external human access is your setup to add.
-- **It runs Claude Code.** Bot Mode is as capable — and as fallible — as the agent driving it. It does the things you could do at a keyboard, and it makes the mistakes an agent makes. Keep a human in the loop for anything that matters.
-- **Chat renders permission prompts; it can't answer them yet.** When Claude asks to run something, the card shows up in chat with the command and its options — and says out loud that you have to answer it in the terminal. The screenshot below is the real state, footnote and all.
-
-<p align="center">
-  <a href="docs/screenshots/chat-permission-phone.png"><img src="docs/screenshots/chat-permission-phone.png" alt="A permission prompt in a bot's chat on a phone: 'Run cargo publish --dry-run?' with Bash · in supermux/server underneath, three options keyed 1, 2 and 3 — Allow once, Allow while this session runs, Not now — and the footnote 'Answer in the terminal — chat can't answer this one yet.'" width="300"></a>
-</p>
-
-<p align="center"><sub><em>Claude asks. Chat shows you what it's asking — and where you have to answer.</em></sub></p>
-
----
-
-<details>
-<summary><strong>Architecture</strong></summary>
-
-- **Backend**: Rust (`axum` + `tokio` + `sqlx`/SQLite), in `server/`.
-- **Frontend**: TypeScript + React + Vite PWA, in `web/`.
-- **Process model**: single binary; tmux runs out-of-process on a persistent socket so sessions survive restarts.
-- **Live data path**: WebSockets for terminal pty streams (binary frames); SSE for everything else (session lists, status, board, push, alerts).
-
-Module map and protocol details: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- From a clone, `sudo bash install.sh` still installs the latest release binary. For a source build use `scripts/dev.sh` (local development, backend on `:8823` plus Vite) or [`scripts/deploy.sh`](scripts/deploy.sh) (build and deploy to a server over SSH).
+- Building from source needs Rust 1.87+, a recent `bun` 1.x and `build-essential pkg-config libssl-dev cmake unzip`. See [`docs/TESTING.md`](docs/TESTING.md).
 
 </details>
 
 <details>
-<summary><strong>Deploy guide (full reference)</strong></summary>
+<summary><strong>Deploy guide (scripts/deploy.sh)</strong></summary>
 
-`scripts/deploy.sh` runs from your workstation and ships a pinned `git archive` of a clean commit *over SSH* to a remote host (not the machine you run it on), builds natively there (no cross-compilation), installs `/usr/local/bin/supermux-server` plus the systemd unit, and starts the service. It runs an upfront preflight and prints a one-page plan before doing anything destructive.
+`scripts/deploy.sh` runs on your workstation. It sends a pinned `git archive` of a clean commit over SSH to a remote host, builds it there, installs `/usr/local/bin/supermux-server` with the systemd unit and starts the service. It checks the host first and prints a plan before changing anything.
 
-### Defaults
-
-- **Non-root by default, even from a root SSH session.** Root provisions; the service drops to the unprivileged `supermux` user. Forcing root throws away the systemd sandbox and trips Claude Code's refusal to run `--dangerously-skip-permissions` as uid 0, so it's refused unless you explicitly set `SUPERMUX_ALLOW_ROOT=1`.
-- **Service user**: `SUPERMUX_SERVICE_USER` (default `supermux`). If it doesn't exist, `deploy.sh` provisions it. Pick a non-default name and the script refuses rather than silently creating something unexpected; `root` is refused unless `SUPERMUX_ALLOW_ROOT=1`.
-- **Repo dir for the updater**: the in-UI updater builds from a git clone, auto-detected at `/opt/projects/supermux` (falling back to walking up from the binary's CWD). Set `SUPERMUX_REPO_DIR=/path/to/clone` for non-standard layouts.
-- **Project directories**: `SUPERMUX_PROJECT_DIRS` (default `<user-home>/projects`). Under-home dirs just work; outside-home dirs (`/opt/projects`, `/srv/work`, …) are created, `chown -R`'d, and folded into the systemd `ReadWritePaths` so the sandbox permits agent writes.
-- **Claude Code (the agent runtime)**: every non-shell session launches the `claude` binary on the service user's PATH, so it's a runtime dependency for the default provider. After provisioning, `deploy.sh` checks whether the service user has `claude` and, when missing, installs it (official native installer, no Node) per `SUPERMUX_INSTALL_CLAUDE` (`ask` = offer interactively, `1` = auto, `0` = warn only).
-- **Service-user Claude login**: supermux uses your Claude subscription (OAuth), never an API key. After confirming the binary, `deploy.sh` checks for `~supermux/.claude/.credentials.json` and offers to copy the deployer's existing login.
-- **Tailscale**: auto-detected. If `tailscaled` is running, `deploy.sh` exposes the service via `tailscale serve` on port `443`.
-- **Secrets & Git SSH keys for agents**: to let agents reach a Git SSH key and other secrets from 1Password on a headless box (no desktop app), use a scoped read-only **service account** + the `op` CLI, with the Git key loaded into an in-memory `ssh-agent`. Step-by-step (generalized, copy-pasteable): [`docs/SECRETS_1PASSWORD.md`](docs/SECRETS_1PASSWORD.md).
-- **Toolchains**: `bun` and `cargo` are required (native build). `SUPERMUX_INSTALL_TOOLCHAINS=1` opts in to automatic install via the official `bun` + `rustup` installers; otherwise missing toolchains are a hard error with manual instructions.
+- The service runs as an unprivileged user, even when you deploy as root. Running it as root needs `SUPERMUX_ALLOW_ROOT=1`, because root disables the sandbox and Claude Code refuses `--dangerously-skip-permissions` as uid 0.
+- `SUPERMUX_SERVICE_USER` (default `supermux`) is created if missing.
+- `SUPERMUX_REPO_DIR` points the in-app updater at the source clone (default `/opt/projects/supermux`).
+- `SUPERMUX_PROJECT_DIRS` (default `<user-home>/projects`): folders outside the home directory are created, given to the service user and added to the unit's `ReadWritePaths`.
+- `SUPERMUX_INSTALL_CLAUDE` (`ask`, `1` or `0`) installs Claude Code for the service user. The script also offers to copy your existing Claude login.
+- `SUPERMUX_INSTALL_TOOLCHAINS=1` installs `bun` and `rustup` if they are missing.
+- Agents can read Git SSH keys and other secrets from 1Password through a read-only service account: [`docs/SECRETS_1PASSWORD.md`](docs/SECRETS_1PASSWORD.md).
 
 ### TLS
 
-The service binds `127.0.0.1` and speaks plain HTTP. Put it behind TLS one of two ways:
-
-1. **Reverse proxy** (nginx, Caddy) terminating at `http://localhost:<SUPERMUX_INTERNAL_PORT>` (default `8824`). See **WebSocket origins** below; a proxied hostname usually needs an `extra_origins` entry.
-2. **`tailscale serve`**: set `SUPERMUX_USE_TAILSCALE=1` and `deploy.sh` runs `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` to terminate TLS and proxy to the loopback port.
+supermux listens on `127.0.0.1` over plain HTTP. Put TLS in front with a reverse proxy (nginx, Caddy) to `http://localhost:8824`, or with `tailscale serve` (`SUPERMUX_USE_TAILSCALE=1`).
 
 ### WebSocket origins
 
-supermux checks the browser's `Origin` header on every WebSocket upgrade and closes non-matching connections with code `1008 "origin not allowed"`. The built-in allowlist covers `localhost`, `127.0.0.1`/`::1`, private-LAN IPv4 ranges, `*.ts.net` (Tailscale), and the server's own bind address. If you reach supermux by a hostname that isn't one of those (a reverse-proxy domain, an internal DNS name), add it to `extra_origins` in `~/.supermux/config.toml`:
+WebSocket upgrades from an unknown `Origin` are closed with code 1008. Localhost, private LAN ranges, `*.ts.net` and the bind address are allowed. Add other hostnames in `~/.supermux/config.toml` and restart:
 
 ```toml
 bind = "127.0.0.1:8824"
 extra_origins = ["supermux.corp.example", "box-12.internal.example"]
 ```
 
-Exact host match only (no wildcards). Restart the service after editing.
-
 ### Company isolation
 
-Company bots run in an OS jail (Landlock on Linux, Seatbelt on macOS) whose allow-list is deliberately narrow: the company folder, the agent homes `~/.claude` and `~/.codex` (each provider keeps its credentials, lock files and state there, and rotates its token by renaming into that dir), `/tmp` and the toolchains. `isolation_mode` in `config.toml` sets the policy — `best-effort` (default, fails open with a warning where the kernel cannot enforce), `strict-required` (refuse to start a company bot unless the jail is enforced) or `off`.
+Company bots run in an OS sandbox (Landlock on Linux, Seatbelt on macOS) that allows the company folder, `~/.claude`, `~/.codex`, `/tmp` and the toolchains. `isolation_mode` in `config.toml` is `best-effort` (default; warns and continues where the kernel can't enforce it), `strict-required` (refuses to start a company bot without the sandbox) or `off`.
 
-A bot that legitimately needs more — a fleet-admin bot that must read the operator's `~/.ssh` and `~/.config/gh` — gets it per company, not by switching the jail off for everyone:
+A company that needs more access gets it per company:
 
 ```toml
 # ~/.supermux/config.toml
 [[company_isolation]]
-company = "canary"                        # the company slug (its folder name under companies/)
-read_only = ["~/.ssh", "~/.config/gh"]    # read (+exec) only
-read_write = []                           # read + write
+company = "ops"                           # the company's folder name under companies/
+read_only = ["~/.ssh", "~/.config/gh"]    # read and execute
+read_write = []
 ```
 
-Sibling companies keep the default list. Entries are checked on their real (canonical) path and refused with a logged reason when they are relative, contain `..`, do not exist yet, resolve through a symlink, are `/` or the home dir (or an ancestor of it), sit at/under/above the supermux data dir (`~/.supermux` by default: auth token, DB, vault), or point into another company's tree (or the companies root itself). `config.toml` is read once when supermux starts — restart the service after editing it; each company bot is then confined with the new list at its next (re)start.
+Paths are refused (with a logged reason) when they are relative, contain `..`, don't exist, go through a symlink, are `/` or the home directory, touch the supermux data directory, or point into another company. The file is read at startup: restart the service, then restart the company's bots.
 
 ### Verify
 
 ```bash
-curl -sf http://127.0.0.1:<SUPERMUX_INTERNAL_PORT>/api/health
+curl -sf http://127.0.0.1:8824/api/health
 journalctl -u supermux -n 50
 ```
-
-Public routes include `/api/health`, the PWA shell, and the issue iCal feed. Browser-extension pairing and feedback use their own narrowly scoped capabilities; dashboard APIs require the owner bearer or an authorized human session.
 
 </details>
 
 <details>
-<summary><strong>Push notifications setup</strong></summary>
+<summary><strong>Push notifications</strong></summary>
 
-The PWA's iOS push works out of the box with a placeholder VAPID contact. To use your own `mailto:`, set `push_sub = "mailto:you@your-domain"` in `~/.supermux/config.toml`, or export `SUPERMUX_PUSH_SUB`. Settings → Notifications has a **Send test** button to confirm delivery before you trust it for real alerts.
+Push works out of the box with a placeholder VAPID contact. To use your own, set `push_sub = "mailto:you@your-domain"` in `~/.supermux/config.toml` or export `SUPERMUX_PUSH_SUB`. Settings → Notifications has a Send test button.
 
-iOS specifics: Safari only allows push from installed home-screen PWAs, so add to home screen first, then grant notification permission inside the installed app.
+On iOS, Safari only allows push for web apps added to the home screen: add supermux to the home screen first, then allow notifications inside the installed app.
 
 </details>
 
----
+<details>
+<summary><strong>Architecture</strong></summary>
+
+- Backend: Rust (`axum`, `tokio`, `sqlx` with SQLite) in `server/`.
+- Frontend: TypeScript, React and a Vite PWA in `web/`, embedded in the binary.
+- Sessions: local sessions run in a built-in pty holder that survives restarts; remote hosts and agent teams use tmux.
+- Live data: WebSockets for terminal streams, server-sent events for everything else.
+
+More in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+</details>
 
 ## Contributing
 
-Issues, ideas, screenshots of your dashboard with 14 Claude sessions: all welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup. Security issues: please report privately via [`SECURITY.md`](SECURITY.md). PRs land via review; CI runs on every push to `main`. Heavy code paths (sessions, ws, scheduler, board) have inline `#[cfg(test)]` tests plus integration tests under `server/tests/`. The frontend is type-checked end-to-end with `tsc -b` and uses Playwright for e2e smoke.
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the development setup; report security issues privately through [`SECURITY.md`](SECURITY.md). CI runs the Rust tests (unit tests plus integration tests in `server/tests/`), a TypeScript build and Playwright smoke tests.
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). Third-party dependency licenses are summarized in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+MIT, see [`LICENSE`](LICENSE). Third-party licenses are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
