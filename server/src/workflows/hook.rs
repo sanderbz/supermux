@@ -260,8 +260,9 @@ struct CreateBody {
     /// A concrete expression from `workflows::parser`'s grammar. The agent does
     /// the natural-language parsing; the server never guesses.
     schedule_expr: String,
-    /// The legacy spelling: `disable` (default) or `notify`. `command:…` is
-    /// refused here. Kept because the skill an agent has already read teaches
+    /// The legacy spelling: `disable`, `notify` or `none`. Left out, it is
+    /// `disable` for a one-shot and `none` for a recurring workflow (see
+    /// [`default_done_action`]). `command:…` is refused here. Kept because the skill an agent has already read teaches
     /// this field, and a live agent cannot re-read the skill.
     #[serde(default)]
     done_action: Option<String>,
@@ -372,7 +373,11 @@ async fn create_handler(
 
     // G2: a session token may not become host command execution, nor an outward
     // send. Both spellings land on the same typed enum, through the hook parser.
-    let on_complete = hook_completion(body.done_action.as_deref(), body.on_complete.as_ref())?;
+    let on_complete = hook_completion(
+        body.done_action.as_deref(),
+        body.on_complete.as_ref(),
+        &body.schedule_expr,
+    )?;
 
     // The cap, BEFORE the insert. Counted over live rows for this session only —
     // one agent filling its own quota must not stop another from scheduling.
@@ -568,18 +573,84 @@ async fn delete_handler(
 fn hook_completion(
     done_action: Option<&str>,
     on_complete: Option<&Value>,
+    schedule_expr: &str,
 ) -> Result<Value, AppError> {
     if let Some(v) = on_complete.filter(|v| !v.is_null()) {
         let action = complete::parse_for_hook(&v.to_string())?;
         return Ok(serde_json::to_value(action).unwrap_or_else(|_| json!({ "kind": "none" })));
     }
-    let a = done_action.unwrap_or("disable");
+    let a = done_action.unwrap_or_else(|| default_done_action(schedule_expr));
     match a {
         "disable" => Ok(json!({ "kind": "disable" })),
         "notify" => Ok(json!({ "kind": "notify" })),
         "none" => Ok(json!({ "kind": "none" })),
         _ => Err(AppError::BadRequest(
-            "done_action must be 'disable' or 'notify' on this endpoint".into(),
+            "done_action must be 'disable', 'notify' or 'none' on this endpoint".into(),
         )),
+    }
+}
+
+/// The completion an agent gets when it names none.
+///
+/// A one-shot (`in 20m`) turns itself off once it has run, which is what an
+/// agent scheduling a follow-up means. A recurring workflow (`every 1h`,
+/// `daily at 09:00`) keeps its cadence: `none`. Before this default depended on
+/// the kind, every agent-made recurring workflow got `disable`, and since the
+/// engine applies `on_complete` after EVERY run, an hourly check stopped after
+/// its first run without anyone noticing.
+///
+/// A cron pinned to one calendar date (`0 10 29 10 *`) is recurring to the
+/// parser — it would fire again next year — but agents write it to mean "once,
+/// at that moment", so it keeps `disable`. An expression the parser refuses
+/// also gets `disable`; `create` turns it into a 400 anyway.
+fn default_done_action(schedule_expr: &str) -> &'static str {
+    match super::parser::parse(schedule_expr, chrono::Utc::now()) {
+        Ok(p) if p.sched_type == "recurring" && !is_date_pinned_cron(schedule_expr) => "none",
+        _ => "disable",
+    }
+}
+
+/// A bare 5-field cron whose day-of-month AND month are both one literal number.
+fn is_date_pinned_cron(expr: &str) -> bool {
+    let f: Vec<&str> = expr.split_whitespace().collect();
+    f.len() == 5 && f[2].parse::<u32>().is_ok() && f[3].parse::<u32>().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recurring_cadence_defaults_to_none_and_a_one_shot_to_disable() {
+        let recurring = [
+            "every 1h",
+            "every 30m",
+            "daily at 09:15",
+            "every weekday at 08:00",
+            "weekly on monday at 09:00",
+            "monthly on 1 at 09:00",
+            "*/15 * * * *",
+            "0 8 * * 1-5",
+            "every morning",
+        ];
+        for recurring in recurring {
+            assert_eq!(default_done_action(recurring), "none", "{recurring}");
+        }
+        for once in ["in 20m", "in 2h", "in 1d", "0 10 29 10 *", "30 7 11 11 *"] {
+            assert_eq!(default_done_action(once), "disable", "{once}");
+        }
+        assert_eq!(default_done_action("not a schedule"), "disable");
+    }
+
+    #[test]
+    fn an_explicit_done_action_still_wins_over_the_default() {
+        let v = hook_completion(Some("disable"), None, "every 1h").unwrap();
+        assert_eq!(v, json!({ "kind": "disable" }));
+        let v = hook_completion(Some("notify"), None, "in 20m").unwrap();
+        assert_eq!(v, json!({ "kind": "notify" }));
+        let v = hook_completion(None, None, "every 1h").unwrap();
+        assert_eq!(v, json!({ "kind": "none" }));
+        let v = hook_completion(None, None, "in 20m").unwrap();
+        assert_eq!(v, json!({ "kind": "disable" }));
     }
 }

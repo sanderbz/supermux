@@ -22,9 +22,11 @@ the deploy"), or a reminder to yourself before you hand back.
   colleague; if that is what the human wants, say so rather than trying.
 - **You can only deliver a PROMPT.** Not a shell command, not a booted session,
   not a permission bypass. Asking for any of those is a 400.
-- **`done_action` may only be `disable` or `notify`.** `disable` turns the
-  schedule off after it has run (the right answer for a one-shot); `notify` pings
-  the human. Anything else is a 400.
+- **`done_action` may only be `disable`, `notify` or `none`.** `disable` turns
+  the schedule off after it has run; `notify` pings the human; `none` does
+  nothing. Anything else is a 400. Leave it out and you get `disable` for a
+  one-shot (`in 20m`, or a cron pinned to one date) and `none` for a recurring
+  schedule, so an `every 1h` check keeps running.
 - **There is a cap of 20 live schedules per session.** Over it you get a 429.
   That is not a retry — delete one first, or tell the human you are at the limit.
 - **You can pause any schedule that targets you, and delete the ones you
@@ -102,9 +104,11 @@ For something that should happen once and then stop, use a relative expression:
 supermux-schedule "CI follow-up" "in 20m" "Check whether the CI run on this branch finished, and report the result."
 ```
 
-`done_action` defaults to `disable`, which turns the schedule off after it has
-run — the right answer for a one-shot. To set it (or any other field the three
-arguments do not cover) hand over the whole body:
+For a one-shot `done_action` defaults to `disable`, which turns the schedule off
+after it has run. A recurring schedule (`every 1h`, `daily at 09:00`) defaults to
+`none` and keeps its cadence; **never pass `disable` on one you want to keep
+running**, or it stops after its first run. To set it (or any other field the
+three arguments do not cover) hand over the whole body:
 
 ```bash
 supermux-schedule --json '{"title":"Nightly release watch","schedule_expr":"daily at 21:00","prompt":"Check the release job; if it is red, say what broke.","done_action":"notify"}'

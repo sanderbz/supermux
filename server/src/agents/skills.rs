@@ -764,7 +764,11 @@ mod tests {
 
         // The boundaries the server enforces, stated in the agent's own terms.
         assert!(md.contains("YOUR OWN session"), "must state the scoping rule");
-        assert!(md.contains("`disable` or `notify`"), "must state the done_action rule");
+        assert!(md.contains("`disable`, `notify` or `none`"), "must state the done_action rule");
+        assert!(
+            md.contains("`none` for a recurring"),
+            "must say a recurring schedule keeps running by default"
+        );
         assert!(md.contains("20 live schedules"), "must state the cap");
         for verb in ["supermux-schedule list", "supermux-schedule disable", "supermux-schedule delete"] {
             assert!(md.contains(verb), "must teach {verb}");

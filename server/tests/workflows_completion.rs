@@ -321,3 +321,52 @@ fn the_connector_instruction_is_built_only_from_typed_fields() {
     assert!(!round.contains("text"), "no free-text field exists: {round}");
     assert_eq!(complete::parse(&round).unwrap(), action);
 }
+
+// ── a workflow that turns itself off says so ────────────────────────────────
+
+/// `disable` used to switch a workflow off with no trace, which is how an
+/// agent's hourly check stopped after one run without anyone seeing it. The
+/// engine now writes a `workflow.disable` ledger row as `scheduler` — once,
+/// not again when the row is already off.
+#[tokio::test]
+async fn a_self_disable_writes_one_ledger_row_as_the_scheduler() {
+    let (state, dir) = new_state().await;
+    bot(&state, &dir, "scout", None).await;
+    let (_, run) = finished_run(&state, "WF-hourly", "scout", r#"{"kind":"disable"}"#).await;
+    sqlx::query(
+        "UPDATE workflows SET trigger_kind = 'recurring', schedule_expr = 'every 1h' WHERE id = ?",
+    )
+        .bind("WF-hourly")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    let outcome = complete::fire(&state, &run, &CompletionAction::Disable).await;
+    assert!(matches!(outcome, CompletionOutcome::Disabled), "{outcome:?}");
+    let wf = db::workflows::get(&state.pool, "WF-hourly").await.unwrap().unwrap();
+    assert_eq!(wf.enabled, 0);
+
+    let rows: Vec<_> = db::audit::list(&state.pool, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == "workflow.disable" && e.target == "WF-hourly")
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].actor, "scheduler");
+    let detail: serde_json::Value = serde_json::from_str(&rows[0].detail).unwrap();
+    assert_eq!(detail["reason"], "on_complete");
+    assert_eq!(detail["trigger"], "recurring");
+    assert_eq!(detail["session"], "scout");
+
+    // Firing again on a row that is already off adds nothing.
+    complete::fire(&state, &run, &CompletionAction::Disable).await;
+    let again = db::audit::list(&state.pool, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == "workflow.disable" && e.target == "WF-hourly")
+        .count();
+    assert_eq!(again, 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
