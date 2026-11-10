@@ -202,7 +202,11 @@ pub async fn fire(
         CompletionAction::None => CompletionOutcome::Nothing,
 
         CompletionAction::Disable => {
+            if wf.enabled == 0 {
+                return CompletionOutcome::Disabled;
+            }
             let _ = db::workflows::set_enabled(&state.pool, &wf.id, false).await;
+            note_self_disable(state, &wf, run.id).await;
             CompletionOutcome::Disabled
         }
 
@@ -409,6 +413,57 @@ async fn same_company(state: &AppState, wf: &Workflow, target: &str) -> Result<(
         Ok(_) => Err(format!("'{target}' is not a bot this workflow can reach")),
         Err(e) => Err(format!("could not look up '{target}': {e}")),
     }
+}
+
+/// The engine just turned `wf` off through its own `Disable` completion.
+///
+/// That used to leave no trace at all: no ledger row and no notice, so an
+/// agent's hourly check could stop after its first run and nobody noticed for
+/// a day. Now it always writes a `workflow.disable` row with `scheduler` as the
+/// actor and repaints the list. A RECURRING workflow also pushes once, because
+/// its stopping is the surprise; a one-shot ending is what was asked for, and
+/// a push for each of those would be noise.
+async fn note_self_disable(state: &AppState, wf: &Workflow, run_id: i64) {
+    let _ = db::audit::log(
+        &state.pool,
+        "scheduler",
+        "workflow.disable",
+        &wf.id,
+        json!({
+            "session": wf.session,
+            "title": wf.title,
+            "reason": "on_complete",
+            "trigger": wf.trigger_kind,
+            "run_id": run_id,
+        }),
+    )
+    .await;
+    if let Ok(Some(updated)) = db::workflows::get(&state.pool, &wf.id).await {
+        super::emit_workflows(state, &updated, "updated");
+    }
+    if wf.trigger_kind != "recurring" {
+        return;
+    }
+    let st = state.clone();
+    let title = wf.title.clone();
+    let session = wf.session.clone();
+    tokio::spawn(async move {
+        let _ = crate::push::send_push_for(
+            &st,
+            crate::db::push::NotifCategory::ScheduleFinished,
+            &crate::notify::PushPayload::simple(
+                format!("workflow '{title}' turned itself off"),
+                format!(
+                    "'{title}' ({session}) ran and then switched itself off: its completion is \
+                     'disable'. It will not run again until it is turned back on."
+                ),
+                "/workflows",
+                crate::notify::Tier::Schedule,
+            ),
+            None,
+        )
+        .await;
+    });
 }
 
 /// A completion action that did not happen: mark the run `error` with a note

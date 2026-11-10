@@ -444,7 +444,9 @@ async fn a_session_scheduling_its_own_prompt_lands_and_narrates_itself() {
     assert_eq!(mine.len(), 1);
     let w = &mine[0];
     assert_eq!(w.session, "b4-a", "forced, whatever was asked for");
-    assert_eq!(w.on_complete, r#"{"kind":"disable"}"#);
+    // A recurring cadence with no done_action keeps running: `none`, not
+    // `disable` — `disable` would stop it after its first run.
+    assert_eq!(w.on_complete, r#"{"kind":"none"}"#);
     assert!(w.next_run.is_some(), "the cadence parsed and a first fire is armed");
     let steps = db::workflows::steps_for(&h.state.pool, &w.id).await.unwrap();
     assert_eq!(steps.len(), 1);
@@ -482,6 +484,41 @@ async fn notify_is_the_other_done_action_an_agent_may_choose() {
     let (status, resp) = create_with(&h, &[(HOOK_HEADER, a)], body).await;
     assert_eq!(status, StatusCode::CREATED, "{resp}");
     assert_eq!(workflows_for(&h, "b4-a").await[0].on_complete, r#"{"kind":"notify"}"#);
+    h.cleanup();
+}
+
+/// The default completion follows the kind of schedule: a one-shot (and a cron
+/// pinned to one date, which agents use as a one-shot) turns itself off after
+/// its run; a recurring cadence does not. An explicit `disable` on a recurring
+/// workflow is still honoured.
+#[tokio::test]
+async fn the_default_done_action_follows_the_kind_of_schedule() {
+    let h = spawn_harness().await;
+    let a = make_session(&h, "b4-a").await;
+    let cases = [
+        ("every 1h", None, r#"{"kind":"none"}"#),
+        ("daily at 09:15", None, r#"{"kind":"none"}"#),
+        ("in 20m", None, r#"{"kind":"disable"}"#),
+        ("0 10 29 10 *", None, r#"{"kind":"disable"}"#),
+        ("every 30m", Some("disable"), r#"{"kind":"disable"}"#),
+    ];
+    for (i, (expr, done, want)) in cases.iter().enumerate() {
+        let mut body = valid("b4-a");
+        body["title"] = json!(format!("case {i}"));
+        body["schedule_expr"] = json!(expr);
+        if let Some(d) = done {
+            body["done_action"] = json!(d);
+        }
+        let (status, resp) = create_with(&h, &[(HOOK_HEADER, a.clone())], body).await;
+        assert_eq!(status, StatusCode::CREATED, "{expr}: {resp}");
+        let id = resp["data"]["workflow"]["id"].as_str().unwrap_or_default().to_string();
+        let w = workflows_for(&h, "b4-a")
+            .await
+            .into_iter()
+            .find(|w| w.title == format!("case {i}"))
+            .unwrap_or_else(|| panic!("{expr}: not stored ({id})"));
+        assert_eq!(w.on_complete, *want, "{expr} with done_action {done:?}");
+    }
     h.cleanup();
 }
 
