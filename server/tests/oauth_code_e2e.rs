@@ -868,3 +868,121 @@ async fn the_callback_is_public_and_start_complete_are_not() {
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     std::fs::remove_dir_all(&h.data_dir).ok();
 }
+
+// ── the running session's token (headersHelper) ────────────────────────────────
+
+/// `POST /api/hook/mcp-token` as the pane's `headersHelper` does it.
+async fn mcp_token(h: &Harness, session: &str, hook_token: Option<&str>, connector: &str) -> (StatusCode, HeaderMap, Value) {
+    let mut b = Request::builder().method(Method::POST).uri("/api/hook/mcp-token");
+    if let Some(t) = hook_token {
+        b = b.header("X-Supermux-Hook-Token", t);
+    }
+    let req = b
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "session": session, "connector": connector }).to_string()))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// Push the sealed expiry to `at` (unix seconds) — a launch that happened `now - at`
+/// ago with a 24 h token is simply a token whose expiry lies in the past.
+async fn set_expiry(h: &Harness, secret_ref: &str, at: i64) {
+    let mut fields = vault_fields(h, secret_ref).await;
+    fields.insert("MCP_OAUTH_EXPIRES_AT".into(), at.to_string());
+    reseal(h, secret_ref, &fields).await;
+}
+
+#[tokio::test]
+async fn a_session_running_past_its_launch_token_gets_a_fresh_one_from_its_headers_helper() {
+    let h = harness().await;
+    full_flow(&h, "bot").await;
+    db::sessions::ensure_runtime(&h.state.pool, "bot", "hook-bot").await.unwrap();
+
+    // Launch: the entry keeps the static launch header AND names the helper.
+    let fin = connector_config::assemble(&h.state, "bot").await.unwrap().expect("active");
+    let entry = mcp_entry(&fin);
+    assert_eq!(entry["headers"]["Authorization"], json!("Bearer ${SUPERMUX_MCP_TOKEN_REMOTE_OAUTH}"));
+    assert_eq!(
+        entry["headersHelper"],
+        json!(oauth_code::headers_helper_command(&h.data_dir, ID)),
+        "the running bot asks supermux for the current token"
+    );
+    assert!(entry["headersHelper"].as_str().unwrap().ends_with("/bin/supermux-mcp-headers remote-oauth"));
+    assert_eq!(fin.env.get("SUPERMUX_MCP_TOKEN_REMOTE_OAUTH").map(String::as_str), Some("at-1"));
+
+    // While the launch token is valid the helper hands back that same token.
+    let (st, hd, v) = mcp_token(&h, "bot", Some("hook-bot"), ID).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["headers"]["Authorization"], json!("Bearer at-1"));
+    assert_eq!(hd.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(h.mock.lock().unwrap().refresh_calls, 0);
+
+    // 25 hours later: the bot never restarted, so its env still holds at-1, which
+    // expired an hour ago. The helper (run by Claude Code on the server's 401)
+    // gets a REFRESHED token, sealed back into the vault for every other holder.
+    let acct = connectors::accounts_for_connector(&h.state.pool, ID).await.unwrap().remove(0);
+    let secret_ref = acct.secret_ref.clone().unwrap();
+    set_expiry(&h, &secret_ref, chrono::Utc::now().timestamp() - 3600).await;
+    let (st, _, v) = mcp_token(&h, "bot", Some("hook-bot"), ID).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["headers"]["Authorization"], json!("Bearer at-2"), "a fresh token, not the launch one");
+    assert_eq!(h.mock.lock().unwrap().refresh_calls, 1);
+    let fields = vault_fields(&h, &secret_ref).await;
+    assert_eq!(fields["MCP_OAUTH_ACCESS_TOKEN"], "at-2");
+    assert_eq!(fields["MCP_OAUTH_REFRESH_TOKEN"], "rt-2", "rotated refresh token sealed");
+    assert!(fields["MCP_OAUTH_EXPIRES_AT"].parse::<i64>().unwrap() > chrono::Utc::now().timestamp());
+    // Against the server: the launch token is dead, the helper's token works.
+    h.mock.lock().unwrap().access.remove("at-1");
+    let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
+    let client = reqwest::Client::new();
+    for (bearer, want) in [("at-1", 401u16), ("at-2", 200)] {
+        let r = client.post(format!("{}/mcp", h.base)).bearer_auth(bearer).json(&init).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), want, "{bearer}");
+    }
+
+    // A second ask inside the new lifetime does not refresh again.
+    let (st, _, v) = mcp_token(&h, "bot", Some("hook-bot"), ID).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["headers"]["Authorization"], json!("Bearer at-2"));
+    assert_eq!(h.mock.lock().unwrap().refresh_calls, 1);
+
+    // A dead sign-in is a readable 409 (the helper exits non-zero, Claude Code
+    // keeps the static header) and the account says so.
+    set_expiry(&h, &secret_ref, chrono::Utc::now().timestamp() - 60).await;
+    h.mock.lock().unwrap().refuse_refresh = true;
+    let (st, _, _) = mcp_token(&h, "bot", Some("hook-bot"), ID).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let acct = connectors::account_get(&h.state.pool, &acct.id).await.unwrap().unwrap();
+    assert_eq!(acct.health.as_deref(), Some("expired"));
+    std::fs::remove_dir_all(&h.data_dir).ok();
+}
+
+#[tokio::test]
+async fn the_headers_helper_endpoint_answers_only_the_granted_session_with_its_own_hook_token() {
+    let h = harness().await;
+    full_flow(&h, "bot-a").await;
+    db::sessions::ensure_runtime(&h.state.pool, "bot-a", "hook-a").await.unwrap();
+    db::sessions::ensure_runtime(&h.state.pool, "bot-b", "hook-b").await.unwrap();
+
+    // No header, or another session's token: 401 — no existence oracle.
+    assert_eq!(mcp_token(&h, "bot-a", None, ID).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(mcp_token(&h, "bot-a", Some("hook-b"), ID).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(mcp_token(&h, "nobody", Some("hook-a"), ID).await.0, StatusCode::UNAUTHORIZED);
+    // bot-b authenticates fine but holds no grant: 404, and no token in the body.
+    let (st, _, v) = mcp_token(&h, "bot-b", Some("hook-b"), ID).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(!v.to_string().contains("at-1"));
+    // bot-a asking for a connector it was not granted: 404.
+    assert_eq!(mcp_token(&h, "bot-a", Some("hook-a"), "some-other").await.0, StatusCode::NOT_FOUND);
+    // The dashboard bearer is not a hook token.
+    assert_eq!(mcp_token(&h, "bot-a", Some(TOKEN), ID).await.0, StatusCode::UNAUTHORIZED);
+    // The granted session with its own token: 200.
+    let (st, _, v) = mcp_token(&h, "bot-a", Some("hook-a"), ID).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["headers"]["Authorization"], json!("Bearer at-1"));
+    std::fs::remove_dir_all(&h.data_dir).ok();
+}

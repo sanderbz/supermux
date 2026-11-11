@@ -33,6 +33,15 @@
 //! Only the short-lived access token enters the child env; the refresh token, the
 //! expiry and the meta never leave the vault.
 //!
+//! A bot outlives that launch token (InhouseSEO issues 24 h tokens; a bot runs
+//! for days). So the entry also carries `headersHelper` =
+//! `<data_dir>/bin/supermux-mcp-headers <id>`: Claude Code runs it on every
+//! connect and again on a 401/403 before retrying the call once, and its headers
+//! override the static one (verified on 2.1.322). The wrapper asks
+//! `POST /api/hook/mcp-token` (per-session hook token + the session's own grant)
+//! for the CURRENT token, refreshed through [`ensure_fresh`]. The static header
+//! stays as the fallback when the helper cannot run.
+//!
 //! **Secret hygiene.** `CodeFlow`/`TokenResponse` print `<redacted>` for every
 //! secret field; DCR responses and token-endpoint error bodies go through
 //! [`crate::log_redact::redact_secrets`] before any log line; the authorize URL is
@@ -2048,6 +2057,17 @@ pub async fn apply_to_launch(
         if obj.get("type").is_none() {
             obj.insert("type".to_string(), Value::String("http".to_string()));
         }
+        // The static header above holds the token minted at launch, and a
+        // session outlives it (InhouseSEO: 24 h). Claude Code runs
+        // `headersHelper` on every connect AND again on a 401/403 before it
+        // retries the call once, and its headers override the static ones
+        // (verified on 2.1.322). So a long-running bot asks supermux for the
+        // CURRENT token instead of holding a dead one; the static header stays
+        // as the fallback for a helper that cannot run.
+        obj.insert(
+            "headersHelper".to_string(),
+            Value::String(headers_helper_command(&state.config.data_dir, &grant.connector_id)),
+        );
     }
     let now = chrono::Utc::now().timestamp();
     let launch = match outcome {
@@ -2058,6 +2078,98 @@ pub async fn apply_to_launch(
     (emit, only, launch)
 }
 
+// ── the running session's token (headersHelper) ─────────────────────────────────
+
+/// The `headersHelper` wrapper, installed beside the other hook CLIs in
+/// `<data_dir>/bin` by [`crate::hook_cli::install_scripts`].
+pub const HEADERS_HELPER_WRAPPER: &str = "supermux-mcp-headers";
+
+/// `'<data_dir>/bin/supermux-mcp-headers' <connector_id>` — the command Claude
+/// Code runs (through a shell) for a brokered connector's headers. The path is
+/// single-quoted for the shell; the id needs no quoting because
+/// [`valid_connector_id`] admits no shell metacharacters, but it is quoted too
+/// for an id stored before that rule.
+pub fn headers_helper_command(data_dir: &std::path::Path, connector_id: &str) -> String {
+    let path = data_dir.join("bin").join(HEADERS_HELPER_WRAPPER);
+    format!("{} {}", sh_quote(&path.to_string_lossy()), sh_quote(connector_id))
+}
+
+fn sh_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The current access token for `connector_id` as `session` holds it —
+/// refreshed through [`ensure_fresh`] when it is about to expire, exactly as a
+/// launch would. Only a session that holds an enabled grant (own, company or
+/// `*`) of a brokered sign-in gets one; it is the same token that session
+/// already received in its launch env, so this adds no reach, only freshness.
+pub async fn current_token_for(
+    state: &AppState,
+    session: &str,
+    connector_id: &str,
+) -> Result<String, AppError> {
+    let no_grant = || AppError::NotFound(format!("this session holds no signed-in '{connector_id}' connector"));
+    let grants = connectors::grants_for_session(&state.pool, session).await.map_err(db_err)?;
+    let grant = grants.into_iter().find(|g| g.connector_id == connector_id).ok_or_else(no_grant)?;
+    let secret_ref = grant.secret_ref.clone().ok_or_else(no_grant)?;
+    let vault = Vault::open(&state.config.data_dir)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("vault unavailable: {e}")))?;
+    let row = connectors::vault_get(&state.pool, &secret_ref).await.map_err(db_err)?.ok_or_else(no_grant)?;
+    let fields = vault
+        .open_fields(&row.fields_enc, &row.nonce)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("sealed sign-in unreadable: {e}")))?;
+    if !fields.contains_key(ACCESS_TOKEN_FIELD) {
+        return Err(no_grant());
+    }
+    let (fields, outcome) = ensure_fresh(state, &vault, &secret_ref, fields).await;
+    if let Some(aref) = grant.account_ref.as_deref() {
+        let _ = connectors::account_mark_used(&state.pool, aref, chrono::Utc::now().timestamp()).await;
+    }
+    let now = chrono::Utc::now().timestamp();
+    match outcome {
+        FreshOutcome::Fresh | FreshOutcome::Refreshed => {}
+        FreshOutcome::NoRefreshToken if is_fresh(&fields, now) => {}
+        FreshOutcome::RefreshFailed(why) => return Err(AppError::Conflict(why)),
+        _ => return Err(AppError::Conflict("Sign-in expired — reconnect".into())),
+    }
+    let token = fields.get(ACCESS_TOKEN_FIELD).cloned().unwrap_or_default();
+    if token.is_empty() {
+        return Err(no_grant());
+    }
+    Ok(token)
+}
+
+#[derive(Debug, Deserialize)]
+struct McpTokenBody {
+    session: String,
+    connector: String,
+}
+
+/// `POST /api/hook/mcp-token {session, connector}` — the `headersHelper`
+/// endpoint. NO bearer layer: auth is the per-session `X-Supermux-Hook-Token`
+/// (session A's token never authenticates B). Answers
+/// `{"headers":{"Authorization":"Bearer …"}}`; the token is never logged.
+async fn mcp_token_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<McpTokenBody>,
+) -> Result<Response, AppError> {
+    crate::hooks::verify_hook_token(&state, &body.session, &headers).await?;
+    let token = current_token_for(&state, &body.session, &body.connector).await?;
+    let mut resp = Json(json!({ "headers": { "Authorization": format!("Bearer {token}") } })).into_response();
+    resp.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// The pane-side router (merged outside the bearer layer, like every `/api/hook/*`).
+pub fn hook_router_for(state: AppState) -> Router {
+    Router::new().route("/api/hook/mcp-token", post(mcp_token_handler)).with_state(state)
+}
+
 // ── tests ───────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2066,6 +2178,14 @@ mod tests {
 
     fn prod() -> UrlPolicy {
         UrlPolicy::default()
+    }
+
+    #[test]
+    fn headers_helper_command_names_the_wrapper_and_quotes_for_the_shell() {
+        let plain = headers_helper_command(std::path::Path::new("/home/x/.supermux"), "pmcp-inhouseseo");
+        assert_eq!(plain, "/home/x/.supermux/bin/supermux-mcp-headers pmcp-inhouseseo");
+        let spaced = headers_helper_command(std::path::Path::new("/data/my box"), "a'b");
+        assert_eq!(spaced, "'/data/my box/bin/supermux-mcp-headers' 'a'\\''b'");
     }
 
     #[test]

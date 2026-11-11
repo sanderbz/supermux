@@ -98,6 +98,10 @@ pub fn router(state: AppState) -> Router {
         // code and stashes the tokens in RAM only — the authenticated
         // `/oauth/complete` is what seals + grants. Uniform 302 on every failure.
         .merge(crate::connectors::oauth_code::public_router_for(state.clone()))
+        // The brokered-OAuth `headersHelper` endpoint (`/api/hook/mcp-token`): a
+        // running bot's MCP client asks for the CURRENT token. NO bearer layer;
+        // per-session `X-Supermux-Hook-Token` + the session's own grant.
+        .merge(crate::connectors::oauth_code::hook_router_for(state.clone()))
         // Embedded SPA — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
         // assets or the SPA shell (with `window._SUPERMUX_AUTH_TOKEN` injected). The

@@ -322,7 +322,10 @@ pub fn install_scripts(data_dir: &Path) {
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "supermux-server".to_string());
-    for name in WRAPPERS {
+    // The `headersHelper` wrapper rides the same install but is NOT in
+    // [`WRAPPERS`]: Claude Code runs it for a brokered MCP server, the bot never
+    // types it, so it gets no `Bash(…)` allow rule.
+    for name in WRAPPERS.iter().copied().chain([crate::connectors::oauth_code::HEADERS_HELPER_WRAPPER]) {
         let path = bin_dir.join(name);
         let body = format!("#!/bin/sh\nexec \"{exe}\" __hook-cli {name} \"$@\"\n");
         if let Err(e) = crate::bot_memory::write_executable(&bin_dir, &path, &body) {
@@ -348,9 +351,55 @@ pub async fn run(argv: &[String]) -> Result<()> {
         println!("{}", version_line());
         return Ok(());
     }
+    if cmd == crate::connectors::oauth_code::HEADERS_HELPER_WRAPPER {
+        return run_headers_helper(argv.get(1..).unwrap_or(&[]))
+            .await
+            .map_err(|e| anyhow!("{cmd}: {e}"));
+    }
     run_inner(&cmd, argv.get(1..).unwrap_or(&[]))
         .await
         .map_err(|e| anyhow!("{cmd}: {e}"))
+}
+
+/// Client cap for the `headersHelper` call. Claude Code gives a helper about
+/// ten seconds; a refresh is one token-endpoint round trip, so stay under that.
+const HEADERS_HELPER_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// `supermux-mcp-headers <connector_id>` — Claude Code's `headersHelper` for a
+/// brokered-OAuth MCP server. Prints ONLY the headers object on stdout (that is
+/// the helper contract); every failure goes to stderr with a non-zero exit, and
+/// Claude Code then keeps the static launch header.
+async fn run_headers_helper(argv: &[String]) -> Result<()> {
+    let [connector] = argv else {
+        return Err(anyhow!("usage: {} <connector_id>", crate::connectors::oauth_code::HEADERS_HELPER_WRAPPER));
+    };
+    let url = env_required("SUPERMUX_URL")?;
+    let session = env_required("SUPERMUX_SESSION")?;
+    let token = env_required("SUPERMUX_HOOK_TOKEN")?;
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(is_loopback_url(&url))
+        .timeout(HEADERS_HELPER_TIMEOUT)
+        .build()
+        .map_err(|e| anyhow!("building http client: {e}"))?;
+    let res = client
+        .post(format!("{}/api/hook/mcp-token", url.trim_end_matches('/')))
+        .header(HOOK_TOKEN_HEADER, &token)
+        .json(&json!({ "session": session, "connector": connector }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("POST /api/hook/mcp-token: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| anyhow!("reading hook response: {e}"))?;
+    if !status.is_success() {
+        return Err(anyhow!("{status} from /api/hook/mcp-token — {text}"));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|e| anyhow!("unreadable answer: {e}"))?;
+    let headers = value
+        .get("headers")
+        .filter(|h| h.is_object())
+        .ok_or_else(|| anyhow!("answer carries no headers"))?;
+    println!("{headers}");
+    Ok(())
 }
 
 /// `supermux v0.7.9 (abc1234)` — the tag and short sha `build.rs` baked in.
