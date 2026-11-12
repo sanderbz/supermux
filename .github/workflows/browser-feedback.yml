@@ -13,7 +13,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   chromium:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: since Nov 2026 ubuntu-latest is 26.04, where
+    # Playwright 1.60 refuses to install chromium ("does not support chromium on
+    # ubuntu26.04-x64"). Back to ubuntu-latest once Playwright supports 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

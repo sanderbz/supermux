@@ -40,7 +40,11 @@ concurrency:
 jobs:
   build-server:
     name: server binary (debug, shared by the e2e shards)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: since Nov 2026 ubuntu-latest is 26.04, where
+    # Playwright 1.60 refuses to install chromium ("does not support chromium on
+    # ubuntu26.04-x64"). build-server is pinned with it so the binary's glibc
+    # matches the e2e runner. Back to ubuntu-latest once Playwright supports 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -75,7 +79,11 @@ jobs:
 
   e2e-full:
     name: e2e (full, incl. @extended — shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: since Nov 2026 ubuntu-latest is 26.04, where
+    # Playwright 1.60 refuses to install chromium ("does not support chromium on
+    # ubuntu26.04-x64"). build-server is pinned with it so the binary's glibc
+    # matches the e2e runner. Back to ubuntu-latest once Playwright supports 26.04.
+    runs-on: ubuntu-24.04
     needs: build-server
     timeout-minutes: 45
     strategy:
