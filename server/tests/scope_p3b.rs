@@ -1105,3 +1105,64 @@ async fn only_the_owner_moves_a_session_to_another_claude_login() {
     let row = db::sessions::get(&f.state.pool, "sess-a").await.unwrap().unwrap();
     assert_eq!(row.config_dir, account.to_string_lossy());
 }
+
+/// The same owner-only rule at CREATE: `config_dir` is granted read-write in
+/// the company jail, so a member naming any existing directory would widen
+/// their own bot's sandbox to it.
+#[tokio::test]
+async fn only_the_owner_creates_a_session_on_another_claude_login() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let account = f.root_a.join("other-login");
+    std::fs::create_dir_all(&account).unwrap();
+    let body = |name: &str| {
+        serde_json::json!({
+            "name": name,
+            "dir": f.root_a.to_string_lossy(),
+            "provider": "claude",
+            "config_dir": account.to_string_lossy(),
+        })
+        .to_string()
+    };
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sessions")
+                .header(header::COOKIE, format!("supermux_hsess={alice}"))
+                .header("x-supermux-csrf", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body("member-acct")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = status_body(resp).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member cannot pick the login");
+    assert!(
+        db::sessions::get(&f.state.pool, "member-acct").await.unwrap().is_none(),
+        "the refused create wrote nothing"
+    );
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sessions")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body("owner-acct")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = status_body(resp).await;
+    assert_eq!(status, StatusCode::CREATED, "the owner can");
+    let row = db::sessions::get(&f.state.pool, "owner-acct").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, account.to_string_lossy());
+}

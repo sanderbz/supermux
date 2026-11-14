@@ -126,7 +126,7 @@ supermux fits if you want all of it on your own server under an open-source lice
 - Workflows with schedules and completion actions.
 - Shared Chrome per company with Watch and Drive, and an option to keep sites signed in.
 - Invite colleagues through an in-app wizard: your own domain on Cloudflare with Google sign-in, or a temporary link.
-- A separate Claude account per session if you need one.
+- Several Claude logins on one host: one file decides which login new sessions use, and a single session can be pinned to its own.
 
 ### Running it
 
@@ -219,6 +219,44 @@ read_write = []
 ```
 
 Paths are refused (with a logged reason) when they are relative, contain `..`, don't exist, go through a symlink, are `/` or the home directory, touch the supermux data directory, or point into another company. The file is read at startup: restart the service, then restart the company's bots.
+
+### Several Claude logins
+
+A host can hold more than one Claude login, for example a personal and a work subscription. Each login gets its own Claude config dir, and one file says which of them new sessions use. Turn it on with one line and restart the service once:
+
+```toml
+# ~/.supermux/config.toml
+[provider_defaults]
+claude_accounts_dir = "/home/you/.claude-accounts"   # absolute path
+```
+
+Add a login as the service user. It shares everything except the login with your normal Claude home, so a session that switches still finds its conversations:
+
+```bash
+A=/home/you/.claude-accounts            # the same path as in config.toml
+mkdir -p -m 700 "$A/work"
+for x in projects CLAUDE.md commands skills agents plugins todos; do
+  [ -e ~/.claude/$x ] && ln -s ~/.claude/$x "$A/work/$x"
+done
+ln -s ~/.claude "$A/main"               # optional: a label for the login you already have
+CLAUDE_CONFIG_DIR="$A/work" claude      # sign in with the other account, finish the first-run screens, /exit
+```
+
+Switch the host by writing a label to `ACTIVE`. No restart is needed:
+
+```bash
+echo work > "$A/ACTIVE"                 # new sessions and restarts use "work"
+echo main > "$A/ACTIVE"                 # back to the normal login
+```
+
+- `ACTIVE` is read every time a Claude session starts. Sessions that are already running keep their login until they restart.
+- It applies to local Claude sessions without a login of their own. A session created with `config_dir` keeps it; remote hosts and Codex are not affected.
+- A label that points at your normal Claude home exports nothing, which is the same as having no `ACTIVE` file. A missing or bad label also falls back to the normal login.
+- An account dir whose `projects` is not your normal `~/.claude/projects` is skipped with a warning in the log, so a restart never comes up without its conversation.
+- Keep `settings.json` in an account dir a real file, not a link. supermux writes its status hooks there and creates the file if it is missing. To use your own Claude settings in that login, copy `~/.claude/settings.json` in.
+- Pin one session to a login (owner only, applies at its next restart, `""` returns it to the host default): `PATCH /api/sessions/<name>/config` with `{"config_dir": "/home/you/.claude-accounts/work"}`. It is refused when the session's conversation would not be found in that dir.
+- Company bots get read-write access to their account dir inside the sandbox. Only the owner can choose a session's login. Company members cannot, at create or later.
+- **macOS:** Claude Code keeps each login in the Keychain, under an entry tied to the exact `CLAUDE_CONFIG_DIR` string. Sign in with exactly `<claude_accounts_dir>/<label>`, as above: no trailing slash, no `~`, and no other path to the same folder. Otherwise the session starts logged out. On Linux the login is a file inside the dir.
 
 ### Verify
 
