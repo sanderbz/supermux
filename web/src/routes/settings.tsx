@@ -87,6 +87,7 @@ import { WorkflowsRow } from '@/components/settings/workflows-row'
 import { ImportedSchedulesSection } from '@/components/settings/imported-schedules'
 import { AuditLog } from '@/components/settings/audit-log'
 import { UpdatesSection } from '@/components/settings/updates-panel'
+import { ServerSection } from '@/components/settings/server-section'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -1344,6 +1345,8 @@ export function Settings() {
           <NotificationsSection />
 
           <UpdatesSection />
+
+          <ServerSection />
 
           <Section title="Model">
             <Row

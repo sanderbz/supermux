@@ -25,6 +25,7 @@ pub mod extract;
 pub mod files;
 pub mod hook_cli;
 pub mod hooks;
+pub mod host_power;
 pub mod hosts;
 pub mod http;
 pub mod isolation;
