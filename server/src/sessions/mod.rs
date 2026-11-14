@@ -2199,6 +2199,15 @@ async fn create_handler(
     //     cannot even learn another company exists by probing create).
     // Owner/admin (Scope::All) are unrestricted — any/no company as before.
     if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        // Which Claude login a bot boots on is the owner's decision, at create
+        // exactly as at PATCH /config: the dir is granted read-write inside the
+        // company jail, so a member naming any existing directory here would
+        // widen their own bot's sandbox to it. Members get the host default.
+        if input.config_dir.as_deref().is_some_and(|d| !d.trim().is_empty()) {
+            return Err(AppError::Forbidden(
+                "only the owner can choose which Claude login a session uses".into(),
+            ));
+        }
         match input.company_id {
             None => input.company_id = Some(hc),
             Some(c) if c == hc => {}
