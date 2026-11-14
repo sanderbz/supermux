@@ -130,7 +130,9 @@ pub struct Session {
     /// exported as `CLAUDE_CONFIG_DIR` in the launch line. The empty string
     /// means "use the daemon default", which is every pre-0041 row and every
     /// session created without the field. Validated on create
-    /// (`sessions::valid_config_dir`), never mutated afterwards.
+    /// (`sessions::valid_config_dir`); changed only through `PATCH .../config`
+    /// (applied at the next start). An empty value is resolved at launch against
+    /// `[provider_defaults] claude_accounts_dir` (see `sessions::claude_account`).
     #[serde(default)]
     pub config_dir: String,
 }
@@ -628,6 +630,11 @@ pub async fn set_tags(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result
 /// (`sessions::config_patch`) before it lands here, and injected as
 /// `--model <id>` at the next launch — so a change takes effect on restart, not
 /// under a live agent (the PATCH returns `restart_required`).
+/// Move a session to another Claude login (the `config_dir` column, migration
+/// 0041). Applied by the next start; `""` returns it to the host default.
+pub async fn set_config_dir(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "config_dir", value).await
+}
 pub async fn set_model(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "model", value).await
 }

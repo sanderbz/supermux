@@ -1054,3 +1054,54 @@ async fn scoped_human_fs_verbs_on_remote_or_foreign_sessions_are_404() {
     assert_eq!(st, StatusCode::OK, "the owner reaches any local path");
     assert!(f.root_b.join("owner-made").is_dir());
 }
+
+/// Which Claude login a bot boots on is the OWNER's call: the dir is granted
+/// read-write inside the company jail and carries that login's credentials. A
+/// scoped member may not move even their own company's bot; the owner may.
+#[tokio::test]
+async fn only_the_owner_moves_a_session_to_another_claude_login() {
+    let f = fixture().await;
+    let (alice, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let account = f.root_a.join("other-login");
+    std::fs::create_dir_all(&account).unwrap();
+    let body = serde_json::json!({ "config_dir": account.to_string_lossy() }).to_string();
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/sessions/sess-a/config")
+                .header(header::COOKIE, format!("supermux_hsess={alice}"))
+                .header("x-supermux-csrf", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = status_body(resp).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member cannot switch the login");
+    let row = db::sessions::get(&f.state.pool, "sess-a").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, "", "the refused PATCH wrote nothing");
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/sessions/sess-a/config")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = status_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "the owner can");
+    let row = db::sessions::get(&f.state.pool, "sess-a").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, account.to_string_lossy());
+}
