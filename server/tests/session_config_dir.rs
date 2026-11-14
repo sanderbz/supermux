@@ -360,3 +360,133 @@ async fn recall_reads_the_sessions_config_dir() {
     let _ = std::fs::remove_dir_all(work);
     let _ = std::fs::remove_dir_all(data);
 }
+
+// ── PATCH .../config {config_dir}: move an existing session to another login ──
+
+async fn create(app: &axum::Router, name: &str, config_dir: Option<&Path>) {
+    let mut body = json!({ "name": name, "dir": "/tmp", "provider": "claude" });
+    if let Some(d) = config_dir {
+        body["config_dir"] = json!(d.to_string_lossy());
+    }
+    let (status, b) = send(app, Method::POST, "/api/sessions", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{b}");
+}
+
+async fn patch_dir(app: &axum::Router, name: &str, value: &str) -> (StatusCode, Value) {
+    send(
+        app,
+        Method::PATCH,
+        &format!("/api/sessions/{name}/config"),
+        Some(json!({ "config_dir": value })),
+    )
+    .await
+}
+
+/// An account dir whose `projects/` is the given transcript tree (a symlink),
+/// the layout that lets a conversation move between logins.
+fn account_sharing(tag: &str, projects: &Path) -> PathBuf {
+    let d = temp_dir(tag);
+    std::os::unix::fs::symlink(projects, d.join("projects")).unwrap();
+    d
+}
+
+/// The move itself: stored, flagged `restart_required` (the live agent keeps its
+/// login until its next start), and `""` returns the session to the host default.
+#[tokio::test]
+async fn patch_moves_a_session_to_another_login_at_its_next_start() {
+    let (state, app, data) = setup().await;
+    create(&app, "mover", None).await;
+    let account = temp_dir("move-to");
+
+    let (status, body) = patch_dir(&app, "mover", &account.to_string_lossy()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["config_dir"], account.to_string_lossy().as_ref(), "{body}");
+    assert_eq!(body["data"]["restart_required"], true, "{body}");
+    let row = db::sessions::get(&state.pool, "mover").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, account.to_string_lossy());
+
+    // Trailing slash and whitespace are cleaned exactly as on create.
+    let (status, _) = patch_dir(&app, "mover", &format!("  {}/ ", account.display())).await;
+    assert_eq!(status, StatusCode::OK);
+    let row = db::sessions::get(&state.pool, "mover").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, account.to_string_lossy());
+
+    let (status, body) = patch_dir(&app, "mover", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = db::sessions::get(&state.pool, "mover").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, "", "empty returns the session to the host default");
+
+    let _ = std::fs::remove_dir_all(account);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+/// The create-time validation applies to PATCH too, and a refusal changes nothing.
+#[tokio::test]
+async fn patch_refuses_bad_config_dirs_and_keeps_the_old_one() {
+    let (state, app, data) = setup().await;
+    let account = temp_dir("keep");
+    create(&app, "keeper", Some(&account)).await;
+    for bad in [".claude-second", "/nonexistent-supermux-config-dir", "/tmp/evil; rm -rf /", "/tmp/it's"] {
+        let (status, body) = patch_dir(&app, "keeper", bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+        let row = db::sessions::get(&state.pool, "keeper").await.unwrap().unwrap();
+        assert_eq!(row.config_dir, account.to_string_lossy(), "{bad:?} must not land");
+    }
+    let _ = std::fs::remove_dir_all(account);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+/// A session WITH a conversation may only move to a login that reads the same
+/// transcript tree; otherwise its restart would boot without the conversation.
+/// With `projects/` shared (the documented layout) the move goes through, which
+/// is how an existing bot changes account while keeping its name and history.
+#[tokio::test]
+async fn patch_keeps_the_conversation_reachable() {
+    let (state, app, data) = setup().await;
+    let transcripts = temp_dir("transcripts");
+    let current = account_sharing("cur", &transcripts);
+    create(&app, "talker", Some(&current)).await;
+    db::sessions::set_cc_conversation_id(&state.pool, "talker", "conv-1").await.unwrap();
+
+    // A login with its OWN projects/: refused, nothing written.
+    let lonely = temp_dir("lonely");
+    std::fs::create_dir_all(lonely.join("projects")).unwrap();
+    let (status, body) = patch_dir(&app, "talker", &lonely.to_string_lossy()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("transcripts"), "{body}");
+    let row = db::sessions::get(&state.pool, "talker").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, current.to_string_lossy());
+
+    // A login sharing the transcript tree: accepted, conversation id untouched.
+    let shared = account_sharing("shared", &transcripts);
+    let (status, body) = patch_dir(&app, "talker", &shared.to_string_lossy()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = db::sessions::get(&state.pool, "talker").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, shared.to_string_lossy());
+    assert_eq!(row.cc_conversation_id, "conv-1");
+
+    for d in [transcripts, current, lonely, shared, data] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// Non-Claude providers have no `CLAUDE_CONFIG_DIR` to move.
+#[tokio::test]
+async fn patch_refuses_config_dir_on_a_non_claude_session() {
+    let (state, app, data) = setup().await;
+    let (status, b) = send(
+        &app,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({ "name": "codexer", "dir": "/tmp", "provider": "codex" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{b}");
+    let account = temp_dir("codex-acct");
+    let (status, body) = patch_dir(&app, "codexer", &account.to_string_lossy()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let row = db::sessions::get(&state.pool, "codexer").await.unwrap().unwrap();
+    assert_eq!(row.config_dir, "");
+    let _ = std::fs::remove_dir_all(account);
+    let _ = std::fs::remove_dir_all(data);
+}

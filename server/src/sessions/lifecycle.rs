@@ -2996,12 +2996,43 @@ async fn start_locked(
     }
 }
 
+/// Boot a session that has no `config_dir` of its own on the host's ACTIVE
+/// Claude login (`[provider_defaults] claude_accounts_dir`, see
+/// [`crate::sessions::claude_account`]). In-memory only: the row keeps its empty
+/// `config_dir`, so the NEXT start reads `ACTIVE` again and a later switch
+/// applies. Everything downstream in this start (the `CLAUDE_CONFIG_DIR` export,
+/// the jail's RW grant, the hook install into `<dir>/settings.json`, the
+/// transcript lookup) reads this same copy, so they all follow the one choice.
+fn apply_host_default_account(state: &AppState, s: &mut Session) {
+    let home = crate::claude_tools::atomic::claude_config_dir();
+    let accounts = state.config.provider_defaults.claude_accounts_dir.as_deref();
+    if let Some(dir) = host_default_account_for(s, accounts, &home) {
+        tracing::info!(session = %s.name, config_dir = %dir, "booting on the host's active Claude login");
+        s.config_dir = dir;
+    }
+}
+
+/// The pure half of [`apply_host_default_account`]: the dir this session should
+/// boot on from the host default, or `None` to leave it as it is. Only a LOCAL
+/// Claude session with NO explicit `config_dir` takes the host default.
+fn host_default_account_for(
+    s: &Session,
+    accounts: Option<&std::path::Path>,
+    home: &std::path::Path,
+) -> Option<String> {
+    if !s.config_dir.trim().is_empty() || s.host_id.is_some() || !launches_claude(&s.provider) {
+        return None;
+    }
+    crate::sessions::claude_account::host_default_config_dir(accounts?, home)
+}
+
 async fn start_locked_inner(
     state: &AppState,
     name: &str,
     prompt: Option<&str>,
 ) -> Result<StartResult, AppError> {
     let mut s = require_session(state, name).await?;
+    apply_host_default_account(state, &mut s);
 
     // RETIRED PROVIDER GUARD. A row whose provider supermux no longer ships
     // (see `sessions::RETIRED_PROVIDERS`) survives in deployed databases and
@@ -6927,6 +6958,52 @@ mod build_env_tests {
             archive_on_stop: 0,
             config_dir: String::new(),
         }
+    }
+
+    /// The host-wide login switch (`claude_accounts_dir` + `ACTIVE`): only a
+    /// LOCAL Claude session with NO `config_dir` of its own takes it, it follows
+    /// the file at every call (a switch needs no server restart), and with the
+    /// setting unset nothing changes at all.
+    #[test]
+    fn host_default_account_takes_only_bare_local_claude_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "supermux-hostacct-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let home = root.join("home");
+        let accts = root.join("accts");
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        for l in ["gmail", "icloud"] {
+            std::fs::create_dir_all(accts.join(l)).unwrap();
+            std::os::unix::fs::symlink(home.join("projects"), accts.join(l).join("projects")).unwrap();
+        }
+        std::fs::write(accts.join("ACTIVE"), "gmail").unwrap();
+        let gmail = accts.join("gmail").to_string_lossy().into_owned();
+        let icloud = accts.join("icloud").to_string_lossy().into_owned();
+
+        let bare = claude_session("bare", "");
+        assert_eq!(host_default_account_for(&bare, Some(&accts), &home), Some(gmail.clone()));
+        // The setting unset: today's behaviour, no export.
+        assert_eq!(host_default_account_for(&bare, None, &home), None);
+        // Read per call: flipping ACTIVE moves the next start.
+        std::fs::write(accts.join("ACTIVE"), "icloud\n").unwrap();
+        assert_eq!(host_default_account_for(&bare, Some(&accts), &home), Some(icloud));
+        // An explicit config_dir always wins over the host default.
+        let explicit = Session { config_dir: gmail.clone(), ..claude_session("x", "") };
+        assert_eq!(host_default_account_for(&explicit, Some(&accts), &home), None);
+        // Remote-host rows and non-Claude providers never take it.
+        let remote = Session { host_id: Some(7), ..claude_session("r", "") };
+        assert_eq!(host_default_account_for(&remote, Some(&accts), &home), None);
+        let codex = Session { provider: "codex".into(), ..claude_session("c", "") };
+        assert_eq!(host_default_account_for(&codex, Some(&accts), &home), None);
+
+        // And the resolved dir reaches the launch line exactly like an explicit one.
+        let mut booted = claude_session("bare", "");
+        booted.config_dir = gmail.clone();
+        let (command, _) = build_launch_command(&cfg(), &booted, &[]);
+        assert!(command.contains(&format!("export CLAUDE_CONFIG_DIR='{gmail}';")), "{command}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// COMPAT — every flags value this repo actually stores must reach the agent

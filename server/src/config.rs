@@ -482,6 +482,16 @@ pub struct ProviderDefaults {
     pub codex_flags: String,
     #[serde(default)]
     pub default_model: String,
+    /// Host-wide Claude login switch. A directory with one Claude config dir per
+    /// login (`<dir>/<label>/`, each usable as `CLAUDE_CONFIG_DIR`) plus a file
+    /// `<dir>/ACTIVE` naming the label to use. When set, a Claude session with no
+    /// `config_dir` of its own boots on `<dir>/<ACTIVE>`. The file is read at
+    /// every start, so switching the host is one write to `ACTIVE`, with no
+    /// server restart, and running sessions are never touched. Unset (the
+    /// default) keeps the daemon's own `~/.claude`. See
+    /// [`crate::sessions::claude_account`].
+    #[serde(default)]
+    pub claude_accounts_dir: Option<PathBuf>,
 }
 
 /// On-disk `config.toml` shape — every field optional so a partial file is valid.
@@ -1077,5 +1087,29 @@ read_write = ["/srv/reisposter-uploads"]
     fn absent_company_isolation_key_means_no_extras() {
         let raw: RawConfig = toml::from_str("bind = \"127.0.0.1:1\"\n").unwrap();
         assert!(raw.company_isolation.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod claude_accounts_dir_tests {
+    use super::*;
+
+    #[test]
+    fn claude_accounts_dir_parses_under_provider_defaults() {
+        let raw: RawConfig = toml::from_str(
+            "[provider_defaults]\nclaude_accounts_dir = \"/home/agent/.claude-accounts\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            raw.provider_defaults.claude_accounts_dir.as_deref(),
+            Some(std::path::Path::new("/home/agent/.claude-accounts"))
+        );
+    }
+
+    #[test]
+    fn absent_claude_accounts_dir_keeps_the_daemon_login() {
+        let raw: RawConfig = toml::from_str("[provider_defaults]\nclaude_flags = \"\"\n").unwrap();
+        assert!(raw.provider_defaults.claude_accounts_dir.is_none());
+        assert!(ProviderDefaults::default().claude_accounts_dir.is_none());
     }
 }

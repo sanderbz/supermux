@@ -20,6 +20,7 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod claude_account;
 pub mod company_inbox;
 pub mod connect_ask;
 pub mod connector_config;
@@ -1787,6 +1788,14 @@ pub struct ConfigInput {
     /// Stored as a JSON array. Nothing injects it yet, so unlike model/memory it
     /// does NOT set `restart_required`.
     pub skills: Option<Vec<String>>,
+    /// Move this session to another Claude login (migration 0041's column):
+    /// the dir exported as `CLAUDE_CONFIG_DIR` at launch. Same validation as on
+    /// create (absolute, existing, `[A-Za-z0-9._/-]`). `Some("")` returns it to
+    /// the host default. A launch-line change: `restart_required: true`, and the
+    /// live agent keeps its login until its next start. Refused for a remote-host
+    /// row, and for a session with a conversation when the new dir does not share
+    /// the transcript tree (the restart would come up without that conversation).
+    pub config_dir: Option<String>,
 }
 
 pub async fn config_patch(
@@ -1984,6 +1993,45 @@ pub async fn config_patch(
         // change (no `restart_required`).
         let json = serde_json::to_string(&v).unwrap_or_else(|_| "[]".into());
         db::sessions::set_skills(&state.pool, &current, &json).await?;
+        changed = true;
+    }
+    if let Some(v) = patch.config_dir {
+        let row = db::sessions::get(&state.pool, &current)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("session '{current}' not found")))?;
+        let value = if v.trim().is_empty() {
+            String::new()
+        } else {
+            valid_config_dir(&v).map_err(AppError::BadRequest)?
+        };
+        if !value.is_empty() && row.host_id.is_some() {
+            return Err(AppError::BadRequest(
+                "config_dir is local-only; a remote-host session cannot take one".into(),
+            ));
+        }
+        if !value.is_empty() && !lifecycle::launches_claude(&row.provider) {
+            return Err(AppError::BadRequest(format!(
+                "config_dir only applies to Claude sessions, not '{}'",
+                row.provider
+            )));
+        }
+        // Keep the conversation: a session that has one must land on a dir that
+        // reads the same transcript tree, or its restart would boot fresh.
+        if !row.cc_conversation_id.trim().is_empty() {
+            let home = crate::claude_tools::atomic::claude_config_dir();
+            let from = claude_account::effective_home(&row.config_dir, &home);
+            let to = claude_account::effective_home(&value, &home);
+            if !claude_account::shares_transcripts(&from, &to) {
+                return Err(AppError::BadRequest(format!(
+                    "config_dir '{}' does not share this session's transcripts ({}/projects); \
+                     link its projects/ to the current one first, or the restart loses the conversation",
+                    to.display(),
+                    from.display()
+                )));
+            }
+        }
+        db::sessions::set_config_dir(&state.pool, &current, &value).await?;
+        restart_required = true;
         changed = true;
     }
     if patch.toggle_pin.is_some() {
@@ -2221,6 +2269,16 @@ async fn config_handler(
     ctx: crate::scope::OptCtx,
     Json(mut input): Json<ConfigInput>,
 ) -> Result<Json<Envelope<SessionView>>, AppError> {
+    // Which Claude login a bot boots on is an owner decision: the dir is granted
+    // read-write inside the company jail and carries that login's credentials,
+    // so a company-scoped member may not point a bot at another one.
+    if input.config_dir.is_some()
+        && matches!(crate::scope::Scope::of(ctx.0.as_ref()), crate::scope::Scope::Company(_))
+    {
+        return Err(AppError::Forbidden(
+            "only the owner can move a session to another Claude login".into(),
+        ));
+    }
     if input.dir.is_some() {
         // Workspace changes serialize with feedback capture and final delivery.
         let lock = state.lock_for(&name);
@@ -3490,6 +3548,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 
@@ -3555,6 +3614,7 @@ mod tests {
                 model: None,
                 memory: None,
                 skills: None,
+                config_dir: None,
             },
         )
         .await
@@ -3599,6 +3659,7 @@ mod tests {
                 model: None,
                 memory: None,
                 skills: None,
+                config_dir: None,
             },
         )
         .await
@@ -3741,6 +3802,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 
@@ -3776,6 +3838,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 
