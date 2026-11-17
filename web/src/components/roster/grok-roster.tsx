@@ -29,7 +29,11 @@ import * as React from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   Archive,
+  CircleAlert,
+  CircleCheck,
+  Moon,
   MoreHorizontal,
   Plus,
   Search,
@@ -78,6 +82,8 @@ import {
   type LeadSignal,
 } from '@/lib/team-attention'
 import { useUI } from '@/stores/ui-store'
+import { useRailWidthStore } from '@/stores/rail-width-store'
+import { RailResizeHandle } from '@/components/roster/rail-resize-handle'
 import { useCompanies } from '@/hooks/use-companies'
 import {
   resolveActiveCompany,
@@ -993,6 +999,17 @@ export default function GrokRoster() {
 
   // Mask-fade the list edges by whether it is scrolled (no shadows on glass).
   const listRef = React.useRef<HTMLDivElement>(null)
+  // The rail's user-chosen width (the divider is draggable — see
+  // `rail-resize-handle.tsx`). `null` leaves the CSS default in charge.
+  const railRef = React.useRef<HTMLDivElement>(null)
+  const railWidth = useRailWidthStore((s) => s.width)
+  const railStyle = React.useMemo<React.CSSProperties>(
+    () =>
+      railWidth === null
+        ? railHueStyle
+        : ({ ...railHueStyle, '--gr-rail-w': `${railWidth}px` } as React.CSSProperties),
+    [railHueStyle, railWidth],
+  )
   const [fade, setFade] = React.useState({ top: false, bottom: false })
   const onScroll = React.useCallback(() => {
     const el = listRef.current
@@ -1374,11 +1391,14 @@ export default function GrokRoster() {
 
   const hasDetail = !!selectedSession || !!selectedTeam || channelOpen
 
-  const SECTIONS: { key: GroupKey; label: string }[] = [
-    { key: 'needs', label: 'Needs you' },
-    { key: 'active', label: 'Active' },
-    { key: 'done', label: 'Done today' },
-    { key: 'idle', label: 'Idle' },
+  // Each section's icon stands in for its label once the rail is dragged narrow
+  // (the label stays for screen readers); icon and count share the section's
+  // status colour — see `.gr-grp` under "a narrow rail" in grok-mode.css.
+  const SECTIONS: { key: GroupKey; label: string; Icon: typeof CircleAlert }[] = [
+    { key: 'needs', label: 'Needs you', Icon: CircleAlert },
+    { key: 'active', label: 'Active', Icon: Activity },
+    { key: 'done', label: 'Done today', Icon: CircleCheck },
+    { key: 'idle', label: 'Idle', Icon: Moon },
   ]
 
   let rowIndex = 0
@@ -1545,9 +1565,10 @@ export default function GrokRoster() {
       <div className="gr-two">
         <div
           className="gr-rail"
+          ref={railRef}
           data-solo={hasDetail ? undefined : ''}
           data-company={activeCompanyRow ? '' : undefined}
-          style={railHueStyle}
+          style={railStyle}
         >
           <div
             className="gr-list"
@@ -1595,13 +1616,14 @@ export default function GrokRoster() {
                 and its count is the SUM of both — so a needs-you crew sits in the
                 red `Needs you` section like any other needs-you row, and the
                 header's count matches what the sections show. */}
-            {SECTIONS.map(({ key, label }) => {
+            {SECTIONS.map(({ key, label, Icon }) => {
               const items = groups[key]
               const teamItems = teamGroups[key]
               if (items.length === 0 && teamItems.length === 0) return null
               return (
                 <React.Fragment key={key}>
-                  <div className="gr-grp" data-need={key === 'needs' ? '' : undefined}>
+                  <div className="gr-grp" data-group={key} data-need={key === 'needs' ? '' : undefined}>
+                    <Icon className="ic" size={13} strokeWidth={2.25} aria-hidden />
                     <span className="lbl">{label}</span>
                     <span className="ct">{items.length + teamItems.length}</span>
                     <span className="ln" />
@@ -1662,6 +1684,10 @@ export default function GrokRoster() {
               </div>
             )}
           </div>
+          {/* The divider, draggable (mail-client style). Only with a pane beside
+              the list — a solo rail already takes the whole width. Hidden on the
+              phone in CSS, where there is no pane. */}
+          {hasDetail && <RailResizeHandle railRef={railRef} />}
         </div>
 
         {channelOpen && activeCompanyRow ? (
