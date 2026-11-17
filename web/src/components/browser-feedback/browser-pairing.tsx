@@ -199,7 +199,7 @@ export function BrowserPairingButton({ session, label, compact = false, provider
   if (!allowed || (provider !== undefined && !supportsBrowserFeedback(provider))) return null
   return <>
     <button type="button" onClick={() => setOpen(true)} title="Connect your browser to this chat" aria-label="Pair browser" aria-haspopup="dialog" data-testid="chat-pair-browser" className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2 text-ink-2 transition-colors hover:bg-fill-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:opacity-70">
-      <MonitorUp aria-hidden className="size-4" />{!compact && <span className="text-[11px] font-medium">Pair browser</span>}
+      <MonitorUp aria-hidden className="size-4" />{!compact && <span className="text-[11px] font-medium @max-[36rem]/pill:hidden">Pair browser</span>}
     </button>
     {open && <ResponsiveSheet open hideHeader onOpenChange={value => { if (!value) setOpen(false) }} title="Feedback Chrome Extension" description={`Browser feedback for ${label || session}`} className="sm:max-w-[430px]">
       <div className="p-5"><BrowserFeedbackCard key={session} session={session} label={label} remote={remote} /></div>
