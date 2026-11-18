@@ -1360,10 +1360,11 @@ pub fn probe_alive(dir: &Path) -> bool {
 ///   The socket has no listener any more, so nothing can ever serve this session
 ///   again: report it dead rather than leaving an orphaned child looking healthy.
 ///
-/// When `/proc` yields nothing conclusive (a non-Linux host, an unreadable
-/// parent, the in-process holder the tests run) it falls back to comparing the
-/// pid's real start time with `meta.json`'s — a recycled pid started long after
-/// the holder recorded its spawn.
+/// When `/proc` yields nothing conclusive (macOS, an unreadable parent, the
+/// in-process holder the tests run) it falls back to comparing the pid's real
+/// start time with `meta.json`'s — a recycled pid started long after the holder
+/// recorded its spawn. On macOS the parent and start time come from
+/// `proc_pidinfo`, so a reboot's recycled pids read as dead there too.
 fn pid_belongs_to_session(pid: u32, session: &str, started_at: i64) -> bool {
     match holder_identity(pid, session) {
         HolderId::Ours => return true,
@@ -1384,10 +1385,36 @@ fn pid_belongs_to_session(pid: u32, session: &str, started_at: i64) -> bool {
         // A process that started ~when the holder wrote `meta.json` is the one
         // the holder spawned; anything else is a recycled pid.
         Some(started) => (started - started_at).abs() <= MAX_START_SKEW,
+        // macOS answers `proc_pidinfo` for every process of our own user, and the
+        // holder and its child always run as that user. A live pid it refuses is
+        // another user's process (a root daemon that took the number after a
+        // reboot), so it can not be this session's child.
+        None if cfg!(target_os = "macos") => false,
         // No `/proc` to ask — keep the historical (permissive) answer rather than
         // declaring a live session dead on a platform we can not inspect.
         None => true,
     }
+}
+
+/// `proc_pidinfo(PROC_PIDTBSDINFO)`: macOS's answer to `/proc/<pid>/stat` for
+/// the two facts the recycled-pid check needs, the parent pid and the real
+/// start time. `None` when the process is gone or belongs to another user.
+#[cfg(target_os = "macos")]
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a writable, correctly sized `proc_bsdinfo`; the kernel
+    // writes at most `size` bytes into it and returns how many it wrote.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (written == size).then_some(info)
 }
 
 /// What `/proc/<pid>/cmdline` says a process is.
@@ -1431,6 +1458,10 @@ fn holder_identity(pid: u32, session: &str) -> HolderId {
 /// Parent pid of `pid` (`ppid`, field 4 of `/proc/<pid>/stat`). Parsed from after
 /// the LAST `)` because `comm` may contain spaces and parentheses.
 fn parent_pid(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    if let Some(info) = bsd_info(pid) {
+        return Some(info.pbi_ppid);
+    }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
     // After comm: state(0) ppid(1).
@@ -1439,8 +1470,13 @@ fn parent_pid(pid: u32) -> Option<u32> {
 
 /// When `pid` really started, in unix seconds: `/proc/<pid>/stat`'s `starttime`
 /// (field 22, in clock ticks since boot) added to `/proc/stat`'s `btime`.
-/// `None` when either is unreadable — i.e. on any non-Linux host.
+/// On macOS the same fact comes from `proc_pidinfo` ([`bsd_info`]). `None` when
+/// neither can answer (the process is gone, or it is another user's).
 pub(crate) fn proc_start_unix(pid: u32) -> Option<i64> {
+    #[cfg(target_os = "macos")]
+    if let Some(info) = bsd_info(pid) {
+        return Some(info.pbi_start_tvsec as i64);
+    }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
     // After comm: state(0) … starttime is the 22nd field overall, i.e. #19 here.
@@ -2319,6 +2355,44 @@ Caused by:
         );
         session.stop_pump();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// macOS has no `/proc`, so every check above used to fall through to "alive".
+    /// After a reboot the holders' old (low) pids belong to unrelated processes,
+    /// and supermux kept four sessions "attached" to them (2026-11-18). These
+    /// cover the three shapes on macOS, where `proc_pidinfo` answers instead.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tells_a_real_child_from_a_recycled_pid() {
+        // 1. A genuine child that started when the meta says: ours.
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let started = proc_start_unix(pid).expect("proc_pidinfo answers for our own child");
+        assert_eq!(parent_pid(pid), Some(std::process::id()), "the parent is read too");
+        assert!(pid_belongs_to_session(pid, "s", started), "the real child is ours");
+
+        // 2. The same live pid, claimed by a meta written long before it started:
+        //    a recycled pid, not ours.
+        assert!(!pid_belongs_to_session(pid, "s", started - 86_400));
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // 3. An orphan (reparented to launchd, as a child is once its holder is
+        //    gone) is dead even when its start time matches.
+        let out = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+            .output()
+            .unwrap();
+        let orphan: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        let orphan_started = proc_start_unix(orphan).unwrap();
+        assert_eq!(parent_pid(orphan), Some(1), "precondition: reparented to launchd");
+        assert!(!pid_belongs_to_session(orphan, "s", orphan_started));
+        // SAFETY: plain libc call on the pid we just spawned.
+        unsafe { libc::kill(orphan as i32, libc::SIGKILL) };
+
+        // 4. Another user's process (launchd runs as root): proc_pidinfo refuses
+        //    it, and a holder's child never runs as another user.
+        assert!(!pid_belongs_to_session(1, "s", 0));
     }
 
     /// `/proc/<pid>/cmdline` identifies a holder by session name, so a pid that
