@@ -126,7 +126,7 @@ interface UIStore {
    *  the legacy scoped kills still work — `supermux:grok-mode='0'` kills only
    *  the skin, `supermux:chat-renderer='0'` kills only the renderer. The skin
    *  is read ONCE at mount (a skin flip is a reload-level change, not a live
-   *  re-render). Default OFF — the default flip ships in a later, separate PR. */
+   *  re-render). Default ON (fase A7); Settings still turns it off. */
   botMode: boolean
   setBotMode: (v: boolean) => void
   /** Fase A5 — the GLOBAL default renderer for eligible sessions at `auto`.
@@ -173,6 +173,28 @@ export function persistedUISlice(state: UIStore): UIStore {
   return rest as UIStore
 }
 
+/** Version of the persisted `supermux-ui` blob. v2 = fase A7, Bot mode default on. */
+export const UI_STORE_VERSION = 2
+
+/** Upgrade a persisted `supermux-ui` blob from version `from`. Pure (exported
+ *  for its test).
+ *  - v0 → v1 folded `chatRenderer` + `grokMode` into ONE `botMode`
+ *    (owner-approved OR: on if EITHER old flag was on).
+ *  - v1 → v2 is the fase A7 default flip: every stored blob turns Bot mode on
+ *    ONCE. A stored `false` cannot tell "never chose" from "turned it off", so
+ *    the flip is deliberate; Settings turns it off again and that sticks
+ *    (a v2 blob is never touched). */
+export function migrateUIBlob(persisted: unknown, from: number): Record<string, unknown> {
+  const p = { ...((persisted ?? {}) as Record<string, unknown>) }
+  if (from < 1) {
+    p.botMode = !!(p.grokMode || p.chatRenderer)
+    delete p.grokMode
+    delete p.chatRenderer
+  }
+  if (from < 2) p.botMode = true
+  return p
+}
+
 export const useUI = create<UIStore>()(
   persist(
     (set) => ({
@@ -194,7 +216,7 @@ export const useUI = create<UIStore>()(
       memberCompany: null,
       lockToCompany: (id) =>
         set({ memberCompany: id, activeCompany: id, botMode: true }),
-      botMode: false,
+      botMode: true,
       // Both setters are SEALED while the member lock holds — that is what makes
       // the lock derived rather than merely written once.
       setBotMode: (botMode) => set((s) => (s.memberCompany === null ? { botMode } : {})),
@@ -241,17 +263,9 @@ export const useUI = create<UIStore>()(
       // (`chatRenderer` + `grokMode`) into ONE `botMode`. `migrate` runs BEFORE
       // `onRehydrateStorage`, so the rehydrate hook below sees the migrated
       // shape unaffected.
-      version: 1,
-      migrate: (persisted, from) => {
-        const p = (persisted ?? {}) as Record<string, unknown>
-        if (from < 1) {
-          // Owner-approved OR: bot mode is on if EITHER old flag was on.
-          p.botMode = !!(p.grokMode || p.chatRenderer)
-          delete p.grokMode
-          delete p.chatRenderer
-        }
-        return p as unknown as UIStore
-      },
+      // v2 is the fase A7 default flip — see `migrateUIBlob`.
+      version: UI_STORE_VERSION,
+      migrate: (persisted, from) => migrateUIBlob(persisted, from) as unknown as UIStore,
       // One-time migration: the focus strip used to keep its OWN hide-stopped
       // flag in localStorage; it's now this shared value. Carry a pre-existing
       // preference over exactly once — at boot, before any surface can toggle it

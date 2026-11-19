@@ -25,7 +25,7 @@
 // must be present throughout, and `(min-width: 768px)` must stay matched.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 const SESSION = 'flick-desktop'
 
@@ -46,6 +46,7 @@ test.describe('desktop overview→focus never flashes the mobile branch', () => 
     // Desktop viewport — the focus fork must resolve to <DesktopFocus/>.
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     const A = api(backend)
     const created = await A.createSession({

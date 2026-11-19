@@ -18,7 +18,7 @@
 // the page the user asked for.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 test.describe('the palette is usable with the keyboard alone', () => {
   let backend: Backend
@@ -35,6 +35,7 @@ test.describe('the palette is usable with the keyboard alone', () => {
   }) => {
     test.setTimeout(75_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(() => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })

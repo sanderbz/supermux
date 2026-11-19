@@ -38,7 +38,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 /** Claude's project-folder encoding: every `/` and `.` → `-`. */
 function encodeDir(abs: string): string {
@@ -153,6 +153,7 @@ test.describe('resume picker — overview tile hover-pin (fix/resume-hover)', ()
     // Desktop 1440 (fine pointer) → the stopped tile's hover-peek is active.
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     const A = api(backend)
     // A created-but-never-started session reads as `stopped` → its overview tile
