@@ -6,7 +6,23 @@
 //! URLs/logs/screenshots. All variants use an internally-tagged
 //! `{"type": "...", ...}` shape.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+/// The smallest pane a viewer may ask for. A collapsed or hidden terminal reports
+/// a handful of cells, and the pty used to follow it (only clamped to 1): one session
+/// sat at 11×5 for a day, where Claude could draw neither its composer nor a reply,
+/// so it looked dead while it was still answering. Not 80×24: the pty tracks the
+/// viewer, and a phone runs at ~50 columns, or ~15 rows with the keyboard up.
+pub const MIN_PANE_COLS: u16 = 40;
+pub const MIN_PANE_ROWS: u16 = 10;
+
+fn cols_at_least_floor<'de, D: Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+    Ok(u16::deserialize(d)?.max(MIN_PANE_COLS))
+}
+
+fn rows_at_least_floor<'de, D: Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+    Ok(u16::deserialize(d)?.max(MIN_PANE_ROWS))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -17,8 +33,15 @@ pub enum ClientMsg {
     Input { data: String },
     /// A named tmux key (e.g. `Enter`, `C-c`, `Up`).
     Key { data: String },
-    /// Terminal resize from the client's `FitAddon` + `ResizeObserver`.
-    Resize { cols: u16, rows: u16 },
+    /// Terminal resize from the client's `FitAddon` + `ResizeObserver`, raised to
+    /// at least [`MIN_PANE_COLS`]×[`MIN_PANE_ROWS`] as it is parsed, so no apply path can
+    /// shrink the pane below that.
+    Resize {
+        #[serde(deserialize_with = "cols_at_least_floor")]
+        cols: u16,
+        #[serde(deserialize_with = "rows_at_least_floor")]
+        rows: u16,
+    },
     /// Client-initiated liveness ping (server PINGs on its own 20s cadence).
     Ping,
     /// Request a fresh full-screen snapshot ("resync"). The server re-pushes the
@@ -65,6 +88,34 @@ mod tests {
         let msg = serde_json::from_str::<ClientMsg>(r#"{"type":"resync"}"#)
             .expect("resync control frame must deserialize");
         assert!(matches!(msg, ClientMsg::Resync));
+    }
+
+    fn resize(frame: &str) -> (u16, u16) {
+        match serde_json::from_str::<ClientMsg>(frame).expect("resize frame must deserialize") {
+            ClientMsg::Resize { cols, rows } => (cols, rows),
+            other => panic!("expected ClientMsg::Resize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_viewer_cannot_shrink_the_pane_below_the_floor() {
+        // The collapsed-tile geometry that left a session at 11×5.
+        assert_eq!(resize(r#"{"type":"resize","cols":11,"rows":5}"#), (40, 10));
+        assert_eq!(resize(r#"{"type":"resize","cols":0,"rows":0}"#), (40, 10));
+        // Each axis on its own: a wide but short window keeps its width.
+        assert_eq!(
+            resize(r#"{"type":"resize","cols":120,"rows":3}"#),
+            (120, 10)
+        );
+        assert_eq!(resize(r#"{"type":"resize","cols":12,"rows":40}"#), (40, 40));
+        // A phone in portrait, and with the keyboard up, pass untouched.
+        assert_eq!(resize(r#"{"type":"resize","cols":52,"rows":31}"#), (52, 31));
+        assert_eq!(resize(r#"{"type":"resize","cols":52,"rows":14}"#), (52, 14));
+        assert_eq!(resize(r#"{"type":"resize","cols":40,"rows":10}"#), (40, 10));
+        assert_eq!(
+            resize(r#"{"type":"resize","cols":120,"rows":40}"#),
+            (120, 40)
+        );
     }
 
     #[test]
