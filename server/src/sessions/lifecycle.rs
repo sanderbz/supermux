@@ -838,11 +838,8 @@ fn build_launch_command(
     // above; it lands AFTER the profile sources so a user `~/.zprofile` that
     // sets its own CLAUDE_CONFIG_DIR cannot override it, and BEFORE `{agent}`
     // so the launched provider inherits it.
-    // Claude Code refuses bypass permissions as root unless `IS_SANDBOX=1` is
-    // set, so as root the only alternative to setting it is a session that dies
-    // at once. This line runs where the session runs (this machine or a remote
-    // host), so it asks there who it is. Only when bypass was asked for: a
-    // session without it, and any session that is not root, is untouched.
+    // As root, Claude refuses bypass permissions without IS_SANDBOX=1; this line runs where the
+    // session runs, so it checks the uid there. Only when bypass was asked for.
     let sandbox_export = if agent.contains("bypassPermissions")
         || agent.contains("--dangerously-skip-permissions")
     {
