@@ -176,6 +176,17 @@ fn keepalive_child_argv_is_pinned() {
     );
 }
 
+/// A host that skipped bootstrap has no `~/.supermux-remote`, and a plain file where the FIFO
+/// belongs replays forever: the reader makes the directory and a real FIFO.
+#[test]
+fn mkfifo_script_makes_the_directory_and_a_real_fifo() {
+    let fifo = std::path::PathBuf::from("$HOME/.supermux-remote/pty-proj.fifo");
+    assert_eq!(
+        SshPtyReader::mkfifo_script_for(&fifo),
+        r#"mkdir -p -m 700 -- "$HOME/.supermux-remote" && { [ -p "$HOME/.supermux-remote/pty-proj.fifo" ] || { rm -f -- "$HOME/.supermux-remote/pty-proj.fifo"; mkfifo -- "$HOME/.supermux-remote/pty-proj.fifo"; }; }"#
+    );
+}
+
 /// Remote path convention (pty reader + host bootstrap). Lives outside the data dir;
 /// the SshPtyReader uses the `$HOME/…` token form so the remote `/bin/sh -c`
 /// expands it once against the REMOTE user's HOME (literal `~/` would be
