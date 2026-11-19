@@ -126,7 +126,7 @@ interface UIStore {
    *  the legacy scoped kills still work — `supermux:grok-mode='0'` kills only
    *  the skin, `supermux:chat-renderer='0'` kills only the renderer. The skin
    *  is read ONCE at mount (a skin flip is a reload-level change, not a live
-   *  re-render). Default OFF — the default flip ships in a later, separate PR. */
+   *  re-render). Default ON (fase A7); Settings still turns it off. */
   botMode: boolean
   setBotMode: (v: boolean) => void
   /** Fase A5 — the GLOBAL default renderer for eligible sessions at `auto`.
@@ -194,7 +194,7 @@ export const useUI = create<UIStore>()(
       memberCompany: null,
       lockToCompany: (id) =>
         set({ memberCompany: id, activeCompany: id, botMode: true }),
-      botMode: false,
+      botMode: true,
       // Both setters are SEALED while the member lock holds — that is what makes
       // the lock derived rather than merely written once.
       setBotMode: (botMode) => set((s) => (s.memberCompany === null ? { botMode } : {})),
@@ -241,7 +241,8 @@ export const useUI = create<UIStore>()(
       // (`chatRenderer` + `grokMode`) into ONE `botMode`. `migrate` runs BEFORE
       // `onRehydrateStorage`, so the rehydrate hook below sees the migrated
       // shape unaffected.
-      version: 1,
+      // v2 is the fase A7 default flip: every stored blob turns bot mode on once.
+      version: 2,
       migrate: (persisted, from) => {
         const p = (persisted ?? {}) as Record<string, unknown>
         if (from < 1) {
@@ -250,6 +251,7 @@ export const useUI = create<UIStore>()(
           delete p.grokMode
           delete p.chatRenderer
         }
+        if (from < 2) p.botMode = true
         return p as unknown as UIStore
       },
       // One-time migration: the focus strip used to keep its OWN hide-stopped
