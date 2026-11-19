@@ -221,6 +221,43 @@ pub(crate) fn launches_claude(provider: &str) -> bool {
 /// this: it comes from the server's own config file, it is trusted the way the
 /// rest of that file is, and an operator may legitimately have written their own
 /// quoting there.
+/// Whether these launch flag words ask Claude for bypass permissions:
+/// `--dangerously-skip-permissions`, or `--permission-mode bypassPermissions`
+/// (also as `--permission-mode=bypassPermissions`). Word-exact, so a path, a
+/// model name or a prompt that merely contains the text never matches. Pure.
+pub(crate) fn flags_request_bypass<'a>(words: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut prev_was_mode = false;
+    for w in words {
+        if w == "--dangerously-skip-permissions"
+            || w == "--permission-mode=bypassPermissions"
+            || (prev_was_mode && w == "bypassPermissions")
+        {
+            return true;
+        }
+        prev_was_mode = w == "--permission-mode";
+    }
+    false
+}
+
+/// The guarded `IS_SANDBOX=1` export for a root Claude session with bypass
+/// permissions, or "" — which is the default for every install. See
+/// [`crate::config::ProviderDefaults::allow_root_bypass_permissions`].
+fn root_sandbox_export(config: &crate::config::Config, s: &Session) -> &'static str {
+    let defaults = &config.provider_defaults;
+    let wants_bypass = flags_request_bypass(
+        defaults.claude_flags.split_whitespace().chain(s.flags.split_whitespace()),
+    );
+    if defaults.allow_root_bypass_permissions && launches_claude(&s.provider) && wants_bypass {
+        tracing::warn!(
+            session = %s.name,
+            "allow_root_bypass_permissions is on: this session sets IS_SANDBOX=1 when it runs as root",
+        );
+        r#"[ "$(id -u)" = 0 ] && export IS_SANDBOX=1; "#
+    } else {
+        ""
+    }
+}
+
 fn quoted_flag_words(flags: &str) -> Vec<String> {
     flags
         .split_whitespace()
@@ -838,11 +875,17 @@ fn build_launch_command(
     // above; it lands AFTER the profile sources so a user `~/.zprofile` that
     // sets its own CLAUDE_CONFIG_DIR cannot override it, and BEFORE `{agent}`
     // so the launched provider inherits it.
+    // As root, Claude refuses bypass permissions unless IS_SANDBOX=1. That guard
+    // stays ON unless the operator opted out in config.toml
+    // (`[provider_defaults] allow_root_bypass_permissions = true`), and even then
+    // only for a Claude session whose flags ask for bypass. The `id -u` test runs
+    // in the pane, so it checks the uid where the session actually runs.
+    let sandbox_export = root_sandbox_export(config, s);
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
          source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
          export PATH='{bin_dir}':\"$PATH\":\"$HOME/.local/bin\"; \
-         {config_dir_export}{agent}"
+         {sandbox_export}{config_dir_export}{agent}"
     );
     (command, resume_intended)
 }
@@ -7137,6 +7180,46 @@ mod build_env_tests {
         assert!(argv.contains(&"--name".to_string()), "argv: {argv:?}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── root + bypass permissions: IS_SANDBOX=1 only on an explicit opt-in ──
+
+    const ROOT_EXPORT: &str = r#"[ "$(id -u)" = 0 ] && export IS_SANDBOX=1;"#;
+
+    #[test]
+    fn root_bypass_stays_guarded_unless_the_operator_opts_in() {
+        let mut config = cfg();
+        let bypass = claude_session("root-bot", "--dangerously-skip-permissions");
+        let (cmd, _) = build_launch_command(&config, &bypass, &[]);
+        assert!(!cmd.contains("IS_SANDBOX"), "off by default, even as root with bypass: {cmd}");
+
+        config.provider_defaults.allow_root_bypass_permissions = true;
+        let (cmd, _) = build_launch_command(&config, &bypass, &[]);
+        assert!(cmd.contains(ROOT_EXPORT), "opted in + bypass → the guarded export: {cmd}");
+        assert!(
+            cmd.find(ROOT_EXPORT).unwrap() < cmd.find("--dangerously-skip-permissions").unwrap(),
+            "the export precedes the agent it is for: {cmd}",
+        );
+
+        let plain = claude_session("plain-bot", "--model sonnet");
+        let (cmd, _) = build_launch_command(&config, &plain, &[]);
+        assert!(!cmd.contains("IS_SANDBOX"), "opted in but no bypass → nothing: {cmd}");
+
+        // The host-wide default flags count too.
+        config.provider_defaults.claude_flags = "--permission-mode bypassPermissions".into();
+        let (cmd, _) = build_launch_command(&config, &plain, &[]);
+        assert!(cmd.contains(ROOT_EXPORT), "bypass from provider defaults: {cmd}");
+    }
+
+    #[test]
+    fn bypass_is_read_from_flag_words_not_from_text() {
+        assert!(flags_request_bypass(["--dangerously-skip-permissions"]));
+        assert!(flags_request_bypass(["--permission-mode", "bypassPermissions"]));
+        assert!(flags_request_bypass(["--permission-mode=bypassPermissions"]));
+        assert!(!flags_request_bypass(["--permission-mode", "default"]));
+        assert!(!flags_request_bypass(["bypassPermissions"]), "a bare word is not the flag");
+        assert!(!flags_request_bypass(["--add-dir", "/srv/bypassPermissions-notes"]));
+        assert!(!flags_request_bypass(["--model", "--dangerously-skip-permissions-x"]));
     }
 }
 
