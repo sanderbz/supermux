@@ -25,13 +25,16 @@
 //! `KeepAlive`: on a Mac whose login session is locked and stuck, launchd parks
 //! that respawn and the server would stay down. A helper in its own session
 //! runs `kickstart -k` and kicks the job again until it is running
-//! ([`launchd_restart_script`]). Session panes survive either way: their pty
+//! ([`launchd_restart_script`]). The launchd job is only trusted when
+//! `launchctl` reports our own pid for it ([`launchd_target`]), never on the
+//! inherited `XPC_SERVICE_NAME` alone. Session panes survive either way: their pty
 //! holders are detached from the server (the same path every deploy takes).
 //!
 //! The countdown is broadcast as a `host-power` SSE frame (owner-only, being
 //! unstamped), so every open app shows it with a Cancel button.
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -112,6 +115,26 @@ struct Pending {
 
 static PENDING: Lazy<Mutex<Option<Pending>>> = Lazy::new(|| Mutex::new(None));
 static FAILED: Lazy<Mutex<Vec<Instant>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static CONFIRMING: AtomicBool = AtomicBool::new(false);
+
+/// The right to confirm a Mac restart, held by one request at a time; dropping
+/// it (on any return) frees it for the next.
+struct ConfirmSlot;
+
+impl ConfirmSlot {
+    fn take() -> Option<Self> {
+        CONFIRMING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ConfirmSlot)
+    }
+}
+
+impl Drop for ConfirmSlot {
+    fn drop(&mut self) {
+        CONFIRMING.store(false, Ordering::Release);
+    }
+}
 
 // ── what this host supports ─────────────────────────────────────────────────
 
@@ -135,28 +158,28 @@ pub fn host_restart_support() -> Support {
 }
 
 /// The server restart: only under a supervisor that starts it again.
-pub fn server_restart_support() -> Support {
+pub async fn server_restart_support() -> Support {
     server_restart_support_from(
-        std::env::var("XPC_SERVICE_NAME").ok().as_deref(),
+        launchd_target().await.is_some(),
         std::env::var("INVOCATION_ID").ok().as_deref(),
         std::path::Path::new("/.dockerenv").exists(),
     )
 }
 
-/// Pure half of [`server_restart_support`]: launchd stamps `XPC_SERVICE_NAME`
-/// with the job label (`"0"` outside a job), systemd sets `INVOCATION_ID` in a
-/// unit's processes. Docker's restart policy is unknown, so it is not offered.
+/// Pure half of [`server_restart_support`]: `launchd_job` is whether
+/// [`launchd_target`] found a launchd job that is provably THIS process;
+/// systemd sets `INVOCATION_ID` in a unit's processes. Docker's restart policy
+/// is unknown, so it is not offered.
 pub fn server_restart_support_from(
-    xpc_service: Option<&str>,
+    launchd_job: bool,
     invocation_id: Option<&str>,
     in_docker: bool,
 ) -> Support {
     if in_docker {
         return Support::no("supermux runs in Docker here; restart the container instead.");
     }
-    let launchd = xpc_service.is_some_and(|s| !s.is_empty() && s != "0");
     let systemd = invocation_id.is_some_and(|s| !s.is_empty());
-    if launchd || systemd {
+    if launchd_job || systemd {
         Support::yes()
     } else {
         Support::no(
@@ -174,10 +197,10 @@ fn pending_view() -> Option<PendingView> {
         .map(|p| PendingView { at: p.at })
 }
 
-fn view() -> PowerView {
+async fn view() -> PowerView {
     PowerView {
         host_restart: host_restart_support(),
-        server_restart: server_restart_support(),
+        server_restart: server_restart_support().await,
         pending: pending_view(),
     }
 }
@@ -290,7 +313,7 @@ async fn sudo(password: &str, args: &[&str]) -> Result<(), SudoError> {
 // ── handlers ────────────────────────────────────────────────────────────────
 
 async fn power_handler() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "data": view() }))
+    Json(json!({ "ok": true, "data": view().await }))
 }
 
 #[derive(Deserialize)]
@@ -306,6 +329,15 @@ async fn restart_handler(
     if !support.supported {
         return Err(AppError::BadRequest(support.reason.unwrap_or_default()));
     }
+    // One request at a time from here until its countdown is recorded, so two
+    // devices cannot both pass the check below and schedule two restarts (the
+    // second would orphan the first's cancel handle). Holding it across
+    // `sudo -v` also keeps the wrong-password count from being raced past.
+    let Some(_slot) = ConfirmSlot::take() else {
+        return Err(AppError::Conflict(
+            "a restart is already being confirmed".into(),
+        ));
+    };
     if pending_view().is_some() {
         return Err(AppError::Conflict(
             "a restart is already counting down".into(),
@@ -338,6 +370,16 @@ async fn restart_handler(
     }
 
     let at = chrono::Utc::now().timestamp() + RESTART_DELAY.as_secs() as i64;
+    // Audit FIRST: a request that cannot be recorded schedules nothing, so a
+    // 500 here never leaves a restart counting down that nobody can see.
+    db::audit::log(
+        &state.pool,
+        "user",
+        "host.restart.requested",
+        "host",
+        json!({ "at": at }),
+    )
+    .await?;
     let password = input.password;
     let st = state.clone();
     let task = tokio::spawn(async move {
@@ -357,16 +399,8 @@ async fn restart_handler(
         at,
         task: task.abort_handle(),
     });
-    db::audit::log(
-        &state.pool,
-        "user",
-        "host.restart.requested",
-        "host",
-        json!({ "at": at }),
-    )
-    .await?;
     broadcast(&state);
-    Ok(Json(json!({ "ok": true, "data": view() })))
+    Ok(Json(json!({ "ok": true, "data": view().await })))
 }
 
 async fn cancel_handler(
@@ -390,13 +424,13 @@ async fn cancel_handler(
         .await?;
         broadcast(&state);
     }
-    Ok(Json(json!({ "ok": true, "data": view() })))
+    Ok(Json(json!({ "ok": true, "data": view().await })))
 }
 
 async fn restart_server_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let support = server_restart_support();
+    let support = server_restart_support().await;
     if !support.supported {
         return Err(AppError::BadRequest(support.reason.unwrap_or_default()));
     }
@@ -410,8 +444,8 @@ async fn restart_server_handler(
     .await?;
     // Answer first, then restart. Session panes keep running either way: their
     // pty holders are setsid-detached, not in this process's group.
-    match launchd_label(std::env::var("XPC_SERVICE_NAME").ok().as_deref()) {
-        Some(label) => spawn_launchd_restart(&label)
+    match launchd_target().await {
+        Some(target) => spawn_launchd_restart(&target)
             .map_err(|e| AppError::Conflict(format!("could not start the restart helper: {e}")))?,
         // systemd's `Restart=always` brings us back after a SIGTERM, the same
         // signal `systemctl restart` sends.
@@ -440,6 +474,64 @@ pub fn launchd_label(xpc_service: Option<&str>) -> Option<String> {
     ok.then(|| l.to_string())
 }
 
+/// The launchd domains a job with `label` can live in, most likely first:
+/// a LaunchAgent in the login session, one in a background session, a
+/// LaunchDaemon. Pure.
+pub fn launchd_targets(uid: u32, label: &str) -> [String; 3] {
+    [
+        format!("gui/{uid}/{label}"),
+        format!("user/{uid}/{label}"),
+        format!("system/{label}"),
+    ]
+}
+
+/// The job's own pid from `launchctl print` output: the top-level
+/// `\tpid = N` line, not one in a nested section. Pure.
+pub fn launchctl_pid(print: &str) -> Option<u32> {
+    print
+        .lines()
+        .filter(|l| l.starts_with('\t') && !l.starts_with("\t\t"))
+        .find_map(|l| l.trim().strip_prefix("pid = ")?.trim().parse().ok())
+}
+
+static LAUNCHD_TARGET: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+
+/// Our launchd job as a `launchctl` target, resolved once per process.
+/// `XPC_SERVICE_NAME` alone is not trusted: a server started from a terminal
+/// app inherits that app's label, and kickstarting it would restart the
+/// terminal and leave supermux down. The label counts only when `launchctl
+/// print` of the job reports THIS process's pid. Always `None` off macOS.
+async fn launchd_target() -> Option<String> {
+    LAUNCHD_TARGET
+        .get_or_init(|| async {
+            if !cfg!(target_os = "macos") {
+                return None;
+            }
+            let label = launchd_label(std::env::var("XPC_SERVICE_NAME").ok().as_deref())?;
+            // SAFETY: getuid has no preconditions and cannot fail.
+            let uid = unsafe { libc::getuid() };
+            for target in launchd_targets(uid, &label) {
+                let Ok(out) = tokio::process::Command::new("/bin/launchctl")
+                    .args(["print", &target])
+                    .stdin(Stdio::null())
+                    .stderr(Stdio::null())
+                    .output()
+                    .await
+                else {
+                    continue;
+                };
+                if out.status.success()
+                    && launchctl_pid(&String::from_utf8_lossy(&out.stdout)) == Some(std::process::id())
+                {
+                    return Some(target);
+                }
+            }
+            None
+        })
+        .await
+        .clone()
+}
+
 /// The helper script for a launchd restart. `kickstart -k` stops and restarts
 /// the job, but launchd can PARK the restart (`pended nondemand spawn =
 /// speculative`, seen on a Mac whose login session is locked and stuck), which
@@ -456,13 +548,12 @@ pub fn launchd_restart_script(target: &str) -> String {
 }
 
 /// Start the launchd restart helper in its OWN session, so launchd tearing
-/// down this job's process group does not take the helper with it.
-fn spawn_launchd_restart(label: &str) -> std::io::Result<()> {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let target = format!("gui/{}/{label}", unsafe { libc::getuid() });
+/// down this job's process group does not take the helper with it. `target`
+/// comes from [`launchd_target`], so it is our own job in its real domain.
+fn spawn_launchd_restart(target: &str) -> std::io::Result<()> {
     let mut cmd = tokio::process::Command::new("/bin/sh");
     cmd.arg("-c")
-        .arg(launchd_restart_script(&target))
+        .arg(launchd_restart_script(target))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -488,14 +579,52 @@ mod tests {
 
     #[test]
     fn server_restart_needs_a_supervisor() {
-        assert!(server_restart_support_from(Some("com.supermux.server"), None, false).supported);
-        assert!(server_restart_support_from(None, Some("abc123"), false).supported);
-        // launchd's "not a job" marker and an empty systemd id are not supervisors.
-        assert!(!server_restart_support_from(Some("0"), None, false).supported);
-        assert!(!server_restart_support_from(None, Some(""), false).supported);
-        assert!(!server_restart_support_from(None, None, false).supported);
+        assert!(server_restart_support_from(true, None, false).supported);
+        assert!(server_restart_support_from(false, Some("abc123"), false).supported);
+        // No verified launchd job and an empty systemd id are not supervisors.
+        assert!(!server_restart_support_from(false, Some(""), false).supported);
+        assert!(!server_restart_support_from(false, None, false).supported);
         // Docker's restart policy is unknown — never offered.
-        assert!(!server_restart_support_from(Some("x"), Some("y"), true).supported);
+        assert!(!server_restart_support_from(true, Some("y"), true).supported);
+    }
+
+    #[tokio::test]
+    async fn off_macos_no_launchd_job_is_ever_trusted() {
+        if !cfg!(target_os = "macos") {
+            assert_eq!(launchd_target().await, None);
+        }
+    }
+
+    #[test]
+    fn a_launchd_job_is_ours_only_by_its_top_level_pid() {
+        let print = "gui/501/com.supermux.server = {\n\
+                     \tactive count = 1\n\
+                     \tstate = running\n\
+                     \tpid = 4242\n\
+                     \tendpoints = {\n\
+                     \t\tpid = 7\n\
+                     \t}\n\
+                     }\n";
+        assert_eq!(launchctl_pid(print), Some(4242));
+        // A nested `pid` line is never mistaken for the job's own.
+        assert_eq!(launchctl_pid("job = {\n\tstate = waiting\n\t\tpid = 7\n}\n"), None);
+        assert_eq!(launchctl_pid(""), None);
+        assert_eq!(
+            launchd_targets(501, "com.supermux.server"),
+            [
+                "gui/501/com.supermux.server".to_string(),
+                "user/501/com.supermux.server".to_string(),
+                "system/com.supermux.server".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_one_restart_request_confirms_at_a_time() {
+        let first = ConfirmSlot::take().expect("free at start");
+        assert!(ConfirmSlot::take().is_none(), "a second request must get 409");
+        drop(first);
+        assert!(ConfirmSlot::take().is_some(), "freed when the first returns");
     }
 
     #[test]
@@ -534,12 +663,12 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn the_password_is_never_serialized_back() {
+    #[tokio::test]
+    async fn the_password_is_never_serialized_back() {
         // The view carries no input field at all; the input type cannot be
         // serialized (it only derives Deserialize), so a password cannot be
         // echoed by accident.
-        let v = serde_json::to_string(&view()).unwrap();
+        let v = serde_json::to_string(&view().await).unwrap();
         assert!(!v.contains("password"));
     }
 
