@@ -161,7 +161,9 @@ export function WherePicker(props: WherePickerProps) {
 
   // Loads the project list of the chosen host on mount and on every host change; a host moves the folder with it.
   const onChangeRef = React.useRef(onChange)
-  onChangeRef.current = onChange
+  React.useEffect(() => {
+    onChangeRef.current = onChange
+  })
   const firstRun = React.useRef(true)
   React.useEffect(() => {
     const initial = firstRun.current

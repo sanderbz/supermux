@@ -9360,7 +9360,7 @@ mod pane_shell_tests {
     fn a_pane_on_a_host_never_gets_the_local_shell() {
         let remote = pane_shell(Some(3));
         assert_eq!(remote, REMOTE_PANE_SHELL);
-        assert!(remote.contains("$SHELL"), "resolved on the host, not here: {remote}");
+        assert!(remote.contains("${SHELL"), "resolved on the host, not here: {remote}");
         assert_ne!(pane_shell(None), REMOTE_PANE_SHELL, "a local pane keeps the local shell");
     }
 }
