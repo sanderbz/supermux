@@ -2333,6 +2333,8 @@ async fn stop_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     lifecycle::stop(&state, &name).await?;
+    // A deliberate Stop: a boot audit a crash cut short must not bring it back.
+    auto_actions::forget_pending_audit(&state.config.data_dir, &name);
     // Stop is async-shaped → 202 Accepted.
     Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
 }
