@@ -258,6 +258,22 @@ echo main > "$A/ACTIVE"                 # back to the normal login
 - Company bots get read-write access to their account dir inside the sandbox. Only the owner can choose a session's login. Company members cannot, at create or later.
 - **macOS:** Claude Code keeps each login in the Keychain, under an entry tied to the exact `CLAUDE_CONFIG_DIR` string. Sign in with exactly `<claude_accounts_dir>/<label>`, as above: no trailing slash, no `~`, and no other path to the same folder. Otherwise the session starts logged out. On Linux the login is a file inside the dir.
 
+### Running Claude as root (containers)
+
+Claude Code refuses to start with bypass permissions (`--dangerously-skip-permissions`, or `--permission-mode bypassPermissions`) when it runs as root, unless `IS_SANDBOX=1` is set. That check is there for a reason: a root shell with no permission prompts can change anything on the machine. supermux leaves it on.
+
+If supermux or a remote host runs sessions as root inside a throwaway container or VM, where that risk is contained, you can let those sessions start:
+
+```toml
+# ~/.supermux/config.toml
+[provider_defaults]
+allow_root_bypass_permissions = true   # default false
+```
+
+- Only Claude sessions whose flags (the session's own, or `claude_flags`) ask for bypass get the export, and only when `id -u` is 0 in the pane where the session runs. Nothing changes for other sessions.
+- It applies at each session start, after a restart of the service to read the config. Each start that uses it logs a warning.
+- Do not turn it on for a shared machine or your own workstation.
+
 ### Verify
 
 ```bash
