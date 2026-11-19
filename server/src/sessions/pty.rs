@@ -351,8 +351,14 @@ impl PtyStream {
         if session.runtime == super::runtime::RUNTIME_NATIVE {
             return super::native::reader_for(&self.name, &self.data_dir());
         }
+        // A host row whose pane still runs HERE (created before remote spawn
+        // worked, #240) is read locally while that pane lives — the same rule as
+        // `AppState::session_transport`, so stream and runtime agree.
+        let legacy_local = session.host_id.is_some()
+            && super::tmux::Tmux::new(&self.name).exists().await.unwrap_or(false);
         match session.host_id {
             None => Ok(Box::new(LocalPtyReader::new(self))),
+            Some(_) if legacy_local => Ok(Box::new(LocalPtyReader::new(self))),
             Some(host_id) => Ok(Box::new(SshPtyReader::new(
                 self,
                 host_pool.clone(),

@@ -114,3 +114,4 @@ async fn a_session_on_a_gone_host_has_no_runtime_instead_of_a_local_one() {
     state.pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+

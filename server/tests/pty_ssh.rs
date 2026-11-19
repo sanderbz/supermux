@@ -517,3 +517,24 @@ async fn ssh_reader_returns_stream_dead_on_remote_tmux_kill() {
     pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The remote FIFO script makes its directory, keeps an existing FIFO, and
+/// replaces a plain file left at the FIFO path (which `cat` would replay forever).
+#[test]
+fn the_remote_fifo_script_makes_a_real_fifo_in_any_starting_state() {
+    use std::os::unix::fs::FileTypeExt;
+    let root = std::env::temp_dir().join(format!("supermux-fifo-{}", uuid::Uuid::new_v4()));
+    let fifo = root.join("missing-dir").join("s.fifo");
+    let run = || {
+        let script = supermux_server::sessions::pty::SshPtyReader::mkfifo_script_for(&fifo);
+        let ok = std::process::Command::new("sh").args(["-c", &script]).status().unwrap();
+        assert!(ok.success(), "script: {script}");
+        assert!(std::fs::metadata(&fifo).unwrap().file_type().is_fifo(), "a FIFO at {}", fifo.display());
+    };
+    run(); // the directory did not exist
+    run(); // an existing FIFO is kept
+    std::fs::remove_file(&fifo).unwrap();
+    std::fs::write(&fifo, b"stale bytes").unwrap();
+    run(); // a plain file is replaced
+    let _ = std::fs::remove_dir_all(root);
+}

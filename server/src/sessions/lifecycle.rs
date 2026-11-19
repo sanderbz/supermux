@@ -613,52 +613,10 @@ fn config_dir_export(s: &Session) -> String {
     }
 }
 
-/// The local files a launch line names: the session's `--settings` overlay dir, the connector
-/// scripts its `--mcp-config` runs and the `$EDITOR` bridge. Only those that exist.
-fn launch_files(data_dir: &Path, name: &str) -> Vec<PathBuf> {
-    [data_dir.join("session-config").join(name), data_dir.join("connectors"), data_dir.join("bin")]
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect()
-}
-
-/// Copies the launch files of a session on a host to the same paths there, through its
-/// ControlMaster, so the launch line typed into the remote pane finds them.
-async fn ship_launch_files(state: &AppState, name: &str, host_id: i64) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let files = launch_files(&state.config.data_dir, name);
-    if files.is_empty() {
-        return Ok(());
-    }
-    let relative: Vec<String> = files
-        .iter()
-        .map(|path| path.strip_prefix("/").unwrap_or(path).display().to_string())
-        .collect();
-    let packed = tokio::process::Command::new("tar")
-        .args(["-czf", "-", "-C", "/"])
-        .args(&relative)
-        .output()
-        .await?;
-    anyhow::ensure!(packed.status.success(), "tar: {}", String::from_utf8_lossy(&packed.stderr).trim());
-    let transport = state.host_pool.transport_for(host_id).await?;
-    let mut child = transport
-        .spawn_command("tar", &["-xzf", "-", "--no-same-owner", "-C", "/"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    {
-        let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin for the remote tar"))?;
-        stdin.write_all(&packed.stdout).await?;
-    }
-    let unpacked = child.wait_with_output().await?;
-    anyhow::ensure!(
-        unpacked.status.success(),
-        "unpacking on host {host_id}: {}",
-        String::from_utf8_lossy(&unpacked.stderr).trim()
-    );
-    Ok(())
-}
+/// Printed in a remote session's pane before its launch line when the session
+/// has connector grants: connectors run on this machine only, so the session
+/// starts without them (see `start_locked_inner`).
+pub(crate) const REMOTE_NO_CONNECTORS_NOTE: &str = "printf '%s\\n' 'supermux: connectors are not available on remote hosts yet; this session starts without them.'; ";
 
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
@@ -3181,6 +3139,12 @@ async fn start_locked_inner(
             tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
         }
     }
+    // A host row re-resolves on every start: a cached handle may still point at
+    // the local pane it ran in before remote spawn worked (#240), and once that
+    // pane is gone the next start belongs on the host.
+    if s.host_id.is_some() {
+        state.runtime_invalidate(name);
+    }
     // Runtime seam: `runtime_for` returns the backend for the row's `runtime`
     // column, built exactly as `Tmux::new(name)` built it here before.
     let rt = state.runtime_for(name).await?;
@@ -3300,7 +3264,22 @@ async fn start_locked_inner(
     // ignores these flags); best-effort — a failure logs and launches without
     // connectors rather than blocking start.
     let mut connector_flags: Vec<String> = Vec::new();
-    if launches_claude(&s.provider) {
+    // REMOTE sessions get no overlay. Connectors are local processes with local
+    // paths and secrets from this machine's vault; shipping them to a host would
+    // copy credentials there, and `env` would carry decrypted secrets to the
+    // remote pane. Until connectors can run on a host, a remote session starts
+    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`).
+    let remote_skips_connectors = s.host_id.is_some()
+        && launches_claude(&s.provider)
+        && !crate::db::connectors::grants_for_session(&state.pool, name)
+            .await
+            .unwrap_or_default()
+            .is_empty();
+    if s.host_id.is_some() {
+        if remote_skips_connectors {
+            tracing::warn!(name = %name, "remote session: starting without its connectors (not supported on hosts yet)");
+        }
+    } else if launches_claude(&s.provider) {
         match crate::sessions::connector_config::assemble(state, name).await {
             Ok(Some(cfg)) => {
                 env.extend(cfg.env);
@@ -3316,14 +3295,6 @@ async fn start_locked_inner(
     {
         if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
             connector_flags = crate::connectors::browser::mcp::codex_flags(&path);
-        }
-    }
-
-    // A launch line names files that live here; a session on a host gets them first, or starts without connectors.
-    if let (Some(host_id), true) = (s.host_id, launches_claude(&s.provider)) {
-        if let Err(e) = ship_launch_files(state, name, host_id).await {
-            tracing::warn!(name = %name, host_id, error = %e, "could not copy the launch files to the host; starting without connectors");
-            connector_flags.clear();
         }
     }
 
@@ -3514,6 +3485,11 @@ async fn start_locked_inner(
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) =
                 build_launch_command(&state.config, &s, &connector_flags);
+            let cmd = if remote_skips_connectors {
+                format!("{REMOTE_NO_CONNECTORS_NOTE}{cmd}")
+            } else {
+                cmd
+            };
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -3780,13 +3756,10 @@ pub async fn kill_teammate_pane(
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
-    let s = require_session(state, name).await?;
-    // Respect the session's transport (local vs remote-host SSH) like the WS
-    // attach path does — a remote lead's panes live on the remote box.
-    let transport = match s.host_id {
-        Some(h) => Some(state.host_pool.transport_for(h).await?),
-        None => None,
-    };
+    require_session(state, name).await?;
+    // Respect the session's transport (local vs remote-host SSH) through the
+    // same resolver as the WS attach — a remote lead's panes live on the host.
+    let transport = state.session_transport(name).await?;
     let tmux = match transport.as_deref() {
         Some(t) => Tmux::new_on(t, name),
         None => Tmux::new(name),
@@ -9403,23 +9376,6 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst),0);
         state.pool.close().await;
         let _=std::fs::remove_dir_all(dir);
-    }
-}
-
-#[cfg(test)]
-mod launch_files_tests {
-    use super::*;
-
-    /// A session on a host needs its overlay dir and the connector scripts there; what does not exist is not shipped.
-    #[test]
-    fn the_files_a_launch_line_names_are_the_ones_that_exist() {
-        let dir = std::env::temp_dir().join(format!("supermux-launch-files-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("session-config/alice")).unwrap();
-        std::fs::create_dir_all(dir.join("session-config/bob")).unwrap();
-        std::fs::create_dir_all(dir.join("connectors/group-chat")).unwrap();
-        let files = launch_files(&dir, "alice");
-        assert_eq!(files, vec![dir.join("session-config/alice"), dir.join("connectors")], "no bin dir, and never another session's config");
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
