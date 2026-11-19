@@ -138,6 +138,21 @@ pub async fn tick_once(state: &AppState) -> anyhow::Result<()> {
         // the transcript. `next_run` still advances: the workflow keeps its
         // rhythm, it just misses this beat, and the ledger says so out loud.
         match db::workflows::running_for(&state.pool, &wf.id).await {
+            // The run in flight may be THIS window's own run: the tick that fired
+            // it claimed this fire-key, and `next_run` only advances when that run
+            // finishes (`record_fire`, from `engine::finish`). Every tick until
+            // then still finds the window due. That is not a missed beat, so it
+            // must not write a `skipped` row or move the cadence: the finishing
+            // run does both. A run that never finishes is still caught by the
+            // reaper and then by `sweep_if_stale`.
+            Ok(Some(_))
+                if matches!(
+                    db::workflows::run_key_fired_at(&state.pool, &wf.id, scheduled_for_ts).await,
+                    Ok(Some(_))
+                ) =>
+            {
+                continue;
+            }
             Ok(Some(inflight)) => {
                 let _ = db::workflows::insert_run(
                     &state.pool,
