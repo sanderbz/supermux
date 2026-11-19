@@ -159,34 +159,20 @@ export function WherePicker(props: WherePickerProps) {
     setProjectsLoaded(true)
   }, [hostId])
 
-  // Load the project repos once on mount. The picker is cheap to render
-  // without them (the sessions section + free-text input still work).
-  React.useEffect(() => {
-    let alive = true
-    projectsApi.list().then((res) => {
-      if (alive) {
-        setProjects(res.entries)
-        setProjectsLoaded(true)
-      }
-    })
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  // Picking another host moves the folder with it: the host's home directory, or the default folder again.
+  // Loads the project list of the chosen host on mount and on every host change; a host moves the folder with it.
   const onChangeRef = React.useRef(onChange)
   onChangeRef.current = onChange
-  const previousHost = React.useRef(hostId)
+  const firstRun = React.useRef(true)
   React.useEffect(() => {
-    if (previousHost.current === hostId) return
-    previousHost.current = hostId
+    const initial = firstRun.current
+    firstRun.current = false
     let alive = true
     void projectsApi.list(hostId).then((res) => {
       if (!alive) return
       setProjects(res.entries)
       setHostRoot(hostId != null ? res.root : '')
       setProjectsLoaded(true)
+      if (initial && hostId == null) return
       const dir =
         hostId != null
           ? res.root
