@@ -25,7 +25,7 @@
 // If this leg fails, T11 does not land and B2 ships without it.
 
 import { expect, test, type Page } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 test.describe('board removal gate', () => {
   let backend: Backend
@@ -63,6 +63,7 @@ test.describe('board removal gate', () => {
 
   async function open(page: Page, path = '/'): Promise<void> {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl + path)
   }
 

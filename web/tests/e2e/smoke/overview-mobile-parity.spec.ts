@@ -21,7 +21,7 @@
 // this surface.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 // iPhone 16 Pro Max logical viewport + an iOS Safari UA so media queries that
 // fork on `(pointer: coarse)` / width resolve the mobile branch. hasTouch makes
@@ -71,6 +71,7 @@ test.describe('mobile overview parity', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(suppressFirstRun())
 
     // Seed a few sessions so there are tiles to size.
@@ -133,6 +134,7 @@ test.describe('mobile overview parity', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(suppressFirstRun())
 
     for (const name of ['one', 'two']) {
@@ -178,6 +180,7 @@ test.describe('mobile overview parity', () => {
     'custom mode: the per-tile drag handle is reachable on touch',
     async ({ page }) => {
       await page.addInitScript(injectGlobals(backend.token))
+      await page.addInitScript(PIN_CLASSIC_SURFACE)
       await page.addInitScript(suppressFirstRun())
       await api(backend).createSession({
         name: 'one',
@@ -213,6 +216,7 @@ test.describe('desktop overview unchanged', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(suppressFirstRun())
 
     for (const name of ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']) {

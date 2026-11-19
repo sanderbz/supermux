@@ -32,7 +32,7 @@
 // it should, because THEN the phone really would be back to keyboard-only.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -49,6 +49,7 @@ test.describe('the palette on a phone', () => {
   test('a finger can reach search and drive it, and its rows are 44pt', async ({ page }) => {
     test.setTimeout(75_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     // Pre-mark the first-run overlays as seen — the tour invite is a fixed
     // glass card that intercepts taps on the grid (the same recipe
     // overview-mobile-parity.spec.ts uses).

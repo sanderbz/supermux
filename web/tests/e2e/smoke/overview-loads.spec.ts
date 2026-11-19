@@ -10,7 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 test.describe('overview loads', () => {
   let backend: Backend
@@ -35,6 +35,7 @@ test.describe('overview loads', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     // NO GUARANTEED-404s. `IssueList` used to fall back to an empty board id
     // when given neither a session nor a board, so every page load and every
@@ -94,6 +95,7 @@ test.describe('overview loads', () => {
   // overview shows is THIS test's, and `/api/teams` was empty before it.)
   test('a team card on the overview issues no dead board request', async ({ page }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     const before = await fetch(`${backend.backendUrl}/api/teams`, {
       headers: { Authorization: `Bearer ${backend.token}` },

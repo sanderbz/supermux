@@ -361,6 +361,23 @@ const FIRST_RUN_ANSWERED = `
  * spec installs before its first navigation, which is exactly where that stamp
  * belongs if the next spec is not to re-forget it.
  */
+/** Init script that pins the CLASSIC surface (Bot mode off) for a spec that
+ *  asserts it: the classic overview tiles, nav, palette and tour. Bot mode is
+ *  the default since fase A7, so these specs say which surface they test
+ *  instead of inheriting it. It MERGES into the stored `supermux-ui` blob, so
+ *  other persisted UI state (density, sort, …) survives a reload. Add it right
+ *  after `injectGlobals`. */
+export const PIN_CLASSIC_SURFACE = `
+  (() => {
+    const key = 'supermux-ui'
+    let blob = {}
+    try { blob = JSON.parse(window.localStorage.getItem(key) || '{}') || {} } catch { blob = {} }
+    blob.state = Object.assign({}, blob.state, { botMode: false })
+    blob.version = 2
+    window.localStorage.setItem(key, JSON.stringify(blob))
+  })();
+`
+
 export function injectGlobals(token: string): string {
   return `
     window._SUPERMUX_AUTH_TOKEN = ${JSON.stringify(token)};
