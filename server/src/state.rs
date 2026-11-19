@@ -1073,12 +1073,17 @@ impl AppState {
     ///
     /// This is the ONE replacement for the historical `Tmux::new(name)` at every
     /// session-scoped call site. For `runtime = 'tmux'` (the entire pre-existing
-    /// fleet, by column DEFAULT) it hands back a [`TmuxRuntime`] built LOCALLY —
-    /// deliberately identical to what `Tmux::new(name)` produced, so no swapped
-    /// call site changes meaning, including for a `host_id`-bearing row whose
-    /// pre-seam call was also local. The WS attach path, which resolved an SSH
-    /// transport for itself before the seam, keeps doing so through
-    /// [`runtime_for_attach`](Self::runtime_for_attach).
+    /// fleet, by column DEFAULT) it hands back a [`TmuxRuntime`]: built LOCALLY
+    /// for a local session, identical to what `Tmux::new(name)` produced.
+    ///
+    /// A session with a `host_id` lives on that host, so its [`TmuxRuntime`] runs
+    /// over the host's SSH ControlMaster (`HostPool::transport_for`) and spawn,
+    /// send, capture and kill all reach the remote tmux. A host that cannot be
+    /// resolved or reached is an error here: the old behaviour, a local tmux
+    /// session that merely carried the host's id, started the "remote" agent on
+    /// the supermux machine itself (and, for a company session, without the
+    /// remote jail the plan assumed). The WS attach path resolves its own
+    /// transport through [`runtime_for_attach`](Self::runtime_for_attach).
     ///
     /// An UNKNOWN session name is not an error: it resolves to tmux, matching
     /// `Tmux::new` on a name with no row (the call then fails naturally with
@@ -1093,7 +1098,23 @@ impl AppState {
             .await
             .unwrap_or(None)
             .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
-        let rt = self.build_runtime(name, &kind, None, None)?;
+        // Native sessions are local by definition (a native runtime combined with
+        // a host is refused at create), so only tmux rows look the host up. A
+        // database error propagates: it must never read as "local".
+        let transport = if kind == runtime::RUNTIME_NATIVE {
+            None
+        } else {
+            match crate::db::sessions::host_id(&self.pool, name).await? {
+                Some(host_id) => Some(
+                    self.host_pool
+                        .transport_for(host_id)
+                        .await
+                        .map_err(|e| e.context(format!("session '{name}': host {host_id}")))?,
+                ),
+                None => None,
+            }
+        };
+        let rt = self.build_runtime(name, &kind, transport, None)?;
         // `insert` (not `entry`) — a concurrent resolver for the same name built
         // an equivalent handle, so last-writer-wins is correct and lock-free.
         self.session_runtimes.insert(name.to_string(), rt.clone());

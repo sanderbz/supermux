@@ -81,6 +81,21 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
+/// The pane command for a session on a remote host: the host user's own login
+/// shell, named by `$SHELL` where tmux runs. [`user_shell`] answers for the
+/// supermux machine (`/bin/zsh` on a Mac), a path that need not exist on the
+/// host, and when it does not the pane dies the moment tmux starts it.
+const REMOTE_PANE_SHELL: &str = r#"exec "${SHELL:-/bin/bash}""#;
+
+/// The command a new pane starts with, for a local session or one on a host.
+fn pane_shell(host_id: Option<i64>) -> String {
+    if host_id.is_some() {
+        REMOTE_PANE_SHELL.to_string()
+    } else {
+        user_shell()
+    }
+}
+
 /// Resolve the URL a REMOTE session's hook `curl` should dial back to.
 /// Resolution order:
 ///
@@ -3260,7 +3275,7 @@ async fn start_locked_inner(
     }
 
     let dir = PathBuf::from(&s.dir);
-    let shell = user_shell();
+    let shell = pane_shell(s.host_id);
 
     // ORPHAN REAPING (native, local only). A holder that died while its CHILD
     // survived leaves the child reparented to `init` with `meta.json` still
@@ -9335,5 +9350,21 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst),0);
         state.pool.close().await;
         let _=std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod pane_shell_tests {
+    use super::*;
+
+    /// The shell of the supermux machine means nothing on a host: a pane on a
+    /// remote host must start the host user's own shell, so the same command
+    /// whatever `$SHELL` is here.
+    #[test]
+    fn a_pane_on_a_host_never_gets_the_local_shell() {
+        let remote = pane_shell(Some(3));
+        assert_eq!(remote, REMOTE_PANE_SHELL);
+        assert!(remote.contains("$SHELL"), "resolved on the host, not here: {remote}");
+        assert_ne!(pane_shell(None), REMOTE_PANE_SHELL, "a local pane keeps the local shell");
     }
 }
