@@ -81,6 +81,19 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
+/// Pane command on a remote host: its own `$SHELL`, because `user_shell()` names
+/// a path of the supermux machine that need not exist there.
+const REMOTE_PANE_SHELL: &str = r#"exec "${SHELL:-/bin/bash}""#;
+
+/// The command a new pane starts with, for a local session or one on a host.
+fn pane_shell(host_id: Option<i64>) -> String {
+    if host_id.is_some() {
+        REMOTE_PANE_SHELL.to_string()
+    } else {
+        user_shell()
+    }
+}
+
 /// Resolve the URL a REMOTE session's hook `curl` should dial back to.
 /// Resolution order:
 ///
@@ -636,6 +649,11 @@ fn config_dir_export(s: &Session) -> String {
         format!("export CLAUDE_CONFIG_DIR='{dir}'; ")
     }
 }
+
+/// Printed in a remote session's pane before its launch line when the session
+/// has connector grants: connectors run on this machine only, so the session
+/// starts without them (see `start_locked_inner`).
+pub(crate) const REMOTE_NO_CONNECTORS_NOTE: &str = "printf '%s\\n' 'supermux: connectors are not available on remote hosts yet; this session starts without them.'; ";
 
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
@@ -3164,6 +3182,12 @@ async fn start_locked_inner(
             tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
         }
     }
+    // A host row re-resolves on every start: a cached handle may still point at
+    // the local pane it ran in before remote spawn worked (#240), and once that
+    // pane is gone the next start belongs on the host.
+    if s.host_id.is_some() {
+        state.runtime_invalidate(name);
+    }
     // Runtime seam: `runtime_for` returns the backend for the row's `runtime`
     // column, built exactly as `Tmux::new(name)` built it here before.
     let rt = state.runtime_for(name).await?;
@@ -3283,7 +3307,22 @@ async fn start_locked_inner(
     // ignores these flags); best-effort — a failure logs and launches without
     // connectors rather than blocking start.
     let mut connector_flags: Vec<String> = Vec::new();
-    if launches_claude(&s.provider) {
+    // REMOTE sessions get no overlay. Connectors are local processes with local
+    // paths and secrets from this machine's vault; shipping them to a host would
+    // copy credentials there, and `env` would carry decrypted secrets to the
+    // remote pane. Until connectors can run on a host, a remote session starts
+    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`).
+    let remote_skips_connectors = s.host_id.is_some()
+        && launches_claude(&s.provider)
+        && !crate::db::connectors::grants_for_session(&state.pool, name)
+            .await
+            .unwrap_or_default()
+            .is_empty();
+    if s.host_id.is_some() {
+        if remote_skips_connectors {
+            tracing::warn!(name = %name, "remote session: starting without its connectors (not supported on hosts yet)");
+        }
+    } else if launches_claude(&s.provider) {
         match crate::sessions::connector_config::assemble(state, name).await {
             Ok(Some(cfg)) => {
                 env.extend(cfg.env);
@@ -3303,7 +3342,7 @@ async fn start_locked_inner(
     }
 
     let dir = PathBuf::from(&s.dir);
-    let shell = user_shell();
+    let shell = pane_shell(s.host_id);
 
     // ORPHAN REAPING (native, local only). A holder that died while its CHILD
     // survived leaves the child reparented to `init` with `meta.json` still
@@ -3489,6 +3528,11 @@ async fn start_locked_inner(
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) =
                 build_launch_command(&state.config, &s, &connector_flags);
+            let cmd = if remote_skips_connectors {
+                format!("{REMOTE_NO_CONNECTORS_NOTE}{cmd}")
+            } else {
+                cmd
+            };
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -3755,13 +3799,10 @@ pub async fn kill_teammate_pane(
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
-    let s = require_session(state, name).await?;
-    // Respect the session's transport (local vs remote-host SSH) like the WS
-    // attach path does — a remote lead's panes live on the remote box.
-    let transport = match s.host_id {
-        Some(h) => Some(state.host_pool.transport_for(h).await?),
-        None => None,
-    };
+    require_session(state, name).await?;
+    // Respect the session's transport (local vs remote-host SSH) through the
+    // same resolver as the WS attach — a remote lead's panes live on the host.
+    let transport = state.session_transport(name).await?;
     let tmux = match transport.as_deref() {
         Some(t) => Tmux::new_on(t, name),
         None => Tmux::new(name),
@@ -9418,5 +9459,19 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst),0);
         state.pool.close().await;
         let _=std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod pane_shell_tests {
+    use super::*;
+
+    /// A pane on a host starts the host user's own shell, whatever `$SHELL` is here.
+    #[test]
+    fn a_pane_on_a_host_never_gets_the_local_shell() {
+        let remote = pane_shell(Some(3));
+        assert_eq!(remote, REMOTE_PANE_SHELL);
+        assert!(remote.contains("${SHELL"), "resolved on the host, not here: {remote}");
+        assert_ne!(pane_shell(None), REMOTE_PANE_SHELL, "a local pane keeps the local shell");
     }
 }

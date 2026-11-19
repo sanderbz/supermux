@@ -666,6 +666,12 @@ pub struct AppState {
     /// rename (via [`rename_session`](Self::rename_session)) exactly like every
     /// other per-session map here.
     pub session_runtimes: Arc<DashMap<String, Arc<dyn SessionRuntime>>>,
+    /// Hosts whose last connect failed, with the instant until which
+    /// [`session_transport`](Self::session_transport) answers from this entry
+    /// instead of retrying, so every caller for a session on a down host fails
+    /// fast instead of each waiting out the SSH warm-up. Cleared by a
+    /// successful connect and by the host's manual Check.
+    pub host_down_until: Arc<DashMap<i64, std::time::Instant>>,
     /// Per-session CHAT rings (fase A2 data plane). Keyed by session name; the
     /// ring + monotonic `seq` + snapshot-and-subscribe that give the chat WS its
     /// no-gap/no-overlap seed→live boundary (see
@@ -860,6 +866,7 @@ impl AppState {
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_runtimes: Arc::new(DashMap::new()),
+            host_down_until: Arc::new(DashMap::new()),
             chat_stores: Arc::new(DashMap::new()),
             groupchat_channels: Arc::new(DashMap::new()),
             statuslines: Arc::new(DashMap::new()),
@@ -1072,13 +1079,9 @@ impl AppState {
     /// column (migration 0024) and cached in [`session_runtimes`](Self::session_runtimes).
     ///
     /// This is the ONE replacement for the historical `Tmux::new(name)` at every
-    /// session-scoped call site. For `runtime = 'tmux'` (the entire pre-existing
-    /// fleet, by column DEFAULT) it hands back a [`TmuxRuntime`] built LOCALLY —
-    /// deliberately identical to what `Tmux::new(name)` produced, so no swapped
-    /// call site changes meaning, including for a `host_id`-bearing row whose
-    /// pre-seam call was also local. The WS attach path, which resolved an SSH
-    /// transport for itself before the seam, keeps doing so through
-    /// [`runtime_for_attach`](Self::runtime_for_attach).
+    /// session-scoped call site. A tmux session with a `host_id` runs over that
+    /// host's SSH transport, resolved by [`session_transport`](Self::session_transport)
+    /// (the same resolver the WS attach uses).
     ///
     /// An UNKNOWN session name is not an error: it resolves to tmux, matching
     /// `Tmux::new` on a name with no row (the call then fails naturally with
@@ -1093,11 +1096,62 @@ impl AppState {
             .await
             .unwrap_or(None)
             .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
-        let rt = self.build_runtime(name, &kind, None, None)?;
+        // Native sessions are local by definition, so only tmux rows look the host up.
+        let transport = if kind == runtime::RUNTIME_NATIVE {
+            None
+        } else {
+            self.session_transport(name).await?
+        };
+        let rt = self.build_runtime(name, &kind, transport, None)?;
         // `insert` (not `entry`) — a concurrent resolver for the same name built
         // an equivalent handle, so last-writer-wins is correct and lock-free.
         self.session_runtimes.insert(name.to_string(), rt.clone());
         Ok(rt)
+    }
+
+    /// How long a host whose connect just failed is not retried by
+    /// [`session_transport`](Self::session_transport).
+    pub const HOST_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// The transport `name`'s terminal runs over: `Ok(None)` is this machine,
+    /// `Ok(Some)` the session's host. The ONE resolver behind
+    /// [`runtime_for`](Self::runtime_for) and the WS attach, so the two can never
+    /// disagree about where a session lives.
+    ///
+    /// - **A host that cannot be reached is an error, never a local fallback.**
+    ///   After a failed connect the host is answered from
+    ///   [`host_down_until`](Self::host_down_until) for [`Self::HOST_RETRY_AFTER`],
+    ///   so callers fail fast instead of each waiting out the SSH warm-up.
+    /// - **Sessions created before remote spawn worked** have a `host_id` but a
+    ///   pane on THIS machine (#240). While that local pane is alive it is served
+    ///   locally, so an upgrade never strands a running session; its next start
+    ///   goes to the host.
+    pub async fn session_transport(&self, name: &str) -> anyhow::Result<Option<Arc<Transport>>> {
+        let Some(host_id) = crate::db::sessions::host_id(&self.pool, name).await? else {
+            return Ok(None);
+        };
+        if crate::sessions::tmux::Tmux::new(name).exists().await.unwrap_or(false) {
+            return Ok(None);
+        }
+        if let Some(until) = self.host_down_until.get(&host_id).map(|u| *u) {
+            if std::time::Instant::now() < until {
+                anyhow::bail!(
+                    "session '{name}': host {host_id} is unreachable (retrying after {}s)",
+                    until.saturating_duration_since(std::time::Instant::now()).as_secs()
+                );
+            }
+        }
+        match self.host_pool.transport_for(host_id).await {
+            Ok(t) => {
+                self.host_down_until.remove(&host_id);
+                Ok(Some(t))
+            }
+            Err(e) => {
+                self.host_down_until
+                    .insert(host_id, std::time::Instant::now() + Self::HOST_RETRY_AFTER);
+                Err(e.context(format!("session '{name}': host {host_id}")))
+            }
+        }
     }
 
     /// The runtime for a WS ATTACH, honouring the two things that attach path
@@ -1161,6 +1215,12 @@ impl AppState {
     /// away). The next [`runtime_for`](Self::runtime_for) re-reads the column.
     pub fn runtime_invalidate(&self, name: &str) {
         self.session_runtimes.remove(name);
+    }
+
+    /// Drop EVERY cached runtime handle (a host was deleted: handles built over
+    /// its transport must not outlive it). Handles are rebuilt lazily.
+    pub fn runtime_invalidate_all(&self) {
+        self.session_runtimes.clear();
     }
 
     /// The per-session chat ring (get-or-create). Called by the chat tailer on

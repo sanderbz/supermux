@@ -162,6 +162,9 @@ struct MkdirBody {
     cwd: Option<String>,
     #[serde(default)]
     session: Option<String>,
+    /// Create the directory on this remote host (no session exists yet).
+    #[serde(default)]
+    host_id: Option<i64>,
 }
 
 /// The shared body of the two two-path verbs (`rename`, `copy`). `overwrite` is
@@ -205,6 +208,17 @@ struct AutocompleteQuery {
     /// preserved byte-for-byte; the new "Where" picker passes `hidden=0`.
     #[serde(default)]
     hidden: Option<String>,
+    /// Complete on this remote host instead of the supermux machine (the
+    /// new-session sheet has no session to name yet).
+    #[serde(default)]
+    host_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectsQuery {
+    /// List the home directory of this remote host instead of the projects root.
+    #[serde(default)]
+    host_id: Option<i64>,
 }
 
 // ────────────────────────── transport resolution ──────────────────────────
@@ -265,6 +279,19 @@ async fn transport_for_session(
         }));
     }
     Ok(transport::resolve(&state.host_pool, host_id))
+}
+
+/// The [`FileTransport`] for an explicit remote host (no session to name yet); a scoped
+/// human is refused remote hosts with the uniform 404, as in [`transport_for_session`].
+fn transport_for_host(
+    state: &AppState,
+    ctx: &crate::scope::OptCtx,
+    host_id: i64,
+) -> Result<Arc<dyn FileTransport>, AppError> {
+    if matches!(crate::scope::Scope::of(ctx.0.as_ref()), crate::scope::Scope::Company(_)) {
+        return Err(AppError::NotFound("host".to_string()));
+    }
+    Ok(transport::resolve(&state.host_pool, Some(host_id)))
 }
 
 /// Path-safety + transport in one. Local transports go through the original
@@ -781,7 +808,10 @@ async fn fs_mkdir(
     ctx: crate::scope::OptCtx,
     Json(body): Json<MkdirBody>,
 ) -> Result<Json<Value>, AppError> {
-    let transport = transport_for_session(&state, &ctx, body.session.as_deref()).await?;
+    let transport = match body.host_id {
+        Some(host_id) => transport_for_host(&state, &ctx, host_id)?,
+        None => transport_for_session(&state, &ctx, body.session.as_deref()).await?,
+    };
     let jail = jail_for(&state, &ctx).await?;
     let abs =
         safe_path_scoped(&transport, &to_abs(&body.path, body.cwd.as_deref()), jail.as_deref())
@@ -1180,6 +1210,13 @@ async fn autocomplete_dir(
     ctx: crate::scope::OptCtx,
     Query(q): Query<AutocompleteQuery>,
 ) -> Json<Vec<String>> {
+    if let Some(host_id) = q.host_id {
+        let filter_hidden = matches!(q.hidden.as_deref(), Some("0") | Some("false") | Some("no") | Some("off"));
+        return match transport_for_host(&state, &ctx, host_id) {
+            Ok(transport) => Json(remote_dir_completions(&transport, &q.q, filter_hidden).await),
+            Err(_) => Json(Vec::new()),
+        };
+    }
     let expanded = shellexpand::tilde(&q.q).into_owned();
     let p = Path::new(&expanded);
     let (dir, prefix) = if expanded.ends_with('/') {
@@ -1273,12 +1310,95 @@ struct ProjectRepos {
     entries: Vec<ProjectRepo>,
 }
 
+/// How many of a host's folders are probed for a `.git`, each one an ssh round
+/// trip; the rest are listed without the git chip.
+const REMOTE_GIT_PROBES: usize = 40;
+
+/// Directory completions on a remote host with the local rules, over its file transport;
+/// `~` is the SSH user's home and a path the file browser would refuse lists nothing.
+async fn remote_dir_completions(
+    transport: &Arc<dyn FileTransport>,
+    q: &str,
+    filter_hidden: bool,
+) -> Vec<String> {
+    let mut input = q.to_string();
+    if input == "~" || input.starts_with("~/") {
+        if let Ok(home) = transport.realpath(Path::new(".")).await {
+            input = format!("{}{}", home.to_string_lossy().trim_end_matches('/'), &input[1..]);
+        }
+    }
+    if !input.starts_with('/') {
+        return Vec::new();
+    }
+    let p = Path::new(&input);
+    let (dir, prefix) = if input.ends_with('/') {
+        (p.to_path_buf(), String::new())
+    } else {
+        (
+            p.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/")),
+            p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        )
+    };
+    // The file browser's check: the blocklist, then the same path with symlinks folded on the host.
+    if safe_path(transport, &dir.to_string_lossy(), None).await.is_err() {
+        return Vec::new();
+    }
+    let Ok(entries) = transport.list_dir(&dir).await else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .filter(|e| !(filter_hidden && e.name.starts_with('.') && !prefix.starts_with('.')))
+        .filter(|e| e.name.starts_with(&prefix))
+        .map(|e| dir.join(&e.name).to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out.truncate(10);
+    out
+}
+
+/// The picker's project list for a remote host: the subdirectories of the SSH user's home
+/// (the root), git chip probed for the first [`REMOTE_GIT_PROBES`]; empty when unreadable.
+async fn remote_project_repos(transport: &Arc<dyn FileTransport>) -> ProjectRepos {
+    let empty = ProjectRepos { root: String::new(), entries: Vec::new() };
+    let Ok(home) = transport.realpath(Path::new(".")).await else {
+        return empty;
+    };
+    let Ok(listing) = transport.list_dir(&home).await else {
+        return empty;
+    };
+    let mut dirs: Vec<(String, PathBuf)> = listing
+        .into_iter()
+        .filter(|e| e.is_dir && !e.name.starts_with('.'))
+        .map(|e| (e.name.clone(), home.join(&e.name)))
+        .collect();
+    dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    dirs.truncate(PROJECTS_CAP);
+    let probes = dirs.iter().take(REMOTE_GIT_PROBES).map(|(_, path)| {
+        let git = path.join(".git");
+        async move { transport.exists(&git).await }
+    });
+    let found = futures_util::future::join_all(probes).await;
+    let entries = dirs
+        .iter()
+        .enumerate()
+        .map(|(i, (name, path))| ProjectRepo {
+            path: path.to_string_lossy().into_owned(),
+            name: name.clone(),
+            is_git_repo: matches!(found.get(i), Some(Ok(true))),
+        })
+        .collect();
+    ProjectRepos { root: home.to_string_lossy().into_owned(), entries }
+}
+
 /// `GET /api/projects/repos` — list immediate subdirs of the first
 /// `SUPERMUX_PROJECT_DIRS` entry with git-repo metadata. Hidden entries
 /// filtered; alphabetical; capped at [`PROJECTS_CAP`].
 async fn projects_repos(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     ctx: crate::scope::OptCtx,
+    Query(query): Query<ProjectsQuery>,
 ) -> Json<ProjectRepos> {
     // P3b — the project-dirs root is a GLOBAL config value, not company-scoped,
     // so a scoped human gets no listing (members are chat-only by default and
@@ -1292,6 +1412,14 @@ async fn projects_repos(
             root: String::new(),
             entries: Vec::new(),
         });
+    }
+    // A remote host has no SUPERMUX_PROJECT_DIRS: its starting point is the home
+    // directory of the SSH user.
+    if let Some(host_id) = query.host_id {
+        return match transport_for_host(&state, &ctx, host_id) {
+            Ok(transport) => Json(remote_project_repos(&transport).await),
+            Err(_) => Json(ProjectRepos { root: String::new(), entries: Vec::new() }),
+        };
     }
     let root = std::env::var("SUPERMUX_PROJECT_DIRS")
         .ok()

@@ -526,6 +526,16 @@ pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<
     Ok(row.map(|(v,)| v))
 }
 
+/// The remote host a session runs on (`None` for a local session or an unknown name).
+/// A database error stays an error: it must never read as "local".
+pub async fn host_id(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<i64>> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as("SELECT host_id FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|(v,)| v))
+}
+
 /// Copy a session's CONFIG (not its runtime/counters) under `new_name`. Pinned
 /// is reset and `created_at` refreshed; the caller seeds a fresh runtime row.
 /// The clone's `display_name` is set to its own new slug (not the source's

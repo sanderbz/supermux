@@ -1,5 +1,6 @@
 import { apiToken, apiUrl } from '@/lib/api/client'
 import { homeDir, projectsDir } from '@/env'
+import { filesApi } from '@/lib/api/files'
 
 /** Create a fresh subdir under the projects root (or home if unset).
  *
@@ -13,9 +14,26 @@ import { homeDir, projectsDir } from '@/env'
  *
  *  Shared by the WherePicker's "Create a new folder" row and the New-session
  *  panel's default name → auto-folder flow. */
-export async function createProjectFolder(name: string): Promise<string | null> {
+export async function createProjectFolder(
+  name: string,
+  /** A remote host and the directory to create the folder in (its home directory
+   *  by default for the picker): the folder is then made on that host. */
+  target?: { hostId: number; root: string },
+): Promise<string | null> {
   const safe = name.replace(/[^A-Za-z0-9._-]/g, '').replace(/^[.]+/, '')
   if (!safe) return null
+  if (target) {
+    const root = target.root.replace(/\/+$/, '')
+    if (!root) return null
+    const folder = `${root}/${safe}`
+    try {
+      await filesApi.mkdir(folder, target.hostId)
+    } catch (err) {
+      // 409: the folder already exists on the host; reuse it, like the local path.
+      if ((err as { status?: number })?.status !== 409) return null
+    }
+    return folder
+  }
   const root = (projectsDir() || homeDir()).replace(/\/+$/, '')
   if (!root) return null
   const folder = `${root}/${safe}`
