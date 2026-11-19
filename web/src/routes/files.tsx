@@ -145,7 +145,8 @@ export function Files() {
   // gets `{root:'', entries:[]}`, and never renders HQ at all.
   const projects = useQuery({
     queryKey: ['files', 'projects'],
-    queryFn: projectsApi.list,
+    // Not `projectsApi.list` itself: React Query would hand it its context object as `hostId`.
+    queryFn: () => projectsApi.list(),
     staleTime: 60_000,
     retry: false,
   })

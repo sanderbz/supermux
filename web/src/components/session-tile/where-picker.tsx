@@ -89,6 +89,10 @@ interface WherePickerBaseProps {
   /** Disable the sessions section (legacy; not used now that `showSessions`
    *  exists). Kept for back-compat. Defaults to false. */
   sessionsDisabled?: boolean
+  /** The remote host the session will run on; `null` or omitted is the supermux
+   *  machine. With a host, the project list, the path suggestions and the
+   *  Create-folder row all work on that host (its home directory is the root). */
+  hostId?: number | null
 }
 
 /** Props when the picker is allowed to emit BOTH "new" and "session" picks. */
@@ -133,6 +137,7 @@ export function WherePicker(props: WherePickerProps) {
     id = 'where',
     sessionsDisabled = false,
     gitHint = 'warn',
+    hostId = null,
   } = props as WherePickerFullProps & { sessionsDisabled?: boolean }
   // Discriminated narrowing: when callers pass `showSessions={false}` we
   // suppress the Sessions section entirely AND treat any stray `kind: 'session'`
@@ -146,11 +151,15 @@ export function WherePicker(props: WherePickerProps) {
 
   // Refetch the projects list — used on mount and after Create-new-folder so
   // the section reflects the freshly-created entry without reopening the sheet.
+  // The folder root of the chosen host: the SSH user's home directory ('' for
+  // the supermux machine, whose root is the configured projects directory).
+  const [hostRoot, setHostRoot] = React.useState('')
   const refreshProjects = React.useCallback(async () => {
-    const res = await projectsApi.list()
+    const res = await projectsApi.list(hostId)
     setProjects(res.entries)
+    setHostRoot(hostId != null ? res.root : '')
     setProjectsLoaded(true)
-  }, [])
+  }, [hostId])
 
   // Load the project repos once on mount. The picker is cheap to render
   // without them (the sessions section + free-text input still work).
@@ -166,6 +175,36 @@ export function WherePicker(props: WherePickerProps) {
       alive = false
     }
   }, [])
+
+  // Picking another host moves the folder with it: the home directory of a
+  // remote host, the default folder again for the supermux machine. The picker
+  // never shows the other machine's folders.
+  const onChangeRef = React.useRef(onChange)
+  onChangeRef.current = onChange
+  const previousHost = React.useRef(hostId)
+  React.useEffect(() => {
+    if (previousHost.current === hostId) return
+    previousHost.current = hostId
+    let alive = true
+    void projectsApi.list(hostId).then((res) => {
+      if (!alive) return
+      setProjects(res.entries)
+      setHostRoot(hostId != null ? res.root : '')
+      setProjectsLoaded(true)
+      const dir =
+        hostId != null
+          ? res.root
+            ? res.root.endsWith('/')
+              ? res.root
+              : `${res.root}/`
+            : ''
+          : defaultWhereSelection().dir
+      ;(onChangeRef.current as (sel: NewWhereSelection) => void)({ kind: 'new', dir })
+    })
+    return () => {
+      alive = false
+    }
+  }, [hostId])
 
   // Sessions section (sorted most-recent first, archived rows are already
   // filtered server-side by /api/sessions). Stable selection is by `name`.
@@ -267,6 +306,8 @@ export function WherePicker(props: WherePickerProps) {
           projectRows={projectRows}
           sessionDirs={sessionDirs}
           onCreated={refreshProjects}
+          hostId={hostId}
+          hostRoot={hostRoot}
           // Expanded by default ONLY when the active selection is genuinely
           // outside the picker's known set — i.e. not a project entry AND
           // not the bare projects-root sentinel that's used as the default.
@@ -519,6 +560,8 @@ function UseAnotherFolder({
   projectRows,
   sessionDirs,
   onCreated,
+  hostId,
+  hostRoot,
 }: {
   id: string
   value: string
@@ -527,6 +570,8 @@ function UseAnotherFolder({
   projectRows: ProjectRepo[]
   sessionDirs: Set<string>
   onCreated?: () => void | Promise<void>
+  hostId: number | null
+  hostRoot: string
 }) {
   const [open, setOpen] = React.useState(initiallyOpen)
   const [creating, setCreating] = React.useState(false)
@@ -560,6 +605,7 @@ function UseAnotherFolder({
             onPick={onPick}
             projectRows={projectRows}
             sessionDirs={sessionDirs}
+            hostId={hostId}
           />
 
           {/* Create-new-folder affordance. */}
@@ -570,10 +616,14 @@ function UseAnotherFolder({
             </div>
             <CreateFolderRow
               busy={creating}
+              root={hostId != null ? hostRoot : undefined}
               onCreate={async (name) => {
                 setCreating(true)
                 try {
-                  const created = await createProjectFolder(name)
+                  const created = await createProjectFolder(
+                    name,
+                    hostId != null ? { hostId, root: hostRoot } : undefined,
+                  )
                   if (!created) {
                     // Signal failure so the CreateFolderRow keeps the typed
                     // value (user can retry without re-typing).
@@ -604,12 +654,14 @@ function FreeTextDirInput({
   onPick,
   projectRows,
   sessionDirs,
+  hostId,
 }: {
   id: string
   value: string
   onPick: (dir: string) => void
   projectRows: ProjectRepo[]
   sessionDirs: Set<string>
+  hostId: number | null
 }) {
   const [local, setLocal] = React.useState(value)
   const [suggestions, setSuggestions] = React.useState<string[]>([])
@@ -629,10 +681,10 @@ function FreeTextDirInput({
       return
     }
     // hidden=0 → drop `.git` / `.cache` / `.next` noise.
-    const next = await sessionsApi.autocompleteDir(q, /* noHidden */ true)
+    const next = await sessionsApi.autocompleteDir(q, /* noHidden */ true, hostId)
     if (mine !== seq.current) return
     setSuggestions(next)
-  }, [])
+  }, [hostId])
 
   React.useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current)
@@ -712,12 +764,16 @@ function FreeTextDirInput({
 function CreateFolderRow({
   busy,
   onCreate,
+  root: hostRoot,
 }: {
   busy: boolean
   onCreate: (name: string) => void | Promise<void>
+  /** The directory folders are created in on a remote host; omitted for the
+   *  supermux machine, which uses the projects directory. */
+  root?: string
 }) {
   const [name, setName] = React.useState('')
-  const root = projectsDir() || homeDir()
+  const root = hostRoot ?? (projectsDir() || homeDir())
   const trimmed = name.trim()
   const safe = /^[A-Za-z0-9._-]+$/.test(trimmed)
   const canCreate = safe && !busy
