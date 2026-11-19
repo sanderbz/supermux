@@ -1,0 +1,26 @@
+-- Key a connected account on a STABLE identity, not on its display label
+-- (brokered-OAuth account collapse; additive/nullable).
+--
+-- 0035 keyed the account atom on (connector_id, account_label) and 0037 added the
+-- company dimension. The label is a DISPLAY string: `fetch_identity` picks
+-- `email` ▷ `preferred_username` ▷ `name` ▷ `sub` from userinfo and, when the
+-- provider exposes no userinfo at all, falls back to the RESOURCE HOST. Two
+-- distinct identities on the same connector therefore collapsed into ONE
+-- connector_accounts row — the second sign-in's account_replace re-pointed the
+-- shared secret_ref while the first identity's grants still referenced it, so an
+-- existing grant silently swapped to someone else's token.
+--
+-- `identity_key` is the provider's own stable subject when we can get one
+-- (`sub` ▷ `id` ▷ `email` from userinfo, else the same claims out of the
+-- id_token). Same identity ⇒ the row is rotated in place (today's behaviour);
+-- a DIFFERENT identity ⇒ a NEW row, and the existing grants stay wired to the
+-- account they were minted for.
+--
+-- NULL = un-keyed: every pre-existing row, plus every account minted by a path
+-- that captures no identity (the paste path, the device flow). An un-keyed row
+-- with a matching label is ADOPTED by the first identity that signs in on it
+-- (the key is stamped then), so upgrading an install never duplicates an account.
+-- NON-secret (an email / opaque subject, same class as account_label) and never
+-- returned by the accounts API. No FK; plain nullable add applies cleanly under
+-- foreign_keys=ON. SHIPPED-IMMUTABLE: sqlx checksums migrations; never edit.
+ALTER TABLE connector_accounts ADD COLUMN identity_key TEXT;

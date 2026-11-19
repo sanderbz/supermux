@@ -69,7 +69,11 @@ CONNECT_TOOL = {
         "shown to you. It returns immediately and does NOT wait for them — keep "
         "working. Once they approve, the connector's own tools (mcp__<service>__*) "
         "appear after the bot's next restart — retry your task then, and confirm it "
-        "works. If nothing appears, say so in your reply rather than assuming."
+        "works. If nothing appears, say so in your reply rather than assuming. "
+        "NOT every entry is card-connectable: an entry marked `builtin` (the "
+        "Shared Browser, the company group chat) is granted by a different human "
+        "act and this tool will tell you which — relay THAT, and never tell the "
+        "human a card was sent unless the answer says `card_sent: true`."
     ),
     "inputSchema": {
         "type": "object",
@@ -112,6 +116,22 @@ TOOLS = [CONNECT_TOOL, LIST_TOOL]
 NO_CATALOG_NOTE = "No connector catalog was provided to this bot."
 
 
+def _catalog():
+    """The injected snapshot's `connectors` array, or [] on any miss."""
+    path = sys.argv[1] if len(sys.argv) > 1 else None
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(snap, dict):
+        return []
+    entries = snap.get("connectors", [])
+    return entries if isinstance(entries, list) else []
+
+
 def _list_connectors_text():
     """Return the injected catalog snapshot's `connectors` array as pretty JSON.
 
@@ -120,31 +140,34 @@ def _list_connectors_text():
     written slightly after spawn). Any miss — no argv, missing file, bad JSON, an
     OSError — degrades to an empty list with a note and NEVER raises; the snapshot
     is secret-free, so nothing sensitive is ever surfaced here."""
-    path = sys.argv[1] if len(sys.argv) > 1 else None
-    if not path:
+    connectors = _catalog()
+    if not connectors:
         return json.dumps(
             {"connectors": [], "note": NO_CATALOG_NOTE}, indent=2, ensure_ascii=False
         )
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            snap = json.load(f)
-        connectors = snap.get("connectors", []) if isinstance(snap, dict) else []
-        return json.dumps({"connectors": connectors}, indent=2, ensure_ascii=False)
-    except (OSError, ValueError):
-        return json.dumps(
-            {"connectors": [], "note": NO_CATALOG_NOTE}, indent=2, ensure_ascii=False
-        )
+    return json.dumps({"connectors": connectors}, indent=2, ensure_ascii=False)
 
 
 def _connect_result(service):
-    """The tool's own return value.
+    """The tool's own return value — and it must never claim more than it did.
 
-    This ALWAYS runs (the tool is allow-listed and carries no interaction
-    marker), so the wording has to be true at the moment it is written: supermux
-    has been ASKED to raise the card, but nothing here can observe whether the
-    human ever sees it — the ask lives in server memory and is lost on a restart
-    — and nothing here can observe whether they approve. So we claim the ask, not
-    the outcome. No credential is ever touched here."""
+    Three answers, because there are three truths:
+
+    * **no id** — nothing was asked of anyone;
+    * **a BUILTIN id** (`shared-browser`, `group-chat`) — there is no credential
+      to collect and therefore no card to raise. supermux marks these in the
+      injected snapshot with `builtin: true` and a `connect_note` naming the act
+      that DOES grant them (for the browser: the human lending a tab). Returning
+      the optimistic card text here is what made a bot announce "I've sent you a
+      connect card" for the Shared Browser while nothing ever rendered — the bug
+      this branch exists to kill. Say the truth the server wrote instead;
+    * **an ordinary id** — supermux was asked to raise the card. Even here we
+      claim the ASK and not the outcome: nothing in this process can observe
+      whether the human sees it or taps it.
+
+    An id that is in no snapshot at all is not claimed as a card either: it is
+    almost certainly a guess, and the honest answer is to go and look.
+    No credential is ever touched here."""
     service = (service or "").strip()
     if not service:
         return {
@@ -154,9 +177,42 @@ def _connect_result(service):
                 "e.g. connect(service='pmcp-notion')."
             ),
         }
+    catalog = _catalog()
+    entry = None
+    for c in catalog:
+        if isinstance(c, dict) and c.get("id") == service:
+            entry = c
+            break
+    if entry is not None and entry.get("builtin"):
+        return {
+            "connected": False,
+            "service": service,
+            "card_sent": False,
+            "message": entry.get("connect_note")
+            or (
+                f"'{service}' is built in to supermux and is not connected with a "
+                "card. Ask the human how they want to grant it — do not tell them "
+                "a card was sent, because none was."
+            ),
+        }
+    if entry is None and catalog:
+        known = ", ".join(
+            str(c.get("id")) for c in catalog[:8] if isinstance(c, dict) and c.get("id")
+        )
+        return {
+            "connected": False,
+            "service": service,
+            "card_sent": False,
+            "message": (
+                f"There is no connector called '{service}', so NO card was sent. "
+                "Call list_connectors and use an id from it — do not tell the "
+                f"human to approve a card. Some ids you do have: {known}."
+            ),
+        }
     return {
         "connected": False,
         "service": service,
+        "card_sent": True,
         "message": (
             f"supermux has asked the human to approve '{service}' in a secure "
             "connect card. Nothing is connected yet, and this call did NOT wait "

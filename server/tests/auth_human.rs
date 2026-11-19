@@ -63,6 +63,7 @@ fn config_with(dir: &std::path::Path, human_auth: HumanAuthConfig) -> Config {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth,
     }
 }

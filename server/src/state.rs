@@ -456,6 +456,9 @@ pub struct AppState {
     /// Empty until the detector drives updates; the map + cleanup ensures
     /// churn never leaks entries.
     pub status_watch: Arc<DashMap<String, watch::Sender<StatusUpdate>>>,
+    /// Serialize the durable browser outbox worker and reconciliation. A
+    /// `sending` row at the next locked tick has no remaining live writer.
+    pub browser_feedback_tick_lock: Arc<Mutex<()>>,
     /// Per-session hook-token cache. Seeded on create + rotated on start;
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `SUPERMUX_HOOK_TOKEN`. The `/api/_internal/hook` route reads it.
@@ -574,12 +577,12 @@ pub struct AppState {
     /// empty on `Stop`/`SessionEnd` and dropped on session delete/rename.
     pub session_activity: Arc<DashMap<String, SessionActivity>>,
     /// Per-session LIFECYCLE-forced status override. A `SessionEnd`
-    /// hook forces `Stopped`; the detector loop reads this each tick and
-    /// `force`s it into its classifier (then clears it), so the lifecycle signal
-    /// — which the capture classifier cannot infer — sticks instead of being
-    /// re-derived to `active` on the next tick. `SessionStart` clears any pending
-    /// override so the detector re-evaluates freely.
-    pub forced_status: Arc<DashMap<String, Status>>,
+    /// hook forces `Stopped`; the detector loop holds it for a bounded window
+    /// while the agent exits (see [`Self::held_forced_status`]), so the lifecycle
+    /// signal — which the capture classifier cannot infer — sticks instead of
+    /// being re-derived to `active`. `SessionStart` clears any pending override so
+    /// the detector re-evaluates freely. The instant is when it was forced.
+    pub forced_status: Arc<DashMap<String, (Status, Instant)>>,
     /// Per-session PER-LAUNCH "force Agent Teams ON" flag ("Start a team").
     /// The global `experimental.agent_teams` pref is the app-wide gate; this is
     /// a NARROWER, explicit per-session opt-in set by the `POST /api/teams/start`
@@ -719,6 +722,7 @@ pub struct AppState {
     /// a SIGTERM/SIGINT hook installed only once chrome is really running), so
     /// nothing here or in `main.rs` has to remember to stop it.
     pub browser: Arc<crate::connectors::browser::BrowserService>,
+    pub browser_control: Arc<crate::browser_feedback::control::ControlBridge>,
     /// Portable agent-isolation runtime (companies §4.4): the requested
     /// [`IsolationMode`](crate::isolation::IsolationMode), the once-at-startup
     /// probe result, and the active backend. The spawn path (`lifecycle::
@@ -765,6 +769,20 @@ pub struct AppState {
     /// returned, never logged); the client holds only the handle. Entries drop on
     /// terminal status and self-prune on a poll past expiry. In-memory only.
     pub oauth_device_handles: Arc<DashMap<String, crate::connectors::oauth::DeviceHandle>>,
+    /// Supermux-brokered authorization-code flows for remote MCP servers, keyed
+    /// by `state`. RAM only (PKCE verifier, DCR secret, and — between the public
+    /// callback and the authenticated `complete` — the exchanged tokens). Swept
+    /// on every `start`/`callback`; single-use.
+    pub oauth_code_flows: Arc<DashMap<String, crate::connectors::oauth_code::CodeFlow>>,
+    /// The broker's outbound-URL policy. Production is `UrlPolicy::default()`
+    /// (https-only, public DNS names). The ONLY way to relax it is
+    /// [`set_oauth_url_policy_for_tests`](Self::set_oauth_url_policy_for_tests) —
+    /// never config, never env.
+    pub oauth_url_policy: Arc<arc_swap::ArcSwap<crate::connectors::oauth_code::UrlPolicy>>,
+    /// The asks registry (`crate::asks`): per-session locks, the connected
+    /// decision hooks waiting for an answer, and the `[asks]` config. The asks
+    /// themselves live in the `asks` table.
+    pub asks: Arc<crate::asks::AskRegistry>,
 }
 
 impl AppState {
@@ -775,6 +793,7 @@ impl AppState {
         // — never the raw env, so a test harness lands in its own temp dir).
         let browser_pool = pool.clone();
         let browser_cfg = crate::connectors::browser::BrowserConfig::for_data_dir(&config.data_dir);
+        let asks = Arc::new(crate::asks::AskRegistry::new(crate::asks::AsksConfig::load(&config.data_dir)));
         let (sse_tx, _rx) = broadcast::channel(SSE_CHANNEL_CAP);
         // Build the pty streamer before `config` is moved into the Arc.
         let pty = Arc::new(PtyStreamer::new(
@@ -792,6 +811,7 @@ impl AppState {
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
         // Capture the isolation policy before `config` is moved into the Arc.
         let isolation_mode = config.isolation_mode;
+        let company_isolation = config.company_isolation.clone();
         // Build the P3a human-auth runtime (flow store + Google verifier) before
         // `config` is moved into the Arc. The LIVE config is the file baseline
         // MERGED with any `companies_config.toml` companion the wizard wrote, so a
@@ -819,6 +839,7 @@ impl AppState {
             workflow_runs: Arc::new(crate::workflows::engine::RunRegistry::default()),
             spawn_guards: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
+            browser_feedback_tick_lock: Arc::new(Mutex::new(())),
             hook_tokens: Arc::new(DashMap::new()),
             pane_conversations: Arc::new(DashMap::new()),
             last_hook: Arc::new(DashMap::new()),
@@ -848,6 +869,7 @@ impl AppState {
             // The pool is attached (not passed to `new`) so that call stays
             // allocation-only, which the lazy-start invariant depends on; the
             // workspace-TAB surface is the only thing that reads it.
+            browser_control: Arc::new(crate::browser_feedback::control::ControlBridge::default()),
             browser: {
                 let svc = crate::connectors::browser::BrowserService::new(browser_cfg);
                 svc.attach_pool(browser_pool);
@@ -857,16 +879,36 @@ impl AppState {
             // honest measured level. On THIS box the systemd @system-service
             // filter blocks landlock_*, so the probe measures None and company
             // agents run UNCONFINED under BestEffort (fail-open).
-            isolation: Arc::new(crate::isolation::IsolationRuntime::from_mode(
-                isolation_mode,
-            )),
+            isolation: Arc::new(
+                crate::isolation::IsolationRuntime::from_mode(isolation_mode)
+                    .with_company_extras(company_isolation),
+            ),
             isolation_applied: Arc::new(DashMap::new()),
             human_auth,
             human_auth_config,
             external_access: Arc::new(crate::external_access::ExternalAccess::new()),
             oauth_apps: Arc::new(arc_swap::ArcSwap::from_pointee(oauth_apps_seed)),
             oauth_device_handles: Arc::new(DashMap::new()),
+            oauth_code_flows: Arc::new(DashMap::new()),
+            oauth_url_policy: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::connectors::oauth_code::UrlPolicy::default(),
+            )),
+            asks,
         }
+    }
+
+    /// The broker's current outbound-URL policy (cheap `Arc` load).
+    pub fn oauth_url_policy(&self) -> crate::connectors::oauth_code::UrlPolicy {
+        **self.oauth_url_policy.load()
+    }
+
+    /// TEST ONLY: relax the broker's URL policy so an in-process mock
+    /// authorization server on `http://127.0.0.1:<port>` can be reached. Compiled
+    /// out of production binaries (`test-support` is a dev-only feature); there
+    /// is deliberately no config/env path to this.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_oauth_url_policy_for_tests(&self, policy: crate::connectors::oauth_code::UrlPolicy) {
+        self.oauth_url_policy.store(Arc::new(policy));
     }
 
     /// The LIVE human-auth config snapshot (hot-swappable by the onboarding
@@ -1721,6 +1763,12 @@ impl AppState {
     pub fn set_permission_request(&self, name: &str, ask: PermissionAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.permission = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
@@ -1759,6 +1807,12 @@ impl AppState {
     pub fn set_elicitation(&self, name: &str, ask: ElicitationAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.elicitation = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
@@ -1796,6 +1850,12 @@ impl AppState {
     pub fn set_question_request(&self, name: &str, ask: QuestionAsk) -> bool {
         self.mutate_activity(name, |a| {
             a.question_request = Some(ask);
+            // A blocking ask outranks the connect card. The card deliberately
+            // outlives its own tool call (the bot keeps working while the human
+            // answers), but the chat draws ONE card at a time and the connect card
+            // sits first in that chain — left in place it would hide the ask the
+            // bot is actually parked on, and the pane would look stuck.
+            a.connect_request = None;
         })
     }
 
@@ -1840,18 +1900,29 @@ impl AppState {
     }
 
     /// Force `name`'s status via the lifecycle override: the detector
-    /// loop reads + applies this on its next tick (then clears it), so a
+    /// loop holds it (see [`Self::held_forced_status`]), so a
     /// `SessionEnd`-driven `Stopped` sticks instead of being re-derived. Wakes
     /// the loop so the change surfaces within ~1s, not at the next tier edge.
     pub fn set_forced_status(&self, name: &str, status: Status) {
-        self.forced_status.insert(name.to_string(), status);
+        self.forced_status.insert(name.to_string(), (status, Instant::now()));
         self.wake_detector(name);
     }
 
-    /// Take (consume) any pending lifecycle-forced status for `name`. Called by
-    /// the detector loop each tick; `None` when nothing is pending.
+    /// The forced status for `name` while it is younger than `hold`. An older one
+    /// is dropped and reads `None`, so the detector decides again. Called by the
+    /// detector loop each tick; `None` when nothing is pending.
+    pub fn held_forced_status(&self, name: &str, hold: Duration) -> Option<Status> {
+        let (status, at) = *self.forced_status.get(name)?;
+        if at.elapsed() < hold {
+            return Some(status);
+        }
+        self.forced_status.remove(name);
+        None
+    }
+
+    /// Take (consume) any pending lifecycle-forced status for `name`.
     pub fn take_forced_status(&self, name: &str) -> Option<Status> {
-        self.forced_status.remove(name).map(|(_, s)| s)
+        self.forced_status.remove(name).map(|(_, (s, _))| s)
     }
 
     /// Clear any pending lifecycle-forced status (e.g. on `SessionStart`, so a
@@ -2336,6 +2407,7 @@ mod pending_edit_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };

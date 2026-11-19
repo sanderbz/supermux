@@ -26,6 +26,7 @@ export { CapturedFrameCard, type CapturedFrameCardProps } from './captured-frame
 export {
   CardCode,
   ChoiceCard,
+  ChoicePills,
   DialogShell,
   InlineCode,
   type ChoiceCardProps,

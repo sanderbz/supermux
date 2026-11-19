@@ -124,16 +124,16 @@ describe('a picker row opens THAT session — never a random one', () => {
     // Each row's destination is ITS OWN session's target — the anti-random
     // guarantee, read straight off the DOM.
     expect(out).toContain('data-session="perm"')
-    expect(out).toContain('data-href="/focus/perm#attention"')
+    expect(out).toContain('data-href="/agent/perm#attention"')
     expect(out).toContain('data-session="ask"')
-    expect(out).toContain('data-href="/focus/ask#choice"')
+    expect(out).toContain('data-href="/agent/ask#choice"')
     expect(out).toContain('data-session="oops"')
-    expect(out).toContain('data-href="/focus/oops"')
+    expect(out).toContain('data-href="/agent/oops"')
   })
 
   test('a session name with URL-hostile characters is encoded in the row href', () => {
     const out = listHtml([{ name: 'feat/a b', status: 'waiting' }])
-    expect(out).toContain('data-href="/focus/feat%2Fa%20b#choice"')
+    expect(out).toContain('data-href="/agent/feat%2Fa%20b#choice"')
   })
 
   test('the row names the reason, so the list says WHAT each needs', () => {
@@ -146,7 +146,7 @@ describe('rollupTarget — the three destinations are different things', () => {
   test('a pending choice lands on the choice card', () => {
     const t = rollupTarget(waiting('supermux', 0))
     expect(t.kind).toBe('choice')
-    expect(t.href).toBe('/focus/supermux#choice')
+    expect(t.href).toBe('/agent/supermux#choice')
   })
 
   test('a live permission dialog lands on the attention card', () => {
@@ -156,7 +156,7 @@ describe('rollupTarget — the three destinations are different things', () => {
       permission_request: { tool: 'Bash' } as never,
     })
     expect(t.kind).toBe('attention')
-    expect(t.href).toBe('/focus/supermux#attention')
+    expect(t.href).toBe('/agent/supermux#attention')
   })
 
   test('everything else lands on the session', () => {
@@ -166,7 +166,7 @@ describe('rollupTarget — the three destinations are different things', () => {
       error: { type: 'rate_limit', message: '' },
     })
     expect(t.kind).toBe('session')
-    expect(t.href).toBe('/focus/supermux')
+    expect(t.href).toBe('/agent/supermux')
   })
 })
 

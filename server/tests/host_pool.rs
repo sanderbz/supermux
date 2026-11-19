@@ -46,6 +46,7 @@ async fn test_pool() -> (SqlitePool, PathBuf) {
             github_token: None,
             statusline_tap: false,
             isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");

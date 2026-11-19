@@ -35,10 +35,9 @@ pub const ID_MAX_CHARS: usize = 256;
 
 /// What a parsed line *is*, from the renderer's point of view.
 ///
-/// `Unknown` is load-bearing: the corpus contains top-level types the master
-/// plan never listed (`agent-name`, `agent-setting`, `bridge-session`,
-/// `ai-title`) and Claude Code adds more between patch releases. An unmodelled
-/// shape is kept, never dropped and never a parse failure.
+/// `Unknown` is load-bearing: new interactive actions and warning types appear
+/// between provider releases. Verified housekeeping is excluded by the parser;
+/// an unmodeled content/action shape stays addressable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -156,6 +155,10 @@ mod sealed {
     #[derive(Debug, Clone, serde::Serialize)]
     pub struct Inner {
         pub(super) seq: u64,
+        #[serde(skip)]
+        pub(super) source_generation: u64,
+        #[serde(skip)]
+        pub(super) conversation_id: Option<String>,
         pub(super) uuid: String,
         pub(super) kind: super::Kind,
         pub(super) ts_ms: i64,
@@ -211,6 +214,8 @@ impl WireEntry {
     pub fn seal(seq: u64, e: &ChatEntry) -> Self {
         let mut inner = sealed::Inner {
             seq,
+            source_generation: 0,
+            conversation_id: None,
             uuid: clip_uuid(&e.uuid),
             kind: e.kind,
             ts_ms: e.ts_ms,
@@ -262,6 +267,17 @@ impl WireEntry {
     /// `seq` is the ring's order and the seed→live boundary.
     pub(super) fn set_seq(&mut self, seq: u64) {
         self.0.seq = seq;
+    }
+
+    pub(super) fn set_source(&mut self, generation: u64, conversation_id: &str) {
+        self.0.source_generation = generation;
+        self.0.conversation_id = Some(conversation_id.to_string());
+    }
+    pub fn source_generation(&self) -> u64 {
+        self.0.source_generation
+    }
+    pub fn conversation_id(&self) -> Option<&str> {
+        self.0.conversation_id.as_deref()
     }
 
     pub fn seq(&self) -> u64 {

@@ -68,6 +68,17 @@ const FALLBACK_DELAY: Duration = Duration::from_secs(2);
 /// leaves. 50ms ≪ the 2s tick, so steady-state latency is unaffected.
 const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 
+/// How long after a start a shell at the foreground may still mean "the agent has
+/// not taken over yet". `start` holds the session lock until the agent UI shows or
+/// its wait gives up; this covers a slow boot after that give-up. An agent that
+/// exits inside this window reads `Stopped` once the window has passed.
+const AGENT_START_GRACE_SECS: i64 = 60;
+
+/// How long a `SessionEnd`-forced stop outranks the screen while the agent exits.
+/// Claude gives its `SessionEnd` hooks 1.5s by default. An agent still in the pty
+/// after this, with no `SessionStart`, did not exit, so the detector decides again.
+const FORCED_STOP_HOLD: Duration = Duration::from_secs(5);
+
 /// How many trailing lines the tile preview surfaces.
 /// Sized to feed BOTH preview modes from one capture: the static tile shows
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
@@ -604,13 +615,18 @@ pub async fn tick(
     }
 
     // hooks-10x lifecycle: a `SessionEnd` hook may have forced this session
-    // `Stopped` (a clean exit the capture classifier cannot infer). Apply +
-    // consume the override so the detector holds `Stopped` this tick instead of
-    // re-deriving `active`; `SessionStart` clears the override so a re-launched
-    // session is re-evaluated freely. We force BEFORE the capture so the held
-    // status flows through the normal change/broadcast path below.
-    if let Some(forced) = state.take_forced_status(name) {
+    // `Stopped` (a clean exit the capture classifier cannot infer). Hold it and end
+    // the tick here: `SessionEnd` fires while the agent is still exiting, and more
+    // hooks wake this loop right after it, so a capture taken now shows the live
+    // screen and would commit `active` 100ms after the hook's `stopped`.
+    // `force_stopped` already wrote and broadcast the status. Once the hold lapses
+    // the agent has left the pty, which `agent_left_pane` below keeps at `Stopped`.
+    // `SessionStart` clears the override so `/clear` and a re-launched session are
+    // re-evaluated at once.
+    if let Some(forced) = state.held_forced_status(name, FORCED_STOP_HOLD) {
         detector.force(forced);
+        state.record_recency(name, forced);
+        return Ok(forced);
     }
 
     let last_pty = state.last_pty(name);
@@ -712,6 +728,9 @@ pub async fn tick(
     {
         clear_holder_death_badge(state, name);
     }
+
+    let gone = agent_left_pane(state, name, rt.shell_is_foreground().await).await;
+    detector.set_agent_gone(gone);
 
     // Heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
     // the detector's heartbeat branch fires) and is normally spawned on the
@@ -846,6 +865,11 @@ pub async fn tick(
         // settle. A transient flap (e.g. a stale-by-now hook) that reverts is
         // suppressed; only a status that still holds is broadcast.
         tokio::time::sleep(FLAP_DEBOUNCE).await;
+        // The foreground is one of those fresh signals. A `Stopped` commits here
+        // and can archive a disposable session, so a shell that held the pty only
+        // for a moment must not reach that on one stale read.
+        let gone = agent_left_pane(state, name, rt.shell_is_foreground().await).await;
+        detector.set_agent_gone(gone);
         let confirmed = detector.detect_with_subagents(
             &capture,
             state.last_pty(name),
@@ -916,6 +940,15 @@ pub async fn tick(
         // — never every tick. The send is spawned so the detector tick is not
         // blocked on network I/O to the push service.
         maybe_push_on_transition(state, name, s);
+        // `SessionEnd` normally archives a disposable session. Its hook is a
+        // best-effort `--max-time 1` curl, so a lost one must not strand the shell.
+        if s == Status::Stopped && detector.agent_gone() {
+            let state = state.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                crate::sessions::lifecycle::maybe_archive_on_stop(&state, &name).await;
+            });
+        }
     }
 
     // ── A2 chat tail for the tile (zero new requests: it rides this delta) ────
@@ -1026,6 +1059,32 @@ pub(crate) fn expire_blank_hold(name: &str) {
 /// the focus header with no new wire field; the frontend labels it
 /// "Terminal died" and puts the full reason in the tooltip.
 pub const HOLDER_DIED: &str = "holder_died";
+
+/// Has the agent left a terminal that is still alive?
+///
+/// The pty's foreground program is the proof: the agent's own tool calls never
+/// hand the shell the foreground, so a shell there means nothing is running under
+/// it. Two windows do show a shell with an agent on its way, and both read `false`:
+/// a start in progress (it holds the session lock) and the grace after one.
+///
+/// A backend that can not tell (`None`, tmux) stays on the capture.
+async fn agent_left_pane(state: &AppState, name: &str, shell_foreground: Option<bool>) -> bool {
+    if shell_foreground != Some(true) {
+        return false;
+    }
+    if state.lock_for(name).try_lock().is_err() {
+        return false;
+    }
+    match db::sessions::get(&state.pool, name).await {
+        Ok(Some(s)) => agent_start_settled(&s.provider, chrono::Utc::now().timestamp() - s.last_started),
+        _ => false,
+    }
+}
+
+/// A `shell` session has no agent to leave, and a recent start has not settled.
+fn agent_start_settled(provider: &str, secs_since_start: i64) -> bool {
+    provider != "shell" && secs_since_start >= AGENT_START_GRACE_SECS
+}
 
 /// Force `session` to `Stopped` because its terminal is PROVABLY gone, pushing
 /// the flip through the same triplet every other lifecycle writer uses — DB,
@@ -1647,12 +1706,76 @@ pub const AUDIT_DELAY: Duration = Duration::from_secs(20);
 /// One session the audit will hold to account: it was RUNNING when this daemon
 /// (or the previous one) went down, so after an update it had better be
 /// attached again.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuditTarget {
     pub name: String,
     /// The persisted `last_status` as it was BEFORE `reconcile_on_boot` rewrote
     /// it — the whole point of snapshotting separately.
     pub was: String,
+}
+
+// ── the pending list: "was running at shutdown" survives a crash mid-audit ──
+//
+// `reconcile_on_boot` stamps every dead session `stopped` right at boot, and the
+// audit only heals them [`AUDIT_DELAY`] later, one at a time. If the machine
+// goes down again inside that window (two power cuts in a row), the next boot
+// reads `stopped` for every session not yet healed and would leave them down
+// for good. So the target list is written to the data dir BEFORE the reconcile,
+// each target leaves it only once the audit has a verdict on it, and the next
+// boot's snapshot carries over whatever is still listed.
+
+/// The pending list, next to `data.db`.
+const PENDING_AUDIT_FILE: &str = "boot-audit-pending.json";
+
+/// Serialises read-modify-write of the pending list (the audit and a Stop can
+/// both touch it).
+static PENDING_AUDIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn pending_audit_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(PENDING_AUDIT_FILE)
+}
+
+/// The targets a previous boot listed and never gave a verdict. A missing or
+/// unreadable file is an empty list: this is a safety net, never a boot blocker.
+fn read_pending_audit(data_dir: &std::path::Path) -> Vec<AuditTarget> {
+    let path = pending_audit_path(data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            tracing::warn!(path = %path.display(), error = %e, "post-update audit: unreadable pending list, ignored");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Replace the pending list; an empty list removes the file. Best-effort.
+fn write_pending_audit(data_dir: &std::path::Path, targets: &[AuditTarget]) {
+    let path = pending_audit_path(data_dir);
+    let res = if targets.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(anyhow::Error::from(e)),
+            _ => Ok(()),
+        }
+    } else {
+        serde_json::to_string(targets)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| crate::bot_memory::store::write_atomic(&path, &json))
+    };
+    if let Err(e) = res {
+        tracing::warn!(path = %path.display(), error = %e, "post-update audit: could not write the pending list");
+    }
+}
+
+/// `name` no longer owes the audit a verdict: it got one, or the user stopped
+/// it on purpose. Removes it from the pending list.
+pub fn forget_pending_audit(data_dir: &std::path::Path, name: &str) {
+    let _g = PENDING_AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut pending = read_pending_audit(data_dir);
+    let before = pending.len();
+    pending.retain(|t| t.name != name);
+    if pending.len() != before {
+        write_pending_audit(data_dir, &pending);
+    }
 }
 
 /// What one audit pass found. Every field is in the single summary line.
@@ -1697,7 +1820,7 @@ pub async fn snapshot_for_audit(state: &AppState) -> Vec<AuditTarget> {
         .map(|r| (r.name.as_str(), r.last_status.as_str()))
         .collect();
 
-    sessions
+    let fresh: Vec<AuditTarget> = sessions
         .iter()
         .filter(|s| s.archived == 0 && s.runtime == RUNTIME_NATIVE && s.host_id.is_none())
         .filter_map(|s| {
@@ -1712,7 +1835,36 @@ pub async fn snapshot_for_audit(state: &AppState) -> Vec<AuditTarget> {
                 was: was.to_string(),
             })
         })
-        .collect()
+        .collect();
+    carry_over_pending(&state.config.data_dir, &sessions, fresh)
+}
+
+/// Add the targets a previous boot never gave a verdict (if still eligible:
+/// not archived, native, local), then persist the full list — BEFORE the caller
+/// runs `reconcile_on_boot` erases the statuses it came from.
+fn carry_over_pending(
+    data_dir: &std::path::Path,
+    sessions: &[db::sessions::Session],
+    mut targets: Vec<AuditTarget>,
+) -> Vec<AuditTarget> {
+    let _g = PENDING_AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let eligible: HashSet<&str> = sessions
+        .iter()
+        .filter(|s| s.archived == 0 && s.runtime == RUNTIME_NATIVE && s.host_id.is_none())
+        .map(|s| s.name.as_str())
+        .collect();
+    for t in read_pending_audit(data_dir) {
+        if eligible.contains(t.name.as_str()) && !targets.iter().any(|x| x.name == t.name) {
+            tracing::info!(
+                name = %t.name,
+                was = %t.was,
+                "post-update audit: carried over from an audit that a crash cut short",
+            );
+            targets.push(t);
+        }
+    }
+    write_pending_audit(data_dir, &targets);
+    targets
 }
 
 /// Schedule the one-shot post-update attach audit. Returns immediately; the
@@ -1747,30 +1899,11 @@ pub async fn post_update_audit(state: &AppState, targets: &[AuditTarget]) -> Aud
     };
     for t in targets {
         let name = t.name.as_str();
-        let ok = crate::sessions::native::attached(name)
-            || crate::sessions::native::holder_alive(name, &state.config.data_dir);
-        if ok {
-            summary.reattached += 1;
-            continue;
-        }
-        // MID-START is not a failure. `snapshot_for_audit` deliberately includes
-        // `starting` sessions, and a start that is still running has by
-        // definition no holder to be attached to yet — the holder is what it is
-        // busy spawning. WARNing about that would be noise, and healing it would
-        // be worse: `auto_heal` → `start` blocks on the very lock the running
-        // start holds, then starts the session a SECOND time behind it.
-        if is_mid_start(state, name).await {
-            tracing::info!("post-update audit: '{name}' is mid-start — no verdict");
-            summary.skipped += 1;
-            continue;
-        }
-        let reason = crate::sessions::native::death_reason(name, &state.config.data_dir)
-            .unwrap_or_else(|| "no exit marker — the holder vanished".to_string());
-        tracing::warn!("post-update audit: '{name}' failed to re-attach ({reason})");
-        match auto_heal(state, name, &reason).await {
-            Heal::Healed => summary.healed += 1,
-            _ => summary.failed += 1,
-        }
+        audit_one(state, name, &mut summary).await;
+        // A verdict either way, so it leaves the pending list. Mid-start counts
+        // too: a start in flight writes `starting`, which the next boot's
+        // snapshot picks up on its own.
+        forget_pending_audit(&state.config.data_dir, name);
     }
     tracing::info!(
         "post-update audit: {} sessions checked, {} re-attached, {} healed, {} failed, \
@@ -1782,6 +1915,34 @@ pub async fn post_update_audit(state: &AppState, targets: &[AuditTarget]) -> Aud
         summary.skipped,
     );
     summary
+}
+
+/// The audit's verdict on ONE target, counted into `summary`.
+async fn audit_one(state: &AppState, name: &str, summary: &mut AuditSummary) {
+    let ok = crate::sessions::native::attached(name)
+        || crate::sessions::native::holder_alive(name, &state.config.data_dir);
+    if ok {
+        summary.reattached += 1;
+        return;
+    }
+    // MID-START is not a failure. `snapshot_for_audit` deliberately includes
+    // `starting` sessions, and a start that is still running has by
+    // definition no holder to be attached to yet — the holder is what it is
+    // busy spawning. WARNing about that would be noise, and healing it would
+    // be worse: `auto_heal` → `start` blocks on the very lock the running
+    // start holds, then starts the session a SECOND time behind it.
+    if is_mid_start(state, name).await {
+        tracing::info!("post-update audit: '{name}' is mid-start — no verdict");
+        summary.skipped += 1;
+        return;
+    }
+    let reason = crate::sessions::native::death_reason(name, &state.config.data_dir)
+        .unwrap_or_else(|| "no exit marker — the holder vanished".to_string());
+    tracing::warn!("post-update audit: '{name}' failed to re-attach ({reason})");
+    match auto_heal(state, name, &reason).await {
+        Heal::Healed => summary.healed += 1,
+        _ => summary.failed += 1,
+    }
 }
 
 /// Is a `start` for `name` running RIGHT NOW? Two independent signs, either of
@@ -1913,6 +2074,8 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
                     ],
                 )
                 .await?;
+                // The card's needs-input ask comes down with its badge.
+                crate::asks::sync_needs_input(state, &issue.id, "agent", "resumed").await;
                 crate::board::emit_board(state).await;
             }
         }
@@ -2120,7 +2283,7 @@ pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
             // Other categories are not produced by maybe_push_on_transition.
             _ => return,
         };
-        let url = format!("/focus/{task_name}");
+        let url = crate::notify::agent_url(&task_name);
         // B5/T1.4 — the payload shape. The tier is derived from the category
         // rather than hard-coded: `AgentFinished` is the calm review-when-you-can
         // tier, the other two genuinely interrupt. Passing the session lets the
@@ -2326,6 +2489,7 @@ mod board_reaction_tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -2432,6 +2596,34 @@ mod board_reaction_tests {
         react_to_transition(&state, "worker-2", Status::Active).await.unwrap();
         let issue = db::board::get_issue(&state.pool, "B-1").await.unwrap().unwrap();
         assert_eq!(issue.awaiting_input, 0, "→active clears awaiting_input");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The card's needs-input ask (`crate::asks`) follows its badge: when the
+    /// agent resumes and the board clears `awaiting_input`, the ask closes too,
+    /// so an answerable ask never outlives a card that stopped asking.
+    #[tokio::test]
+    async fn resuming_closes_the_cards_needs_input_ask_with_its_badge() {
+        let (state, dir) = test_state().await;
+        seed_session_with_doing_issue(&state, "worker-2", "B-1").await;
+        db::board::patch_issue(&state.pool, "B-1", &[db::board::IssueField::AwaitingInput(1)])
+            .await
+            .unwrap();
+        crate::asks::open_needs_input(&state, "worker-2", "B-1", "eu or us?").await;
+        let open = db::asks::open_for_issue(&state.pool, "B-1").await.unwrap();
+        assert_eq!(open.len(), 1);
+
+        react_to_transition(&state, "worker-2", Status::Active).await.unwrap();
+
+        assert!(db::asks::open_for_issue(&state.pool, "B-1").await.unwrap().is_empty());
+        let row = db::asks::get(&state.pool, &open[0].id).await.unwrap().unwrap();
+        assert_eq!(row.state, "resolved");
+        let res: serde_json::Value =
+            serde_json::from_str(row.resolution.as_deref().unwrap()).unwrap();
+        assert_eq!(res["by"], "agent");
+        assert_eq!(res["outcome"], "resumed");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
@@ -2748,6 +2940,60 @@ mod dead_holder_tests {
         };
         crate::sessions::create(state, inp).await.expect("create");
         db::sessions::set_last_status(&state.pool, name, status).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_end_holds_stopped_while_the_agent_exits() {
+        let (state, _dir) = test_state().await;
+        native_row(&state, "ender", "active").await;
+        state.set_forced_status("ender", Status::Stopped);
+        // More hooks wake the loop right after the first tick, agent still up.
+        assert_eq!(one_tick(&state, "ender", Status::Active).await, Status::Stopped);
+        assert_eq!(one_tick(&state, "ender", Status::Active).await, Status::Stopped);
+
+        assert_eq!(state.held_forced_status("ender", Duration::ZERO), None, "the hold lapses");
+        assert_eq!(state.take_forced_status("ender"), None, "and is gone with it");
+    }
+
+    #[tokio::test]
+    async fn a_session_start_ends_the_hold_at_once() {
+        let (state, _dir) = test_state().await;
+        state.set_forced_status("cleared", Status::Stopped);
+        state.clear_forced_status("cleared");
+        assert_eq!(state.held_forced_status("cleared", FORCED_STOP_HOLD), None);
+    }
+
+    #[tokio::test]
+    async fn only_a_shell_at_the_foreground_of_a_settled_session_means_the_agent_left() {
+        let (state, _dir) = test_state().await;
+        native_row(&state, "exited", "active").await;
+
+        assert!(agent_left_pane(&state, "exited", Some(true)).await);
+        assert!(!agent_left_pane(&state, "exited", Some(false)).await, "the agent owns the pty");
+        assert!(!agent_left_pane(&state, "exited", None).await, "tmux can not tell");
+
+        {
+            let lock = state.lock_for("exited");
+            let _start_in_progress = lock.lock().await;
+            assert!(
+                !agent_left_pane(&state, "exited", Some(true)).await,
+                "a running start has yet to type its launch command",
+            );
+        }
+
+        db::sessions::bump_start(&state.pool, "exited").await.unwrap();
+        assert!(
+            !agent_left_pane(&state, "exited", Some(true)).await,
+            "a fresh start gets its grace",
+        );
+    }
+
+    #[test]
+    fn the_start_grace_and_the_shell_provider_never_count_as_a_departed_agent() {
+        assert!(agent_start_settled("claude", AGENT_START_GRACE_SECS));
+        assert!(agent_start_settled("codex", AGENT_START_GRACE_SECS));
+        assert!(!agent_start_settled("claude", AGENT_START_GRACE_SECS - 1));
+        assert!(!agent_start_settled("shell", AGENT_START_GRACE_SECS * 100));
     }
 
     /// One detector tick, driven directly (the loop's cadence is not under test).
@@ -4149,6 +4395,102 @@ mod recovery_tests {
         reset_heal_state("audit-lost");
         drop_transcript(cc);
         crate::sessions::native::forget("audit-up");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Two power cuts in a row (seen on a Mac mini): boot #1 snapshots the
+    /// running sessions, the reconcile stamps them all `stopped`, and the audit
+    /// gets through only the first one before the power goes again. Boot #2
+    /// reads `stopped` for the rest; without the pending list they owed the
+    /// audit nothing and stayed down for good.
+    #[tokio::test]
+    async fn a_crash_mid_audit_does_not_lose_the_sessions_it_had_not_reached() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        // Listed most-recently-used first, as `db::sessions::list` orders them.
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            native_row(&state, name, "shell", "idle").await;
+            reset_heal_state(name);
+        }
+
+        // ── boot #1 ────────────────────────────────────────────────────────
+        let boot1 = snapshot_for_audit(&state).await;
+        assert_eq!(boot1.len(), 3);
+        reconcile_on_boot(&state).await;
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            let rt = db::sessions::runtime(&state.pool, name).await.unwrap().unwrap();
+            assert_eq!(rt.last_status, "stopped", "{name}: the reconcile erased 'was running'");
+        }
+        // The audit reaches the first target only; then the power goes.
+        let first = boot1.iter().find(|t| t.name == "cut-recent").unwrap().clone();
+        let s1 = post_update_audit(&state, std::slice::from_ref(&first)).await;
+        assert_eq!(s1.healed, 1);
+        db::sessions::set_last_status(&state.pool, "cut-recent", "idle").await.unwrap();
+
+        // ── boot #2: a fresh process (no heal memory), same disk ─────────────
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            reset_heal_state(name);
+        }
+        let mut boot2 = snapshot_for_audit(&state).await;
+        boot2.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            boot2,
+            vec![
+                AuditTarget { name: "cut-old-a".into(), was: "idle".into() },
+                AuditTarget { name: "cut-old-b".into(), was: "idle".into() },
+                AuditTarget { name: "cut-recent".into(), was: "idle".into() },
+            ],
+            "the two the first audit never reached are still owed a heal",
+        );
+        reconcile_on_boot(&state).await;
+        let s2 = post_update_audit(&state, &boot2).await;
+        assert_eq!(s2, AuditSummary { checked: 3, healed: 3, ..Default::default() });
+        assert!(
+            !pending_audit_path(&dir).exists(),
+            "an audit that finished leaves no pending list behind",
+        );
+
+        // ── boot #3: nothing left over, nothing healed twice ─────────────────
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            db::sessions::set_last_status(&state.pool, name, "stopped").await.unwrap();
+        }
+        assert!(snapshot_for_audit(&state).await.is_empty());
+
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            reset_heal_state(name);
+        }
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The pending list only carries what can still be healed, and a deliberate
+    /// Stop takes a session off it.
+    #[tokio::test]
+    async fn the_pending_list_drops_gone_sessions_and_deliberate_stops() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "left-over", "shell", "stopped").await;
+        native_row(&state, "stopped-by-hand", "shell", "stopped").await;
+        native_row(&state, "now-tmux", "shell", "stopped").await;
+        db::sessions::set_runtime(&state.pool, "now-tmux", "tmux").await.unwrap();
+        let t = |n: &str| AuditTarget { name: n.into(), was: "idle".into() };
+        write_pending_audit(
+            &dir,
+            &[t("left-over"), t("stopped-by-hand"), t("now-tmux"), t("deleted-since")],
+        );
+
+        forget_pending_audit(&dir, "stopped-by-hand");
+        let names: Vec<String> = snapshot_for_audit(&state).await.into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["left-over"], "no row, a tmux row and a hand Stop are not carried over");
+        assert_eq!(read_pending_audit(&dir), vec![t("left-over")]);
+
+        forget_pending_audit(&dir, "left-over");
+        assert!(!pending_audit_path(&dir).exists(), "an emptied list is removed");
+
+        // A corrupt file is an empty list, never a failed boot.
+        std::fs::write(pending_audit_path(&dir), "{not json").unwrap();
+        assert!(snapshot_for_audit(&state).await.is_empty());
+
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

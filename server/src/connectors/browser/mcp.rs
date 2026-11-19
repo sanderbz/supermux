@@ -73,6 +73,8 @@ pub const LIST_TABS_TOOL: &str = "browser_list_tabs";
 /// `web/src/components/store/catalog.ts`.
 pub fn tool_decls() -> Vec<ToolDecl> {
     vec![
+        ToolDecl { name:"browser_connected_tabs".into(), description:"List human-enabled Chrome tabs connected to this agent.".into() },
+        ToolDecl { name:"browser_actions".into(), description:"Run a compact batch of actions in an enabled Chrome tab; snapshot refs and screenshots on request.".into() },
         ToolDecl {
             name: LIST_TABS_TOOL.into(),
             description: "See which shared tabs you're allowed to use, and whether each is still                 signed in. Call this first."
@@ -151,6 +153,23 @@ pub fn emit(server_path: &std::path::Path) -> Value {
     })
 }
 
+/// Add only connected-tab tools, preserving the user's other MCP servers.
+pub fn control_emit(path: &std::path::Path) -> Value {
+    let mut entry = emit(path);
+    entry["args"] = json!([path.to_string_lossy(), "--control-only"]);
+    entry
+}
+pub fn claude_control_flags(path: &std::path::Path) -> Vec<String> {
+    vec!["--mcp-config".into(), json!({"mcpServers":{"supermux_browser_control":control_emit(path)}}).to_string(),
+        "--settings".into(), json!({"permissions":{"allow":["mcp__supermux_browser_control__*", "Bash(supermux-browser *)"]}}).to_string()]
+}
+
+/// Codex's supported per-launch TOML override; inherited env names, no secrets.
+pub fn codex_flags(path: &std::path::Path) -> Vec<String> {
+    let path = serde_json::to_string(&path.to_string_lossy()).unwrap();
+    vec!["-c".into(), format!("mcp_servers.supermux_browser_control={{command=\"python3\",args=[{path},\"--control-only\"],env_vars=[\"SUPERMUX_URL\",\"SUPERMUX_SESSION\",\"SUPERMUX_HOOK_TOKEN\"],enabled_tools=[\"browser_connected_tabs\",\"browser_actions\"]}}")]
+}
+
 /// The store manifest for the Shared Browser card.
 pub fn manifest(server_path: &str) -> Manifest {
     Manifest {
@@ -208,9 +227,68 @@ pub async fn seed(state: &AppState) {
     tracing::info!(connector = BROWSER_ID, "seeded the built-in Shared Browser connector");
 }
 
+/// **Every bot the human has already lent a tab gets the connector grant.**
+///
+/// `browser::api::lend_the_browser` does this at grant time, but installs
+/// upgrading into that fix carry tab grants written before it existed — and those
+/// bots are precisely the ones already in the broken state: a tab in the DB, no
+/// `browser_*` tools in their launch, no way to discover the tab they hold. One
+/// idempotent pass at boot lands the tools on their next start instead of asking
+/// the human to re-lend every tab.
+///
+/// Idempotent by construction ([`connectors::ensure_enabled`] returns early when
+/// the grant is already enabled), so a steady-state boot writes nothing and
+/// re-stamps no `granted_at` — a bot that already picked the browser up is not
+/// nagged to restart. Best-effort: any read failure just skips the pass.
+///
+/// Called from `main` at BOOT, deliberately not from [`seed`]: `seed` is also
+/// re-run lazily by `browser::api::lend_the_browser` when the builtin's row is
+/// missing, and backfilling from inside that call would grant the connector a
+/// moment before the lend does — which would make the lend report "nothing
+/// changed" and swallow the restart hint the human needs.
+pub async fn backfill_tab_grants(state: &AppState) {
+    let Ok(tabs) = crate::db::browser_tabs::list(&state.pool).await else {
+        return;
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut granted = 0usize;
+    for tab in &tabs {
+        let Ok(grants) = crate::db::browser_tabs::grants_for_tab(&state.pool, &tab.id).await else {
+            continue;
+        };
+        for g in grants.iter().filter(|g| g.enabled != 0) {
+            if !seen.insert(g.grantee.clone()) {
+                continue;
+            }
+            match connectors::ensure_enabled(&state.pool, &g.grantee, BROWSER_ID).await {
+                Ok(true) => {
+                    granted += 1;
+                    tracing::info!(target = %g.grantee, "backfilled the shared-browser grant for a bot that already holds a tab");
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, target = %g.grantee, "shared-browser backfill failed"),
+            }
+        }
+    }
+    if granted > 0 {
+        tracing::info!(count = granted, "shared-browser: backfilled tab-grant holders");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_control_override_is_per_launch_and_contains_env_names_only() {
+        let flags = codex_flags(std::path::Path::new("/tmp/path with spaces/server.py"));
+        assert_eq!(flags[0], "-c");
+        assert!(flags[1].contains("mcp_servers.supermux_browser_control="));
+        assert!(flags[1].contains("args=[\"/tmp/path with spaces/server.py\",\"--control-only\"]"));
+        assert!(flags[1]
+            .contains("env_vars=[\"SUPERMUX_URL\",\"SUPERMUX_SESSION\",\"SUPERMUX_HOOK_TOKEN\"]"));
+        assert!(!flags[1].contains("Bearer"));
+    }
 
     #[test]
     fn manifest_is_a_credential_free_builtin_browser_card() {
@@ -218,8 +296,12 @@ mod tests {
         assert_eq!(m.id, BROWSER_ID);
         assert_eq!(m.kind, KIND_BUILTIN_BROWSER);
         assert_eq!(m.display_name, "Shared Browser");
-        assert_eq!(m.categories, vec!["browser".to_string()], "shows under the Browser chip");
-        assert_eq!(m.tools.len(), 6, "six tools on the card");
+        assert_eq!(
+            m.categories,
+            vec!["browser".to_string()],
+            "shows under the Browser chip"
+        );
+        assert_eq!(m.tools.len(), 8, "browser tools on the card");
         let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
         for want in [
             LIST_TABS_TOOL,
@@ -321,7 +403,7 @@ mod tests {
 
         let list = roundtrip(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
         // The three-file mirror (§5.3): whatever the live process advertises is
         // exactly what the card declares. A drift here is a bot calling a tool
         // the store never showed the human.
@@ -338,7 +420,10 @@ mod tests {
             let has_tab = t["inputSchema"]["properties"]["tab"].is_object();
             assert_eq!(
                 has_tab,
-                name != LIST_TABS_TOOL,
+                !matches!(
+                    name,
+                    LIST_TABS_TOOL | "browser_connected_tabs" | "browser_actions"
+                ),
                 "{name} tab-argument declaration"
             );
         }

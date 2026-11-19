@@ -20,6 +20,7 @@
 // reduced-motion safe. The panel only MOUNTS while open (the routes gate it).
 
 import * as React from 'react'
+import { BrowserFeedbackCard, supportsBrowserFeedback } from '../browser-feedback/browser-pairing'
 import { Link } from 'react-router-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
@@ -194,6 +195,7 @@ function PanelBody({
 
   return (
     <div className="flex flex-col gap-4">
+      {supportsBrowserFeedback(session?.provider) && <BrowserFeedbackCard key={name} session={name} label={displayLabel(session ?? { name })} remote={session?.host_id != null} />}
       {/* Name — edits the mutable DISPLAY LABEL (migration 0019). The slug below
           is the immutable identity (URL / tmux / hooks) and is shown read-only. */}
       <PaneSection label="Name">

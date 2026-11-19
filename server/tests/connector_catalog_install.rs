@@ -58,6 +58,7 @@ fn test_config(data_dir: &Path) -> Config {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     }
 }

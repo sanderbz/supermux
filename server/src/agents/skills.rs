@@ -661,6 +661,10 @@ mod tests {
         ] {
             assert!(md.contains(ep), "template must wrap {ep}");
         }
+        // The PRE-APPROVED wrapper is what the doc teaches first — the raw curl
+        // is the fallback note at the end. `Bash(curl …)` is what the permission
+        // classifier stops an unattended bot on; `supermux-task` is allow-listed.
+        assert!(md.contains("supermux-task done"), "must teach the wrapper");
         // The two terminal actions are both shown.
         assert!(md.contains("\"status\":\"done\""), "must show the done curl");
         assert!(md.contains("\"question\""), "must show the needs-input curl");
@@ -760,8 +764,26 @@ mod tests {
 
         // The boundaries the server enforces, stated in the agent's own terms.
         assert!(md.contains("YOUR OWN session"), "must state the scoping rule");
-        assert!(md.contains("`disable` or `notify`"), "must state the done_action rule");
-        assert!(md.contains("20 live schedules"), "must state the cap");
+        assert!(md.contains("`disable`, `notify` or `none`"), "must state the done_action rule");
+        assert!(
+            md.contains("`none` for a recurring"),
+            "must say a recurring schedule keeps running by default"
+        );
+        assert!(md.contains("20 active schedules"), "must state the cap");
+        assert!(
+            md.contains("Paused schedules and one-shots that already ran do not count"),
+            "must say what the cap counts"
+        );
+        assert!(md.contains("Clean up after yourself"), "must tell the agent to tidy its own");
+        assert!(
+            !md.contains("cannot edit or delete"),
+            "the old 'you cannot delete' line made bots wait for the owner"
+        );
+        assert!(md.contains("supermux-schedule --version"), "must teach how to read the version");
+        for verb in ["supermux-schedule list", "supermux-schedule disable", "supermux-schedule delete"] {
+            assert!(md.contains(verb), "must teach {verb}");
+        }
+        assert!(md.contains("created yourself"), "must state that delete is creator-only");
         assert!(
             md.contains("429") && md.contains("400"),
             "must name the statuses a rejection arrives as"

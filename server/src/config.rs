@@ -129,6 +129,11 @@ pub struct Config {
     /// PA bots are never touched. `best-effort` fails open (a loud warning) when
     /// isolation is unavailable; `off` is the escape hatch.
     pub isolation_mode: crate::isolation::IsolationMode,
+    /// Per-company widening of the company jail: `[[company_isolation]]` blocks
+    /// (`company = "<slug>"`, `read_only = [...]`, `read_write = [...]`). Absent
+    /// ⇒ every company gets the built-in allow-list only. See
+    /// [`crate::isolation::CompanyIsolation`] for the screening rules.
+    pub company_isolation: Vec<crate::isolation::CompanyIsolation>,
     /// P3a — the human identity plane (Google OIDC + cookie sessions).
     ///
     /// **Inert by default.** With no `google_client_id` and no `company_hosts`,
@@ -477,6 +482,16 @@ pub struct ProviderDefaults {
     pub codex_flags: String,
     #[serde(default)]
     pub default_model: String,
+    /// Host-wide Claude login switch. A directory with one Claude config dir per
+    /// login (`<dir>/<label>/`, each usable as `CLAUDE_CONFIG_DIR`) plus a file
+    /// `<dir>/ACTIVE` naming the label to use. When set, a Claude session with no
+    /// `config_dir` of its own boots on `<dir>/<ACTIVE>`. The file is read at
+    /// every start, so switching the host is one write to `ACTIVE`, with no
+    /// server restart, and running sessions are never touched. Unset (the
+    /// default) keeps the daemon's own `~/.claude`. See
+    /// [`crate::sessions::claude_account`].
+    #[serde(default)]
+    pub claude_accounts_dir: Option<PathBuf>,
 }
 
 /// On-disk `config.toml` shape — every field optional so a partial file is valid.
@@ -515,6 +530,9 @@ struct RawConfig {
     /// (`best-effort`), resolved by [`crate::isolation::IsolationMode::parse`].
     #[serde(default)]
     isolation_mode: Option<String>,
+    /// See [`Config::company_isolation`]. Absent ⇒ no per-company widening.
+    #[serde(default)]
+    company_isolation: Vec<crate::isolation::CompanyIsolation>,
     // ── P3a human identity plane (all optional; absent ⇒ inert) ──
     #[serde(default)]
     google_client_id: Option<String>,
@@ -649,6 +667,7 @@ pub fn load() -> Result<Config> {
                 .or(raw.isolation_mode)
                 .unwrap_or_default(),
         ),
+        company_isolation: raw.company_isolation,
         human_auth,
     })
 }
@@ -1036,5 +1055,61 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod company_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn company_isolation_blocks_parse_from_config_toml() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+[[company_isolation]]
+company = "canary"
+read_only = ["~/.ssh", "~/.config/gh"]
+
+[[company_isolation]]
+company = "reisposter"
+read_write = ["/srv/reisposter-uploads"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(raw.company_isolation.len(), 2);
+        assert_eq!(raw.company_isolation[0].company, "canary");
+        assert_eq!(raw.company_isolation[0].read_only, vec!["~/.ssh", "~/.config/gh"]);
+        assert!(raw.company_isolation[0].read_write.is_empty());
+        assert_eq!(raw.company_isolation[1].read_write, vec!["/srv/reisposter-uploads"]);
+    }
+
+    #[test]
+    fn absent_company_isolation_key_means_no_extras() {
+        let raw: RawConfig = toml::from_str("bind = \"127.0.0.1:1\"\n").unwrap();
+        assert!(raw.company_isolation.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod claude_accounts_dir_tests {
+    use super::*;
+
+    #[test]
+    fn claude_accounts_dir_parses_under_provider_defaults() {
+        let raw: RawConfig = toml::from_str(
+            "[provider_defaults]\nclaude_accounts_dir = \"/home/agent/.claude-accounts\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            raw.provider_defaults.claude_accounts_dir.as_deref(),
+            Some(std::path::Path::new("/home/agent/.claude-accounts"))
+        );
+    }
+
+    #[test]
+    fn absent_claude_accounts_dir_keeps_the_daemon_login() {
+        let raw: RawConfig = toml::from_str("[provider_defaults]\nclaude_flags = \"\"\n").unwrap();
+        assert!(raw.provider_defaults.claude_accounts_dir.is_none());
+        assert!(ProviderDefaults::default().claude_accounts_dir.is_none());
     }
 }

@@ -295,14 +295,20 @@ fetch_tarball() {
   stage="$(mktemp -d -t supermux-install.XXXXXX)"
   TARBALL="${stage}/${name}"
 
+  # curl retries only transient failures (time-outs, 408/429/5xx), so a real
+  # 404 still fails at once. The window rides out a GitHub release-download
+  # outage of a minute or two; 3 retries 2s apart (~8s) did not (install-smoke
+  # 2026-11-08: four 504s in ten seconds).
   log "downloading ${name}..."
-  curl -fSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+  curl -fSL --proto '=https' --tlsv1.2 --connect-timeout 20 \
+       --retry 6 --retry-delay 10 --retry-max-time 120 \
        "${GH_AUTH_HEADER[@]}" \
        -o "$TARBALL" "$url" \
     || die "download failed: ${url}"
 
   log "downloading checksums.txt..."
-  curl -fSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+  curl -fSL --proto '=https' --tlsv1.2 --connect-timeout 20 \
+       --retry 6 --retry-delay 10 --retry-max-time 120 \
        "${GH_AUTH_HEADER[@]}" \
        -o "${stage}/checksums.txt" "$sums_url" \
     || die "download failed: ${sums_url}"

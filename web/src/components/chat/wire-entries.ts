@@ -550,6 +550,17 @@ export const SYSTEM_ROW_BADGES = [
   'stalled',
   // The tombstone a retraction leaves behind (see `retractionRow`).
   'retracted',
+  // A BACKGROUND AGENT FINISHED (cc 2.1.25x). Claude Code hands the model a
+  // `<task-notification>` envelope as a USER-ROLE line; without a badge here it
+  // is drawn as a speech bubble from the person using the app.
+  'background-agent',
+  // Any other harness-injected user line (`promptSource: "system"`).
+  'harness',
+  // AN ENTRY THIS VIEW CANNOT DRAW. Only ever produced for a provider whose
+  // dialect is mapped pragmatically rather than exhaustively (Codex): the row
+  // says so and points at the terminal, instead of leaving a hole where
+  // something happened. See `UNMAPPED_TEXT`.
+  'unmapped',
 ] as const
 
 function num(body: unknown, key: string): number | undefined {
@@ -607,6 +618,9 @@ function systemRow(w: WireEntry): { text: string; badge: string; detail?: string
     }
   }
   switch (w.label) {
+    case 'turn_started':
+    case 'turn_complete': return null
+    case 'turn_aborted': return { text: str(w.body, 'content') ?? 'Turn interrupted.', badge: 'harness' }
     case 'model_refusal_fallback':
     case 'model_fallback':
     case 'model_consent_fallback': {
@@ -661,6 +675,48 @@ function systemRow(w: WireEntry): { text: string; badge: string; detail?: string
         // agent suddenly stopped starting subagents. The paraphrase is what the
         // reader scans; the verbatim line is what they check it against.
         detail: str(w.body, 'content'),
+      }
+    }
+    // A BACKGROUND AGENT FINISHED (cc 2.1.25x, `origin.kind:"task-notification"`).
+    //
+    // Claude Code hands the model a `<task-notification>…</task-notification>`
+    // envelope as a USER-ROLE line, so before `parser.rs` learned to read
+    // `promptSource` the chat drew that raw XML — task id, output path, status,
+    // the lot — as a message from the person sitting in front of it. Nobody typed
+    // it, and the terminal renders the same event as one calm line
+    // (`● Agent "Draft Mollie KYC answer" finished · 1m 45s`).
+    //
+    // The summary is Claude Code's own words for the agent; without one the row
+    // still says the true thing, because "an agent finished" is the fact and the
+    // name is the detail. The envelope rides underneath as `detail` for the same
+    // reason `limit_grace` keeps CC's sentence: the paraphrase is what a reader
+    // scans, the verbatim text is what they check it against.
+    case 'agent_notification': {
+      const summary = str(w.body, 'summary')
+      const status = str(w.body, 'status')
+      const ended = status && status !== 'completed' ? ` · ${status}` : ''
+      // NO `detail`: the envelope is `<task-notification>` XML with a task id
+      // and an output-file path — chrome, not evidence. Rendered under the row
+      // it was a six-line grey XML dump on a phone (owner screenshot); the
+      // summary IS Claude Code's own sentence, and that is the whole row.
+      return {
+        text: summary ? `${summary}${ended}` : `a background agent finished${ended}`,
+        badge: 'background-agent',
+      }
+    }
+    // ANY OTHER HARNESS-INJECTED USER LINE (`promptSource: "system"`). Named so
+    // it is a visible, uninteresting notice rather than a prompt in the user's
+    // mouth — the same verdict `recall.rs::classify_user` has reached for years.
+    case 'harness_notice': {
+      const content = str(w.body, 'content')
+      // The FIRST LINE only, the way every other row on this surface reads: a
+      // harness notice can be a page long, and a grey chrome row is not where a
+      // page belongs. The rest rides as `detail`, which is what that slot is for.
+      const head = content?.split('\n').find((l) => l.trim() !== '')?.trim()
+      return {
+        text: head || 'Claude Code added a note to the conversation',
+        badge: 'harness',
+        detail: content,
       }
     }
     // A LONG-RUNNING MCP TASK (`mcp.task_input_required`). `input_required` is
@@ -808,6 +864,49 @@ export function isSubagent(w: WireEntry): boolean {
 }
 
 /**
+ * WHEN THE TRANSCRIPT PLANE LAST CONFIRMED ANYTHING — the clock the provisional
+ * "Live terminal · unconfirmed" card is gated on.
+ *
+ * It reads the WIRE window, not the rendered list, and that is the whole point.
+ * `toChatEntries` drops every subagent turn (`isSubagent` — a deliberate A6
+ * decision: the surface has no voice for one), so a stretch of conversation
+ * whose only confirmed traffic is subagent traffic advanced the rendered clock
+ * by nothing at all. The plane was current to the second and the surface said it
+ * was behind.
+ *
+ * Claude Code 2.1.25x made that the ORDINARY case. A turn now launches an agent
+ * in the BACKGROUND — `Agent(…) └ Backgrounded agent (↓ to manage)` — and then
+ * has nothing more to say for as long as that agent runs, while the agent's own
+ * `subagents/agent-*.jsonl` streams confirmed entries the whole time. Measured
+ * on cc 2.1.258 (2026-09-02): entries confirmed 0–4 s ago while the rendered
+ * clock read 10–16 s behind, so the card came up over a transcript that was not
+ * behind at all and re-showed, as "unconfirmed", prose the reader could already
+ * see confirmed above it.
+ *
+ * A zero `ts_ms` is not a timestamp: the pointer lines Claude Code appends
+ * (`custom-title`, `mode`, `atis-latch`) carry none, and they are the LAST thing
+ * written after most turns — so the scan walks back to the newest entry that
+ * actually has a clock rather than reading the end of the array.
+ *
+ * The rendered clock is still an input, never overridden downward: a paged-in
+ * backlog can hold an entry newer than the socket's window.
+ */
+export function transcriptFreshMs(
+  wire: readonly { ts_ms: number }[],
+  renderedTs: number,
+): number {
+  let newest = 0
+  for (let i = wire.length - 1; i >= 0; i--) {
+    const ts = wire[i].ts_ms
+    if (ts > 0) {
+      newest = ts
+      break
+    }
+  }
+  return Math.max(newest, renderedTs * 1000)
+}
+
+/**
  * Wire entries (oldest-first, as the socket holds them) → the renderer's
  * newest-first `ChatEntry` list.
  *
@@ -819,7 +918,17 @@ export function isSubagent(w: WireEntry): boolean {
  * exactly that reason. See [`isSubagent`] for the A6 decision that made this
  * deliberate rather than accidental.
  */
-export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
+/** What an entry this renderer has no mapping for says on screen. Deliberately
+ *  about the VIEW's limits, not the session's — nothing went wrong, the chat
+ *  just cannot draw this one. */
+export const UNMAPPED_TEXT =
+  "Codex did something the chat view can't show yet — open the terminal."
+
+export function toChatEntries(
+  wire: readonly WireEntry[],
+  opts: { surfaceUnmapped?: boolean } = {},
+): ChatEntry[] {
+  const surfaceUnmapped = opts.surfaceUnmapped ?? false
   const out: ChatEntry[] = []
   // tool_use_id → index in `out`, so a later `tool_result` folds into its
   // receipt instead of becoming a row of its own.
@@ -829,6 +938,11 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
 
   for (const w of wire) {
     if (isSubagent(w)) continue
+    if (w.label === 'token_usage_record' || w.label === 'token_count') continue
+    if (w.kind === 'subagent') {
+      out.push({ uuid: w.uuid, ts: w.ts_ms / 1000, kind: 'coordination', tone: 'quiet', label: w.label, text: str(w.body, 'content') ?? str(w.body, 'text') ?? 'Agent activity', truncated: w.truncated })
+      continue
+    }
 
     if (w.kind === 'tool_result') {
       const id = w.tool_use_id
@@ -1093,8 +1207,27 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       continue
     }
 
-    // attachment / system / compact_boundary / queue / mode / subagent /
-    // unknown: not part of the A1 calm view.
+    // NOT PART OF THE CALM VIEW: attachment / queue / mode / unknown.
+    //
+    // For Claude these are deliberate omissions — the shapes are known, and
+    // known to be chrome. For a provider whose dialect is mapped PRAGMATICALLY
+    // (Codex: prompts, replies, reasoning and shell runs, and honestly nothing
+    // more), the same silence is a lie: something happened in the session and
+    // the view showed a gap. `surfaceUnmapped` turns that gap into a row that
+    // says so and points at the terminal, which is the whole contract for
+    // second-tier providers.
+    if (surfaceUnmapped) {
+      out.push({
+        uuid: w.uuid,
+        ts: toSeconds(w.ts_ms),
+        text: UNMAPPED_TEXT,
+        kind: 'unmapped',
+        // The wire label is the source event's own type name
+        // (`turn_aborted`, `mcp_tool_call_end`, …). Shown as the detail line so
+        // the row is diagnosable without being cryptic.
+        reply: w.label ? `Codex event: ${w.label}` : undefined,
+      })
+    }
   }
 
   out.reverse()
@@ -1129,6 +1262,7 @@ export function truncatedUuids(
     // will draw. This is the ONLY thing standing between the surface and a
     // request for an entry it does not render — hence the named predicate.
     if (isSubagent(w)) continue
+    if (w.label === 'token_usage_record' || w.label === 'token_count') continue
     if (
       w.kind !== 'assistant' &&
       w.kind !== 'prompt' &&

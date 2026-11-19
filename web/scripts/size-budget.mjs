@@ -79,7 +79,13 @@ const DIST = join(DIST_ROOT, 'assets')
 // Per this file's own policy (the "161" entry above: honest fix = ceil(measured)
 // with the measurement attached, not clawing unrelated bytes off the hero path):
 // ceil(163.09) = 164. Still the tightest gate in this file.
-const BUDGET_ENTRY_JS = 164 * KB
+// RATCHETED 164 -> 165 for #204 (answering asks from chat). Measured in CI, where
+// the gate runs (bun 1.3.10; a local 1.3.14 build reads ~0.2 KB smaller): main
+// after #203 163.97, #204 alone 164.04 (+0.07 — the shared choice-card's pressed
+// state rides the hero path), #205 alone 163.98 (+0.01). Combined ≈ 164.05: no
+// single PR is the regression, the gate was at 99.98% before either. Same policy
+// as the two entries above: ceil(measured) = 165, measurement attached.
+const BUDGET_ENTRY_JS = 165 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
@@ -1314,9 +1320,118 @@ const BUDGET_ENTRY_JS = 164 * KB
 // main, because nothing here is on the cold path.
 // The ceiling follows this counter's documented policy (measured x 1.02, NOT
 // ceil(measured) — see the 2026-08-17 note above): 452.85 x 1.02 = 461.9 -> 462.
-const BUDGET_APP_JS = 462 * KB
-// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab
-// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
+//
+// RATCHETED 462 -> 471 by the brokered-OAuth return fix (`fix/oauth-return-ux`).
+// Same shape as the ratchet above, and the interesting half is again not this
+// branch:
+//
+//   origin/main (e9870fd5), built the same way   461.67 KB  ← 99.93% of 462
+//   this branch                                  461.88 KB  ← +0.21 KB
+//   this branch, on CI's zlib                    462.03 KB  ← RED by 30 bytes
+//
+// 0.33 KB of headroom on a shared per-PR gate is not a budget, it is the
+// tripwire this file warns about twice: gzip output differs by ~0.16 KB between
+// this box and the runner, so on main the gate was already inside its own
+// measurement noise. The next author to add ANY feature was going to get a red
+// that says nothing about their change. Ratcheting here rather than leaving it.
+//
+// This branch's own +0.21 KB, all of it in LAZY route chunks (the ENTRY gate
+// MOVED DOWN, 161.05 -> 160.29, because nothing here is on the cold path):
+//   ~+0.10 KB  `oauthConnection` / `consumerTargets` in `lib/api/connectors.ts`
+//              — the pure derivation of "is this connector connected, as whom,
+//              with how many tools" from the card's accounts. It replaces a
+//              local-state guess that a full-page OAuth redirect destroyed, which
+//              is why a completed sign-in kept rendering its initial state.
+//   ~+0.11 KB  `<McpOauthLane>` + its status line: one status header, one picker,
+//              one action — net of DELETING the old lane, the duplicate "Sign in
+//              again" button and the second grant control it replaces.
+// Policy: 461.88 x 1.02 = 471.1 -> 471.
+//
+// Rebased onto that ratchet: the base now carries the oauth-return +0.21 KB, so
+// 466.07 measured here becomes ~466.3 on the merged main — x 1.02 = 475.6 -> 476
+// still holds; re-measured after the rebase (see the release gate).
+// RATCHETED 462 -> 476 by chunked, resumable uploads (`feat/large-resumable-uploads`).
+// The measurement, both halves built the same way in the same worktree:
+//
+//   origin/main (e9870fd5)   entry 161.05   app 461.62   files chunk 14.18
+//   this branch              entry 161.05   app 466.07   files chunk 18.61
+//                            ─────────────  ───────────  ────────────────
+//                                    0.00        +4.45            +4.43
+//
+// Read the three columns together: the app total moved +4.45 KB and the LAZY
+// `files-*` chunk moved +4.43 KB. Within rounding, ALL of it is the files
+// route's own chunk — the upload manager (`lib/upload/manager`), the pure
+// protocol module (`lib/upload/protocol`: chunk ranges, the sliding rate
+// window, backoff, the reload manifest, the tray's copy) and the tray
+// component. `grep` finds none of those symbols in `index-*.js`.
+//
+// The ENTRY gate — the one that guards first paint — did NOT move to make room
+// for anything: 161.05 -> 161.05, byte-identical, and green at 98% of 164 —
+// `grep` finds zero upload symbols in `index-*.js`. A first-time visitor who never opens
+// Files downloads not one byte of this feature.
+//
+// The bytes bought: uploads up to 10 GB that survive a dropped connection, a
+// closed laptop lid and a server restart, with a real progress bar, a live
+// speed, an ETA, per-file cancel/retry and the server's own sentence on
+// failure. The replaced path was one buffered multipart POST capped at 200 MB
+// with no progress at all. Cheaper placements were considered and rejected: the
+// pure module cannot fold into the component without losing the unit tests that
+// pin the range/resume arithmetic (the part where an off-by-one costs someone a
+// 9 GB file), and it cannot live in `lib/api/files` because that module IS on
+// the hero path.
+// This counter's documented policy is measured x 1.02, NOT ceil(measured) — see
+// the 2026-08-17 note above: 466.07 x 1.02 = 475.4 -> 476.
+//
+// RATCHETED 476 -> 478 by the agent deep link (rebased onto the uploads ratchet) (`feat/agent-deep-link`). The
+// envelope is the real story again — 462 was itself a x1.02 bump, and the
+// branch parent had spent nearly all of it:
+//
+//   parent 8caae253, built the same way   461.52 KB  <- 0.48 KB of headroom
+//   this branch                           462.49 KB  <- +0.97 KB
+//
+// What the +1.01 KB buys: a bot's home thread had NO URL, so nothing could link
+// to it and every "open this agent" link — including every push notification —
+// landed in the full-screen terminal, in whatever company scope you happened to
+// be browsing. `lib/agent-href.ts` is that address (`/agent/<name>`), its
+// resolver, and the roster effect that consumes it once and switches the scope.
+// It is its own 0.21 KB chunk, imported by ten LAZY chunks; `grok-roster`
+// carries the consume-once effect and its unknown-name toast (9.46 KB), and the
+// rest is content-hash churn spread over the chunks those two touch.
+//
+// The gate that actually guards first paint is UNMOVED in substance and green:
+// 161.19 / 164 KB, +0.19 KB of import-map churn from re-rolling those hashes —
+// nothing here lands on the cold path.
+//
+// 462.49 x 1.02 = 471.7 -> 471. Deliberately NOT ceil(measured) = 463: the
+// v0.6.1 note above records that exact mistake and its correction, because a
+// sub-KB ceiling on a gate every web PR shares red-lights the NEXT author with
+// a failure that says nothing about their branch — which is precisely what
+// happened to this one.
+// Re-measured after the rebase onto the uploads ratchet (oauth return + uploads
+// + this branch, one build on this box): 468.78 KB. Policy: 468.78 x 1.02 =
+// 478.2 -> 478.
+//
+// RATCHETED 478 -> 488 by chat answering through the asks API
+// (`feat/chat-answers-no-terminal`, stacked on the asks API). Measured the same
+// way on the same box:
+//
+//   parent origin/maxmax/asks-api       474.87 KB  <- 3.13 KB of headroom
+//   this branch                         478.94 KB  <- +4.07 KB
+//
+// ALL of it is the lazy `chat-panel` chunk (48.97 -> 53.02); every other chunk
+// moved by hash churn only, and the entry gate is green and unmoved in
+// substance (163.72 -> 163.78 / 164, import-map churn). What the 4 KB buys:
+// the permission / question / form cards answer through Claude Code's own
+// decision hook instead of keys pressed into the pty — every option on every
+// build, multi-select, several questions, the free-text row, Claude's own
+// "Yes, and always allow …" offers by name — plus the live asks list it reads
+// (`hooks/use-asks`, `lib/api/asks`) and the composer routing a typed sentence
+// into the open ask. The key-pressing paths stay as the fallback for sessions
+// whose hooks predate the decision hook, so nothing was removable yet.
+//
+// Policy: 478.94 x 1.02 = 488.5 -> 488.
+const BUDGET_APP_JS = 488 * KB
+// RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:
 //   +0.91 KB  `browser` (15.25 → 16.16), the lazily-imported workspace route.

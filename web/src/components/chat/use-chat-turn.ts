@@ -30,14 +30,23 @@ import * as React from 'react'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
+import { transcriptFreshMs } from './wire-entries'
 import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
 import { serverNowMs } from './latency'
 
-/** Only show the provisional tail when the transcript is clearly BEHIND the
- *  live turn — right after a batch lands the pty text is confirmed content
- *  and showing it again would duplicate (the A1 anti-glitch heuristic). */
+/** A quiet completed-event stream does not establish a broken data plane.
+ * Raw terminal evidence is reserved for an established, degraded connection;
+ * initial loading and re-seeding must first finish their coherent snapshot. */
+export function provisionalSourceDegraded(
+  source: Pick<ChatWireView, 'seeded' | 'state' | 'gone' | 'fresh'>,
+): boolean {
+  return source.seeded && !source.gone && !source.fresh &&
+    (source.state === 'reconnecting' || source.state === 'no_hooks' || source.state === 'offline')
+}
+
+/** After a real outage, let a just-received batch supersede raw terminal text. */
 const PROVISIONAL_LAG_MS = 5_000
 /** How recent `last_send_at` must be at the flip to count as THIS turn's
  *  anchor (terminal-typed sends never stamp it, so it can be stale). */
@@ -157,11 +166,30 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // never touches — an older page cannot change the turn anchor, the supersede
   // gate or the confirmed clock. Memoised inside the hook, so `toDisplayList`
   // is not recomputed on the 1s live-layer tick.
-  const backlog = useChatBacklog(name, tail)
+  // Codex's dialect is mapped pragmatically (prompts, replies, reasoning, shell
+  // runs) and honestly nothing more, so anything it does beyond that must be
+  // SHOWN as an "open the terminal" row rather than silently dropped the way
+  // Claude's known chrome kinds are.
+  const backlog = useChatBacklog(name, tail, session?.provider === 'codex')
   const entries = backlog.entries
   const items = React.useMemo(() => toDisplayList(entries), [entries])
   const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0
-  const lastConfirmedMs = lastConfirmedTs * 1000
+  // THE PLANE'S CLOCK, NOT THE RENDERER'S — and DISPLAY-ONLY.
+  //
+  // `lastConfirmedTs` is the newest entry the surface DRAWS. The provisional
+  // pty card is gated on something different: when the transcript plane last
+  // confirmed ANYTHING, drawn or not (`transcriptFreshMs`, which owns the
+  // reasoning because it is the wire module's business, not this one's).
+  //
+  // It feeds `showProvisional` and its wake timer and NOTHING ELSE. The turn
+  // boundary below is deliberately untouched: `confirmedCaughtUp` still reads
+  // `lastAgentMs`, so nothing here can end a turn early. This file still knows
+  // nothing about which entries the wire module drops, which is the invariant
+  // its own pinned test exists to keep (see `wire-entries.ts` for what it is).
+  const lastConfirmedMs = React.useMemo(
+    () => transcriptFreshMs(tail.wire, lastConfirmedTs),
+    [tail.wire, lastConfirmedTs],
+  )
 
   // Turn tracking, SERVER clock domain. Anchor priority: the server's
   // last_send_at stamp (the dock/API send that started the turn — makes the
@@ -251,10 +279,12 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
 
   const overlay = useReceiptOverlay(session, turnStart, lastConfirmedTs)
 
-  // Shown while the transcript is behind the live turn; liveLayerUp keeps it
+  // Shown only when the seeded data plane is degraded; liveLayerUp keeps it
   // (and the overlay) mounted through the post-Stop confirmation window, so
   // the answer never blanks out before its confirmed form arrives.
+  const provisionalEligible = provisionalSourceDegraded(tail)
   const showProvisional =
+    provisionalEligible &&
     liveLayerUp &&
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
@@ -271,7 +301,7 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   useWakeAt(
     // The provisional tail appears once the transcript is PROVISIONAL_LAG_MS
     // behind the live turn.
-    liveLayerUp && turnStart != null && !showProvisional ? lastConfirmedMs + PROVISIONAL_LAG_MS : null,
+    provisionalEligible && liveLayerUp && turnStart != null && !showProvisional ? lastConfirmedMs + PROVISIONAL_LAG_MS : null,
     wake,
   )
   useWakeAt(

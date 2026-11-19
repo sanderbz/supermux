@@ -48,6 +48,7 @@
  * sheet; the pane's outer chrome reuses the roster's existing `.gr-pane` surface.
  */
 import * as React from 'react'
+import { BrowserFeedbackCard, supportsBrowserFeedback } from '../browser-feedback/browser-pairing'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
@@ -81,6 +82,7 @@ import {
   type LastSend,
 } from '@/components/focus-mode/last-send-recall'
 import { NotifPolicyControl } from '@/components/focus-mode/notif-policy-control'
+import { CompanyInboxField } from '@/components/roster/company-inbox-field'
 import {
   DescEditor,
   TagsEditor,
@@ -1137,7 +1139,8 @@ function Group({ children }: { children: React.ReactNode }) {
  *   1 · Behavior   — the role, the model, the core notes it always carries.
  *   2 · Connectors — the real per-bot action surface.
  *   3 · Memory     — what the bot has LEARNED across runs.
- *   4 · Delivery   — how it notifies you, then the Advanced internals. */
+ *   4 · Delivery   — how it notifies you, whether companies may message it
+ *                    (HQ bots, owner only), then the Advanced internals. */
 function SetupTab({
   name,
   session,
@@ -1150,6 +1153,7 @@ function SetupTab({
   const memory = session?.memory ?? ''
   return (
     <div className="flex flex-col gap-6">
+      {supportsBrowserFeedback(session?.provider) && <BrowserFeedbackCard key={name} session={name} label={session?.display_name || name} remote={session?.host_id != null} />}
       <Group>
         <RoleField name={name} session={session} />
         <Field label="Launch model" hint={LAUNCH_MODEL_HINT}>
@@ -1179,6 +1183,7 @@ function SetupTab({
         <Field label="Notifications">
           <NotifPolicyControl name={name} value={session?.notif} />
         </Field>
+        <CompanyInboxField name={name} session={session} />
         <LaunchInternals session={session} />
       </Group>
     </div>

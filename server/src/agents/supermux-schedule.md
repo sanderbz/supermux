@@ -22,20 +22,22 @@ the deploy"), or a reminder to yourself before you hand back.
   colleague; if that is what the human wants, say so rather than trying.
 - **You can only deliver a PROMPT.** Not a shell command, not a booted session,
   not a permission bypass. Asking for any of those is a 400.
-- **`done_action` may only be `disable` or `notify`.** `disable` turns the
-  schedule off after it has run (the right answer for a one-shot); `notify` pings
-  the human. Anything else is a 400.
-- **There is a cap of 20 live schedules per session.** Over it you get a 429.
-  That is not a retry — delete one first, or tell the human you are at the limit.
-- **A rejected request is a 400, a 401 or a 429 with a readable message.**
+- **`done_action` may only be `disable`, `notify` or `none`.** `disable` turns
+  the schedule off after it has run; `notify` pings the human; `none` does
+  nothing. Anything else is a 400. Leave it out and you get `disable` for a
+  one-shot (`in 20m`, or a cron pinned to one date) and `none` for a recurring
+  schedule, so an `every 1h` check keeps running.
+- **There is a cap of 20 active schedules per session.** Over it you get a 429.
+  That is not a retry — pause or delete one first, or tell the human you are at
+  the limit. Paused schedules and one-shots that already ran do not count, and
+  your own finished one-shots are cleared away a week after they ran.
+- **You can pause any schedule that targets you, and delete the ones you
+  created** — see "Cleaning up your own schedules" below. You do not need the
+  human for that. (Older copies of this file said you could not delete
+  schedules at all; that is no longer true.)
+- **A rejected request is a 400, a 401, a 403 or a 429 with a readable message.**
   Surface it to the human. Do not retry the same call hoping for a different
   answer; the server is deterministic.
-
-The pane already has the three env vars these calls need — you set nothing up:
-
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name.
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates these calls.
 
 ## YOU do the parsing — the server does not
 
@@ -91,37 +93,29 @@ watch"), not a restatement of the prompt.
 with enough context to act on cold: you will not remember this conversation.
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"Check whether the 08:00 deploy went green; if it did not, summarise the failure.","schedule_expr":"every weekday at 08:00"}'
+supermux-schedule "Deploy check" "every weekday at 08:00" "Check whether the 08:00 deploy went green; if it did not, summarise the failure."
 ```
 
-For prompts with quotes or newlines in them, build the JSON safely with `jq`:
-
-```bash
-TITLE='Nightly release watch'
-PROMPT='Check the release job. If it is red, read the last 50 lines of the log and say what broke.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  --json "$(printf '{"session":%s,"title":%s,"prompt":%s,"schedule_expr":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg t "$TITLE" '$t')" \
-            "$(jq -Rn --arg p "$PROMPT" '$p')" \
-            "$(jq -Rn --arg e 'daily at 21:00' '$e')")"
-```
+Three arguments in order: the title, the schedule expression, then the prompt.
+The wrapper is on your `PATH` and pre-approved, so it runs without a permission
+prompt — reach for it rather than `curl`.
 
 ### A one-shot follow-up
 
-For something that should happen once and then stop, use a relative expression
-and `done_action: "disable"` (which is the default — it is spelled out here so
-the intent is visible):
+For something that should happen once and then stop, use a relative expression:
 
 ```bash
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  "$SUPERMUX_URL/api/hook/schedule/create" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"CI follow-up","prompt":"Check whether the CI run on this branch finished, and report the result.","schedule_expr":"in 20m","done_action":"disable"}'
+supermux-schedule "CI follow-up" "in 20m" "Check whether the CI run on this branch finished, and report the result."
+```
+
+For a one-shot `done_action` defaults to `disable`, which turns the schedule off
+after it has run. A recurring schedule (`every 1h`, `daily at 09:00`) defaults to
+`none` and keeps its cadence; **never pass `disable` on one you want to keep
+running**, or it stops after its first run. To set it (or any other field the
+three arguments do not cover) hand over the whole body:
+
+```bash
+supermux-schedule --json '{"title":"Nightly release watch","schedule_expr":"daily at 21:00","prompt":"Check the release job; if it is red, say what broke.","done_action":"notify"}'
 ```
 
 ### Pinging the human instead
@@ -141,9 +135,57 @@ a duplicate schedule.** A `Created schedule ⏱ <title>` line appears in this
 session's transcript by itself — you do not need to announce it separately. **Tell the human what you scheduled and when it will
 first fire**, in one sentence, so they can correct you before it runs.
 
-To change or remove a schedule, the human does it from the Schedules sheet in
-the app (tap the `⏱` chip in the transcript). You cannot edit or delete
-schedules — including your own — and you should say that rather than trying.
+## Cleaning up your own schedules
+
+Clean up after yourself. When a one-off check has run and done its job, delete
+it; when a recurring schedule has outlived its purpose (the test week it was
+checking is over, the follow-up is no longer needed), delete it too rather than
+letting it fire on. Run `supermux-schedule list` now and then and remove what
+you no longer need:
+
+```bash
+supermux-schedule list               # the schedules that target this session, with their ids
+supermux-schedule disable WF-1a2b3c4d   # pause one
+supermux-schedule delete WF-1a2b3c4d    # remove one you created yourself
+```
+
+- **`list`** shows every schedule that targets this session, with `id`,
+  `title`, `enabled`, `schedule_expr`, `next_run` and `created_by_you`.
+- **`disable`** pauses any of them, including one the human set up for you.
+  It is reversible: the human can switch it back on in the app. Disabling an
+  already-paused schedule is a no-op (`changed: false`).
+- **`delete`** works only on a schedule **you created yourself**
+  (`created_by_you: true`). One the human set up is a 403: pause it instead.
+- A schedule of another session is a 401, the same as everywhere else.
+- If you forget, supermux tidies your own one-off checks away a week after
+  they ran. Do not rely on it: a finished check you leave behind clutters the
+  human's Schedules sheet for that week.
+- You cannot edit a schedule or switch one back on. Tell the human what you
+  paused and why, in one sentence; they re-enable or edit it from the Schedules
+  sheet in the app (tap the `⏱` chip in the transcript).
+
+## Under the hood
+
+`supermux-schedule` POSTs `{session,title,schedule_expr,prompt}` to
+`$SUPERMUX_URL/api/hook/schedule/create` with your `$SUPERMUX_HOOK_TOKEN` — the
+same call as:
+
+```bash
+curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  "$SUPERMUX_URL/api/hook/schedule/create" \
+  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy check","prompt":"…","schedule_expr":"every weekday at 08:00"}'
+```
+
+`list`, `disable` and `delete` POST `{session}` or `{session,id}` to
+`$SUPERMUX_URL/api/hook/workflow/list`, `…/disable` and `…/delete` the same way.
+
+`supermux-schedule --version` (and the same flag on every `supermux-*` wrapper)
+prints the supermux version this box runs, so you can tell whether a feature
+described here is available.
+
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
 
 ---
 

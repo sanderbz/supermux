@@ -15,7 +15,7 @@
  * was wrong", and the client has to be able to tell them apart to surface the
  * reload prompt instead of a red error.
  */
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { isWorkflowEvent } from '../../src/hooks/use-workflows'
 import {
@@ -67,10 +67,25 @@ describe('the client speaks the envelope', () => {
   // `apiToken`/`apiUrl` read the runtime globals the shell stamps on `window`;
   // a bun test has no DOM, so the two the client actually reads are stubbed
   // rather than the whole surface mocked.
-  ;(globalThis as { window?: unknown }).window ??= {
-    _SUPERMUX_AUTH_TOKEN: 'test-token',
-    _SUPERMUX_BASE_URL: '',
-  }
+  const globals = globalThis as unknown as { window?: { _SUPERMUX_AUTH_TOKEN?: string; _SUPERMUX_BASE_URL?: string } }
+  let originalWindow: typeof globals.window
+  let originalToken: string | undefined, originalBase: string | undefined
+  beforeEach(() => {
+    originalWindow = globals.window
+    originalToken = originalWindow?._SUPERMUX_AUTH_TOKEN
+    originalBase = originalWindow?._SUPERMUX_BASE_URL
+    globals.window ??= {}
+    globals.window._SUPERMUX_AUTH_TOKEN = 'test-token'
+    globals.window._SUPERMUX_BASE_URL = ''
+  })
+  afterEach(() => {
+    if (originalWindow === undefined) delete globals.window
+    else {
+      globals.window = originalWindow
+      originalWindow._SUPERMUX_AUTH_TOKEN = originalToken
+      originalWindow._SUPERMUX_BASE_URL = originalBase
+    }
+  })
 
   const withFetch = async <T,>(
     reply: { status: number; body: unknown },

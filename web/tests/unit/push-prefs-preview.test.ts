@@ -20,6 +20,7 @@ let captured: Captured[] = []
 let nextData: unknown = {}
 
 const realFetch = globalThis.fetch
+const prevWindow = (globalThis as { window?: unknown }).window
 
 beforeEach(() => {
   captured = []
@@ -42,6 +43,10 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch
+  // All test files share one process: a window double left behind breaks a later
+  // file whose code only checks `typeof window` (ThemeProvider calls matchMedia).
+  if (prevWindow === undefined) delete (globalThis as { window?: unknown }).window
+  else (globalThis as { window?: unknown }).window = prevWindow
 })
 
 describe('the message-preview toggle', () => {

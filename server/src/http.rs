@@ -39,6 +39,8 @@ use crate::ws;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(protected_router(state.clone()))
+        .merge(crate::browser_feedback::public_router_for(state.clone()))
+        .merge(crate::browser_feedback::control::router_for(state.clone()))
         // PUBLIC (no auth): `/api/health` plus the board iCal feed.
         .merge(board::public_router_for(state.clone()))
         // WS pty stream — NO bearer layer; auth is in-band first-frame.
@@ -61,6 +63,10 @@ pub fn router(state: AppState) -> Router {
         // Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Supermux-Hook-Token` validated in the handler.
         .merge(hooks::router_for(state.clone()))
+        // The DECISION hook (`/api/_internal/ask`): the long-poll Claude Code's
+        // PermissionRequest / Elicitation hook waits on for an API answer. NO
+        // bearer layer; same per-session `X-Supermux-Hook-Token` auth as above.
+        .merge(crate::asks::hook::router_for(state.clone()))
         // The `$EDITOR` bridge's open/result endpoints
         // — NO bearer layer; SAME per-session `X-Supermux-Hook-Token` auth as the
         // status hook (the bridge runs inside the pane, never holds the bearer).
@@ -86,6 +92,16 @@ pub fn router(state: AppState) -> Router {
         // Merged OUTSIDE the bearer layer, beside the public router. Inert unless
         // `config.human_auth` is configured (routes 404 / return not-authenticated).
         .merge(auth_human::router::router_for(state.clone()))
+        // Connector-OAuth PUBLIC callback (`GET /api/oauth/callback`). Outside the
+        // bearer layer AND outside `member_allowlist_mw` on purpose: the provider
+        // redirects the owner's browser here with no credential. It exchanges the
+        // code and stashes the tokens in RAM only — the authenticated
+        // `/oauth/complete` is what seals + grants. Uniform 302 on every failure.
+        .merge(crate::connectors::oauth_code::public_router_for(state.clone()))
+        // The brokered-OAuth `headersHelper` endpoint (`/api/hook/mcp-token`): a
+        // running bot's MCP client asks for the CURRENT token. NO bearer layer;
+        // per-session `X-Supermux-Hook-Token` + the session's own grant.
+        .merge(crate::connectors::oauth_code::hook_router_for(state.clone()))
         // Embedded SPA — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
         // assets or the SPA shell (with `window._SUPERMUX_AUTH_TOKEN` injected). The
@@ -168,6 +184,9 @@ fn protected_router(state: AppState) -> Router {
     use crate::scope::{member_allowlist_mw, require_admin_mw, require_admin_writes_mw};
     Router::new()
         .merge(sessions::router_for(state.clone()))
+        // Browser pairing follows agent access; each handler checks session
+        // company scope under the lifecycle lock.
+        .merge(crate::browser_feedback::router_for(state.clone()))
         .merge(board::router_for(state.clone()))
         // hosts CRUD + bootstrap — P3d: owner/admin-only. A scoped member never
         // reaches these (uniform 404, hides existence), enforced by the shared
@@ -192,6 +211,9 @@ fn protected_router(state: AppState) -> Router {
         // allowlist entry (spec §5.1) rather than a blanket owner-only layer.
         .merge(crate::workflows::router_for(state.clone()))
         .merge(sse::router_for(state.clone())) // GET /api/events SSE stream
+        // The asks inbox (`/api/asks*`): owner/admin only — not on the member
+        // allowlist, so a scoped member gets the uniform 404.
+        .merge(crate::asks::router_for(state.clone()))
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
         // Claude tools registry + MCP CRUD — P3d owner/admin-only. The MCP

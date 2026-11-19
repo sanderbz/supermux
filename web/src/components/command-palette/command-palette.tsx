@@ -88,6 +88,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
 import { EntityPickerView } from '@/components/ui/entity-picker'
 import { resolveEntityTarget, type EntityRow } from '@/lib/entity'
+import { agentHref } from '@/lib/agent-href'
 import { rankEntities, type RankText } from '@/lib/rank'
 import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 import { useTheme } from '@/components/theme-provider'
@@ -489,7 +490,7 @@ export function CommandPalette() {
         return
       }
       setOpen(false)
-      navigate(`/focus/${encodeURIComponent(target.name)}`)
+      navigate(agentHref(target.name))
       toast({ message: `Ran ${label} in ${target.name}`, tone: 'active' })
       void settingsRequest(`/api/sessions/${encodeURIComponent(target.name)}/send`, {
         method: 'POST',

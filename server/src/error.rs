@@ -33,6 +33,12 @@ pub enum AppError {
     /// status before it reads the sentence.
     #[error("too many: {0}")]
     TooManyRequests(String),
+    /// The disk cannot hold what was asked for. 507 rather than 400: the
+    /// request is well-formed and the caller did nothing wrong — the box is
+    /// full. Refusing a 9 GB upload in the first 50 ms is kinder than dying at
+    /// 90 %, and the sentence names both numbers so the person can act.
+    #[error("insufficient storage: {0}")]
+    InsufficientStorage(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -47,6 +53,7 @@ impl AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Gone(_) => StatusCode::GONE,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::InsufficientStorage(_) => StatusCode::INSUFFICIENT_STORAGE,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

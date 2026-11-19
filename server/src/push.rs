@@ -565,7 +565,7 @@ async fn mute_reason(
 /// the push service reports `404`/`410 Gone` for is pruned from the DB so dead
 /// devices don't accumulate. Returns the number of devices the push reached.
 ///
-/// `url` is an app-relative path (e.g. `/focus/<session>`) the SW opens on tap.
+/// `url` is an app-relative path (e.g. `/agent/<session>`) the SW opens on tap.
 /// No-op (no DB scan beyond a count, no network) when nobody is subscribed.
 ///
 /// This is the lower-level path — bypasses the per-category gate. Callers

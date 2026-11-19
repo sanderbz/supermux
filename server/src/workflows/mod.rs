@@ -49,8 +49,12 @@ pub const ONESHOT_GRACE: chrono::Duration = chrono::Duration::hours(6);
 /// status→idle signal is event-driven (no polling cost while waiting), so a
 /// generous default lets long agent steps run to completion.
 pub use crate::db::workflows::DEFAULT_STEP_TIMEOUT;
-/// How many workflows one bot may own.
+/// How many ARMED (switched-on) workflows one bot may have at once. Paused and
+/// finished ones do not count: they arm no work.
 pub const MAX_WORKFLOWS_PER_SESSION: usize = 20;
+/// An agent's own finished one-shot is tidied away this long after it last
+/// changed (see [`db::workflows::tidy_finished_agent_oneshots`]).
+pub const FINISHED_ONESHOT_KEEP: chrono::Duration = chrono::Duration::days(7);
 /// How many steps one workflow may carry.
 pub const MAX_STEPS_PER_WORKFLOW: usize = 20;
 /// How many steps a workflow created over the AGENT hook path may carry — a
@@ -134,6 +138,21 @@ pub async fn tick_once(state: &AppState) -> anyhow::Result<()> {
         // the transcript. `next_run` still advances: the workflow keeps its
         // rhythm, it just misses this beat, and the ledger says so out loud.
         match db::workflows::running_for(&state.pool, &wf.id).await {
+            // The run in flight may be THIS window's own run: the tick that fired
+            // it claimed this fire-key, and `next_run` only advances when that run
+            // finishes (`record_fire`, from `engine::finish`). Every tick until
+            // then still finds the window due. That is not a missed beat, so it
+            // must not write a `skipped` row or move the cadence: the finishing
+            // run does both. A run that never finishes is still caught by the
+            // reaper and then by `sweep_if_stale`.
+            Ok(Some(_))
+                if matches!(
+                    db::workflows::run_key_fired_at(&state.pool, &wf.id, scheduled_for_ts).await,
+                    Ok(Some(_))
+                ) =>
+            {
+                continue;
+            }
             Ok(Some(inflight)) => {
                 let _ = db::workflows::insert_run(
                     &state.pool,
@@ -567,13 +586,12 @@ pub async fn create(
         }
     };
 
-    // 6. The per-session cap, BEFORE the insert.
-    let owned = db::workflows::count_for_session(&state.pool, &session).await? as usize;
-    if owned >= MAX_WORKFLOWS_PER_SESSION {
-        return Err(AppError::TooManyRequests(format!(
-            "this session already owns {owned} workflows (max {MAX_WORKFLOWS_PER_SESSION}) — \
-             delete one before creating another"
-        )));
+    // 6. The per-session cap, BEFORE the insert. Only switched-on workflows
+    // count; a new one that is created paused arms nothing either.
+    let creates_armed = input.enabled.unwrap_or(true);
+    let armed = db::workflows::count_armed_for_session(&state.pool, &session).await? as usize;
+    if creates_armed && armed >= MAX_WORKFLOWS_PER_SESSION {
+        return Err(AppError::TooManyRequests(cap_message(armed)));
     }
 
     let ts = Utc::now().timestamp();
@@ -599,6 +617,14 @@ pub async fn create(
     let steps = db::workflows::replace_steps(&state.pool, &wf.id, &steps).await?;
     stamp_archive_on_stop(state, &wf.session, input.archive_on_stop).await;
     Ok(db::workflows::WorkflowWithSteps { workflow: wf, steps })
+}
+
+/// The 429 text for the per-session cap, shared by the bearer and hook paths.
+pub(crate) fn cap_message(armed: usize) -> String {
+    format!(
+        "this session already has {armed} active workflows (max {MAX_WORKFLOWS_PER_SESSION}) — \
+         pause or delete one before creating another (paused and finished ones do not count)"
+    )
 }
 
 /// Stamp the disposable marker (`sessions.archive_on_stop`, 0025) onto the

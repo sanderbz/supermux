@@ -65,6 +65,21 @@ describe('reconcile', () => {
     expect(reconcile([mk('hello', 1_000)], [entry('hello', 1_002)], 2_000)).toEqual([])
   })
 
+  test('a browser-control capability hint reconciles during an active turn', () => {
+    const hint = '\n\nBrowser control: supermux-browser list.'
+    expect(reconcile([mk('change the button', 1_000)], [entry('change the button' + hint, 1_002)], 2_000)).toEqual([])
+    expect(reconcile([mk('change the button  ', 1_000)], [entry('change the button  ' + hint, 1_002)], 2_000)).toEqual([])
+    expect(reconcile([mk('change the button', 1_000)], [entry('change the button' + hint, 1_002, 'assistant')], 2_000)).toHaveLength(1)
+    expect(reconcile([mk('change the button', 1_000)], [entry('change the button again' + hint, 1_002)], 2_000)).toHaveLength(1)
+    expect(reconcile([mk('change the button', 100_000)], [entry('change the button' + hint, 50_000)], 101_000)).toHaveLength(1)
+  })
+
+  test('the wire clamp can cut inside a browser capability hint', () => {
+    const text = 'x'.repeat(PROMPT_CLAMP_CHARS - 10)
+    const wire = text + '\n\nBrowser control: supermux-browser list.'
+    expect(reconcile([mk(text, 1_000)], [entry(wire.slice(0, PROMPT_CLAMP_CHARS), 1_002)], 2_000)).toEqual([])
+  })
+
   test('the same text twice claims one entry each, oldest first', () => {
     const out = reconcile(
       [mk('ping', 1_000), mk('ping', 1_100)],

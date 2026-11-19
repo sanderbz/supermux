@@ -70,6 +70,7 @@ async fn mk_state(base: &Path) -> AppState {
         github_token: None,
         statusline_tap: false,
         isolation_mode: crate::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
         extra_origins: Vec::new(),
     };

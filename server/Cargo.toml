@@ -2,7 +2,7 @@
 name = "supermux-server"
 version = "3.0.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 authors = ["Sander van Meggelen"]
 description = "Self-hosted dashboard for running a roomful of AI coding agents (Claude Code, Codex, shells) on top of tmux. Single Rust binary, embedded PWA."
 license = "MIT"
@@ -18,7 +18,7 @@ publish = false
 
 # server/ is its own workspace root (the repo top is intentionally NOT a Cargo
 # workspace). resolver "3" is MSRV-aware: it honours the
-# `rust-version = "1.85"` floor above when selecting transitive dep versions,
+# `rust-version = "1.87"` floor above when selecting transitive dep versions,
 # so the resulting Cargo.lock builds on the pinned toolchain.
 [workspace]
 resolver = "3"
@@ -66,7 +66,7 @@ toml = "0.8"
 
 # ── time ──
 chrono = { version = "0.4", features = ["serde"] }
-cron = "0.13"                                            # cron parser
+cron = "0.17"                                            # cron parser
 
 # ── tracing ──
 tracing = "0.1"
@@ -75,7 +75,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # ── auth/crypto ──
 rand = "0.8"
 base64 = "0.22"
-constant_time_eq = "0.3"                                 # auth token compare
+constant_time_eq = "0.4"                                 # auth token compare
 # P3a human identity plane: SHA-256 for the cookie/token store (hash-only, never
 # raw) + HMAC for the signed cookie & CSRF double-submit. Both already resolved
 # transitively (jwt-simple/openssl pull them) — promoting to direct deps adds 0

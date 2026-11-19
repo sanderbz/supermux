@@ -52,6 +52,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -62,8 +63,7 @@ use serde::Serialize;
 use tokio::sync::{watch, Notify};
 
 use super::model::ChatEntry;
-use super::parser::parse_stream;
-use crate::sessions::resumable;
+use super::parser::{parse_stream_with, Dialect};
 use crate::state::AppState;
 
 /// Slow safety re-scan cadence. FSEvents can be dropped and an editor-less
@@ -306,7 +306,12 @@ fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
 /// One watched file and how far into it we have already published.
 #[derive(Debug)]
 struct FileCursor {
+    identity: Option<(u64, u64)>,
     path: PathBuf,
+    /// Which transcript FORMAT this file is in. Carried per cursor rather than
+    /// per tailer because it belongs to the FILE — and because a cursor is the
+    /// only thing that ever calls the parser.
+    dialect: Dialect,
     offset: u64,
     /// How far back from EOF this cursor was allowed to seed. Kept so a
     /// rotation re-seeds under the SAME bound instead of falling back to 0.
@@ -317,11 +322,20 @@ impl FileCursor {
     /// A cursor over `path` seeded at most `budget` bytes back from EOF.
     /// Returns the cursor and how much of `budget` it actually consumed, so a
     /// cursor SET can share one total budget.
-    fn seeded(path: PathBuf, budget: u64) -> (Self, u64) {
+    fn seeded(path: PathBuf, dialect: Dialect, budget: u64) -> (Self, u64) {
         let offset = seed_offset(&path, budget);
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let spent = len.saturating_sub(offset);
-        (Self { path, offset, seed_budget: budget }, spent)
+        (
+            Self {
+                identity: std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino())),
+                path,
+                dialect,
+                offset,
+                seed_budget: budget,
+            },
+            spent,
+        )
     }
 
     /// Read everything appended since `offset`. Returns the entries and whether
@@ -336,7 +350,11 @@ impl FileCursor {
         };
         let len = meta.len();
         let mut restarted = false;
-        if len < self.offset {
+        if len < self.offset
+            || self
+                .identity
+                .is_some_and(|id| id != (meta.dev(), meta.ino()))
+        {
             // Backstop for a file that shrank between `Tailer::any_shrank` and
             // here. Re-seed under the same bound a cold cursor gets — never
             // byte 0, which on a large rotated file is the flood this cap
@@ -344,6 +362,7 @@ impl FileCursor {
             self.offset = seed_offset(&self.path, self.seed_budget);
             restarted = true;
         }
+        self.identity = Some((meta.dev(), meta.ino()));
         if len == self.offset {
             return (Vec::new(), restarted);
         }
@@ -353,7 +372,7 @@ impl FileCursor {
         if f.seek(SeekFrom::Start(self.offset)).is_err() {
             return (Vec::new(), restarted);
         }
-        let (entries, next) = parse_stream(BufReader::new(f), self.offset);
+        let (entries, next) = parse_stream_with(self.dialect, BufReader::new(f), self.offset);
         self.offset = next;
         (entries, restarted)
     }
@@ -453,6 +472,8 @@ pub struct TailPoll {
 pub struct Tailer {
     project_dir: PathBuf,
     conversation_id: String,
+    /// The dialect every cursor of this tailer opens in.
+    dialect: Dialect,
     main: FileCursor,
     /// agent id → its own cursor. `BTreeMap` so a poll's output order is stable.
     subagents: BTreeMap<String, FileCursor>,
@@ -463,12 +484,32 @@ pub struct Tailer {
 
 impl Tailer {
     pub fn new(project_dir: impl Into<PathBuf>, conversation_id: &str) -> Self {
+        Self::new_in(project_dir, conversation_id, Dialect::Claude)
+    }
+
+    /// [`Tailer::new`] over a transcript in an explicit dialect. A Codex rollout
+    /// is a different FORMAT in a different place, but it is still one
+    /// append-only JSONL, so it reuses this whole byte-cursor machinery — the
+    /// caller only has to hand it the right `(dir, stem)` (see
+    /// [`super::codex::locate`]) and the right dialect.
+    pub fn new_in(
+        project_dir: impl Into<PathBuf>,
+        conversation_id: &str,
+        dialect: Dialect,
+    ) -> Self {
         let project_dir = project_dir.into();
         let path = transcript_path(&project_dir, conversation_id);
         let mut t = Self {
             project_dir,
             conversation_id: conversation_id.to_string(),
-            main: FileCursor { path: path.clone(), offset: 0, seed_budget: 0 },
+            dialect,
+            main: FileCursor {
+                identity: std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino())),
+                path: path.clone(),
+                dialect,
+                offset: 0,
+                seed_budget: 0,
+            },
             subagents: BTreeMap::new(),
             pending_resync: false,
             cold_budget: COLD_SEED_TOTAL_BYTES,
@@ -487,7 +528,7 @@ impl Tailer {
     /// main entries LAST so the newest-biased ring and seed window keep them (a
     /// reserved seed the ring then evicts is no seed at all).
     fn open_cold_main(&mut self, path: PathBuf) -> FileCursor {
-        let (cursor, _spent) = FileCursor::seeded(path, COLD_SEED_BYTES);
+        let (cursor, _spent) = FileCursor::seeded(path, self.dialect, COLD_SEED_BYTES);
         cursor
     }
 
@@ -508,7 +549,7 @@ impl Tailer {
         } else {
             COLD_SEED_BYTES.min(self.cold_budget)
         };
-        let (cursor, spent) = FileCursor::seeded(path, budget);
+        let (cursor, spent) = FileCursor::seeded(path, self.dialect, budget);
         self.cold_budget = self.cold_budget.saturating_sub(spent);
         cursor
     }
@@ -646,7 +687,9 @@ impl Tailer {
         std::iter::once(&self.main)
             .chain(self.subagents.values())
             .any(|c| {
-                std::fs::metadata(&c.path).is_ok_and(|m| m.len() < c.offset)
+                std::fs::metadata(&c.path).is_ok_and(|m| {
+                    m.len() < c.offset || c.identity.is_some_and(|id| id != (m.dev(), m.ino()))
+                })
             })
     }
 
@@ -931,16 +974,40 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
                 continue;
             }
         };
-        if row.provider != "claude" || row.host_id.is_some() {
+        if !super::ws::chat_eligible(&row.provider, row.host_id) {
             break TailState::Stopped {
                 reason: "chat is unavailable for this session",
                 retry: false,
             };
         }
 
-        let project = resumable::project_dir_for(&row.config_dir, &row.dir);
-        let conv = row.cc_conversation_id.clone();
-        let rebuilt = rebuild(&mut core, &project, &conv);
+        let dialect = Dialect::for_provider(&row.provider);
+        // WHERE the transcript is, per dialect. Both answers are a
+        // `(dir, stem)` pair that `transcript_path` joins into `<dir>/<stem>.jsonl`,
+        // so everything below — the cursor, the watcher, the rebuild test — is
+        // shared and never learns which agent wrote the file.
+        let located = super::source::for_session(&state, &row, true).await;
+        let Some(source) = located else {
+            let next = TailStatus {
+                state: TailState::Reconnecting {
+                    reason: NO_TRANSCRIPT_REASON,
+                },
+                resync_epoch,
+            };
+            handle.status.send_if_modified(|old| {
+                if *old == next {
+                    false
+                } else {
+                    *old = next;
+                    true
+                }
+            });
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        };
+        let project = source.project.clone();
+        let conv = source.conversation_id.clone();
+        let rebuilt = rebuild(&mut core, &project, &conv, dialect);
 
         // Arm/re-arm the directory watcher (best effort; the poll runs anyway).
         if watcher.as_ref().map(|(p, _)| p.as_path()) != Some(project.as_path()) {
@@ -959,7 +1026,10 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // Filesystem work happens off the async worker: a re-seed can read a
         // whole seed window from disk.
         let taken = core.take().expect("core was just set");
-        let want_siblings = running && hooks_live && hook_fresh;
+        // Subagent transcripts are a Claude Code concept (`subagents/agent-*.jsonl`
+        // next to the main file); a Codex rollout has no siblings to scan.
+        let want_siblings =
+            dialect == Dialect::Claude && running && hooks_live && hook_fresh;
         let pass = tokio::task::spawn_blocking(move || blocking_pass(taken, want_siblings)).await;
         // The blocking pool is gone (shutdown), or the pass panicked. Either
         // way this task is done — say so, loudly, instead of leaving every
@@ -970,18 +1040,6 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         };
         core = Some(returned);
 
-        if rebuilt || pass.resync {
-            // The ring holds what the PREVIOUS cursor set published: another
-            // conversation after a retarget, or a second copy of this one when a
-            // fresh task re-reads the file from byte 0. Clearing it (seq stays
-            // monotonic) is what makes "resync" mean "re-seed" rather than
-            // "splice" or "double".
-            if store.reset() {
-                // An already-empty ring means the client has nothing to drop, so
-                // a cold first attach never spends an epoch on a no-op.
-                resync_epoch += 1;
-            }
-        }
         // A drained sidechain line is proof a background subagent wrote THIS
         // poll: stamp the ground-truth liveness the status classifier + roster
         // read via `AppState::subagents_live`. This survives the main `Stop`, so a
@@ -999,22 +1057,42 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         if pass.subagent_appended && !pass.resync && !rebuilt {
             state.mark_subagent_active(&name);
         }
-        store.publish_sealed(pass.entries);
+        if store.publish_source(
+            source,
+            pass.entries,
+            rebuilt || pass.resync,
+            core.as_ref().map(|c| c.main.offset).unwrap_or(0),
+        ) {
+            resync_epoch += 1;
+        }
 
-        let state_now = classify_pointer(PointerInputs {
-            pointer_path_exists: !conv.is_empty() && pass.pointer_exists,
-            pointer_mtime_ms: pass.pointer_mtime_ms,
-            newest_sibling_mtime_ms: pass.newest_sibling_mtime_ms,
-            hooks_live,
-            last_hook_ms: last_hook,
-            session_running: running,
-            session_crashed: crashed,
-            // `sessions.last_started` is stored in SECONDS.
-            session_last_started_ms: row.last_started.saturating_mul(1_000),
-            server_start_ms: state.server_start_ms,
-            now_ms,
-        });
-        let status = TailStatus { state: state_now, resync_epoch };
+        let state_now = if dialect == Dialect::Codex && pass.pointer_exists {
+            if crashed {
+                TailState::Reconnecting {
+                    reason: "the session's terminal died",
+                }
+            } else {
+                TailState::Live
+            }
+        } else {
+            classify_pointer(PointerInputs {
+                pointer_path_exists: !conv.is_empty() && pass.pointer_exists,
+                pointer_mtime_ms: pass.pointer_mtime_ms,
+                newest_sibling_mtime_ms: pass.newest_sibling_mtime_ms,
+                hooks_live,
+                last_hook_ms: last_hook,
+                session_running: running,
+                session_crashed: crashed,
+                // `sessions.last_started` is stored in SECONDS.
+                session_last_started_ms: row.last_started.saturating_mul(1_000),
+                server_start_ms: state.server_start_ms,
+                now_ms,
+            })
+        };
+        let status = TailStatus {
+            state: state_now,
+            resync_epoch,
+        };
         handle.status.send_if_modified(|cur| {
             let changed = *cur != status;
             *cur = status;
@@ -1060,14 +1138,22 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
 /// session delete). A fresh cursor set starts at byte 0, so without the resync a
 /// restarted tailer would publish every entry the previous one already
 /// published, and the seed would show the whole conversation twice.
-fn rebuild(core: &mut Option<Tailer>, project: &Path, conversation_id: &str) -> bool {
+fn rebuild(
+    core: &mut Option<Tailer>,
+    project: &Path,
+    conversation_id: &str,
+    dialect: Dialect,
+) -> bool {
     match core.as_mut() {
-        // Same project dir: only a moved pointer changes anything, and it is the
-        // one adoption path (hook-carried id, never a guessed sibling).
-        Some(t) if t.project_dir() == project => t.retarget(conversation_id),
+        // Same project dir AND dialect: only a moved pointer changes anything,
+        // and it is the one adoption path (hook-carried id, never a guessed
+        // sibling).
+        Some(t) if t.project_dir() == project && t.dialect == dialect => {
+            t.retarget(conversation_id)
+        }
         // First pass of this task, or the session's cwd moved under us.
         _ => {
-            *core = Some(Tailer::new(project, conversation_id));
+            *core = Some(Tailer::new_in(project, conversation_id, dialect));
             true
         }
     }
@@ -1077,7 +1163,15 @@ fn rebuild(core: &mut Option<Tailer>, project: &Path, conversation_id: &str) -> 
 /// state machine records into the server-ms domain the guard compares in.
 fn last_hook_ms(state: &AppState, name: &str, now_ms: i64) -> Option<i64> {
     let t = state.turn_state(name);
-    let newest = [t.user_prompt, t.pre_tool, t.post_tool, t.stop, t.subagent_stop, t.notification]
+    let newest = [
+        t.user_prompt,
+        t.pre_tool,
+        t.post_tool,
+        t.stop,
+        t.subagent_stop,
+        t.notification,
+        t.permission_request,
+    ]
     .into_iter()
     .flatten()
     .max()?;
@@ -1192,6 +1286,31 @@ fn arm_fs_watcher(project: &Path, wake: Arc<Notify>) -> Option<notify::Recommend
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atomic_file_replacement_resets_even_when_length_does_not_shrink() {
+        use super::*;
+        let dir = std::env::temp_dir().join(format!("chat-replace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("conversation.jsonl");
+        let line = |uuid, text| {
+            serde_json::json!({"type":"user","uuid":uuid,"message":{"content":text}}).to_string()
+                + "\n"
+        };
+        std::fs::write(&path, line("old", "old")).unwrap();
+        let mut tail = Tailer::new(&dir, "conversation");
+        assert_eq!(tail.poll().entries[0].uuid, "old");
+        let replacement = dir.join("replacement.jsonl");
+        std::fs::write(
+            &replacement,
+            line("replacement", "a longer new conversation"),
+        )
+        .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let pass = tail.poll();
+        assert!(pass.resync);
+        assert_eq!(pass.entries[0].uuid, "replacement");
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use super::*;
     use crate::sessions::status::Status;
     use std::io::Write;
@@ -1394,6 +1513,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -1743,7 +1863,7 @@ mod tests {
         assert!(off == 0 || raw[off as usize - 1] == b'\n', "the fallback offset must be a line start");
 
         // Draining from that offset yields the giant final line as a visible entry.
-        let (mut cursor, _spent) = FileCursor::seeded(f.clone(), COLD_SEED_BYTES);
+        let (mut cursor, _spent) = FileCursor::seeded(f.clone(), Dialect::Claude, COLD_SEED_BYTES);
         let (entries, _restarted) = cursor.drain();
         assert!(!entries.is_empty(), "the over-budget final line must seed a visible entry");
         assert_eq!(entries.last().unwrap().uuid, "uBIG", "…and it is that final line");
@@ -1928,6 +2048,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A WHOLE BACKGROUND-AGENT TURN, from the live cc 2.1.258 corpus.
+    ///
+    /// The main file gets the `Agent` call, its launch receipt and — later — the
+    /// `task-notification` Claude Code injects when the agent finishes, with the
+    /// agent's own file streaming underneath the whole time. Every one of those
+    /// main lines must CONFIRM, and the notification must not confirm as a
+    /// prompt: that is the shape the owner reported as "shown only as Live
+    /// terminal · unconfirmed".
+    ///
+    /// An unknown top-level type is spliced into the middle on purpose. Claude
+    /// Code invents them every few releases (`atis-latch`, `cost-state`,
+    /// `pr-link`) and one that stalled the cursor would silently freeze the
+    /// transcript from that byte on — the failure mode this test is really for.
+    #[tokio::test]
+    async fn a_background_agent_turn_confirms_every_main_line() {
+        let dir = tmp_project("bgagent");
+        let f = dir.join("conv-a.jsonl");
+        let fixture = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/chat/background-agent.jsonl"),
+        )
+        .unwrap();
+        let real: Vec<String> = fixture
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(real.len(), 3, "fixture: tool_use, tool_result, notification");
+
+        let unknown = r#"{"type":"future-state-marker","sessionId":"s1"}"#.to_string();
+        append(
+            &f,
+            &[real[0].clone(), real[1].clone(), unknown, real[2].clone()],
+        );
+        let sub = dir
+            .join("conv-a")
+            .join("subagents")
+            .join("agent-a1b2c3d4e5f60718a.jsonl");
+        append(&sub, &[sidechain_line("s1", None)]);
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        let poll = t.poll();
+        use crate::sessions::chat::model::Kind;
+        let kinds: Vec<Kind> = poll.entries.iter().map(|e| e.kind).collect();
+        // Subagent first, then the four main lines in file order.
+        assert_eq!(
+            kinds,
+            vec![Kind::Prompt, Kind::ToolUse, Kind::ToolResult, Kind::Unknown, Kind::System],
+        );
+        assert_eq!(poll.entries[0].agent_id.as_deref(), Some("a1b2c3d4e5f60718a"));
+        assert_eq!(poll.entries[1].label.as_deref(), Some("Agent"));
+        // THE LINE THE BUG WAS ABOUT: a system notice, never a prompt.
+        let notice = poll.entries.last().unwrap();
+        assert_eq!(notice.label.as_deref(), Some("agent_notification"));
+        assert!(!notice.is_sidechain);
+
+        // The cursor is intact past the unknown line: the next append arrives.
+        append(&f, &[user_line("after")]);
+        assert_eq!(uuids(&t.poll().entries), ["after"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn sidechain_lines_in_the_main_file_are_dropped_not_double_counted() {
         // They are re-read, with their agent id, from `subagents/`.
@@ -2023,7 +2205,7 @@ mod tests {
         let store = ChatStore::new();
 
         let mut task1: Option<Tailer> = None;
-        assert!(rebuild(&mut task1, &dir, "conv-a"));
+        assert!(rebuild(&mut task1, &dir, "conv-a", Dialect::Claude));
         store.reset();
         store.publish(task1.as_mut().unwrap().poll().entries);
         assert_eq!(store.attach().ring.len(), 2);
@@ -2031,7 +2213,7 @@ mod tests {
         // …the last lease drops, the task exits, the store stays. A new attach:
         let mut task2: Option<Tailer> = None;
         assert!(
-            rebuild(&mut task2, &dir, "conv-a"),
+            rebuild(&mut task2, &dir, "conv-a", Dialect::Claude),
             "a cold cursor over a warm ring MUST resync, or the seed doubles"
         );
         store.reset();
@@ -2048,11 +2230,11 @@ mod tests {
         let dir = tmp_project("rebuild");
         let other = tmp_project("rebuild-moved");
         let mut core: Option<Tailer> = None;
-        assert!(rebuild(&mut core, &dir, "conv-a"), "the first build is a resync");
-        assert!(!rebuild(&mut core, &dir, "conv-a"), "an unchanged pointer must not churn");
-        assert!(rebuild(&mut core, &dir, "conv-b"), "a moved pointer re-seeds");
+        assert!(rebuild(&mut core, &dir, "conv-a", Dialect::Claude), "the first build is a resync");
+        assert!(!rebuild(&mut core, &dir, "conv-a", Dialect::Claude), "an unchanged pointer must not churn");
+        assert!(rebuild(&mut core, &dir, "conv-b", Dialect::Claude), "a moved pointer re-seeds");
         assert_eq!(core.as_ref().unwrap().conversation_id(), "conv-b");
-        assert!(rebuild(&mut core, &other, "conv-b"), "a moved cwd is a fresh cursor set");
+        assert!(rebuild(&mut core, &other, "conv-b", Dialect::Claude), "a moved cwd is a fresh cursor set");
         assert_eq!(core.as_ref().unwrap().project_dir(), other.as_path());
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(other);

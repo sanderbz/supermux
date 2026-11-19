@@ -96,6 +96,7 @@ fn config_round_trips_remote_callback_url() {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
     let c2 = cfg.clone();
@@ -123,6 +124,7 @@ fn config_round_trips_remote_callback_url() {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
     assert!(cfg_none.remote_callback_url.is_none());
@@ -168,6 +170,7 @@ fn effective_remote_callback_url_resolution_order() {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
 
@@ -244,6 +247,7 @@ async fn spawn_server(remote_callback_url: Option<String>) -> Fixture {
         github_token: None,
         statusline_tap: false,
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");

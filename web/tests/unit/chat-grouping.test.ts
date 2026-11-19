@@ -20,6 +20,8 @@ import { describe, expect, test } from 'bun:test'
 
 import type { HarnessEvent } from '../../src/lib/api/harness'
 import type { ChatEntry, ChatItem } from '../../src/components/chat/entries'
+import { toDisplayList } from '../../src/components/chat/entries'
+import { toChatEntries } from '../../src/components/chat/wire-entries'
 import {
   buildTranscript,
   dayDividers,
@@ -613,6 +615,39 @@ describe('buildTranscript', () => {
 
   test('an empty tail is empty — no divider hanging over nothing', () => {
     expect(buildTranscript([], { nowMs: Date.now() })).toEqual([])
+  })
+
+  // The Codex "open the terminal" row, end to end through the REAL pipeline:
+  // wire -> toChatEntries -> toDisplayList -> buildTranscript. What matters is
+  // that it lands in the SYSTEM voice — a centred row, no gutter mark — and not
+  // as the user's own speech bubble, which is what an unrecognised badge
+  // defaults to. The badge earns that by being listed in SYSTEM_ROW_BADGES.
+  test('an unmapped Codex entry rides the centred system voice, not a bubble', () => {
+    const now = 1_760_000_000_000
+    const entries = toChatEntries(
+      [
+        {
+          seq: 1,
+          uuid: 'x1',
+          kind: 'unknown',
+          label: 'turn_aborted',
+          ts_ms: now - 60_000,
+          offset: 0,
+          oversize: false,
+          truncated: false,
+          body: { reason: 'interrupted' },
+        },
+      ],
+      { surfaceUnmapped: true },
+    )
+    const nodes = buildTranscript(toDisplayList(entries), { nowMs: now })
+    const rows = nodes.filter((n) => n.kind === 'item')
+    expect(rows).toHaveLength(1)
+    const row = rows[0]
+    expect(row.kind === 'item' && row.speaker).toBe('system')
+    expect(row.kind === 'item' && row.item.type === 'user' && row.item.text).toContain(
+      'open the terminal',
+    )
   })
 })
 

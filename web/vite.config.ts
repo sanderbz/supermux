@@ -281,8 +281,9 @@ export default defineConfig({
     proxy: process.env.SUPERMUX_E2E_BACKEND
       ? {
           '/api': { target: process.env.SUPERMUX_E2E_BACKEND, changeOrigin: true },
+          '/downloads': { target: process.env.SUPERMUX_E2E_BACKEND, changeOrigin: true },
           '/ws': { target: process.env.SUPERMUX_E2E_BACKEND, ws: true, changeOrigin: true },
         }
-      : undefined,
+      : { '/downloads': { target: 'http://127.0.0.1:8823', changeOrigin: true } },
   },
 })

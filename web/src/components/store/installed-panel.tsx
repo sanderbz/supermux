@@ -46,6 +46,7 @@ import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 
 import { ConnectorIcon } from './connector-icon'
 import { OfficialBadge } from './connector-card'
+import { OauthConnectButton } from './oauth-connect-button'
 import { GrantControl, type GrantScope } from './grant-control'
 import { PlainField, kindLabel } from './connector-detail'
 import { CredentialSecretField, defaultStr } from './credential-fields'
@@ -190,12 +191,16 @@ function InstalledRow({
                 )}
               </>
             ) : (
-              <>{kindLabel(card.kind)} · not connected</>
+              <>Not connected</>
             )}
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
-          {account && <StatusChip account={account} kind={connectorAuthKind(card)} />}
+          {account ? (
+            <StatusChip account={account} kind={connectorAuthKind(card)} />
+          ) : (
+            <ChipOf meta={noAccountMeta(connectorAuthKind(card))} />
+          )}
           {account ? (
             <GrantLevelChip level={account.grant_level} />
           ) : (
@@ -216,20 +221,40 @@ type StatusTone = 'active' | 'warn' | 'error' | 'muted'
 // The honest health mapping (Slice 3), now AUTH-LANE aware. A tested-bad account
 // NEVER reads Active: `error` → Error (red), `expired` → Expired (amber). A
 // secret-less account is read against the connector's real lane: a `none`
-// connector needs nothing (Ready, not a fake "Needs sign-in"); an `mcp_oauth`
-// connector signs in in the bot's terminal (an honest note, never a false green);
-// only the paste/OAuth lanes genuinely "Need sign-in". A present secret with no
-// known problem is Active.
-function statusMeta(a: ConnectorAccount, kind: AuthKind): { label: string; tone: StatusTone } {
+// connector needs nothing (Ready, not a fake "Needs sign-in"); every credential
+// lane — `mcp_oauth` included, now that supermux brokers that sign-in and holds
+// the token — genuinely "Needs sign-in". A present secret with no known problem
+// is Active.
+export function statusMeta(a: ConnectorAccount, kind: AuthKind): { label: string; tone: StatusTone } {
   if (a.health === 'error') return { label: 'Error', tone: 'error' }
   if (a.health === 'expired') return { label: 'Expired', tone: 'warn' }
   if (a.status === 'disconnected') return { label: 'Disconnected', tone: 'muted' }
   if (!a.has_secret) {
     if (kind === 'none') return { label: 'Ready', tone: 'active' }
-    if (kind === 'mcp_oauth') return { label: 'Signs in in terminal', tone: 'muted' }
     return { label: 'Needs sign-in', tone: 'warn' }
   }
   return { label: 'Active', tone: 'active' }
+}
+
+/** The chip for an installed row with NO account yet: a `none` lane is simply
+ *  Ready; every credential lane needs a sign-in before it is anything. */
+export function noAccountMeta(kind: AuthKind): { label: string; tone: StatusTone } {
+  if (kind === 'none') return { label: 'Ready', tone: 'active' }
+  return { label: 'Needs sign-in', tone: 'warn' }
+}
+
+function ChipOf({ meta }: { meta: { label: string; tone: StatusTone } }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-medium',
+        TONE_CLASS[meta.tone],
+      )}
+    >
+      {meta.tone === 'active' && <span className="size-1.5 rounded-full bg-status-ready" aria-hidden />}
+      {meta.label}
+    </span>
+  )
 }
 
 const TONE_CLASS: Record<StatusTone, string> = {
@@ -393,7 +418,13 @@ function InstalledDetail({
 
   const tools = toolCountLabel(card)
   const authKind = connectorAuthKind(card)
-  const st = account ? statusMeta(account, authKind) : null
+  const st = account ? statusMeta(account, authKind) : noAccountMeta(authKind)
+  const isMcpOauth = authKind === 'mcp_oauth'
+  // A brokered-OAuth account whose sign-in is dead re-signs in (re-seals the same
+  // vault row in place, every grant stays wired) instead of "Reconnect" — a kept
+  // token that the server already refused is nothing to reconnect with.
+  const oauthDead = isMcpOauth && !!account && (account.health === 'expired' || account.status === 'disconnected')
+  const oauthTarget = account?.company_id != null ? `@company:${account.company_id}` : '*'
 
   return (
     <div className="flex flex-col gap-5 px-5 py-5">
@@ -415,7 +446,7 @@ function InstalledDetail({
             ) : (
               <span>Not connected</span>
             )}
-            {st && <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', TONE_CLASS[st.tone])}>{st.label}</span>}
+            <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', TONE_CLASS[st.tone])}>{st.label}</span>
             {tools && <span className="font-medium">{tools}</span>}
             <span className="capitalize">{kindLabel(card.kind)}</span>
           </div>
@@ -424,6 +455,12 @@ function InstalledDetail({
 
       {card.description && (
         <p className="text-[14px] leading-relaxed text-foreground/90">{card.description}</p>
+      )}
+
+      {/* An installed brokered-OAuth card with no account yet: the sign-in IS the
+          connect (there is no key to paste on this lane). */}
+      {!account && isMcpOauth && (
+        <OauthConnectButton card={card} target={oauthTarget} returnTo={`/store/${encodeURIComponent(card.id)}`} />
       )}
 
       {/* account block — identity, freshness, health, the lifecycle verbs */}
@@ -447,14 +484,16 @@ function InstalledDetail({
             <VerbButton onClick={runTest} busy={testing} icon={<Activity className="size-3.5" aria-hidden />}>
               {testing ? 'Testing…' : 'Test connection'}
             </VerbButton>
-            {(account.status === 'disconnected' || !account.has_secret) && (
+            {!isMcpOauth && (account.status === 'disconnected' || !account.has_secret) && (
               <VerbButton onClick={reconnect} busy={reconnecting} icon={<RotateCw className="size-3.5" aria-hidden />}>
                 Reconnect
               </VerbButton>
             )}
-            <VerbButton onClick={() => setView('replace')} icon={<RotateCw className="size-3.5" aria-hidden />}>
-              Replace account
-            </VerbButton>
+            {!isMcpOauth && (
+              <VerbButton onClick={() => setView('replace')} icon={<RotateCw className="size-3.5" aria-hidden />}>
+                Replace account
+              </VerbButton>
+            )}
             <VerbButton
               onClick={disconnect.press}
               tone={disconnect.armed ? 'danger' : 'default'}
@@ -467,6 +506,14 @@ function InstalledDetail({
             <p className="text-[12px] text-muted-foreground">
               Revokes every grant this account feeds. The sealed key is kept for a one-tap reconnect.
             </p>
+          )}
+          {oauthDead && (
+            <OauthConnectButton
+              card={card}
+              target={oauthTarget}
+              returnTo={`/store/${encodeURIComponent(card.id)}`}
+              label={`Sign in again with ${card.display_name}`}
+            />
           )}
           {testNote && (
             <p
@@ -525,6 +572,7 @@ function InstalledDetail({
 
       {/* add account + danger zone */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+        {isMcpOauth ? <span /> : (
         <button
           type="button"
           onClick={() => setView('add')}
@@ -533,6 +581,7 @@ function InstalledDetail({
           <Plus className="size-3.5" aria-hidden />
           Add account
         </button>
+        )}
         <button
           type="button"
           onClick={uninstall.press}

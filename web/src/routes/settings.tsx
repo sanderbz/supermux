@@ -1231,7 +1231,7 @@ export function Settings() {
         // `sm:pt-0` still resets the mobile-only inset once the desktop SideNav
         // owns the chrome. z-20 is deliberately unchanged — B1 renumbers no
         // existing z-index (see BRAND.md §6d).
-        className="glass safe-header pointer-events-none sticky top-0 z-20 flex items-center justify-center border-b border-hairline sm:pt-0"
+        className="glass safe-header sm-page-header pointer-events-none sticky top-0 flex items-center justify-center border-b border-hairline sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Settings</span>
         {/* Close X — the exit affordance. Under grok, Settings is dropped from

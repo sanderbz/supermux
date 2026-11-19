@@ -85,6 +85,9 @@ export interface PendingSend {
    * response never comes back.
    */
   sendId?: string
+  /** Original composer text, separate from quoted attachment paths on the wire. */
+  composerDraft?: string
+  attachmentPrefix?: string
   /** The SERVER confirmed it typed this text into the pty (`set_last_send`,
    *  written by `/send` after the paste + Enter). Transport-independent, so it
    *  survives exactly the failure the watchdog cannot see through. */
@@ -175,6 +178,12 @@ export function normalizeSend(text: string): string {
 /** Does this confirmed entry text answer for that sent text? */
 function claims(sent: string, confirmed: string): boolean {
   if (sent === confirmed) return true
+  // A live extension tab adds this one capability hint to the actual wire,
+  // while the optimistic send and server receipt retain the user's text.
+  const browserHint = '\n\nBrowser control: supermux-browser list.'
+  if (confirmed.endsWith(browserHint) && confirmed.slice(0, -browserHint.length).trimEnd() === sent) return true
+  const hinted = sent + browserHint
+  if (hinted.length > PROMPT_CLAMP_CHARS && hinted.slice(0, PROMPT_CLAMP_CHARS).trimEnd() === confirmed) return true
   // The wire's 8000-char truncation, inverted — and only in that direction, so
   // a short entry can never claim a long send by accident.
   return (

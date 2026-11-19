@@ -205,7 +205,8 @@ impl SessionConfig {
             }
 
             self.active = true;
-            self.mcp_servers.insert(g.connector_id.clone(), g.emit.clone());
+            self.mcp_servers
+                .insert(g.connector_id.clone(), with_remote_transport(g.emit.clone()));
             self.allow_rules
                 .push(Value::String(format!("mcp__{}__*", g.connector_id)));
             // Point each file-credential's env var at the materialized PATH (never
@@ -381,6 +382,38 @@ impl SessionConfig {
         );
     }
 
+    /// Pre-approve the four bot→app hook wrappers
+    /// (`supermux-{message,notify,task,schedule}`, installed by
+    /// [`crate::hook_cli::install_scripts`]) — the same deterministic-grant trade
+    /// the `supermux-memory` rules above make, for the same reason.
+    ///
+    /// Those capabilities used to be reachable only as `Bash(curl …)`, which the
+    /// auto-mode permission classifier reviews and regularly stops on; in an
+    /// unattended pane that dialog is never answered, so a bot's message to a
+    /// teammate simply never left. An explicit `allow` rule skips the classifier
+    /// entirely. It grants NO new authority: each wrapper POSTs the same body to
+    /// the same `/api/hook/*` route the skill's `curl` did, with the same
+    /// per-session hook token — which already authorized those routes — and the
+    /// server-side scope gates (own pane, own issue, same company) are untouched.
+    ///
+    /// BOTH prefix forms per wrapper, exactly as in `apply_memory`: which of
+    /// `Bash(cmd *)` / `Bash(cmd:*)` a given Claude Code build matches is not
+    /// something the server can know, and a duplicate allow entry is inert.
+    ///
+    /// Applied by `finish` to EVERY active launch (like the kill switch), not
+    /// only to memory bots: any session that gets the overlay also holds a hook
+    /// token, and these are exactly the calls it is expected to make.
+    fn apply_hook_cli_grants(&mut self) {
+        for name in crate::hook_cli::WRAPPERS {
+            for rule in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                let entry = Value::String(rule);
+                if !self.allow_rules.contains(&entry) {
+                    self.allow_rules.push(entry);
+                }
+            }
+        }
+    }
+
     /// Point the recall hook at this session's pre-rendered SessionStart
     /// capability briefing (fase C). The briefing text is built server-side (it
     /// needs the DB for the company + peer roster) and written to `path` by
@@ -434,7 +467,12 @@ impl SessionConfig {
                 .insert("enableAllProjectMcpServers".to_string(), Value::Bool(false));
         }
 
-        // Write the merged allow list once (connector globs + connect + memory).
+        // Every active launch may call the bot→app hooks, so their wrappers are
+        // pre-approved here — BEFORE the allow list is written below.
+        self.apply_hook_cli_grants();
+
+        // Write the merged allow list once (connector globs + connect + memory +
+        // the hook-CLI wrappers).
         if !self.allow_rules.is_empty() {
             let perms = self
                 .settings
@@ -447,6 +485,29 @@ impl SessionConfig {
 
         // Every active launch gets the kill switch, decoupled from grants.
         self.apply_account_connector_killswitch();
+
+        // CROSS-SESSION MESSAGES ARRIVE, they do not queue behind a dialog.
+        // Claude Code's cross-session messaging (`SendMessage` over a per-session
+        // socket, ≥ 2.1.224) decides per message from the two sessions'
+        // permission-mode CLASS whenever no `crossSessionInbound` value applies: a
+        // receiver that bypasses permissions HOLDS every message for approval
+        // unless the sender bypasses too, and a receiver in auto/manual mode holds
+        // messages from a bypassing sender. This fleet deliberately mixes modes
+        // (some bots launch `--permission-mode bypassPermissions`, most run the
+        // default auto), so bot→bot messages hit that heuristic and sat unanswered
+        // in an unattended pane. Setting it explicitly takes the guess away.
+        //
+        // It is not a permission bypass: `accept` decides only that the message is
+        // DELIVERED into the session. Whatever it then asks the receiver to do is
+        // still gated by that session's own permission rules — this overlay's
+        // `permissions.allow` included.
+        //
+        // `--settings` overrides the user-settings value, so a bot's `/config`
+        // row for this setting disappears while it runs. That is by design: the
+        // fleet's messaging behaviour is the server's call, not a per-pane one.
+        self.settings
+            .insert("crossSessionInbound".to_string(), Value::String("accept".to_string()));
+
         let settings_path = self.settings_dir.join(SETTINGS_FILE);
         write_json_atomic(&settings_path, &Value::Object(self.settings)).await?;
         // Layer the overlay OVER ~/.claude via --settings (Claude Code merges it),
@@ -535,6 +596,9 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
         let agent_inbox_addr = agent_inbox_address(state, session_name).await;
 
         let mut resolved: Vec<ResolvedGrant> = Vec::new();
+        // Env-var names already claimed by a brokered-OAuth grant in THIS launch
+        // (so `a-b` and `a_b` never collide on one bot).
+        let mut oauth_env_taken: std::collections::HashSet<String> = std::collections::HashSet::new();
         for g in &grants {
             let Some(connector) = connectors::get(&state.pool, &g.connector_id).await? else {
                 tracing::warn!(connector = %g.connector_id, "connector launch: grant references a missing connector; skipping");
@@ -572,6 +636,35 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
                 }
             }
             let secrets = resolve_secret(state, vault.as_ref(), g).await;
+            // Supermux-brokered remote OAuth: refresh-at-launch + inject ONLY the
+            // access token as `headers.Authorization = "Bearer ${VAR}"` (the
+            // refresh token / expiry / meta never enter the child env).
+            let (mut emit, mut secrets, oauth) = crate::connectors::oauth_code::apply_to_launch(
+                state,
+                vault.as_ref(),
+                g,
+                emit,
+                secrets,
+                &mut oauth_env_taken,
+            )
+            .await;
+            match oauth {
+                crate::connectors::oauth_code::OauthLaunch::Injected => {
+                    // A `*` (all-agents) grant of a personal identity into every
+                    // company's bots must be visible in the journal.
+                    let company_id = company_id_of(state, session_name).await;
+                    tracing::info!(connector = %g.connector_id, target = %session_name, ?company_id, "connector launch: brokered OAuth token injected");
+                }
+                crate::connectors::oauth_code::OauthLaunch::NeedsSignIn => {
+                    tracing::info!(connector = %g.connector_id, target = %session_name, "connector launch: brokered OAuth token is stale and could not be refreshed — the bot will see the server's own 401 (sign in again from the store)");
+                }
+                crate::connectors::oauth_code::OauthLaunch::NotOauth => {
+                    // A PAT-style hosted remote (Lane B with a `url`): send the
+                    // sealed token as a bearer. Fixes pmcp-github / pmcp-stripe,
+                    // which granted fine and then never authenticated.
+                    inject_remote_bearer(&connector, &mut emit, &mut secrets);
+                }
+            }
             // Peel FILE credentials out of the env map using the connector's schema:
             // a `file_env` field is materialized to a 0600 file at launch and its env
             // var points at the PATH — the content is never an env value.
@@ -697,6 +790,21 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
         }
     }
 
+    if !wants_browser && crate::browser_feedback::control::has_binding(state, session_name).await {
+        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+            let emit = crate::connectors::browser::mcp::control_emit(&path);
+            if !cfg.is_active() {
+                return Ok(Some(FinishedConfig {
+                    env: HashMap::new(),
+                    launch_flags: crate::connectors::browser::mcp::claude_control_flags(&path),
+                }));
+            }
+            cfg.mcp_servers
+                .insert("supermux_browser_control".into(), emit);
+            cfg.allow_rules
+                .push(Value::String("mcp__supermux_browser_control__*".into()));
+        }
+    }
     cfg.finish().await
 }
 
@@ -710,6 +818,39 @@ async fn agent_inbox_address(state: &AppState, session_name: &str) -> Option<Str
     let company_id = session.company_id?;
     let cfg = crate::external_access::store::read_or_default(&state.config.data_dir).ok()?;
     crate::external_access::store::agent_inbox_for(&cfg, company_id).map(|a| a.address.clone())
+}
+
+/// This session's company id (display context for the OAuth injection log line).
+async fn company_id_of(state: &AppState, session_name: &str) -> Option<i64> {
+    crate::db::sessions::get(&state.pool, session_name)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.company_id)
+}
+
+/// A PAT-style hosted remote (`url` emit + a Lane B `token_field` whose value is
+/// in `secrets`) gets `headers.Authorization = "Bearer ${<token_field>}"` — unless
+/// the emit already declares `headers` (never overwritten). Pure; stdio untouched.
+pub fn inject_remote_bearer(
+    connector: &connectors::Connector,
+    emit: &mut Value,
+    secrets: &mut BTreeMap<String, String>,
+) {
+    let has_url = emit.get("url").and_then(Value::as_str).is_some_and(|u| !u.trim().is_empty());
+    if !has_url || emit.get("headers").is_some() {
+        return;
+    }
+    let Some(field) = crate::connectors::health::token_field_for(connector) else { return };
+    if !secrets.contains_key(&field) {
+        return;
+    }
+    if let Some(obj) = emit.as_object_mut() {
+        obj.insert(
+            "headers".to_string(),
+            json!({ "Authorization": format!("Bearer ${{{field}}}") }),
+        );
+    }
 }
 
 /// Decrypt a grant's secret field-map, or return an empty map (no secret / a
@@ -814,6 +955,31 @@ fn materialize_cred_file(
     Ok(path.to_string_lossy().into_owned())
 }
 
+
+/// A hosted remote's launch entry MUST name its transport. Claude Code refuses a
+/// bare `{ "url": … }` at boot — verbatim, from a live pane (2.1.258):
+///
+/// ```text
+/// Warning: 1 MCP server skipped due to invalid config:
+///   - Skipped — MCP server "pmcp-inhouseseo" has a "url" but no "type";
+///     add "type": "http" (or "sse" / "ws") to this entry
+/// ```
+///
+/// …which silently disabled EVERY remote / OAuth catalog connector while the
+/// grant looked fine in the UI. Normalise at launch (not only in the catalog
+/// templates) so rows already installed without a type — the owner's
+/// `pmcp-inhouseseo` among them — heal on the next start. A declared `type`
+/// is never overwritten; a `command` entry (stdio) is left alone.
+pub fn with_remote_transport(mut emit: Value) -> Value {
+    if let Some(obj) = emit.as_object_mut() {
+        let has_url = obj.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty());
+        if has_url && obj.get("type").is_none() && obj.get("command").is_none() {
+            obj.insert("type".into(), Value::String("http".into()));
+        }
+    }
+    emit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,6 +1027,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -895,6 +1062,32 @@ mod tests {
             .position(|w| w == "--mcp-config")
             .expect("--mcp-config present");
         serde_json::from_str(&fin.launch_flags[i + 1]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn paired_plain_session_adds_only_control_tools_without_disabling_ambient_mcp() {
+        let (state, dir) = browser_state().await;
+        crate::db::sessions::insert_minimal(&state.pool, "alice", "/tmp", "claude")
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at) VALUES('bb_plain','https://example.test','alice','hash',1)").execute(&state.pool).await.unwrap();
+        let fin = assemble(&state, "alice").await.unwrap().unwrap();
+        assert!(fin.env.is_empty());
+        assert!(!fin.launch_flags.iter().any(|f| f == "--strict-mcp-config"));
+        let mcp = mcp_config_json(&fin);
+        assert!(mcp["mcpServers"]["browser"].is_null());
+        assert_eq!(
+            mcp["mcpServers"]["supermux_browser_control"]["args"][1],
+            "--control-only"
+        );
+        let settings: Value = serde_json::from_str(settings_flag(&fin).unwrap()).unwrap();
+        assert!(settings.get("enableAllProjectMcpServers").is_none());
+        assert!(settings.get("crossSessionInbound").is_none());
+        assert_eq!(
+            settings["permissions"]["allow"][1],
+            "Bash(supermux-browser *)"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// GRANTED: the launch carries the browser MCP server + its allow rule, with
@@ -972,6 +1165,150 @@ mod tests {
             "assembling a launch must never spawn chrome"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── supermux-brokered remote OAuth at launch (§7.2) ──────────────────────
+
+    /// Seal `fields` for `connector_id` into a fresh vault row + an account + a
+    /// grant to `session`, returning `(secret_ref, account_ref)`.
+    async fn seed_oauth_grant(
+        state: &crate::state::AppState,
+        connector_id: &str,
+        session: &str,
+        fields: &BTreeMap<String, String>,
+    ) -> (String, String) {
+        let vault = Vault::open(&state.config.data_dir).unwrap();
+        let sealed = vault.seal(fields).unwrap();
+        let secret_ref = uuid::Uuid::new_v4().to_string();
+        connectors::vault_put(&state.pool, &secret_ref, connector_id, &sealed.fields_enc, &sealed.nonce, false)
+            .await
+            .unwrap();
+        let account_ref = connectors::account_add(&state.pool, connector_id, "owner@test", Some(&secret_ref), None)
+            .await
+            .unwrap();
+        connectors::grant_with_account(&state.pool, session, connector_id, Some(&secret_ref), true, Some(&account_ref))
+            .await
+            .unwrap();
+        (secret_ref, account_ref)
+    }
+
+    fn oauth_fields(access: &str, refresh: Option<&str>, expires_at: i64) -> BTreeMap<String, String> {
+        use crate::connectors::oauth_code as oc;
+        let mut f = BTreeMap::new();
+        f.insert(oc::ACCESS_TOKEN_FIELD.to_string(), access.to_string());
+        if let Some(r) = refresh {
+            f.insert(oc::REFRESH_TOKEN_FIELD.to_string(), r.to_string());
+        }
+        f.insert(oc::EXPIRES_AT_FIELD.to_string(), expires_at.to_string());
+        f.insert(
+            oc::META_FIELD.to_string(),
+            json!({ "issuer": "https://as.example", "token_endpoint": "https://as.example/token", "client_id": "cid", "resource": "https://app.example/mcp", "redirect_uri": "https://box/api/oauth/callback" }).to_string(),
+        );
+        f
+    }
+
+    #[tokio::test]
+    async fn a_remote_oauth_grant_injects_only_the_access_token_as_a_bearer_header() {
+        let (state, dir) = browser_state().await;
+        connectors::upsert(&state.pool, "remote-oauth", "mcp_catalog", "Remote", "", "", "[]", "[]",
+            &json!({ "url": "https://app.example/mcp" }).to_string(), r#"{"auth":{"kind":"mcp_oauth"}}"#)
+            .await
+            .unwrap();
+        crate::db::sessions::insert_minimal(&state.pool, "alice", "/tmp", "claude").await.unwrap();
+        // Fresh for an hour: no refresh attempt (no network in this test).
+        let fields = oauth_fields("tok", Some("r"), chrono::Utc::now().timestamp() + 3600);
+        let (_sr, account_ref) = seed_oauth_grant(&state, "remote-oauth", "alice", &fields).await;
+
+        let fin = assemble(&state, "alice").await.unwrap().expect("active config");
+        let cfg = mcp_config_json(&fin);
+        let entry = &cfg["mcpServers"]["remote-oauth"];
+        assert_eq!(entry["type"], json!("http"));
+        assert_eq!(entry["url"], json!("https://app.example/mcp"));
+        assert_eq!(entry["headers"]["Authorization"], json!("Bearer ${SUPERMUX_MCP_TOKEN_REMOTE_OAUTH}"));
+        // The env carries EXACTLY the access token under the placeholder name.
+        assert_eq!(fin.env.get("SUPERMUX_MCP_TOKEN_REMOTE_OAUTH").map(String::as_str), Some("tok"));
+        assert!(!fin.env.values().any(|v| v == "r"), "the refresh token never enters the child env");
+        assert!(!fin.env.contains_key("MCP_OAUTH_REFRESH_TOKEN"));
+        assert!(!fin.env.contains_key("MCP_OAUTH_META"));
+        // No plaintext in the launch flags or the settings overlay.
+        let flags = fin.launch_flags.join(" ");
+        assert!(!flags.contains("tok") || flags.contains("${SUPERMUX_MCP_TOKEN"), "flags: {flags}");
+        assert!(!flags.contains("\"r\""));
+        let settings = std::fs::read_to_string(settings_flag(&fin).unwrap()).unwrap();
+        assert!(!settings.contains("tok") && !settings.contains("MCP_OAUTH"), "settings leaked: {settings}");
+        // `last_used_at` was stamped for the account.
+        let a = connectors::account_get(&state.pool, &account_ref).await.unwrap().unwrap();
+        assert!(a.last_used_at > 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_with_no_refresh_still_emits_the_entry_and_flags_sign_in() {
+        use crate::connectors::oauth_code::{apply_to_launch, OauthLaunch};
+        let (state, dir) = browser_state().await;
+        connectors::upsert(&state.pool, "remote-oauth", "mcp_catalog", "Remote", "", "", "[]", "[]",
+            &json!({ "url": "https://app.example/mcp" }).to_string(), "{}")
+            .await
+            .unwrap();
+        // Expired an hour ago, no refresh token: nothing to refresh with.
+        let fields = oauth_fields("stale", None, chrono::Utc::now().timestamp() - 3600);
+        let (_sr, account_ref) = seed_oauth_grant(&state, "remote-oauth", "bob", &fields).await;
+        let grant = connectors::grants_for_session(&state.pool, "bob").await.unwrap().remove(0);
+        let vault = Vault::open(&state.config.data_dir).unwrap();
+        let mut taken = std::collections::HashSet::new();
+        let (emit, secrets, outcome) =
+            apply_to_launch(&state, Some(&vault), &grant, json!({ "url": "https://app.example/mcp" }), fields, &mut taken).await;
+        assert_eq!(outcome, OauthLaunch::NeedsSignIn);
+        // Still emitted with the stale bearer, so the bot sees the server's own 401.
+        assert_eq!(emit["headers"]["Authorization"], json!("Bearer ${SUPERMUX_MCP_TOKEN_REMOTE_OAUTH}"));
+        assert_eq!(emit["type"], json!("http"));
+        assert_eq!(secrets.get("SUPERMUX_MCP_TOKEN_REMOTE_OAUTH").map(String::as_str), Some("stale"));
+        assert_eq!(secrets.len(), 1);
+        let a = connectors::account_get(&state.pool, &account_ref).await.unwrap().unwrap();
+        assert!(a.last_used_at > 0, "stamped even on the stale path");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pat_style_remote_gets_its_bearer_header() {
+        let row = |id: &str, emit: Value| connectors::Connector {
+            id: id.to_string(),
+            kind: "mcp_catalog".to_string(),
+            display_name: id.to_string(),
+            icon: String::new(),
+            description: String::new(),
+            tools_json: "[]".to_string(),
+            credentials_json: "[]".to_string(),
+            emit_json: emit.to_string(),
+            source_json: "{}".to_string(),
+            created_at: 0,
+        };
+        let mut secrets = BTreeMap::new();
+        secrets.insert("GITHUB_TOKEN".to_string(), "pat".to_string());
+
+        // pmcp-github: curated token_field GITHUB_TOKEN + a url emit → header.
+        let gh = row("pmcp-github", json!({ "type": "http", "url": "https://api.githubcopilot.com/mcp/" }));
+        let mut emit = json!({ "type": "http", "url": "https://api.githubcopilot.com/mcp/" });
+        inject_remote_bearer(&gh, &mut emit, &mut secrets);
+        assert_eq!(emit["headers"]["Authorization"], json!("Bearer ${GITHUB_TOKEN}"));
+        assert_eq!(secrets.get("GITHUB_TOKEN").map(String::as_str), Some("pat"), "the env still carries it");
+
+        // A stdio card is untouched.
+        let stdio = row("pmcp-github", json!({ "command": "npx", "args": ["x"] }));
+        let mut emit = json!({ "command": "npx", "args": ["x"] });
+        inject_remote_bearer(&stdio, &mut emit, &mut secrets);
+        assert!(emit.get("headers").is_none());
+
+        // An existing headers map is never overwritten.
+        let mut emit = json!({ "url": "https://api.githubcopilot.com/mcp/", "headers": { "X-Api-Key": "${GITHUB_TOKEN}" } });
+        inject_remote_bearer(&gh, &mut emit, &mut secrets);
+        assert!(emit["headers"].get("Authorization").is_none());
+        assert_eq!(emit["headers"]["X-Api-Key"], json!("${GITHUB_TOKEN}"));
+
+        // No secret value for the field → no header.
+        let mut emit = json!({ "url": "https://api.githubcopilot.com/mcp/" });
+        inject_remote_bearer(&gh, &mut emit, &mut BTreeMap::new());
+        assert!(emit.get("headers").is_none());
     }
 
     /// Seed a mail connector card whose emit carries an `env` block (the shared
@@ -1677,6 +2014,12 @@ mod tests {
         // unanswered permission prompt.
         assert!(allow.contains(&json!("Bash(supermux-memory *)")), "memory grant merged: {allow:?}");
         assert!(allow.contains(&json!("Bash(supermux-memory:*)")), "prefix-form grant merged: {allow:?}");
+        // …and so do the four bot→app hook wrappers, in both prefix forms.
+        for name in crate::hook_cli::WRAPPERS {
+            for form in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                assert!(allow.contains(&json!(form)), "{form} granted: {allow:?}");
+            }
+        }
         // Connector kill switch survives the memory merge.
         assert_eq!(v["disableClaudeAiConnectors"], json!(true));
         // Recall hooks fire on both context-injecting events.
@@ -1711,5 +2054,47 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
         assert_eq!(v["disableClaudeAiConnectors"], json!(true), "account-connector kill switch on");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// EVERY overlay says cross-session messages are accepted, and grants the four
+    /// hook wrappers — a connector-only bot (no memory) included. Without the
+    /// explicit `crossSessionInbound`, Claude Code falls back to comparing the two
+    /// sessions' permission-mode classes, and this fleet mixes them, so a
+    /// teammate's message sat waiting for an approval nobody was in the pane to
+    /// give. The wrapper grants are the same story one layer down (a `curl` the
+    /// classifier stops on).
+    #[tokio::test]
+    async fn every_overlay_accepts_cross_session_messages_and_grants_the_hook_wrappers() {
+        let dir = temp_dir();
+        let mut cfg = SessionConfig::new(&dir, "connector-only");
+        cfg.apply_connectors(&[resolved("github", None)]);
+        let fin = cfg.finish().await.unwrap().expect("active");
+        let overlay = settings_flag(&fin).expect("overlay rides --settings");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(overlay).unwrap()).unwrap();
+        assert_eq!(v["crossSessionInbound"], json!("accept"));
+        let allow = v["permissions"]["allow"].as_array().unwrap();
+        for name in crate::hook_cli::WRAPPERS {
+            for form in [format!("Bash({name} *)"), format!("Bash({name}:*)")] {
+                assert!(allow.contains(&json!(form)), "{form} granted: {allow:?}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn remote_emit_gets_the_http_transport_claude_code_requires() {
+        // A bare url (the shape every installed catalog row carried) → http.
+        let v = with_remote_transport(json!({ "url": "https://app.inhouseseo.ai/api/mcp" }));
+        assert_eq!(v["type"], json!("http"));
+        assert_eq!(v["url"], json!("https://app.inhouseseo.ai/api/mcp"));
+        // A declared transport is respected.
+        let v = with_remote_transport(json!({ "type": "sse", "url": "https://x/sse" }));
+        assert_eq!(v["type"], json!("sse"));
+        // stdio entries are untouched.
+        let v = with_remote_transport(json!({ "command": "npx", "args": ["-y", "pkg"] }));
+        assert!(v.get("type").is_none());
+        // An empty url is not a remote.
+        let v = with_remote_transport(json!({ "url": "" }));
+        assert!(v.get("type").is_none());
     }
 }

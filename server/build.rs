@@ -20,6 +20,7 @@ use std::process::Command;
 fn main() {
     // ── 1. re-embed when the built web bundle changes ────────────────────────
     println!("cargo:rerun-if-changed=static");
+    println!("cargo:rerun-if-changed=../extension/releases/supermux-browser-extension.zip");
 
     // rust-embed reads `static/` at compile time. If the build is run before
     // `build.sh`/`bun run build` has populated it, emit a loud warning rather

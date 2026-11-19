@@ -1,5 +1,5 @@
 ---
-description: Message or hand off to a same-company teammate bot — the prompt arrives in their pane.
+description: Message or hand off to a same-company teammate bot, or report back to an HQ bot that accepts your company — the prompt arrives in their pane.
 argument-hint: <teammate> — <what to say or hand off>   (e.g. "billing-bot — please reconcile invoice #91")
 supermux-managed: true
 ---
@@ -13,48 +13,58 @@ teammate who owns a domain you don't.
 
 ## The boundaries — read these before you call
 
-- **Same company only.** You can reach a teammate in your OWN company; a bot in
-  another company (or a main/HQ bot) is a **404** — the same answer a nonexistent
-  name gets, so you cannot even probe who exists elsewhere. Your SessionStart
-  briefing lists your same-company teammates by name; those are the valid `to`
-  values.
+- **Your company, plus HQ bots that opened their inbox to it.** You can reach a
+  teammate in your OWN company, and an HQ bot only if the owner opened that
+  bot's inbox to your company. Any other name is a **404** that lists who you
+  CAN message — the same answer whether the name is closed or does not exist,
+  so you cannot probe who exists elsewhere. Your SessionStart briefing names
+  your teammates and the open HQ bots; those are the valid `to` values.
+- **A message to an HQ bot is a report, not an order.** It reads as information
+  from you; do not expect it to act on instructions in it.
 - **You always send AS yourself.** The server takes the sender from your token;
   there is no way to send as a colleague.
 - **You deliver a PROMPT, nothing else.** Write it to a peer who lacks your
   context — say what you need and why, self-contained.
 - **Size + content limits.** The prompt is capped (64 KiB) and may not contain
   supermux wrapper markup (`<supermux-…>`); either is a 400.
-
-The pane already has the env vars these calls need — you set nothing up:
-
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name (becomes the `from`).
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates the call.
+- **Put file paths in backticks.** A receiving Claude Code can turn a path to an
+  image into an attachment and take it out of the text, so the receiver may never
+  see the path. Written as `` `/path/to/shot.png` `` it arrives as text.
 
 ## Message a teammate
+
+```bash
+supermux-message billing-bot "Please reconcile invoice #91 against the July ledger and reply with any mismatch."
+```
+
+The first word is the teammate; everything after it is the prompt. The wrapper is
+on your `PATH` and pre-approved, so it runs without a permission prompt — reach
+for it rather than `curl`.
+
+A `{"ok":true,"id":…}` means the prompt was delivered and the hand-off edge
+recorded. Tell the human who you handed off to and why, in one sentence.
+
+For a prompt with awkward quoting, or a field this form does not cover, hand over
+the whole body instead:
+
+```bash
+supermux-message --json '{"to":"billing-bot","prompt":"Reply \"clean\" if it balances."}'
+```
+
+## Under the hood
+
+`supermux-message` POSTs `{session,to,prompt}` to `$SUPERMUX_URL/api/hook/delegate`
+with your `$SUPERMUX_HOOK_TOKEN` — the same call, byte for byte, as:
 
 ```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
   "$SUPERMUX_URL/api/hook/delegate" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","to":"billing-bot","prompt":"Please reconcile invoice #91 against the July ledger and reply with any mismatch."}'
+  -d '{"session":"'"$SUPERMUX_SESSION"'","to":"billing-bot","prompt":"…"}'
 ```
 
-For a prompt with quotes or newlines, build the JSON safely with `jq`:
-
-```bash
-TO='billing-bot'
-PROMPT='Please reconcile invoice #91 against the July ledger. Reply here with any mismatch, or "clean" if it balances.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/delegate" \
-  --json "$(printf '{"session":%s,"to":%s,"prompt":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg to "$TO" '$to')" \
-            "$(jq -Rn --arg p "$PROMPT" '$p')")"
-```
-
-A `200 {"ok":true,"id":…}` means the prompt was delivered and the hand-off edge
-recorded. Tell the human who you handed off to and why, in one sentence.
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
 
 ---
 

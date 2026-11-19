@@ -5,11 +5,13 @@
 //! definition.
 
 pub mod agents;
+pub mod asks;
 pub mod audit;
 pub mod auth;
 pub mod auth_human;
 pub mod board;
 pub mod bot_memory;
+pub mod browser_feedback;
 pub mod claude_config;
 pub mod claude_tools;
 pub mod companies;
@@ -21,6 +23,7 @@ pub mod external_access;
 pub mod external_edit;
 pub mod extract;
 pub mod files;
+pub mod hook_cli;
 pub mod hooks;
 pub mod hosts;
 pub mod http;

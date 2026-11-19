@@ -24,37 +24,41 @@ finishes while they're away — not for routine progress (that's your board issu
   phone.
 - **Never put secrets in the title or body.** It lands on a lock screen.
 
-The pane already has the env vars these calls need — you set nothing up:
-
-- `$SUPERMUX_URL` — the server base URL.
-- `$SUPERMUX_SESSION` — this session's name.
-- `$SUPERMUX_HOOK_TOKEN` — your per-session secret; authenticates the call.
-
 ## Send a notification
+
+```bash
+supermux-notify --title "Deploy done" "The 08:00 release went green."
+```
+
+A leading `--title <t>` sets the title; everything after it is the body. Leave `--title` off and the
+notification is titled with your session name, which is usually what the human
+wants to see on a lock screen. The wrapper is on your `PATH` and pre-approved, so
+it runs without a permission prompt — reach for it rather than `curl`.
+
+An `{"ok":true}` means it was accepted (and delivered if the human has a device
+subscribed; `0` devices is not an error). Don't announce that you sent a
+notification unless the human needs to know — the ping speaks for itself.
+
+For copy with awkward quoting, hand over the whole body instead:
+
+```bash
+supermux-notify --json '{"title":"Blocked on you","body":"I need the staging DB password."}'
+```
+
+## Under the hood
+
+`supermux-notify` POSTs `{session,title,body}` to `$SUPERMUX_URL/api/hook/notify`
+with your `$SUPERMUX_HOOK_TOKEN` — the same call as:
 
 ```bash
 curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
   "$SUPERMUX_URL/api/hook/notify" \
-  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy done","body":"The 08:00 release went green."}'
+  -d '{"session":"'"$SUPERMUX_SESSION"'","title":"Deploy done","body":"…"}'
 ```
 
-For a title/body with quotes or newlines, build the JSON safely with `jq`:
-
-```bash
-TITLE='Blocked on you'
-BODY='I need the staging DB password before I can run the migration.'
-curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \
-  "$SUPERMUX_URL/api/hook/notify" \
-  --json "$(printf '{"session":%s,"title":%s,"body":%s}' \
-            "$(jq -Rn --arg s "$SUPERMUX_SESSION" '$s')" \
-            "$(jq -Rn --arg t "$TITLE" '$t')" \
-            "$(jq -Rn --arg b "$BODY" '$b')")"
-```
-
-A `200 {"ok":true}` means it was accepted (and delivered if the human has a
-device subscribed; `0` devices is not an error). Don't announce that you sent a
-notification unless the human needs to know — the ping speaks for itself.
+Use the `curl` only if the wrapper is missing from an old pane; it costs a
+permission prompt that nobody may be there to answer.
 
 ---
 

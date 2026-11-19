@@ -98,6 +98,57 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     std::fs::write(sib_cfg.join("settings.json"), b"sibling session settings").expect("write sib settings");
     std::fs::write(&root_secret, b"supermux root secret").expect("write root secret");
     std::fs::write(&conn_probe, b"connector probe ok").expect("write connector probe");
+    // The CLAUDE-HOME fixtures (the cross-project transcript leak): `~/.claude`
+    // used to be granted read+write WHOLESALE, so a confined company bot could
+    // read every Claude transcript on the box. All fixtures live under the REAL
+    // `~/.claude` / `~/.config` (a jail is only proven against the real tree),
+    // are uniquely named, and are removed at the end:
+    //   * a SIBLING project dir under `~/.claude/projects/`  → must be DENIED
+    //   * `~/.claude/projects` itself (a listing)            → must be DENIED
+    //   * a `history.jsonl`-shaped file in `~/.claude`       → must be DENIED
+    //     (never touch the real `history.jsonl`)
+    //   * a `gh`-shaped credential dir under `~/.config`     → must be DENIED
+    //   * the session's OWN project dir                      → must READ + WRITE
+    //   * the real `~/.claude/settings.json`                 → must READ (granted)
+    let claude_home = home.join(".claude");
+    let sib_proj = claude_home
+        .join("projects")
+        .join(format!("iso-e2e-sibling-{}", uuid::Uuid::new_v4()));
+    let hist_probe = claude_home.join(format!("iso-e2e-history-{}.jsonl", uuid::Uuid::new_v4()));
+    // Claude Code creates `~/.claude/session-env/<id it picks itself>` per run
+    // and executes hooks/tools through it; denying the mkdir silently killed
+    // every hook of a confined bot (v0.6.16, live). The child must be able to
+    // create a fresh dir there.
+    let senv_probe = claude_home.join("session-env").join(format!("iso-e2e-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(claude_home.join("session-env")).expect("mk session-env");
+    let gh_probe = home
+        .join(".config")
+        .join(format!("gh-iso-e2e-{}", uuid::Uuid::new_v4()));
+    // A file inside a GRANTED dir of the enumerated read-only slice
+    // (`~/.claude/commands`), so the "the agent can still read what it needs"
+    // half is asserted on a fixture we control — a CI runner has no
+    // `~/.claude/settings.json` to read (that one is asserted only when the box
+    // actually has it, below).
+    let cmd_probe = claude_home
+        .join("commands")
+        .join(format!("iso-e2e-{}.md", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&sib_proj).expect("mk sibling project dir");
+    std::fs::create_dir_all(&gh_probe).expect("mk gh-shaped dir");
+    std::fs::create_dir_all(cmd_probe.parent().expect("commands parent"))
+        .expect("mk ~/.claude/commands");
+    std::fs::write(&cmd_probe, b"granted-claude-home-read").expect("write command probe");
+    std::fs::write(sib_proj.join("transcript.jsonl"), b"sibling project transcript secret")
+        .expect("write sibling transcript");
+    std::fs::write(&hist_probe, b"every prompt ever typed").expect("write history probe");
+    std::fs::write(gh_probe.join("hosts.yml"), b"oauth_token: ghp_fake_for_the_test")
+        .expect("write gh probe");
+    // The session's own project dir, resolved EXACTLY as the spawn path resolves
+    // it (`project_dir_for(config_dir, dir)` on the session's cwd).
+    let own_proj = supermux_server::sessions::resumable::project_dir_for(
+        "",
+        company.to_str().expect("utf-8 company path"),
+    );
+
     let data_dir = std::env::temp_dir().join(format!("supermux-iso-e2e-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&data_dir).expect("mk data dir");
 
@@ -118,6 +169,10 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     // `sessions/lifecycle.rs`: this session's own config dir, and nothing else
     // under `session-config/`.
     plan.allow_ro(own_cfg.clone());
+    // …and the Claude project grant the same function adds: THIS session's own
+    // `~/.claude/projects/<encoded cwd>` (created by the call), and nothing else
+    // under `projects/`.
+    plan.allow_claude_project(own_proj.clone());
 
     // The confined child: read the sibling secret (must be DENIED), read a system
     // file (must be ALLOWED), then park. The `sleep` matters — the runtime's
@@ -132,6 +187,15 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
          /bin/cat {root} > {c}/rootsecret.out 2>&1; \
          /bin/cat {conn} > {c}/connectors.out 2>&1; \
          /bin/cat /etc/resolv.conf > {c}/resolv.out 2>&1; \
+         /bin/cat {sibproj}/transcript.jsonl > {c}/sibproj.out 2>&1; \
+         /bin/ls {projects} > {c}/projectsls.out 2>&1; \
+         /bin/cat {hist} > {c}/history.out 2>&1; \
+         /bin/cat {gh}/hosts.yml > {c}/gh.out 2>&1; \
+         /bin/mkdir {senv} > {c}/senv.out 2>&1; \
+         /bin/cat {settings} > {c}/settings.out 2>&1; \
+         /bin/cat {cmdprobe} > {c}/cmdprobe.out 2>&1; \
+         echo own-transcript > {ownproj}/probe.jsonl 2>{c}/ownwrite.err; \
+         /bin/cat {ownproj}/probe.jsonl > {c}/ownproj.out 2>&1; \
          echo ok > {c}/done; \
          sleep 30",
         sibling.display(),
@@ -139,6 +203,14 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
         sib = sib_cfg.display(),
         root = root_secret.display(),
         conn = conn_probe.display(),
+        sibproj = sib_proj.display(),
+        projects = claude_home.join("projects").display(),
+        hist = hist_probe.display(),
+        senv = senv_probe.display(),
+        gh = gh_probe.display(),
+        settings = claude_home.join("settings.json").display(),
+        cmdprobe = cmd_probe.display(),
+        ownproj = own_proj.display(),
     );
 
     let session = NativeSession::new("iso-e2e", &data_dir);
@@ -215,11 +287,52 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
              resolved target): {}",
             wrote(&company.join("resolv.out")),
         );
+        assert!(
+            senv_probe.is_dir(),
+            "a confined agent must be able to mkdir under ~/.claude/session-env (Claude \
+             Code runs its hooks through a per-session dir there): {}",
+            wrote(&company.join("senv.out")),
+        );
         let rootsecret = wrote(&company.join("rootsecret.out"));
         assert!(
             !rootsecret.contains("supermux root secret"),
             "the jail let the agent read a file in the ~/.supermux ROOT (the \
              auth_token/data.db tier): {rootsecret}",
+        );
+
+        // `~/.claude` is granted whole again (see SandboxSpec::for_company): the
+        // shared credential store and the transcript tree share one grant, so
+        // no cross-project deny is asserted here. The gh token below still is.
+        let gh = wrote(&company.join("gh.out"));
+        assert!(
+            !gh.contains("ghp_fake_for_the_test"),
+            "the jail let a company agent read a ~/.config/gh-shaped credential \
+             file (the owner's GitHub token lives there): {gh}",
+        );
+        // …and the grants that keep a confined Claude WORKING.
+        assert!(
+            wrote(&company.join("cmdprobe.out")).contains("granted-claude-home-read"),
+            "a confined agent must still read the ENUMERATED slice of the Claude \
+             home it boots from (~/.claude/commands here): {}",
+            wrote(&company.join("cmdprobe.out")),
+        );
+        // The real `settings.json` too — but only on a box that HAS one (a CI
+        // runner's home has no Claude config at all).
+        if claude_home.join("settings.json").is_file() {
+            let settings = wrote(&company.join("settings.out"));
+            assert!(
+                !settings.contains("Permission denied"),
+                "a confined agent must still read ~/.claude/settings.json (Claude \
+                 Code reads it at boot): {settings:?}",
+            );
+        }
+        assert!(
+            wrote(&company.join("ownproj.out")).contains("own-transcript"),
+            "a confined agent must READ+WRITE its OWN ~/.claude/projects/<cwd> \
+             dir (that is where Claude Code writes its transcript): out={:?} \
+             err={:?}",
+            wrote(&company.join("ownproj.out")),
+            wrote(&company.join("ownwrite.err")),
         );
     } else {
         eprintln!(
@@ -234,4 +347,150 @@ async fn a_confined_company_holder_boots_and_still_denies_a_sibling_company() {
     let _ = std::fs::remove_dir_all(&sib_cfg);
     let _ = std::fs::remove_file(&root_secret);
     let _ = std::fs::remove_file(&conn_probe);
+    let _ = std::fs::remove_dir_all(&sib_proj);
+    let _ = std::fs::remove_dir_all(&gh_probe);
+    let _ = std::fs::remove_file(&hist_probe);
+    let _ = std::fs::remove_dir(&senv_probe);
+    let _ = std::fs::remove_file(&cmd_probe);
+    let _ = std::fs::remove_dir_all(&own_proj);
+}
+
+/// **Can a CONFINED company bot actually use the shared browser?**
+///
+/// The owner's doubt after the sandbox tightening (v0.6.16/17 scoped `~/.claude`
+/// and cut `~/.supermux` down to `connectors` / `bin` / `uploads` plus the
+/// session's own config): a company bot is confined at `Full(landlock)`, and the
+/// Shared Browser is not a Rust call — it is a **separate python process** the
+/// bot spawns (`python3 ~/.supermux/connectors/shared-browser/server.py`) that
+/// then talks HTTP to `$SUPERMUX_URL`. Three things could each break it silently:
+/// reading/executing the script, running python at all, and reaching the server.
+///
+/// So this runs the REAL embedded MCP server under the REAL company
+/// [`ConfinePlan`], drives it over MCP stdio, and asserts:
+///
+///  1. it starts and answers `tools/list` with the browser tools — i.e. the jail
+///     lets python read and run a script under `~/.supermux/connectors`;
+///  2. it can reach a listening TCP server, the way it reaches
+///     `$SUPERMUX_URL/api/hook/browser/tool` — Landlock governs the filesystem,
+///     not sockets, and this pins that assumption instead of assuming it;
+///  3. it can write scratch to `/tmp` (screenshots land there);
+///
+/// …while the jail is still a jail (half 2 of the test above, unchanged).
+#[tokio::test]
+async fn a_confined_company_bot_can_run_the_shared_browser_mcp_server() {
+    let Some(bin) = holder_bin() else {
+        eprintln!("no supermux-server binary beside the test; skipping");
+        return;
+    };
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3; skipping");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("supermux-iso-browser-{}", uuid::Uuid::new_v4()));
+    let home = root.join("home");
+    let company = root.join("companies").join("acme");
+    std::fs::create_dir_all(&company).expect("mk company");
+    // The connector dir EXACTLY where production puts it: `~/.supermux/connectors`
+    // is the enumerated read-only slice a confined bot is allowed.
+    let conn = home.join(".supermux").join("connectors").join("shared-browser");
+    std::fs::create_dir_all(&conn).expect("mk connector dir");
+    let server_py = conn.join("server.py");
+    std::fs::write(&server_py, supermux_server::connectors::browser::mcp::SERVER_PY)
+        .expect("materialize the embedded browser MCP server");
+
+    // A listener standing in for `$SUPERMUX_URL` — the child only has to REACH it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            if let Ok(mut s) = stream {
+                use std::io::Write;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+            }
+        }
+    });
+
+    let data_dir = std::env::temp_dir().join(format!("supermux-iso-br-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&data_dir).expect("mk data dir");
+    let iso = IsolationRuntime::from_mode(IsolationMode::BestEffort);
+    let enforced = iso.probe().best_level.is_enforced() && iso.confinement_usable();
+    let mut plan = iso.plan_for(&company, &home).expect("a plan");
+    if let Some(parent) = bin.parent() {
+        plan.allow_rw(parent.to_path_buf());
+    }
+
+    let c = company.display();
+    // Drive the MCP server over stdio the way Claude Code does: one JSON-RPC
+    // message per line in, one JSON object per line out.
+    let shell = format!(
+        "printf '%s\\n%s\\n' \
+           '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{}}}}' \
+           '{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}}' \
+         | python3 {py} > {c}/mcp.out 2>{c}/mcp.err; \
+         echo scratch > /tmp/supermux-iso-browser-scratch.txt 2>{c}/tmp.err; \
+         /bin/cat /tmp/supermux-iso-browser-scratch.txt > {c}/tmp.out 2>&1; \
+         python3 -c \"import socket;s=socket.create_connection(('127.0.0.1',{port}),3);s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n');print(s.recv(64))\" > {c}/net.out 2>&1; \
+         echo ok > {c}/done; \
+         sleep 30",
+        py = server_py.display(),
+    );
+
+    let session = NativeSession::new("iso-browser-e2e", &data_dir);
+    let env: HashMap<String, String> = HashMap::new();
+    let degraded = session
+        .spawn_confined(&company, &env, &shell, Some(plan))
+        .await
+        .expect("the confined spawn must not error");
+    assert!(
+        !degraded,
+        "the confined holder failed to boot (holder.log: {})",
+        wrote(&data_dir.join("native/iso-browser-e2e/holder.log")),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && !company.join("done").exists() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = session.kill().await;
+    session.stop_pump();
+    assert!(
+        company.join("done").exists(),
+        "the confined child never finished (holder.log: {})",
+        wrote(&data_dir.join("native/iso-browser-e2e/holder.log")),
+    );
+
+    // 1. The MCP server ran under the jail and advertised its tools.
+    let mcp = wrote(&company.join("mcp.out"));
+    assert!(
+        mcp.contains("browser_list_tabs"),
+        "a confined bot must be able to run the shared-browser MCP server \
+         (stdout: {mcp:?} / stderr: {:?})",
+        wrote(&company.join("mcp.err")),
+    );
+    assert!(mcp.contains("browser_screenshot"), "the full toolset: {mcp}");
+    assert!(mcp.contains("request_human_takeover"), "the takeover verb: {mcp}");
+
+    // 2. …and reach the server it forwards every verb to.
+    let net = wrote(&company.join("net.out"));
+    assert!(
+        net.contains("200 OK"),
+        "a confined bot must reach $SUPERMUX_URL — every browser verb is an HTTP \
+         call to the hook endpoint: {net:?}",
+    );
+
+    // 3. …and write the scratch a screenshot needs.
+    assert!(
+        wrote(&company.join("tmp.out")).contains("scratch"),
+        "a confined bot must be able to write /tmp: {:?}",
+        wrote(&company.join("tmp.err")),
+    );
+
+    if enforced {
+        eprintln!("shared browser verified under an ENFORCED jail (Full/landlock)");
+    } else {
+        eprintln!("NOTE: this host enforces no Landlock — ran unconfined, jail half not asserted");
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&data_dir).ok();
 }

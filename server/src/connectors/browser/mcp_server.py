@@ -2,7 +2,8 @@
 """shared-browser — the agent's half of the Shared Browser connector.
 
 A tiny, credential-free, stdlib-only MCP stdio server. It owns NO browser: the
-Rust server does. Every acting tool here is a thin forward to ONE local supermux
+Rust server owns the legacy browser; connected-tab tools relay to the human’s
+extension through its active site-scoped lease. Every tool forwards to ONE local supermux
 endpoint (`POST $SUPERMUX_URL/api/hook/browser/tool`), authenticated with the
 pane's own per-session `$SUPERMUX_HOOK_TOKEN` and scoped to `$SUPERMUX_SESSION`.
 
@@ -43,7 +44,10 @@ Dependencies: Python 3 standard library only (json, os, sys, urllib).
 
 import json
 import os
+import queue
 import sys
+import threading
+import uuid
 import urllib.error
 import urllib.request
 
@@ -275,7 +279,36 @@ LIST_TABS_TOOL = {
     "inputSchema": {"type": "object", "properties": {}},
 }
 
+CONNECTED_TABS_TOOL = {
+    "name": "browser_connected_tabs",
+    "description": "List this agent's human-enabled Chrome extension tabs. Use the returned target for browser_actions.",
+    "inputSchema": {"type": "object", "properties": {}},
+}
+ACTIONS_TOOL = {
+    "name": "browser_actions",
+    "description": "Run up to 32 sequential actions in a connected Chrome tab. Snapshot returns compact element refs; screenshots only when requested. Never replay a batch with an unknown outcome.",
+    "inputSchema": {
+        "type": "object", "properties": {
+            "target": {"type":"string", "description":"Opaque activation target from browser_connected_tabs."},
+            "timeout_ms": {"type":"integer", "minimum":1, "maximum":30000},
+            "steps": {"type":"array", "minItems":1, "maxItems":32, "items": {
+                "type":"object", "properties": {
+                    "action": {"type":"string", "enum":["snapshot","click","type","fill","key","scroll","navigate","back","reload","wait","evaluate","screenshot","dialog"]},
+                    "ref":{"type":"string"}, "frame":{"type":"string"}, "button":{"type":"string","enum":["left","middle","right"]}, "click_count":{"type":"integer","minimum":1,"maximum":2}, "text":{"type":"string","maxLength":16384}, "clear":{"type":"boolean"},
+                    "key":{"type":"string"}, "modifiers":{"type":"array","items":{"type":"string"}},
+                    "x":{"type":"number"}, "y":{"type":"number"}, "url":{"type":"string"},
+                    "expression":{"type":"string","maxLength":16384}, "accept":{"type":"boolean"}, "prompt_text":{"type":"string","maxLength":16384},
+                    "selector":{"type":"string"}, "state":{"type":"string","enum":["visible","hidden","ready"]},
+                    "timeout_ms":{"type":"integer"},
+                }, "required":["action"],
+            }},
+        }, "required":["target","steps"],
+    },
+}
+
 TOOLS = [
+    CONNECTED_TABS_TOOL,
+    ACTIONS_TOOL,
     LIST_TABS_TOOL,
     NAVIGATE_TOOL,
     CLICK_TOOL,
@@ -322,7 +355,10 @@ def _post_tool(tool, args, timeout):
         raw = e.read().decode("utf-8", "replace") if e.fp else ""
         status = e.code
     except Exception as exc:  # transport / timeout
-        return ({"ok": False, "error": f"supermux browser endpoint unreachable: {exc}"}, 0)
+        message = f"supermux browser endpoint unreachable: {exc}"
+        if tool == "actions":
+            message += "; the batch outcome may be unknown: inspect the page before trying again"
+        return ({"ok": False, "error": message, "outcome_unknown": tool == "actions"}, 0)
     try:
         payload = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
@@ -373,6 +409,33 @@ def _tab_arg(args):
     must never be the thing that decides what an agent may touch."""
     tab = (args.get("tab") or "").strip()
     return {"tab": tab} if tab else {}
+
+
+def _control_call(tool, args):
+    payload, status = _post_tool(tool, args, 35)
+    if status != 200 or payload.get("ok") is False:
+        return _error_result({"error":payload.get("error") or f"browser control failed ({status})", "tool":tool})
+    return payload
+
+
+def tool_connected_tabs(_args):
+    out = _control_call("extension_list", {})
+    return out if "content" in out else _text_result(out.get("result", out))
+
+
+def tool_actions(args):
+    out = _control_call("actions", args)
+    if "content" in out:
+        return out
+    result = out.get("result", out)
+    images = []
+    for step in result.get("results", []):
+        if isinstance(step, dict) and step.get("mime") == "image/png" and "data_base64" in step:
+            images.append({"type":"image", "mimeType":"image/png", "data":step.pop("data_base64")})
+    answer = {"content":[{"type":"text", "text":json.dumps(result, ensure_ascii=False, separators=(",", ":"))}] + images}
+    if result.get("ok") is False:
+        answer["isError"] = True
+    return answer
 
 
 def tool_list_tabs(_args):
@@ -460,6 +523,8 @@ def tool_takeover(args):
 
 HANDLERS = {
     "browser_list_tabs": tool_list_tabs,
+    "browser_connected_tabs": tool_connected_tabs,
+    "browser_actions": tool_actions,
     "browser_navigate": tool_navigate,
     "browser_click": tool_click,
     "browser_read": tool_read,
@@ -469,9 +534,61 @@ HANDLERS = {
 
 
 # ── JSON-RPC / MCP plumbing (same shape as the connect + iCloud servers) ──────
+_OUTPUT_LOCK = threading.Lock()
+_CONTROL_LOCK = threading.Lock()
+_CONTROL_CALLS = {}
+_LEGACY_CALLS = queue.Queue(maxsize=16)
+
+
 def _send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
+    with _OUTPUT_LOCK:
+        sys.stdout.write(json.dumps(msg) + "\n")
+        sys.stdout.flush()
+
+
+def _legacy_worker():
+    # Keep legacy tool execution sequential while the protocol reader stays
+    # available for extension cancellation during a parked human takeover.
+    while True:
+        req_id, name, args = _LEGACY_CALLS.get()
+        try:
+            _result(req_id, HANDLERS[name](args))
+        except Exception as exc:
+            _error(req_id, -32603, str(exc))
+        finally:
+            _LEGACY_CALLS.task_done()
+
+
+def _start_control(req_id, name, args):
+    wire = dict(args)
+    if name == "browser_actions":
+        wire["request_id"] = "mcp_" + uuid.uuid4().hex
+    call = {"name":name, "args": wire, "cancelled": False}
+    with _CONTROL_LOCK:
+        if req_id in _CONTROL_CALLS or len(_CONTROL_CALLS) >= 8:
+            _error(req_id, -32602, "Too many pending browser calls or duplicate request id")
+            return
+        _CONTROL_CALLS[req_id] = call
+    def worker():
+        try:
+            _result(req_id, HANDLERS[name](wire))
+        except Exception as exc:
+            _error(req_id, -32603, str(exc))
+        finally:
+            with _CONTROL_LOCK:
+                if _CONTROL_CALLS.get(req_id) is call:
+                    _CONTROL_CALLS.pop(req_id, None)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _cancel_actions(req_id):
+    with _CONTROL_LOCK:
+        call = _CONTROL_CALLS.get(req_id)
+        if not call or call["name"] != "browser_actions" or call["cancelled"]:
+            return
+        call["cancelled"] = True
+        args = {key:call["args"].get(key) for key in ("target", "request_id")}
+    threading.Thread(target=lambda: _post_tool("cancel_actions", args, 5), daemon=True).start()
 
 
 def _result(req_id, result):
@@ -499,6 +616,9 @@ def _handle(msg):
             },
         )
         return
+    if method == "notifications/cancelled":
+        _cancel_actions((msg.get("params") or {}).get("requestId"))
+        return
     if method in ("notifications/initialized", "initialized"):
         return
     if method == "ping":
@@ -511,11 +631,17 @@ def _handle(msg):
         params = msg.get("params") or {}
         name = params.get("name")
         args = params.get("arguments") or {}
-        handler = HANDLERS.get(name)
+        handler = HANDLERS.get(name) if any(tool["name"] == name for tool in TOOLS) else None
         if handler is None:
             _error(req_id, -32602, f"unknown tool: {name}")
             return
-        _result(req_id, handler(args))
+        if name in ("browser_actions", "browser_connected_tabs"):
+            _start_control(req_id, name, args)
+        else:
+            try:
+                _LEGACY_CALLS.put_nowait((req_id, name, args))
+            except queue.Full:
+                _error(req_id, -32602, "Too many queued browser calls")
         return
 
     if is_notification:
@@ -524,6 +650,7 @@ def _handle(msg):
 
 
 def main():
+    threading.Thread(target=_legacy_worker, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -540,4 +667,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--control-only" in sys.argv[1:]:
+        TOOLS = [tool for tool in TOOLS if tool["name"] in ("browser_connected_tabs", "browser_actions")]
     main()

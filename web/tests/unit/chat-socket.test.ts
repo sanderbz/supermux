@@ -415,6 +415,17 @@ describe('the truncated auto-fetch', () => {
     h.socket.dispose()
   })
 
+  test('explicit older expansion waits for a slot instead of being dropped outside the automatic window', async () => {
+    const gates: Array<ReturnType<typeof deferred<unknown>>> = []
+    const h = harness(() => { const gate = deferred<unknown>(); gates.push(gate); return gate.promise })
+    h.ws().greet(Array.from({ length: 20 }, (_, i) => entry({ seq: i + 1, uuid: 'clipped-' + i, truncated: true })), 21)
+    expect(h.fetches).toEqual(['clipped-19', 'clipped-18'])
+    h.socket.retryFull('clipped-0'); expect(h.fetches).toHaveLength(AUTOFETCH_CONCURRENCY)
+    gates[0].resolve({ text: 'newest full body' }); await tick()
+    expect(h.fetches[2]).toBe('clipped-0')
+    h.socket.dispose()
+  })
+
   test('a fetch that lands after unmount touches nothing', async () => {
     const gate = deferred<unknown>()
     const h = harness(() => gate.promise)
@@ -471,5 +482,31 @@ describe('the reason behind “reconnecting”', () => {
     h.ws().greet([entry({ seq: 1, uuid: 'a' })], 2)
     expect(h.last().noTranscript).toBe(false)
     h.socket.dispose()
+  })
+})
+
+describe('source-fenced full body recovery', () => {
+  test('offset UUID reuse never applies old source body, and new-source fetch is not blocked by old in-flight work', async () => {
+    const pending: Array<(body: unknown) => void> = []
+    const h = harness(() => new Promise(resolve => pending.push(resolve)))
+    const seed = (id: string, epoch: string) => { h.ws().deliver(JSON.stringify({ type: 'seed', entries: [entry({ seq: 1, uuid: 'codex:0', truncated: true })], has_more: false, next_before: null, conversation_id: id, source_epoch: epoch, source_generation: 1 })); h.ws().deliver(JSON.stringify({ type: 'seed_done', state: 'live', high_water: 2, resync_epoch: 0 })) }
+    seed('old-conversation', 'old-store'); expect(pending.length).toBe(1)
+    seed('new-conversation', 'new-store'); expect(pending.length).toBe(2)
+    pending[0]({ text: 'Old private body' }); await Promise.resolve(); await Promise.resolve()
+    expect(h.socket.snapshot().entries[0].body).not.toEqual({ text: 'Old private body' })
+    expect(h.socket.snapshot().fetching.has('codex:0')).toBe(true)
+    pending[1]({ text: 'Correct current body' }); await Promise.resolve(); await Promise.resolve()
+    expect(h.socket.snapshot().entries[0].body).toEqual({ text: 'Correct current body' }); h.socket.dispose()
+  })
+  test('same-conversation fresh store retries expansion and ignores old-epoch failure', async () => {
+    const pending: Array<{ resolve: (body: unknown) => void; reject: (error: unknown) => void }> = []
+    const h = harness(() => new Promise((resolve, reject) => pending.push({ resolve, reject })))
+    const seed = (epoch: string) => { h.ws().deliver(JSON.stringify({ type: 'seed', entries: [entry({ seq: 1, uuid: 'u1', truncated: true })], has_more: false, next_before: null, conversation_id: 'same-conversation', source_epoch: epoch, source_generation: 1 })); h.ws().deliver(JSON.stringify({ type: 'seed_done', state: 'live', high_water: 2, resync_epoch: 0 })) }
+    seed('old-store'); const revision = h.socket.snapshot().sourceRevision
+    seed('new-store'); expect(h.socket.snapshot().sourceRevision).toBe(revision); expect(pending.length).toBe(2)
+    pending[0].reject(new Error('old request 409')); await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(h.socket.snapshot().fetchFailed.has('u1')).toBe(false)
+    pending[1].resolve({ text: 'Restored text' }); await Promise.resolve(); await Promise.resolve()
+    expect(h.socket.snapshot().entries[0].body).toEqual({ text: 'Restored text' }); h.socket.dispose()
   })
 })

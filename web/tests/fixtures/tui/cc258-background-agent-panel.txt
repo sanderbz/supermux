@@ -1,0 +1,62 @@
+[0;38;5;246m✻[0m [0;38;5;246mWaiting for [0;1;38;5;246m1[0;38;5;246m background agent to finish[0m
+
+[0;38;5;239;48;5;237m❯ [0;38;5;231;48;5;237mUse the Agent tool to launch a general-purpose subagent IN THE BACKGROUND [0;48;5;237m    [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mwhose task is: run [0;38;5;153;48;5;237mfor i in $(seq 1 10); do echo tick $i; sleep 6; done[0;38;5;231;48;5;237m with [0;48;5;237m [0m
+[0;48;5;237m  [0;38;5;231;48;5;237ma 180s timeout, then report the tick count. Right after launching it, write [0;48;5;237m  [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mtwo short sentences describing what you launched and what you expect. Then [0;48;5;237m   [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mstop; do not poll.[0;48;5;237m                                                            [0m
+
+[0;38;5;231m●[0m I'll launch the background agent now.[0m
+
+[0;38;5;114m●[0m [0;1mAgent[0m(Run ten-tick loop and count)[0m
+[0;38;5;246m  ⎿  [0mBackgrounded agent[0;38;5;246m (↓ to manage · ctrl+o to expand)[0m
+
+[0;38;5;231m●[0m I launched a background agent that runs a ten-step loop printing a tick every[0m
+[0m  six seconds, under a 180-second timeout. I expect it to report ten ticks after[0m
+[0m  about a minute, and I will relay the result when its completion notification[0m
+[0m  arrives. The earlier twelve-tick agent is also still running and has not[0m
+[0m  reported yet.[0m
+
+[0;38;5;246m✻[0m [0;38;5;246mWaiting for [0;1;38;5;246m2[0;38;5;246m background agents to finish[0m
+
+[0;38;5;114m●[0m Agent "Run tick loop and count" finished[0;38;5;246m · 1m 45s[0m
+
+[0;38;5;231m●[0m The twelve-tick agent finished and reported all twelve ticks, with the loop[0m
+[0m  completing in about 96 seconds, well within the timeout. The ten-tick agent is[0m
+[0m  still running and has not reported yet.[0m
+
+[0;38;5;246m✻[0m [0;38;5;246mWaiting for [0;1;38;5;246m1[0;38;5;246m background agent to finish[0m
+
+[0;38;5;114m●[0m Agent "Run ten-tick loop and count" finished[0;38;5;246m · 1m 7s[0m
+
+[0;38;5;231m●[0m The ten-tick agent finished and reported all ten ticks, matching what I[0m
+[0m  expected. Both background agents have now completed.[0m
+
+[0;38;5;246m✻[0m [0;38;5;246mBrewed for 2m 26s · done 10:53 AM[0m
+
+[0;38;5;239;48;5;237m❯ [0;38;5;231;48;5;237mUse the Agent tool to launch a general-purpose subagent IN THE BACKGROUND [0;48;5;237m    [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mwhose task is: run these EIGHT separate Bash calls one after another, each in[0;48;5;237m [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mits own tool call, with [0;38;5;153;48;5;237msleep 7[0;38;5;231;48;5;237m before each echo: echo A; echo B; echo C; [0;48;5;237m    [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mecho D; echo E; echo F; echo G; echo H. Report when done. Right after [0;48;5;237m        [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mlaunching it, write two short sentences about it. Then stop and do not poll [0;48;5;237m  [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mit.[0;48;5;237m                                                                           [0m
+
+[0;38;5;231m●[0m I'll launch the background agent now.[0m
+
+[0;38;5;114m●[0m [0;1mAgent[0m(Run eight sequential echo calls)[0m
+[0;38;5;246m  ⎿  [0mBackgrounded agent[0;38;5;246m (↓ to manage · ctrl+o to expand)[0m
+
+[0;38;5;231m●[0m I launched a background agent that runs eight separate Bash calls, each[0m
+[0m  sleeping seven seconds before echoing one letter from A through H. It should[0m
+[0m  take roughly a minute, and I will relay its report when the completion[0m
+[0m  notification arrives.[0m
+
+[0;38;5;246m✻[0m [0;38;5;246mWaiting for [0;1;38;5;246m1[0;38;5;246m background agent to finish[0m
+
+[0;38;5;244m──────────────────────────────────────────────────────────────────── probe-cc258 ─[0m
+[0m❯ [0;2mLaunch another background agent that runs sleep 5 loops then report[0m
+[0;38;5;244m────────────────────────────────────────────────────────────────────────────────[0m
+[0m  [0;38;5;220m⏵⏵ auto mode on[0;38;5;246m (shift+tab to cycle) · ← 2 agents · ↓ to manage[0m
+
+[0;1m  ● main[0m
+[0;38;5;246m  ◯ general-purpose[0m  [0;38;5;246mRun eight sequential echo calls[0m      [0;38;5;246m18s · ↓ 25.8k tokens[0m

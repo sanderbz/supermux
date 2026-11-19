@@ -5,7 +5,7 @@
 // (2) the hidden kill-switch `localStorage['supermux:chat-renderer'] = '0'`,
 // which force-disables regardless of the toggle (the PR-#27 flag pattern);
 // (3) the Track A v1 eligibility guard (master plan Global Constraints):
-// local Claude sessions only — `provider === 'claude' && host_id == null`.
+// local Claude or Codex sessions — `host_id == null`, see `chatEligible`.
 // Pure functions here; the React binding is use-chat-renderer.ts.
 //
 // A TEAM LEAD USED TO BE REFUSED HERE (`&& !isTeamLead`). It no longer is
@@ -26,9 +26,21 @@ export interface ChatEligibleSession {
   host_id?: number | null
 }
 
-/** Track A v1 guard: local Claude sessions only. */
+/** Local Claude OR Codex sessions. Mirrored server-side by
+ *  `sessions/chat/ws.rs::chat_eligible` — the pair is pinned by
+ *  `chat_eligibility_matches_the_client_guard`.
+ *
+ *  CODEX is served in its own transcript dialect (`sessions/chat/codex.rs`): it
+ *  writes an append-only rollout JSONL that the same byte cursor tails and the
+ *  same wire carries. The rendering is PRAGMATIC by design, not Claude-fidelity
+ *  — prompts, replies, reasoning and shell runs map onto the existing kinds, and
+ *  anything unmodelled becomes the visible "open the terminal" row
+ *  (`wire-entries.ts::UNMAPPED_TEXT`) rather than a gap.
+ *
+ *  `host_id` is still refused for every provider: a remote session's transcript
+ *  lives on the remote box and nothing here can read it. */
 export function chatEligible(s: ChatEligibleSession): boolean {
-  return s.provider === 'claude' && s.host_id == null
+  return (s.provider === 'claude' || s.provider === 'codex') && s.host_id == null
 }
 
 /** The full decision: the unified `botMode` toggle AND the master kill AND the

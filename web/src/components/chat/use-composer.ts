@@ -26,6 +26,7 @@ import { armedRefusal } from './registry/armed'
 import { classifySlash, readTrigger, slashName } from './slash'
 import type { PickerJump } from './composer-keys'
 import { isInlineOwned } from './pending'
+import { sendFailureNote } from './send-errors'
 
 /** How much of the terminal's own draft the block banner quotes back. Enough to
  *  recognise the sentence, short enough that the banner stays one line. */
@@ -110,6 +111,10 @@ export interface ComposerNotice {
      *  server's own sentence ("prompt may not contain supermux wrapper
      *  markup"), which is written to be read. */
     | 'handoff-failed'
+    /** A native ask is up (docs/ASKS.md) and a sentence cannot answer it —
+     *  several questions at once, or a form. The card above answers it; the
+     *  message was not sent (it would be typed into the dialog). */
+    | 'ask-card'
   /** The evidence: the terminal's own draft, the command, or the error. */
   detail?: string
 }
@@ -366,6 +371,18 @@ export interface UseComposerOptions {
    * an ordinary message and nothing changes. A bench render and every existing
    * test therefore keep their exact behaviour by omitting this.
    */
+  /**
+   * A native ask is up (docs/ASKS.md): a send is its ANSWER, not a message —
+   * the question's free-text row, or a permission's "No, and tell Claude what
+   * to do instead". `accepts` says whether this text can be one; `answer`
+   * delivers it and resolves true once the server took it. Absent → the
+   * composer sends and gates exactly as before.
+   */
+  askReply?: {
+    kind: string
+    accepts: (text: string) => boolean
+    answer: (text: string) => Promise<boolean>
+  }
   handoff?: {
     /** Lowercased known name → slug. The same index the chips use. */
     mentions: ReadonlyMap<string, string>
@@ -418,6 +435,13 @@ export interface ComposerHandle {
   dismissNotice: () => void
   submit: () => void
   stop: () => void
+  /**
+   * Take the terminal's unsent draft (the `tui-draft` refusal) INTO this box and
+   * clear it from the terminal's prompt, so the send can go. Verified: the
+   * prompt is re-read after the keys, and a draft that is still there is said
+   * again rather than assumed gone. Absent → no peek to verify with.
+   */
+  adoptTerminalDraft?: () => void
   insert: (text: string) => void
   /**
    * The draft currently reads as a hand-off (fase B4 T4.4), so Enter will go to
@@ -458,6 +482,7 @@ export function useComposer({
   dialogCard = false,
   formCard = false,
   handoff,
+  askReply,
   onInterrupt,
   getOutgoingPrefix,
   onSent,
@@ -577,6 +602,33 @@ export function useComposer({
       })()
       return
     }
+    // THE ASK BRANCH. While a native ask is up the terminal is showing its
+    // dialog, so a paste would land in the dialog (a0 §3: ignored, and the Enter
+    // behind it picks the highlighted row). The asks API is the one way a
+    // sentence reaches that dialog's own free-text answer — so it goes there,
+    // and the draft clears only once the server took it. A failure is told on
+    // the card (one owner per failure); the words stay in the box.
+    if (askReply) {
+      const reply = prefix + text
+      if (!askReply.accepts(reply)) {
+        setNotice({ kind: 'ask-card' })
+        return
+      }
+      void (async () => {
+        sendingRef.current = true
+        setSending(true)
+        try {
+          if (await askReply.answer(reply)) {
+            setDraft(name, draftAfterSend(getDraft(name), raw))
+            onSent?.()
+          }
+        } finally {
+          sendingRef.current = false
+          setSending(false)
+        }
+      })()
+      return
+    }
     // THE SLASH GATE (fase A4 T9), before the peek because it needs no network
     // — and therefore it cannot fail open when the session or the command list
     // is unreachable, which is the one property a gate has to have.
@@ -618,7 +670,7 @@ export function useComposer({
         // The attachment paths go on the wire FIRST, then the user's prose —
         // quoted absolute paths Claude's Read/vision tool resolves, exactly the
         // shape the dock and terminal drag/paste have always injected.
-        await input.submit(prefix + text)
+        await input.submit(prefix + text, { composer: { draft: raw, attachmentPrefix: prefix } })
         // Cleared only AFTER the POST resolves: a rejected send keeps the
         // user's words in the box, where they can retry them.
         //
@@ -649,7 +701,7 @@ export function useComposer({
         if (!isInlineOwned(err)) {
           setNotice({
             kind: 'send-failed',
-            detail: err instanceof Error ? err.message : undefined,
+            detail: sendFailureNote(err),
           })
         }
       } finally {
@@ -657,7 +709,48 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
+  }, [askReply, dialogCard, formCard, getOutgoingPrefix, handoff, input, name, onSent, peek, readIntent])
+
+  // THE TERMINAL'S DRAFT, MOVED RATHER THAN REFUSED. The refusal is right — a
+  // send would be pasted onto that half-typed sentence — but it left the user
+  // nothing to do here except walk to the terminal. This is the walk: the
+  // draft's text goes into the chat box first (so nothing can be lost), then
+  // `End` + `C-u` clear the prompt, and the prompt is READ AGAIN. Only an empty
+  // prompt counts as moved; anything else is the same refusal, with what is
+  // still there. Never while a dialog is up (`C-u` would edit its field).
+  const adoptTerminalDraft = React.useCallback(() => {
+    if (!peek || notice?.kind !== 'tui-draft' || !notice.detail || sendingRef.current) return
+    const moved = notice.detail
+    void (async () => {
+      sendingRef.current = true
+      setSending(true)
+      try {
+        const before = await peek.refresh()
+        if (before?.dialog || before?.composerDraft !== moved) {
+          setNotice(before?.composerDraft ? { kind: 'tui-draft', detail: before.composerDraft } : null)
+          return
+        }
+        const mine = getDraft(name)
+        setDraft(name, mine.trim() ? `${moved}\n${mine}` : moved)
+        await input.sendKey('End')
+        await input.sendKey('C-u')
+        // The terminal redraws a beat after the key — measured live, one read
+        // straight after `C-u` still saw the old line. A few short re-reads
+        // before concluding the draft is still there.
+        let after = await peek.refresh()
+        for (let i = 0; i < 4 && after?.composerDraft; i++) {
+          await new Promise((r) => setTimeout(r, 300))
+          after = await peek.refresh()
+        }
+        setNotice(after?.composerDraft ? { kind: 'tui-draft', detail: after.composerDraft } : null)
+      } catch (err) {
+        setNotice({ kind: 'send-failed', detail: err instanceof Error ? err.message : undefined })
+      } finally {
+        sendingRef.current = false
+        setSending(false)
+      }
+    })()
+  }, [input, name, notice, peek])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the
@@ -837,6 +930,7 @@ export function useComposer({
     dismissNotice,
     submit,
     stop,
+    adoptTerminalDraft: peek ? adoptTerminalDraft : undefined,
     insert,
     handoff: handoffState,
     handoffPending,

@@ -616,6 +616,45 @@
   padding-top: env(safe-area-inset-top);
 }
 
+/* ── Sticky route chrome: ONE rung for every page header ────────────────────
+   Route chrome that sticks over its own scroller — a page header, or the
+   equivalent pinned footer in a sheet — MUST sit on the
+   `--sm-z-header` rung (30) — above `--sm-z-content` (10), the rung in-flow
+   page content is allowed to use.
+
+   Every shipped page header instead carried a bare `z-10`, which does not sit
+   above content, it TIES with it. A tie is broken by tree order, and page
+   content always comes after the header in the tree, so any card that layers
+   its own rows at `z-10` (the store cards stack their content over a
+   full-bleed hit target that has to sit underneath) painted straight THROUGH
+   the header while the list scrolled: title, search field and tabs interleaved
+   with card icons and Connect buttons. Measured on a 1440x900 desktop with the
+   shell's <main> scrolled 450px, 9 of 54 hit-test points inside the /store
+   header band were owned by a card; 0 of 54 after.
+
+   `isolation: isolate` makes the header its own stacking context, so its
+   internal layering is self-contained and it is stacked as ONE unit at 30 —
+   a child of the header can never be out-stacked from outside it either.
+
+   Apply to the sticky element itself. It only sets the rung, so the chrome
+   keeps its own `sticky top-*` / `bottom-*`, padding, background and blur. */
+@utility sm-page-header {
+  z-index: var(--sm-z-header);
+  isolation: isolate;
+}
+
+/* The scroll body a `sm-page-header` sticks over. `isolation: isolate` traps
+   EVERY z-index the page content uses inside this box, so no card, row or
+   popover in the list can reach the header's rung no matter what it does
+   internally — the containment half of the same fix, so a future card is
+   correct by construction instead of by remembering the ladder. Content still
+   sits on its own `--sm-z-content` rung relative to the header. */
+@utility sm-page-scroll {
+  position: relative;
+  z-index: var(--sm-z-content);
+  isolation: isolate;
+}
+
 /* ── Terminal touch-scroll ──────────────────────────────────────────────────
    xterm 6.0 has NO built-in touch-drag scroll: its VS Code scrollable element
    scrolls on WHEEL (desktop) but ignores one-finger touch drags, and its
@@ -673,20 +712,47 @@
 .chat-thinking-summary::-webkit-details-marker {
   display: none;
 }
+/* The STATIC thinking pill: an empty block (Claude Code writes the thinking
+   entry with no body on this model family). Same chrome as the summary pill
+   above, minus everything that promises a click — no cursor, no hover, no
+   chevron — because there is nothing behind it to open. The "not saved" fact
+   lives in the span's title / aria-label, not in a body. */
+@utility chat-thinking-pill {
+  margin: 0;
+  line-height: 1.4;
+}
+.chat-thinking-pill > .chat-thinking-pill-label {
+  display: inline-flex;
+  align-items: center;
+  border: 0.5px solid var(--sm-hairline-soft);
+  border-radius: 9999px;
+  background: var(--sm-fill-soft);
+  padding: 3px 10px;
+  font-size: 12.5px;
+  letter-spacing: -0.05px;
+  color: var(--sm-ink-2);
+  cursor: default;
+}
 /* The inline thinking SUMMARY (Fable 5 `display: summarized`): the narration
    line between two tool calls. Quiet ink, no chrome — it is context, not an
    answer, so it must never compete with the assistant bubble beneath it. */
 @utility chat-thinking-inline {
-  font-size: 13.5px;
+  /* Sits in the bubble column but is NOT a bubble: inset to the bubble's own
+     text edge (so it lines up with the reply under it instead of hugging the
+     column edge), a step smaller and a shade quieter than reply prose — it is
+     the model's narration, never the answer. */
+  padding-inline: 17px; /* = the bubble text inset (ui/bubble.tsx px-[17px]) */
+  font-size: 12.5px;
   line-height: 1.5;
-  color: var(--sm-ink-2);
+  color: var(--sm-ink-3);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 @utility chat-thinking-meta {
   margin-left: 0.375rem;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--sm-ink-3);
+  opacity: 0.75;
   white-space: nowrap;
 }
 @utility chat-thinking-body {

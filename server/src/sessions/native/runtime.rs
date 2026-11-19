@@ -1360,10 +1360,11 @@ pub fn probe_alive(dir: &Path) -> bool {
 ///   The socket has no listener any more, so nothing can ever serve this session
 ///   again: report it dead rather than leaving an orphaned child looking healthy.
 ///
-/// When `/proc` yields nothing conclusive (a non-Linux host, an unreadable
-/// parent, the in-process holder the tests run) it falls back to comparing the
-/// pid's real start time with `meta.json`'s — a recycled pid started long after
-/// the holder recorded its spawn.
+/// When `/proc` yields nothing conclusive (macOS, an unreadable parent, the
+/// in-process holder the tests run) it falls back to comparing the pid's real
+/// start time with `meta.json`'s — a recycled pid started long after the holder
+/// recorded its spawn. On macOS the parent and start time come from
+/// `proc_pidinfo`, so a reboot's recycled pids read as dead there too.
 fn pid_belongs_to_session(pid: u32, session: &str, started_at: i64) -> bool {
     match holder_identity(pid, session) {
         HolderId::Ours => return true,
@@ -1384,10 +1385,36 @@ fn pid_belongs_to_session(pid: u32, session: &str, started_at: i64) -> bool {
         // A process that started ~when the holder wrote `meta.json` is the one
         // the holder spawned; anything else is a recycled pid.
         Some(started) => (started - started_at).abs() <= MAX_START_SKEW,
+        // macOS answers `proc_pidinfo` for every process of our own user, and the
+        // holder and its child always run as that user. A live pid it refuses is
+        // another user's process (a root daemon that took the number after a
+        // reboot), so it can not be this session's child.
+        None if cfg!(target_os = "macos") => false,
         // No `/proc` to ask — keep the historical (permissive) answer rather than
         // declaring a live session dead on a platform we can not inspect.
         None => true,
     }
+}
+
+/// `proc_pidinfo(PROC_PIDTBSDINFO)`: macOS's answer to `/proc/<pid>/stat` for
+/// the two facts the recycled-pid check needs, the parent pid and the real
+/// start time. `None` when the process is gone or belongs to another user.
+#[cfg(target_os = "macos")]
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a writable, correctly sized `proc_bsdinfo`; the kernel
+    // writes at most `size` bytes into it and returns how many it wrote.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (written == size).then_some(info)
 }
 
 /// What `/proc/<pid>/cmdline` says a process is.
@@ -1431,6 +1458,10 @@ fn holder_identity(pid: u32, session: &str) -> HolderId {
 /// Parent pid of `pid` (`ppid`, field 4 of `/proc/<pid>/stat`). Parsed from after
 /// the LAST `)` because `comm` may contain spaces and parentheses.
 fn parent_pid(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    if let Some(info) = bsd_info(pid) {
+        return Some(info.pbi_ppid);
+    }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
     // After comm: state(0) ppid(1).
@@ -1439,8 +1470,13 @@ fn parent_pid(pid: u32) -> Option<u32> {
 
 /// When `pid` really started, in unix seconds: `/proc/<pid>/stat`'s `starttime`
 /// (field 22, in clock ticks since boot) added to `/proc/stat`'s `btime`.
-/// `None` when either is unreadable — i.e. on any non-Linux host.
+/// On macOS the same fact comes from `proc_pidinfo` ([`bsd_info`]). `None` when
+/// neither can answer (the process is gone, or it is another user's).
 pub(crate) fn proc_start_unix(pid: u32) -> Option<i64> {
+    #[cfg(target_os = "macos")]
+    if let Some(info) = bsd_info(pid) {
+        return Some(info.pbi_start_tvsec as i64);
+    }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
     // After comm: state(0) … starttime is the 22nd field overall, i.e. #19 here.
@@ -1511,11 +1547,32 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// The foreground process-group id of the terminal `pid` is attached to
-/// (`tpgid`, field 8 of `/proc/<pid>/stat`). `None` when unreadable, or when the
-/// terminal has no foreground group.
-///
-/// The `comm` field can contain spaces AND parentheses, so the fixed fields are
-/// parsed from after the LAST `)` — the standard way to read this file.
+/// (`tpgid`). `None` when unreadable, or when the terminal has no foreground
+/// group.
+#[cfg(target_os = "macos")]
+pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
+    // No /proc on macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` carries the same
+    // `tpgid`. Without this the double-launch guard in `start` read "unknown"
+    // here and typed the launch command into a live agent.
+    // SAFETY: a zeroed POD struct of exactly the size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (n == size && info.e_tpgid > 0).then_some(info.e_tpgid)
+}
+
+/// Linux: field 8 of `/proc/<pid>/stat`. The `comm` field can contain spaces
+/// AND parentheses, so the fixed fields are parsed from after the LAST `)` —
+/// the standard way to read this file.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
@@ -2300,6 +2357,44 @@ Caused by:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// macOS has no `/proc`, so every check above used to fall through to "alive".
+    /// After a reboot the holders' old (low) pids belong to unrelated processes,
+    /// and supermux kept four sessions "attached" to them (2026-11-18). These
+    /// cover the three shapes on macOS, where `proc_pidinfo` answers instead.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tells_a_real_child_from_a_recycled_pid() {
+        // 1. A genuine child that started when the meta says: ours.
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let started = proc_start_unix(pid).expect("proc_pidinfo answers for our own child");
+        assert_eq!(parent_pid(pid), Some(std::process::id()), "the parent is read too");
+        assert!(pid_belongs_to_session(pid, "s", started), "the real child is ours");
+
+        // 2. The same live pid, claimed by a meta written long before it started:
+        //    a recycled pid, not ours.
+        assert!(!pid_belongs_to_session(pid, "s", started - 86_400));
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // 3. An orphan (reparented to launchd, as a child is once its holder is
+        //    gone) is dead even when its start time matches.
+        let out = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+            .output()
+            .unwrap();
+        let orphan: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        let orphan_started = proc_start_unix(orphan).unwrap();
+        assert_eq!(parent_pid(orphan), Some(1), "precondition: reparented to launchd");
+        assert!(!pid_belongs_to_session(orphan, "s", orphan_started));
+        // SAFETY: plain libc call on the pid we just spawned.
+        unsafe { libc::kill(orphan as i32, libc::SIGKILL) };
+
+        // 4. Another user's process (launchd runs as root): proc_pidinfo refuses
+        //    it, and a holder's child never runs as another user.
+        assert!(!pid_belongs_to_session(1, "s", 0));
+    }
+
     /// `/proc/<pid>/cmdline` identifies a holder by session name, so a pid that
     /// belongs to a holder for a DIFFERENT session is never mistaken for ours.
     #[test]
@@ -2461,6 +2556,62 @@ Caused by:
         session.kill().await.unwrap();
         holder.abort();
         crate::sessions::native::forget("fg");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A foreground job that ignores the polite signals must not outlive a
+    /// kill. The interactive shell runs it in its OWN process group, so
+    /// signalling the shell's group alone let the shell exit and left a wedged
+    /// agent orphaned under init (erecentrum on the mini, 28 Oct).
+    #[tokio::test]
+    async fn kill_takes_down_a_foreground_job_that_ignores_hangup() {
+        let dir = data_dir("fgkill");
+        let args = super::super::holder::Args {
+            session: "fgkill".to_string(),
+            dir: spool::session_dir(&dir, "fgkill"),
+            socket: spool::socket_path(&dir, "fgkill"),
+            cols: 80,
+            rows: 24,
+            command: "bash --norc -i".to_string(),
+        };
+        let holder = tokio::spawn(async move {
+            let _ = super::super::holder::run(args).await;
+        });
+        let session = NativeSession::new("fgkill", &dir);
+        assert!(wait_until!(Duration::from_secs(10), session.attached()));
+        // Let the shell reach its prompt (`shell_is_foreground` reads /proc, so
+        // it cannot be the gate on macOS).
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Ignored dispositions survive `exec`, so this `sleep` ignores both.
+        let secs = 3000 + std::process::id() % 1000;
+        session
+            .send_text(&format!("bash -c 'trap \"\" HUP TERM; exec sleep {secs}'"))
+            .await
+            .unwrap();
+        tokio::time::sleep(SUBMIT_GAP).await;
+        session.send_key("Enter").await.unwrap();
+        let pgrep = || {
+            std::process::Command::new("pgrep")
+                .args(["-f", &format!("^sleep {secs}$")])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.lines().next().and_then(|l| l.trim().parse::<i32>().ok()))
+        };
+        assert!(wait_until!(Duration::from_secs(10), pgrep().is_some()), "the job never started");
+        let job = pgrep().expect("the foreground job is running");
+
+        session.kill().await.unwrap();
+        // SAFETY: signal 0 only probes for existence.
+        let alive = || unsafe { libc::kill(job, 0) } == 0;
+        assert!(
+            wait_until!(Duration::from_secs(10), !alive()),
+            "the foreground job must not outlive the kill",
+        );
+
+        holder.abort();
+        crate::sessions::native::forget("fgkill");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

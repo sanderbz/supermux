@@ -122,6 +122,34 @@ struct HookBody {
     /// (pre-upgrade sessions) → treated as `{}`.
     #[serde(default)]
     payload: Option<Value>,
+    /// `$CLAUDE_CODE_SESSION_ATTENDED` of the Claude Code that ran the hook,
+    /// normalised by the hook command to `1` / `0` / empty — the same flag the
+    /// decision hook sends (`crate::asks::hook`). Empty on a hook command
+    /// written by an older supermux.
+    #[serde(default)]
+    attended: String,
+    /// `$CLAUDE_CODE_ENTRYPOINT`, normalised to `cli` / `other` / empty — the
+    /// fallback when `attended` is empty.
+    #[serde(default)]
+    entry: String,
+}
+
+/// Did the hook come from a Claude Code that is EXPLICITLY not attended — a
+/// headless `claude -p` (or an SDK run) started inside a supermux pane, which
+/// inherits the pane's `SUPERMUX_*` hook env? Its `Stop`, `UserPromptSubmit`,
+/// `SessionStart`/`SessionEnd` and tool events describe that throwaway run, not
+/// the pane's agent, so they must not open or close the pane's asks.
+///
+/// Absent flags (a hook command written before the flags existed) count as
+/// attended — the opposite default of the decision hook's, on purpose: there
+/// an unknown hook must not WAIT, here an unknown hook must keep recording the
+/// asks it always recorded, until the session restarts onto the new command.
+fn explicitly_unattended(attended: &str, entry: &str) -> bool {
+    match attended.trim() {
+        "0" => true,
+        "1" => false,
+        _ => entry.trim() == "other",
+    }
 }
 
 /// Ingest one hook event. 401 on any auth failure; 200 even for an unknown event
@@ -157,7 +185,8 @@ async fn hook_handler(
                     session = %b.session,
                     event = %b.event,
                     bytes = raw.len(),
-                    "hook payload was truncated mid-token; salvaged the envelope, dropping the payload"
+                    kept_payload_head = b.payload.is_some(),
+                    "hook payload was truncated mid-token; salvaged the envelope and what the payload head still holds"
                 );
                 b
             }
@@ -169,6 +198,39 @@ async fn hook_handler(
     // existence oracle); an empty stored token can never authenticate.
     verify_hook_token(&state, &body.session, &headers).await?;
 
+    let record_asks = !explicitly_unattended(&body.attended, &body.entry);
+    ingest(
+        &state,
+        &body.session,
+        &body.pane,
+        &body.event,
+        body.payload.unwrap_or(Value::Null),
+        record_asks,
+    )
+    .await;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Everything an AUTHENTICATED hook event does, shared by the observe-only
+/// hook ([`hook_handler`]) and the decision hook
+/// ([`crate::asks::hook`], which replaces it for `PermissionRequest` /
+/// `Elicitation` and must therefore do all of the same). Returns the id of the
+/// ask this event opened or refreshed, if any.
+///
+/// `record_asks: false` skips the asks side entirely — the decision hook's
+/// request from an UNATTENDED Claude Code (a `claude -p` inside a pane), which
+/// can neither show nor wait on a dialog.
+pub(crate) async fn ingest(
+    state: &AppState,
+    session: &str,
+    pane: &str,
+    event: &str,
+    raw_payload: Value,
+    record_asks: bool,
+) -> Option<String> {
+    let state = state.clone();
+    let body = IngestEvent { session, pane, event };
     // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
     // reached us), so flag it: the detector now treats the turn state machine +
     // content bank as authoritative and suppresses the raw PTY-heartbeat `Active`
@@ -178,40 +240,6 @@ async fn hook_handler(
     // the flag is set well before the user can type.
     state.mark_hooks_live(&body.session);
 
-    // Fold the turn-state signal in for the events the detector
-    // cares about (Notification→Waiting, turn-start→Active, …). Unknown
-    // event kinds (e.g. SessionStart/SessionEnd/StopFailure) have NO HookEvent
-    // variant and are skipped here — they are handled by the activity/lifecycle
-    // dispatch below, NOT by the turn state machine.
-    if let Some(event) = HookEvent::from_event_str(&body.event) {
-        // An `idle_prompt` notification is Claude Code's POST-TURN idle ping
-        // ("Claude is waiting for your input"), fired while the session sits at its
-        // empty `❯` prompt — NOT a needs-you signal (only `permission_prompt` /
-        // `agent_needs_input` are; the activity dispatch below keeps that
-        // distinction for `waiting_message`). Folding it into the turn machine as a
-        // generic Notification lets it read `Waiting` — the roster's red "needs
-        // you" — whenever the turn's own `Stop` hook was missed/raced (hooks run
-        // `--max-time 1`), so `turn_end` never advanced past `turn_start` and
-        // `TurnState::classify`'s `turn_already_ended` guard cannot fire. Record it
-        // as a turn END instead: an idle_prompt PROVES the turn is over, so the
-        // machine settles straight to Idle without ever passing through Active
-        // (unlike merely dropping it). `record_hook` only folds into `TurnState`
-        // — no notification, DB write or SSE — so the remap has no collateral.
-        let event = if matches!(event, HookEvent::Notification)
-            && body
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("notification_type").or_else(|| p.get("notificationType")))
-                .and_then(Value::as_str)
-                == Some("idle_prompt")
-        {
-            HookEvent::Stop
-        } else {
-            event
-        };
-        state.record_hook(&body.session, event);
-    }
-
     // ── live activity + error + lifecycle from the PAYLOAD ──────────
     // Parse leniently (every field optional); a missing/odd/truncated payload
     // parses to the empty default and is a no-op rather than a 400.
@@ -219,24 +247,17 @@ async fn hook_handler(
     // The raw `Value` is kept beside the typed parse (deserialized BY REFERENCE,
     // so nothing is cloned): the `Elicitation` payload's `requested_schema` is
     // an arbitrary JSON Schema, which `elicitation::parse` reads structurally
-    // rather than through a fixed struct.
-    let raw_payload = body.payload.unwrap_or(Value::Null);
+    // rather than through a fixed struct. (`raw_payload` is this fn's argument.)
 
     // Is this POST the LEAD's own event, or one fired by an in-process teammate
     // running under the same pane token? Decided ONCE per POST (the predicate is
     // read twice below).
     //
-    // Gated on the EVENT as well as on `agent_type`, and both halves matter.
-    // `foreign_agent` is consumed in exactly three places — the lifecycle gate
-    // and the `user_prompt` arm inside `apply_payload`, and the pointer gate
-    // below — all of which are `is_lifecycle_event` or `is_pointer_event`. The
-    // `agent_type` half alone would NOT keep this off the hot path: since the
-    // per-agent rows landed, every child tool hook (`pre_tool`, `post_tool`,
-    // `subagent_*`) carries an `agent_type` beside its `agent_id` — that is what
-    // `touch_agent_row` reads — so a subagent-heavy turn would pay an extra
-    // indexed SELECT per tool call on a `--max-time 1` request, for a value
-    // those events can never consume.
-    let foreign_agent = if (is_lifecycle_event(&body.event) || is_pointer_event(&body.event))
+    // Only lifecycle/pointer/failure events consume the teammate predicate.
+    // Keep the indexed conversation lookup off high-volume child tool hooks.
+    let foreign_agent = if (is_lifecycle_event(&body.event)
+        || is_pointer_event(&body.event)
+        || is_stop_failure(&body.event))
         && has_agent_type(&raw_payload)
     {
         let tracked = db::sessions::cc_conversation_id(&state.pool, &body.session)
@@ -248,7 +269,47 @@ async fn hook_handler(
         false
     };
 
-    apply_payload(&state, &body.session, &body.event, &raw_payload, foreign_agent);
+    // Child failures do not end the main turn. The direct child identifier is
+    // authoritative; named main agents may also carry agent_type, so that field
+    // alone is insufficient (the tracked conversation disambiguates teammates).
+    let child_failure = is_stop_failure(&body.event)
+        && (foreign_agent || payload_str(&raw_payload, "agent_id").is_some());
+    if !child_failure {
+        if let Some(event) = HookEvent::from_event_str(&body.event) {
+            // The post-turn idle ping proves the turn ended, including when its
+            // Stop hook was missed. A permission notification remains a generic
+            // Notification; it must not resolve a direct PermissionRequest.
+            let event = if event == HookEvent::Notification
+                && raw_payload
+                    .get("notification_type")
+                    .or_else(|| raw_payload.get("notificationType"))
+                    .and_then(Value::as_str)
+                    == Some("idle_prompt")
+            {
+                HookEvent::Stop
+            } else {
+                event
+            };
+            state.record_hook(&body.session, event);
+        }
+    }
+
+    apply_payload(
+        &state,
+        &body.session,
+        &body.event,
+        &raw_payload,
+        foreign_agent,
+    );
+
+    // The DURABLE side of the same event: open / refresh / close the session's
+    // asks (`crate::asks`). After `apply_payload`, so the live card and the
+    // ask row never disagree about which came first.
+    let ask_id = if record_asks {
+        crate::asks::observe(&state, body.session, body.event, &raw_payload, foreign_agent).await
+    } else {
+        None
+    };
 
     // A live agent file-write becomes a `files` SSE frame, so a file a bot
     // wrote seconds ago appears in the Files surface without a reload. Only the
@@ -313,7 +374,15 @@ async fn hook_handler(
     // SessionEnd → stopped) is broadcast within ~1s, not at the next tier edge.
     state.wake_detector(&body.session);
 
-    Ok(Json(json!({ "ok": true })))
+    ask_id
+}
+
+/// The envelope fields [`ingest`] reads, under the names the handler body has
+/// always used.
+struct IngestEvent<'a> {
+    session: &'a str,
+    pane: &'a str,
+    event: &'a str,
 }
 
 /// The tools whose `PostToolUse` payload names a file the agent just wrote.
@@ -572,9 +641,10 @@ fn attribute_pointer(pane: &str, lead_pane: Option<&str>, tmux_runtime: bool) ->
 ///
 /// The cap only ever cuts the TAIL, and `payload` is the last field, so the
 /// prefix `{"session":…,"event":…` is always intact: re-close it and parse.
-/// `payload` then defaults to `None`, which the handler already treats as `{}`
-/// — the "a clipped payload is a no-op, never a 400" contract this module
-/// documents. Returns `None` for a body that is malformed for any other
+/// The payload itself is then salvaged as far as it is still whole
+/// ([`salvage_payload_head`]), else `None`, which the handler already treats
+/// as `{}` — the "a clipped payload is a no-op, never a 400" contract this
+/// module documents. Returns `None` for a body that is malformed for any other
 /// reason, which stays a 400.
 fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
     const PAYLOAD_KEY: &[u8] = b",\"payload\":";
@@ -582,19 +652,65 @@ fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
     // A session name could itself contain the literal `,"payload":`, so try
     // every occurrence and keep the first that yields a parseable envelope.
     while from < raw.len() {
-        let rel = raw[from..]
-            .windows(PAYLOAD_KEY.len())
-            .position(|w| w == PAYLOAD_KEY)?;
-        let cut = from + rel;
+        let cut = from + find(&raw[from..], PAYLOAD_KEY)?;
         let mut candidate = Vec::with_capacity(cut + 1);
         candidate.extend_from_slice(&raw[..cut]);
         candidate.push(b'}');
-        if let Ok(body) = serde_json::from_slice::<HookBody>(&candidate) {
+        if let Ok(mut body) = serde_json::from_slice::<HookBody>(&candidate) {
+            body.payload = salvage_payload_head(&raw[cut + PAYLOAD_KEY.len()..]);
             return Some(body);
         }
         from = cut + 1;
     }
     None
+}
+
+/// Set on a payload [`salvage_payload_head`] rebuilt from a truncated one: its
+/// tail — and with it `tool_use_id` — is gone, so a consumer that correlates by
+/// `tool_use_id` must fall back to what the head still carries.
+pub(crate) const TRUNCATED_PAYLOAD_KEY: &str = "_supermux_truncated";
+
+/// What a payload cut off by the hook's 16 KB cap still says.
+///
+/// Claude Code writes the small fields FIRST — measured on 2.1.291, a
+/// `PostToolUse` is `session_id, transcript_path, cwd, prompt_id,
+/// permission_mode, effort, hook_event_name, tool_name, tool_input,
+/// tool_response, tool_use_id, duration_ms` — so a cap that lands in a big
+/// `tool_response` (a 40 KB command output) still leaves the whole head up to
+/// and including `tool_input`. Dropping that head cost the asks their
+/// release: a permission dialog answered "Yes" at the terminal was never
+/// closed because its finished call's `tool_name` / `tool_input` were thrown
+/// away with the tail.
+///
+/// Re-closes the object before the first big field that leaves a parseable
+/// head (`tool_response`, a failure's `error`), else before `tool_input` (a
+/// huge Write/Edit input: only the scalars survive). Every key that survives
+/// is one Claude sent, verbatim; [`TRUNCATED_PAYLOAD_KEY`] marks the result.
+/// `None` when not even the scalar head parses.
+fn salvage_payload_head(payload: &[u8]) -> Option<Value> {
+    const CUTS: [&[u8]; 3] = [b",\"tool_response\":", b",\"error\":", b",\"tool_input\":"];
+    for key in CUTS {
+        let mut from = 0usize;
+        // A nested object inside `tool_input` may itself carry such a key; that
+        // cut leaves unbalanced braces and fails to parse, so try the next one.
+        while let Some(rel) = find(&payload[from..], key) {
+            let cut = from + rel;
+            let mut head = Vec::with_capacity(cut + 1);
+            head.extend_from_slice(&payload[..cut]);
+            head.push(b'}');
+            if let Ok(Value::Object(mut m)) = serde_json::from_slice::<Value>(&head) {
+                m.insert(TRUNCATED_PAYLOAD_KEY.to_string(), Value::Bool(true));
+                return Some(Value::Object(m));
+            }
+            from = cut + 1;
+        }
+    }
+    None
+}
+
+/// Byte offset of the first `needle` in `hay`.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Record a CHILD's hook against its own per-agent row, when this hook actually
@@ -667,6 +783,10 @@ fn apply_payload(
         return;
     }
 
+    if is_stop_failure(event) && (foreign_agent || payload_str(raw, "agent_id").is_some()) {
+        return;
+    }
+
     let changed = match event {
         // A tool call started → set the live activity label (`✎ tile.tsx`, …).
         // A payload with no tool name yields no label → leave activity as-is.
@@ -708,9 +828,18 @@ fn apply_payload(
             // terminal permission dialog), so it returns while the human answers
             // here. The credential never touches this plane — the card POSTs it
             // straight to the vault.
+            // …but not for a builtin (`shared-browser`, `group-chat`) or an id no
+            // catalog knows: the tool itself answers those with `card_sent: false`
+            // and a note, so a card here would be a card for nothing — and since
+            // the card now outlives the call, a WRONG card, not an invisible one.
             let connect = match connect_ask::parse(payload) {
-                Some(ask) => state.set_connect_request(session, ask),
-                None => false,
+                Some(ask)
+                    if crate::connectors::connect_server::builtin_connect_note(&ask.connector_id)
+                        .is_none() =>
+                {
+                    state.set_connect_request(session, ask)
+                }
+                Some(_) | None => false,
             };
             // The Shared Browser connector's `request_human_takeover(reason)`
             // affordance. Unlike `connect` above, this one DOES keep the
@@ -751,7 +880,7 @@ fn apply_payload(
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -762,7 +891,18 @@ fn apply_payload(
             // …and any pending ELICITATION: the form is raised mid-tool-call, so
             // the tool having finished proves the form is gone even if the
             // `ElicitationResult` leg never arrived.
-            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            //
+            // **The connect card is deliberately NOT in this list.** Every other
+            // ask here BLOCKS a tool call, so "the tool finished" resolves it.
+            // `connect` is the one that does not: it is allow-listed and
+            // marker-free precisely so it returns at once (parking it on Claude
+            // Code's terminal dialog left bots stuck for hours), which means its
+            // own PostToolUse lands milliseconds after the PreToolUse that raised
+            // the card. Clearing here gave the card a lifetime of one no-op tool
+            // call — the bot said "I sent you a connect card" and none ever
+            // rendered. It is the human who resolves this one, through the card's
+            // own dismiss/grant route.
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -816,12 +956,13 @@ fn apply_payload(
         // why an MCP-using session used to park here forever wearing a green
         // Idle dot (`mcp.elicitation_form`).
         //
-        // OBSERVE-ONLY, and the whole feature depends on it staying that way:
-        // this hook's STDOUT is how a hook DECIDES the elicitation
-        // (`hookSpecificOutput.action`), and exit code 2 declines it outright.
-        // supermux's installed command is `-o /dev/null … || true`, pinned by
-        // `claude_config`'s inertness tests — so it can watch the ask and can
-        // never answer it on the user's behalf.
+        // This hook's STDOUT is how a hook DECIDES the elicitation
+        // (`hookSpecificOutput.action`). supermux's entry is the decision hook
+        // (`crate::asks::hook`): it prints an answer only when a
+        // bearer-authenticated client answered the ask through
+        // `POST /api/asks/{id}/answer`, and only when the operator opted in to
+        // holding the form (`[asks] elicitation_hold_secs`) — never a decision
+        // of supermux's own. This arm only raises the live card.
         "elicitation" | "Elicitation" => match elicitation::parse(raw) {
             Some(ask) => {
                 // Named push, like the permission dialog's: the sentence a
@@ -864,8 +1005,12 @@ fn apply_payload(
         // hook fresh within `SUBAGENT_LIVE_WINDOW`) rather than by this force-0 —
         // so a lost `SubagentStop` still cannot permanently suppress a finish.
         "stop" | "Stop" => {
+            // The connect card is NOT cleared here either (see the PostToolUse
+            // arm): the tool's own answer tells the bot to carry on meanwhile, so
+            // the turn ends within seconds of the ask while the human is still
+            // walking to their phone.
             let act = state.clear_activity(session);
-            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_connect_request(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session) | state.clear_browser_takeover(session) | state.clear_question_request(session) | state.clear_waiting_message(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -941,8 +1086,8 @@ fn apply_payload(
         // the tile flips immediately, mirroring lifecycle::stop's broadcast.
         "session_end" | "SessionEnd" => {
             // TRIGGER 4 (B5/T1.5) — error, and ONLY for a death the user did not
-            // cause. `clear` / `logout` / `prompt_input_exit` / `exit` are the
-            // human at the keyboard: `/clear`ing a conversation or typing
+            // cause. `clear` / `resume` / `logout` / `prompt_input_exit` / `exit`
+            // are the human at the keyboard: `/clear`ing a conversation or typing
             // `/exit` must never ring their own phone. An absent reason is a
             // real death (a killed pane reports nothing).
             //
@@ -975,14 +1120,21 @@ fn apply_payload(
             // resident forever. Fire-and-forget; a session that never browsed is
             // a no-op.
             crate::connectors::browser::dispose_on_teardown(&state.browser, session);
-            force_stopped(state, session);
+            if !agent_stays_in_pane(payload) {
+                force_stopped(state, session);
+            }
             act_changed || sub_changed || perm_changed || dropped_rows
         }
         // A turn failed with an agent error → record `{type, message}` for the
         // error badge (also clear the now-irrelevant activity).
         "stop_failure" | "StopFailure" => {
             let (etype, msg) = activity::error_info(payload);
-            let cleared = state.clear_activity(session);
+            let cleared = state.clear_activity(session)
+                | state.clear_permission_request(session)
+                | state.clear_elicitation(session)
+                | state.clear_browser_takeover(session)
+                | state.clear_question_request(session)
+                | state.clear_waiting_message(session);
             // TRIGGER 5 (B5/T1.5) — error. Raised with the agent's own error
             // text, before `set_error` moves it into the state.
             notify::notify_event(
@@ -1014,6 +1166,10 @@ fn apply_payload(
     if changed {
         broadcast_activity_delta(state, session);
     }
+}
+
+fn is_stop_failure(event: &str) -> bool {
+    matches!(event, "stop_failure" | "StopFailure")
 }
 
 /// True when `event` is one of Claude's session LIFECYCLE events (the ones whose
@@ -1096,8 +1252,8 @@ fn is_foreign_agent_payload(raw: &Value, tracked_cc_id: Option<&str>) -> bool {
 
 /// Did this `SessionEnd` represent a death the user did NOT cause?
 ///
-/// `clear` / `logout` / `prompt_input_exit` / `exit` are the human at the
-/// keyboard — their own keystroke ringing their own phone is the single
+/// `clear` / `resume` / `logout` / `prompt_input_exit` / `exit` are the human at
+/// the keyboard — their own keystroke ringing their own phone is the single
 /// most-hated false positive. Everything else (`other`, or no reason at all,
 /// which is what a killed pane produces) is a real death.
 fn crashed_reason(payload: &HookPayload) -> bool {
@@ -1105,9 +1261,22 @@ fn crashed_reason(payload: &HookPayload) -> bool {
         None | Some("") => true,
         Some(r) => !matches!(
             r.to_ascii_lowercase().as_str(),
-            "clear" | "logout" | "prompt_input_exit" | "exit"
+            "clear" | "resume" | "logout" | "prompt_input_exit" | "exit"
         ),
     }
+}
+
+/// Did this `SessionEnd` end a conversation, with the agent staying in the pane?
+///
+/// `/clear` and `/resume` close one conversation and open the next in the same
+/// process, and its `SessionStart` follows within milliseconds (reasons captured
+/// from Claude Code 2.1.318). So there is no stop to report and nothing for a
+/// disposable session to archive itself over.
+fn agent_stays_in_pane(payload: &HookPayload) -> bool {
+    matches!(
+        payload.reason.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("clear" | "resume")
+    )
 }
 
 /// Force a session `Stopped` from a `SessionEnd` hook (lifecycle).
@@ -1273,6 +1442,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -2077,6 +2247,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// `/clear` and `/resume` end the conversation, not the agent. The turn and
+    /// its activity are over, but no stop is forced, and `force_stopped` is the
+    /// only way a `SessionEnd` broadcasts `stopped` or archives a disposable session.
+    #[tokio::test]
+    async fn a_clear_or_resume_forces_no_stop() {
+        let (state, dir) = test_state().await;
+        let s = "worker-1";
+
+        for reason in ["clear", "resume", "Clear"] {
+            apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Bash","tool_input":{"command":"sleep 1"}}"#), false);
+            assert!(state.session_activity(s).and_then(|a| a.activity).is_some());
+
+            let end = format!(r#"{{"reason":"{reason}"}}"#);
+            apply_payload(&state, s, "session_end", &p(&end), false);
+            assert_eq!(state.take_forced_status(s), None, "{reason} forces no stop");
+            assert!(
+                state.session_activity(s).and_then(|a| a.activity).is_none(),
+                "{reason} still ends the turn's activity"
+            );
+        }
+
+        for reason in [r#"{"reason":"prompt_input_exit"}"#, r#"{"reason":"logout"}"#, r#"{"reason":"other"}"#, "{}"] {
+            apply_payload(&state, s, "session_end", &p(reason), false);
+            assert_eq!(state.take_forced_status(s), Some(Status::Stopped), "{reason} is a real end");
+        }
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_resume_is_not_a_crash() {
+        let ended = |reason: &str| HookPayload { reason: Some(reason.into()), ..Default::default() };
+        assert!(!crashed_reason(&ended("resume")));
+        assert!(!crashed_reason(&ended("clear")));
+        assert!(crashed_reason(&ended("other")));
+    }
+
     #[tokio::test]
     async fn session_start_clears_error_and_forced_status() {
         let (state, dir) = test_state().await;
@@ -2550,15 +2758,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_connect_request_clears_when_the_call_moves_on() {
-        // No hook reports the credential outcome (it never touches this plane —
-        // the card POSTs it straight to the vault), so "something after it
-        // happened" IS the resolution: the tool finishing, the turn ending, the
-        // user moving on.
+    async fn the_connect_card_outlives_its_own_tool_call_and_the_turn() {
+        // THE PHANTOM CARD. The `connect` tool is deliberately allow-listed and
+        // marker-free so it does NOT park the bot (see `connect_ask`), which means
+        // its own `PostToolUse` lands milliseconds after the `PreToolUse` that
+        // raised the card — and the tool's own answer tells the bot to "carry on
+        // meanwhile", so the turn's `Stop` follows shortly after. While those two
+        // events cleared the ask, the card's entire lifetime was one no-op tool
+        // call: the bot truthfully reported "I sent you a connect card" and no
+        // human ever saw one. The card must survive both.
+        //
+        // This is the one ask on this plane that is NOT a blocked call: a
+        // permission dialog / elicitation / takeover all stall the tool, so "the
+        // tool finished" genuinely resolves them. `connect` asks the human to act
+        // in their OWN time, so only the human resolves it (the card's own
+        // dismiss/grant route, `sessions::connect_request_dismiss_handler`) or a
+        // new process does.
         for (event, payload) in [
             ("post_tool", r#"{"tool_name":"mcp__connect__connect"}"#),
             ("post_tool_failure", LIVE_POST_TOOL_FAILURE),
             ("stop", "{}"),
+        ] {
+            let (state, dir) = test_state().await;
+            let s = "worker-connect";
+            apply_payload(&state, s, "pre_tool", &p(LIVE_CONNECT), false);
+            assert!(
+                state.session_activity(s).and_then(|a| a.connect_request).is_some(),
+                "{event}: precondition — a connect ask is live"
+            );
+            apply_payload(&state, s, event, &p(payload), false);
+            assert!(
+                state.session_activity(s).and_then(|a| a.connect_request).is_some(),
+                "{event} must NOT clear the connect card — the human has not answered it yet"
+            );
+
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blocking_ask_after_a_connect_ask_is_the_card_that_renders() {
+        // Review of #183: the card now outlives its own tool call, but the chat
+        // draws one card at a time with connect FIRST. A permission dialog the
+        // bot is actually parked on must therefore retire the connect card, or
+        // the human stares at a connect card while the bot waits on an invisible
+        // prompt.
+        let (state, _dir) = test_state().await;
+        let s = "worker-connect-then-perm";
+        apply_payload(&state, s, "pre_tool", &p(LIVE_CONNECT), false);
+        assert!(state.session_activity(s).and_then(|a| a.connect_request).is_some());
+        apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST), false);
+        let act = state.session_activity(s).expect("activity");
+        assert!(act.permission.is_some(), "the permission ask landed");
+        assert!(act.connect_request.is_none(), "…and the connect card yielded to it");
+    }
+
+    #[tokio::test]
+    async fn a_builtin_connect_raises_no_card() {
+        // `connect("shared-browser")` answers with a note and `card_sent: false`;
+        // raising a card for it (or for an id no catalog knows) would, now that
+        // the card persists, leave a WRONG card in the chat instead of an
+        // invisible one.
+        let (state, _dir) = test_state().await;
+        let s = "worker-builtin";
+        let payload = LIVE_CONNECT.replace("pmcp-notion", "shared-browser");
+        apply_payload(&state, s, "pre_tool", &p(&payload), false);
+        assert!(
+            state.session_activity(s).and_then(|a| a.connect_request).is_none(),
+            "a builtin connect raises no connect card"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_connect_request_clears_when_the_process_or_the_human_moves_on() {
+        // What DOES resolve it: a new claude process (nothing carries over), the
+        // session ending, or the human typing again (they are demonstrably at the
+        // surface the card is on, and did something else).
+        for (event, payload) in [
             ("session_end", "{}"),
             ("user_prompt", "{}"),
             ("session_start", "{}"),
@@ -3132,5 +3409,74 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod salvage_tests {
+    //! The hook's 16 KB cap cuts big payloads mid-token; these pin what the
+    //! salvage keeps (Claude writes its small fields first) and the attended
+    //! rule the observe hook's new flags feed.
+    use super::*;
+
+    /// A capped observe-hook body, built the way the hook command builds it.
+    fn capped(payload: &str) -> Vec<u8> {
+        let body = format!(
+            "{{\"session\":\"s\",\"event\":\"post_tool\",\"pane\":\"%1\",\"attended\":\"1\",\"entry\":\"cli\",\"payload\":{payload}}}"
+        );
+        let cut = body.len().min(16384 + 120);
+        body.as_bytes()[..cut].to_vec()
+    }
+
+    /// Claude Code's PostToolUse key order (measured on 2.1.291).
+    fn post_tool(input: &str, response_len: usize) -> String {
+        format!(
+            "{{\"session_id\":\"cc-1\",\"transcript_path\":\"/t.jsonl\",\"cwd\":\"/w\",\"hook_event_name\":\"PostToolUse\",\
+             \"tool_name\":\"Bash\",\"tool_input\":{input},\"tool_response\":{{\"stdout\":\"{}\"}},\"tool_use_id\":\"toolu_9\"}}",
+            "x".repeat(response_len)
+        )
+    }
+
+    #[test]
+    fn a_cut_in_the_response_keeps_the_tool_name_and_input() {
+        let raw = capped(&post_tool(r#"{"command":"ls","nested":{"error":1}}"#, 40_000));
+        assert!(serde_json::from_slice::<HookBody>(&raw).is_err(), "the capped body is invalid JSON");
+        let body = salvage_truncated_body(&raw).expect("salvaged");
+        assert_eq!((body.session.as_str(), body.event.as_str()), ("s", "post_tool"));
+        assert_eq!((body.attended.as_str(), body.entry.as_str()), ("1", "cli"));
+        let p = body.payload.expect("the head survives");
+        assert_eq!(p["tool_name"], json!("Bash"));
+        assert_eq!(p["tool_input"], json!({ "command": "ls", "nested": { "error": 1 } }));
+        assert_eq!(p["session_id"], json!("cc-1"));
+        assert_eq!(p[TRUNCATED_PAYLOAD_KEY], json!(true));
+        assert!(p.get("tool_use_id").is_none(), "the tail is gone, not invented");
+    }
+
+    #[test]
+    fn a_cut_in_a_huge_input_keeps_only_the_scalars() {
+        let big_input = format!("{{\"file_path\":\"/a.rs\",\"content\":\"{}\"}}", "y".repeat(40_000));
+        let raw = capped(&post_tool(&big_input, 10));
+        let p = salvage_truncated_body(&raw).expect("salvaged").payload.expect("head");
+        assert_eq!(p["tool_name"], json!("Bash"));
+        assert!(p.get("tool_input").is_none());
+        assert_eq!(p[TRUNCATED_PAYLOAD_KEY], json!(true));
+    }
+
+    #[test]
+    fn an_unrecognisable_payload_is_still_dropped_not_guessed() {
+        let raw = capped(&format!("{{\"blob\":\"{}\"}}", "z".repeat(40_000)));
+        let body = salvage_truncated_body(&raw).expect("the envelope is salvaged");
+        assert!(body.payload.is_none());
+    }
+
+    #[test]
+    fn only_an_explicitly_unattended_run_is_skipped() {
+        assert!(explicitly_unattended("0", ""));
+        assert!(explicitly_unattended("0", "cli"));
+        assert!(explicitly_unattended("", "other"));
+        assert!(!explicitly_unattended("1", "other"));
+        assert!(!explicitly_unattended("", "cli"));
+        // A hook command written before the flags existed: as before.
+        assert!(!explicitly_unattended("", ""));
     }
 }

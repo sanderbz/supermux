@@ -246,7 +246,7 @@ export function StoreView({
       {/* header */}
       <div
         className={cn(
-          'cs-header sticky top-0 z-10 flex flex-col gap-3 px-4 pb-3 sm:px-6',
+          'cs-header sm-page-header sticky top-0 flex flex-col gap-3 px-4 pb-3 sm:px-6',
           // The shell's MobileTopBar renders nothing, so a top-level route owns
           // its own top inset (same reason the grok roster header does). In the
           // PAGE variant (`/store`) reserve the iOS-PWA status-bar band on the
@@ -306,7 +306,7 @@ export function StoreView({
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
+      <div className="sm-page-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
         {showTabs && tab === 'installed' ? (
           <div role="tabpanel" id="store-tabpanel-installed" aria-labelledby="store-tab-installed" className="pt-2">
             <InstalledPanel cards={localCards} q={q} />

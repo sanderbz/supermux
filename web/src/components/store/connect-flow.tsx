@@ -17,8 +17,10 @@
  *     button, never a fake key field.
  *   · B `api_key` → one secret field + a "Get your key →" link + a one-line steer.
  *   · C `form` → the identity + secret + non-secret fields the schema declares.
- *   · D `mcp_oauth` → an HONEST note ("signs in in your bot's terminal") — NO key
- *     field, NO sign-in button; the client drives it at first use.
+ *   · D `mcp_oauth` → "Sign in with {name}": supermux BROKERS the OAuth (start →
+ *     the provider's consent page, same tab → back here). No key field. Rendered
+ *     by `<OauthConnectButton>` when the surface names a target (`oauthTarget`),
+ *     else via the caller's `onSignIn`, else an honest "sign in from the store".
  *   · E `none` → "No sign-in needed" (now TRUE, only for kind=none).
  *
  * Chrome is per-surface (`variant`): the chat card wraps this in `DialogShell`, the
@@ -31,10 +33,11 @@
  * runtime import stays relative, exactly like `connect-card.tsx` / `live-layer.tsx`.
  */
 import * as React from 'react'
-import { ArrowUpRight, Check, Copy, Loader2, Lock, Terminal } from 'lucide-react'
+import { ArrowUpRight, Check, Copy, Loader2, Lock } from 'lucide-react'
 
 import {
   connectorAuthKind,
+  oauthConnection,
   plainFields,
   pollDevice,
   secretField,
@@ -44,6 +47,7 @@ import {
   type ConnectorCard,
   type DeviceStart,
   type DeviceTarget,
+  type OauthConnection,
 } from '../../lib/api/connectors'
 import { cn } from '../../lib/utils'
 import {
@@ -51,6 +55,7 @@ import {
   CredentialTextField as TextField,
   defaultStr,
 } from './credential-fields'
+import { OauthConnectButton, oauthPrimaryClass } from './oauth-connect-button'
 
 /** The outcome of a successful seal — what the surface + the test leg need. */
 export interface ConnectFlowResult {
@@ -103,6 +108,13 @@ export interface ConnectFlowProps {
   renderAddedExtra?: (r: ConnectFlowResult) => React.ReactNode
   /** Seed straight to the added state (store re-opening an already-granted card). */
   initialAdded?: boolean
+  /** With `initialAdded`: what to show ("Connected as …", the test leg's account). */
+  initialResult?: ConnectFlowResult
+  /** Lane D (`mcp_oauth`, supermux-brokered): the grant target the sign-in lands
+   *  on. When set, the lane renders `<OauthConnectButton>` (same-tab hop). */
+  oauthTarget?: string
+  /** Lane D: the same-origin path the provider sends the owner back to. */
+  oauthReturnTo?: string
 }
 
 // The `device` phase renders the code panel + runs the poll loop; it subsumes the
@@ -125,6 +137,9 @@ export function ConnectFlow({
   children,
   renderAddedExtra,
   initialAdded,
+  initialResult,
+  oauthTarget,
+  oauthReturnTo,
 }: ConnectFlowProps) {
   const kind = connectorAuthKind(card)
   const secret = secretField(card)
@@ -143,7 +158,7 @@ export function ConnectFlow({
   const [secretVal, setSecretVal] = React.useState('')
   const [reveal, setReveal] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [result, setResult] = React.useState<ConnectFlowResult | null>(null)
+  const [result, setResult] = React.useState<ConnectFlowResult | null>(initialResult ?? null)
   // Lane A device sub-flow: the started grant (code + verification URL + handle).
   const [dev, setDev] = React.useState<DeviceStart | null>(null)
   const pollRef = React.useRef<number | null>(null)
@@ -274,6 +289,26 @@ export function ConnectFlow({
     }
   }
 
+  // Lane D (`mcp_oauth`) is its own screen, and it reads SERVER truth only.
+  // The brokered sign-in leaves the page for the provider and comes back through
+  // a full-page redirect, so a local "added" phase can never survive it — the
+  // card's own accounts can. One status header, one action, no second picker.
+  if (isMcpOauth) {
+    return (
+      <McpOauthLane
+        card={card}
+        variant={variant}
+        target={oauthTarget}
+        returnTo={oauthReturnTo}
+        onSignIn={onSignIn}
+        submitDisabled={submitDisabled}
+        blockedLabel={blockedLabel}
+        renderAddedExtra={renderAddedExtra}
+        picker={children}
+      />
+    )
+  }
+
   if (phase === 'added') {
     return (
       <AddedBlock
@@ -290,7 +325,9 @@ export function ConnectFlow({
   }
 
   const chat = variant === 'chat'
-  const showCta = keyLaneOpen && !suppressCta // during the OAuth lead the "Sign in" button is the primary; mcp_oauth suppresses it entirely (store)
+  // During the OAuth lead the "Sign in" button is the primary. Lane D never shows
+  // the key/Add CTA: signing in IS its connect (a grant with no token is a 401).
+  const showCta = keyLaneOpen && !suppressCta && !isMcpOauth
   const ctaBase = submitLabel ?? (needsSecret ? 'Connect' : 'Add')
   const ctaLabel =
     phase === 'saving' ? 'Connecting…' : submitDisabled && blockedLabel ? blockedLabel : ctaBase
@@ -310,11 +347,7 @@ export function ConnectFlow({
             onClick={startSignIn}
             disabled={submitDisabled}
             data-vr="connect-oauth"
-            className={cn(
-              chat
-                ? 'inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-full bg-fill-soft-2 px-[15px] text-[13.6px] font-semibold text-ink sm-t-morph hover:bg-fill-soft disabled:opacity-60'
-                : 'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60',
-            )}
+            className={oauthPrimaryClass(chat)}
             style={
               chat
                 ? { borderColor: 'color-mix(in oklab, var(--sm-accent) 40%, transparent)', borderWidth: '0.5px' }
@@ -341,18 +374,9 @@ export function ConnectFlow({
         </div>
       )}
 
-      {/* Lane D — hosted MCP that signs in in the bot's terminal (no key here). */}
-      {isMcpOauth && (
-        <div
-          className={cn(
-            'flex items-start gap-2 rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.45]',
-            chat ? 'mt-[11px] bg-fill-soft text-ink-2' : 'bg-muted/50 text-muted-foreground',
-          )}
-        >
-          <Terminal className="mt-px size-4 shrink-0" aria-hidden />
-          <span>{auth?.help_text || `${card.display_name} signs in the first time your bot uses it — approve it in the bot's terminal. There's no key to paste here.`}</span>
-        </div>
-      )}
+      {/* Lane D is handled by its own early return above (<McpOauthLane>): a
+          brokered sign-in leaves the page, so its state comes from the server,
+          not from this component's phase. */}
 
       {/* Lane E — no sign-in needed (now TRUE, only for kind=none). */}
       {isNone && (
@@ -370,9 +394,9 @@ export function ConnectFlow({
         </div>
       )}
 
-      {/* Lane B / C — the key + form fields. NEVER for mcp_oauth (Lane D is
-          note-only: the bot signs in in its terminal, there is no key to paste
-          here even if the manifest happens to declare a credential). */}
+      {/* Lane B / C — the key + form fields. NEVER for mcp_oauth: that lane has
+          no key to paste at all (supermux brokers the browser sign-in), and it
+          returns above before this ever renders. */}
       {keyLaneOpen && !isMcpOauth && (needsSecret || plains.length > 0) && (
         <div className={cn('flex flex-col', chat ? 'mt-[11px] gap-[9px]' : 'gap-3')}>
           {plains.map((f) => (
@@ -457,6 +481,160 @@ export function ConnectFlow({
             </button>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Lane D — the supermux-brokered sign-in ───────────────────────────────────
+
+/**
+ * <McpOauthLane> — the WHOLE `mcp_oauth` surface, on every screen that shows it.
+ *
+ * One status header, at most one "Grant to" picker, one button. It exists because
+ * the brokered sign-in is the one flow that LEAVES the app: the tab is handed to
+ * the provider and comes back through a top-level redirect, so anything the
+ * surface knew is gone. The old lane leaned on `<ConnectFlow>`'s local `added`
+ * phase and on a grant-scope set that could not even see a single-bot grant, so
+ * the owner came back from a sign-in the server had completed and was shown the
+ * INITIAL state — pick a bot, sign in — with no sign that anything had happened.
+ * He signed in again. And again.
+ *
+ * Everything here is derived from `card.accounts` (server truth, refetched on the
+ * return), so a reload, a second tab, or a redirect all agree.
+ */
+function McpOauthLane({
+  card,
+  variant,
+  target,
+  returnTo,
+  onSignIn,
+  submitDisabled,
+  blockedLabel,
+  renderAddedExtra,
+  picker,
+}: {
+  card: ConnectorCard
+  variant: 'chat' | 'store'
+  target?: string
+  returnTo?: string
+  onSignIn?: (connectorId: string) => Promise<void>
+  submitDisabled?: boolean
+  blockedLabel?: string
+  renderAddedExtra?: (r: ConnectFlowResult) => React.ReactNode
+  /** The store's "Grant to" picker. Rendered ONLY while nobody holds this
+   *  connector yet — a connected card has no choice left to make, and showing the
+   *  picker again is exactly what made the return read as a reset. */
+  picker?: React.ReactNode
+}) {
+  const chat = variant === 'chat'
+  const conn = oauthConnection(card)
+  const connected = conn.key === 'connected'
+  const signInLabel = conn.account
+    ? `Sign in again with ${card.display_name}`
+    : `Sign in with ${card.display_name}`
+
+  return (
+    <div
+      data-testid="oauth-lane"
+      data-state={conn.key}
+      className={cn('flex flex-col', chat ? 'mt-[13px] gap-2' : 'gap-3 rounded-2xl border border-border bg-card p-4')}
+    >
+      <OauthStatusLine conn={conn} chat={chat} />
+
+      {/* The ONE picker. Never alongside a second grant control — the store's
+          segmented "This bot / All agents" is hidden for this lane by the sheet. */}
+      {!connected && picker}
+
+      {/* The action. A surface that knows where the owner COMES BACK TO owns the
+          sign-in — even before a grant target is picked, where the button is
+          present but disabled under "Choose who gets it first". (Hiding it until
+          the picker was answered left the sheet with no primary at all and a line
+          telling the owner to go to the store he was already standing in.) */}
+      {!connected &&
+        (target ? (
+          <OauthConnectButton
+            card={card}
+            target={target}
+            returnTo={returnTo ?? '/store'}
+            chat={chat}
+            disabled={submitDisabled}
+            label={signInLabel}
+          />
+        ) : onSignIn || returnTo ? (
+          // No target chosen yet (or a caller that drives OAuth itself). Same
+          // button, disabled until the picker above is answered — the blocked
+          // label right below says why.
+          <button
+            type="button"
+            onClick={onSignIn ? () => void onSignIn(card.id) : undefined}
+            disabled={submitDisabled || !onSignIn}
+            data-vr="connect-oauth"
+            aria-label={signInLabel}
+            className={oauthPrimaryClass(chat)}
+          >
+            {signInLabel}
+          </button>
+        ) : null)}
+
+      {!connected && submitDisabled && blockedLabel && (
+        <p className={cn('text-[12px]', chat ? 'text-ink-3' : 'text-muted-foreground')}>{blockedLabel}</p>
+      )}
+
+      {!connected && (
+        <p className={cn('text-[12px] leading-[1.4]', chat ? 'text-ink-3' : 'text-muted-foreground')}>
+          {target || onSignIn || returnTo
+            ? MCP_OAUTH_STEER
+            : `Open ${card.display_name} in the store to sign in — supermux keeps the sign-in for the bots you choose.`}
+        </p>
+      )}
+
+      {/* Restart-to-apply rows + the account verbs, once there IS an account. */}
+      {conn.account &&
+        renderAddedExtra?.({
+          restartHint: false,
+          accountRef: conn.account.id,
+          accountLabel: conn.account.account_label || null,
+        })}
+    </div>
+  )
+}
+
+/** The lane's copy. No terminals: supermux brokers this sign-in in the browser
+ *  and the owner lands back on the very surface he started from. */
+export const MCP_OAUTH_STEER = "Tap Sign in — you'll come straight back here."
+
+/** The one-line connection state: "Connected as … — 32 tools", "Needs sign-in
+ *  again", "Sign-in stopped working", "Not connected". Never green unless the
+ *  server's own probe said so. */
+function OauthStatusLine({ conn, chat }: { conn: OauthConnection; chat: boolean }) {
+  const tone =
+    conn.tone === 'active'
+      ? 'text-status-ready-ink'
+      : conn.tone === 'error'
+        ? 'text-status-error-ink'
+        : conn.tone === 'warn'
+          ? 'text-status-active-ink'
+          : chat
+            ? 'text-ink-2'
+            : 'text-muted-foreground'
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span
+        data-testid="oauth-status"
+        className={cn('inline-flex items-center gap-2 text-[13.5px] font-semibold', tone)}
+      >
+        {conn.key === 'connected' && (
+          <span className="grid size-5 place-items-center rounded-full bg-status-ready/20">
+            <Check className="size-3" aria-hidden />
+          </span>
+        )}
+        {conn.title}
+      </span>
+      {conn.detail && (
+        <p className={cn('text-[12px] leading-[1.4]', chat ? 'text-ink-3' : 'text-muted-foreground')}>
+          {conn.detail}
+        </p>
       )}
     </div>
   )
@@ -624,7 +802,7 @@ function AddedBlock({
         </p>
       )}
       {result?.restartHint && (
-        <p className="text-[12.5px] text-muted-foreground">Restart the bot to apply — grants bind at the next launch.</p>
+        <p className="text-[12.5px] text-muted-foreground">Restart the bot to apply.</p>
       )}
       <TestRow card={card} accountRef={accountRef} />
       {result && renderAddedExtra?.(result)}
@@ -638,8 +816,8 @@ function TestRow({ card, accountRef, chat }: { card: ConnectorCard; accountRef: 
   const [state, setState] = React.useState<TestState>('idle')
   const [note, setNote] = React.useState<{ message: string; tone: 'ok' | 'bad' | 'muted' } | null>(null)
 
-  // No connected account to probe (identity-less seal, or an mcp_oauth/none lane):
-  // fall back to the honest agent-as-probe line rather than a fake green.
+  // No connected account to probe (identity-less seal, or a `none` lane): fall
+  // back to the honest agent-as-probe line rather than a fake green.
   if (!accountRef) {
     return (
       <p className={cn('text-[12px] leading-[1.4]', chat ? 'text-ink-3' : 'text-muted-foreground')}>

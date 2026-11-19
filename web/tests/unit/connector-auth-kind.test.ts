@@ -74,15 +74,16 @@ describe('connectorHasOAuth — the "Sign in with X" primary', () => {
 })
 
 describe('connectorNeedsCredential — the honest "Needs sign-in"', () => {
-  test('true for the paste + OAuth lanes', () => {
+  test('true for the paste + OAuth lanes — mcp_oauth included', () => {
     expect(connectorNeedsCredential(card({ kind: 'api_key' }))).toBe(true)
     expect(connectorNeedsCredential(card({ kind: 'form' }))).toBe(true)
     expect(connectorNeedsCredential(card({ kind: 'oauth_device' }))).toBe(true)
+    // supermux BROKERS the hosted-remote sign-in now and holds the token: a
+    // grant with no sealed token is a bot that will meet a 401, so it is an
+    // honest "Needs sign-in" (it used to read as a false green "Active").
+    expect(connectorNeedsCredential(card({ kind: 'mcp_oauth' }))).toBe(true)
   })
-  test('false for none (no auth) and mcp_oauth (signs in in the terminal)', () => {
-    // The false-green fix: a hosted mcp_oauth without a vaulted secret is NOT a
-    // "Needs sign-in" that implies a paste, and `none` needs nothing at all.
+  test('false only for none (no auth)', () => {
     expect(connectorNeedsCredential(card({ kind: 'none' }))).toBe(false)
-    expect(connectorNeedsCredential(card({ kind: 'mcp_oauth' }))).toBe(false)
   })
 })

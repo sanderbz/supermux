@@ -177,4 +177,17 @@ describe('routing helpers', () => {
     expect(sessionFromPath('/focus')).toBeNull()
     expect(sessionFromPath(undefined)).toBeNull()
   })
+
+  test('the AGENT path names the bot too — it is where a tap now lands', () => {
+    // `/agent/<name>` is the thread's address (`lib/agent-href.ts`) and is what
+    // a notification opens. Reading the thread is as much "I have seen it" as
+    // reading the terminal, so a card matched here must go stale as well.
+    expect(sessionFromPath('/agent/deploy-fix')).toBe('deploy-fix')
+    expect(sessionFromPath('/agent/with%20space')).toBe('with space')
+    expect(sessionFromPath('/agent')).toBeNull()
+    expect(sessionFromPath('/agents/deploy-fix')).toBeNull()
+    // A half-typed escape is not a name — and must not throw inside the
+    // visibility handler that calls this.
+    expect(sessionFromPath('/agent/100%')).toBeNull()
+  })
 })

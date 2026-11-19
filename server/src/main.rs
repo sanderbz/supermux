@@ -7,8 +7,8 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, bot_memory, config, connectors, db, external_access, external_edit, http, sessions,
-    state, teams, workflows,
+    agents, bot_memory, config, connectors, db, external_access, external_edit, hook_cli, http,
+    sessions, state, teams, workflows,
 };
 
 #[tokio::main]
@@ -39,6 +39,20 @@ async fn main() -> anyhow::Result<()> {
             let argv: Vec<String> = std::env::args().skip(2).collect();
             if let Err(e) = bot_memory::run::run_save_cli(&argv) {
                 eprintln!("supermux-memory: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        // BOT→APP HOOK CLIs. `supermux-{message,notify,task,schedule}` are the
+        // same trick as `supermux-memory`: a NAMED wrapper the per-session
+        // settings overlay can pre-approve deterministically, instead of a
+        // `Bash(curl …)` line the permission classifier stops an unattended bot
+        // on. Dispatched here so the call stays lean — no DB, no listener — and
+        // resolves everything from the pane's `SUPERMUX_*` env.
+        Some("__hook-cli") => {
+            let argv: Vec<String> = std::env::args().skip(2).collect();
+            if let Err(e) = hook_cli::run(&argv).await {
+                eprintln!("{e}");
                 std::process::exit(1);
             }
             return Ok(());
@@ -100,6 +114,13 @@ async fn main() -> anyhow::Result<()> {
     // config-dir seam wires into a bot's `settings.json`/env. Idempotent; a
     // failure only degrades memory recall/save (logged), never the server.
     bot_memory::install_scripts(&config.data_dir);
+
+    // Install the four bot→app hook wrappers
+    // (`<data_dir>/bin/supermux-{message,notify,task,schedule}`) the same overlay
+    // allow-lists, so a bot messages a teammate / pings the human / reports on its
+    // card without a `curl` permission prompt. Idempotent; a failure only sends
+    // those skills back to their `curl` fallback (logged), never the server.
+    hook_cli::install_scripts(&config.data_dir);
 
     // Session survival across restarts/deploys. tmux keeps its control
     // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening
@@ -185,6 +206,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Background tasks. The workflows tick (and its crash reaper) run here.
     workflows::spawn(state.clone());
+    supermux_server::browser_feedback::spawn(state.clone());
+    // Asks: clear the previous run's hook attachments (awaited, before the
+    // listener binds), then prune daily.
+    supermux_server::asks::start(&state).await;
     // "Keep me signed in": the shared browser's keep-alive sweep. A no-op — and
     // NO chrome start — while no tab has the toggle on, so the lazy-start
     // invariant holds. It is also the only thing in the codebase that rehydrates
@@ -220,6 +245,12 @@ async fn main() -> anyhow::Result<()> {
     // Seeding the row starts NO browser: chrome is spawned lazily, and only by a
     // granted session's first tool call.
     connectors::browser::mcp::seed(&state).await;
+    // …and, once, every bot the human has ALREADY lent a tab gets the connector
+    // grant that wires its `browser_*` tools. Lending does this at grant time
+    // now; this is for the rows written before it did, whose bots are the ones
+    // sitting in the broken state (a tab in the DB, no browser tools in their
+    // launch). Idempotent — a steady-state boot writes nothing.
+    connectors::browser::mcp::backfill_tab_grants(&state).await;
     // The built-in Company Group Chat connector card (kind `builtin_groupchat`).
     // Seeding the row grants nothing: a bot reaches the channel only through its
     // company's `@company:<id>` grant, written when group chat is enabled.

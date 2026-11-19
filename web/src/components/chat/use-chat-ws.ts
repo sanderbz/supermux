@@ -50,6 +50,10 @@ import {
 import type { WireEntry } from './wire'
 
 export interface ChatWireView {
+  conversationId?: string | null
+  sourceGeneration?: number | null
+  sourceEpoch?: string | null
+  sourceRevision?: number
   /**
    * The socket's window, OLDEST-FIRST, in wire shape.
    *
@@ -258,6 +262,7 @@ export function useChatWs(name: string, enabled: boolean, path?: string): ChatWi
     seeded: snap.seeded,
     hasMore: snap.hasMore,
     nextBefore: snap.nextBefore,
+    conversationId: snap.conversationId, sourceGeneration: snap.sourceGeneration, sourceEpoch: snap.sourceEpoch, sourceRevision: snap.sourceRevision,
     resyncCount: snap.resyncCount,
     isLoading: !snap.seeded && snap.state !== 'offline',
     isError: snap.state === 'offline',

@@ -426,4 +426,93 @@ describe('extractProvisionalTail — the bare-caret composer (cc 2.1.233)', () =
     expect(text).not.toMatch(/^[─╌—]{3,}$/m)
     expect(text).not.toContain('Welcome back')
   })
+
+  // ── cc 2.1.258: background agents, and the composer rule that grew a title ──
+  //
+  // `cc258-background-agent-panel.txt` is a live 80-column capture (provenance
+  // in `tests/fixtures/tui/README.md`) taken while a BACKGROUNDED agent was
+  // running. Before this fix the card drawn from it contained exactly two rows —
+  // `● main` and `◯ general-purpose  Run eight sequential echo calls  18s · ↓
+  // 25.8k tokens` — Claude Code's own agent-manager panel, captioned "Live
+  // terminal · unconfirmed", with none of the turn's actual prose in it.
+  describe('the cc258 background-agent capture', () => {
+    const CC258 = readFileSync(join(FIXTURES, 'cc258-background-agent-panel.txt'), 'utf8')
+
+    test('renders the turn’s prose and none of the screen below the composer', () => {
+      const text = extractProvisionalTail(CC258).join('\n')
+      // The prose IS there — a capture full of sentences may never render none.
+      expect(text).toContain('I launched a background agent')
+      // THE PANEL. Both rows, gone.
+      expect(text).not.toContain('◯ general-purpose')
+      expect(text).not.toMatch(/^\s*● main\s*$/m)
+      // The composer, its draft, and the mode hint under it — everything below
+      // the TITLED rule that `RULE_ROW` could not see before.
+      expect(text).not.toContain('Launch another background agent')
+      expect(text).not.toContain('auto mode on')
+      // The titled rule itself is furniture too, wherever it lands.
+      expect(text).not.toContain('probe-cc258')
+    })
+
+    test('never re-shows the reader’s own prompt, wrapped rows included', () => {
+      const text = extractProvisionalTail(CC258).join('\n')
+      // The echo's FIRST row was already cut by the `❯` scan; these are its soft
+      // -wrapped continuation rows, which carry no caret and stop short of the
+      // pane edge, so neither the caret scan nor the hard-wrap test saw them.
+      expect(text).not.toContain('whose task is:')
+      expect(text).not.toContain('sleep 7 before each echo')
+    })
+
+    test('drops every spinner frame the capture contains, not just two of them', () => {
+      const text = extractProvisionalTail(CC258).join('\n')
+      // `✻`/`✽` were the frames somebody happened to capture first; this run
+      // also produced `✶`, `✢` and a plain ASCII `*`.
+      expect(text).not.toMatch(/Zesting|Crystallizing|Waiting for \d+ background/)
+      expect(text).not.toContain('Tip:')
+    })
+  })
+
+  // A TITLED RULE IS STILL A RULE — the unit of the above, stated once so a
+  // future edit to `RULE_ROW` fails here and not only on a 4 KB fixture.
+  test('a composer under a TITLED rule is a bottom cut', () => {
+    const capture = [
+      '● the agent is writing this',
+      '────────────────────────────────────────── my-session ─',
+      '❯ a draft the reader has typed',
+      '────────────────────────────────────────────────────────',
+      '  ⏵⏵ auto mode on (shift+tab to cycle)',
+      '',
+      '  ● main',
+      '  ◯ general-purpose  some task      18s · ↓ 25.8k tokens',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['● the agent is writing this'])
+  })
+})
+
+describe('Codex outage evidence excludes its composer and footer', () => {
+  test('keeps assistant output and removes the uppercase wrapped mobile footer', () => {
+    const prose = '\u001b[32m• This answer is still arriving.\u001b[0m'
+    const capture = [prose, '', '\u001b[2m› Ask Codex to do anything\u001b[0m', '', '  GPT-6.1-Sol high · ~/projects/workspace · Main', '  [default] · ← for agen', '  ts'].join('\n')
+    expect(extractProvisionalTail(capture, 12, 'codex')).toEqual([prose])
+  })
+
+  test('genuine multiline terminal drafts do not become assistant prose', () => {
+    const capture = ['• Answer still streaming.', '', '› Keep this private draft', '  and its wrapped continuation', '', '  gpt-6.1-sol high · ~/project · Main'].join('\n')
+    expect(extractProvisionalTail(capture, 12, 'codex')).toEqual(['• Answer still streaming.'])
+  })
+
+  test('a composer-only capture has no outage prose', () => {
+    expect(extractProvisionalTail('› Ask Codex to do anything\n\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
+  })
+
+  test('model names and angle quotes inside output are preserved', () => {
+    const prose = ['• GPT-6.1-Sol is the requested model.', 'This explanation includes › as an example.']
+    expect(extractProvisionalTail([...prose, '›', '', 'gpt-6.1-sol high · ~/project'].join('\n'), 12, 'codex')).toEqual(prose)
+  })
+})
+
+
+test('Codex refuses fallback without a proved visible composer boundary', () => {
+  expect(extractProvisionalTail('• Saved tool output.\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
+  expect(extractProvisionalTail('› quoted example\n• More assistant prose.', 12, 'codex')).toEqual([])
+  expect(extractProvisionalTail('  a wrapped draft continuation\n\nGPT-6.1-Sol high · ~/project', 12, 'codex')).toEqual([])
 })

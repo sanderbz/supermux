@@ -95,17 +95,19 @@ export interface TailStatus {
   resync_epoch: number
 }
 
+export interface SourceIdentity { conversation_id?: string | null; source_generation?: number; source_epoch?: string }
+
 /** server→client frames. All JSON text; nothing else is ever sent. */
 export type ServerFrame =
   | { type: 'auth_ok' }
-  | {
+  | ({
       type: 'seed'
       entries: WireEntry[]
       has_more: boolean
       next_before: string | null
-    }
+    } & SourceIdentity)
   | ({ type: 'seed_done'; high_water: number } & TailStatus)
-  | { type: 'entry'; entry: WireEntry }
+  | ({ type: 'entry'; entry: WireEntry } & SourceIdentity)
   | ({ type: 'state' } & TailStatus)
   | { type: 'resync'; reason: string }
 
@@ -155,6 +157,10 @@ function readStatus(o: Record<string, unknown>): TailStatus | null {
   return status
 }
 
+function sourceFields(v: Record<string, unknown>): SourceIdentity {
+  return { ...(typeof v.conversation_id === 'string' || v.conversation_id === null ? { conversation_id: v.conversation_id } : {}), ...(typeof v.source_generation === 'number' ? { source_generation: v.source_generation } : {}), ...(typeof v.source_epoch === 'string' ? { source_epoch: v.source_epoch } : {}) }
+}
+
 /**
  * One raw text frame → a typed frame, or `null` for anything this client does
  * not model.
@@ -179,6 +185,7 @@ export function parseFrame(raw: string): ServerFrame | null {
       if (!Array.isArray(v.entries) || !v.entries.every(isWireEntry)) return null
       return {
         type: 'seed',
+        ...sourceFields(v),
         entries: v.entries,
         has_more: v.has_more === true,
         next_before: typeof v.next_before === 'string' ? v.next_before : null,
@@ -191,7 +198,7 @@ export function parseFrame(raw: string): ServerFrame | null {
     }
     case 'entry': {
       if (!isWireEntry(v.entry)) return null
-      return { type: 'entry', entry: v.entry }
+      return { type: 'entry', entry: v.entry, ...sourceFields(v) }
     }
     case 'state': {
       const status = readStatus(v)
@@ -211,6 +218,10 @@ export function parseFrame(raw: string): ServerFrame | null {
 
 /** Everything one open socket knows, and nothing about the socket itself. */
 export interface WireState {
+  conversationId: string | null
+  sourceGeneration: number | null
+  sourceEpoch: string | null
+  sourceRevision: number
   /** Sealed entries, OLDEST-FIRST — the order the seed arrives in (`newest-last`)
    *  and the order live frames extend. The renderer's newest-first list is
    *  derived in `wire-entries.ts`; this stays in wire order so `seq`
@@ -231,6 +242,7 @@ export interface WireState {
 }
 
 export const EMPTY_WIRE: WireState = {
+  conversationId: null, sourceGeneration: null, sourceEpoch: null, sourceRevision: 0,
   entries: [],
   highWater: null,
   seeded: false,
@@ -264,14 +276,21 @@ export function applyFrame(state: WireState, frame: ServerFrame): WireState {
   switch (frame.type) {
     case 'auth_ok':
       return state
-    case 'seed':
+    case 'seed': {
+      const id = frame.conversation_id === undefined ? state.conversationId : frame.conversation_id
+      const epoch = frame.source_epoch ?? null, generation = frame.source_generation ?? null
+      const changed = id !== state.conversationId || (epoch !== null && epoch === state.sourceEpoch && state.sourceGeneration !== null && generation !== state.sourceGeneration)
       return {
         ...state,
         entries: frame.entries,
+        highWater: null,
+        conversationId: id, sourceEpoch: epoch, sourceGeneration: generation,
+        sourceRevision: state.sourceRevision + (changed ? 1 : 0),
         seeded: false,
         hasMore: frame.has_more,
         nextBefore: frame.next_before,
       }
+    }
     case 'seed_done': {
       const { type: _t, high_water: hw, ...status } = frame
       return { ...state, highWater: hw, seeded: true, status }
@@ -281,10 +300,11 @@ export function applyFrame(state: WireState, frame: ServerFrame): WireState {
       return { ...state, status }
     }
     case 'resync':
-      return { ...state, seeded: false, resyncCount: state.resyncCount + 1 }
+      return { ...state, seeded: false, highWater: null, resyncCount: state.resyncCount + 1, sourceRevision: state.sourceRevision + (state.conversationId === null ? 1 : 0) }
     case 'entry': {
       const e = frame.entry
-      if (state.highWater === null || e.seq < state.highWater) return state
+      if ((frame.conversation_id !== undefined && frame.conversation_id !== state.conversationId) || (frame.source_epoch !== undefined && frame.source_epoch !== state.sourceEpoch) || (frame.source_generation !== undefined && frame.source_generation !== state.sourceGeneration)) return state
+      if (!state.seeded || state.highWater === null || e.seq < state.highWater) return state
       const last = state.entries[state.entries.length - 1]
       if (last && e.seq <= last.seq) return state
       return { ...state, entries: [...state.entries, e] }

@@ -311,6 +311,10 @@ export const TOAST = {
   issueStarted: 'Agent started',
   jobScheduled: 'Job scheduled',
   needsInput: 'Needs input',
+  /** A followed `/agent/<name>` link whose bot the roster cannot find — deleted,
+   *  renamed, or never on this instance. It NAMES the bot: "that link is dead"
+   *  is only useful if it says which one. */
+  noSuchBot: (name: string) => `No bot named “${name}”`,
 } as const
 
 // ── Onboarding / first-60-seconds ─────────────────────────────────────────────

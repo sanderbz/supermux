@@ -20,6 +20,8 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod claude_account;
+pub mod company_inbox;
 pub mod connect_ask;
 pub mod connector_config;
 pub mod elicitation;
@@ -126,6 +128,14 @@ pub fn router_for(state: AppState) -> Router {
         // the P3b funnel below. Sits next to `config` because it, too, returns
         // `restart_required`.
         .route("/api/sessions/{name}/company", post(move_company::handler))
+        // Let ONE HQ bot accept `/supermux-message` from company bots (opt-in;
+        // closed by default). Owner/admin-all only — the guard is inside.
+        .route(
+            "/api/sessions/{name}/company-inbox",
+            get(company_inbox::get_handler)
+                .put(company_inbox::put_handler)
+                .delete(company_inbox::delete_handler),
+        )
         // ── tmux lifecycle ──
         .route("/api/sessions/{name}/start", post(start_handler))
         .route("/api/sessions/{name}/stop", post(stop_handler))
@@ -209,6 +219,11 @@ pub fn router_for(state: AppState) -> Router {
         .route(
             "/api/sessions/{name}/connect_request",
             post(connect_request_handler),
+        )
+        // "Not now" on the chat Connect card: clear the pending ask.
+        .route(
+            "/api/sessions/{name}/connect_request/dismiss",
+            post(connect_request_dismiss_handler),
         )
         // ── reopen a past Claude conversation for the dir ──
         .route(
@@ -1138,6 +1153,7 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         Some(true) => {}
     }
 
+    crate::asks::close_for_session_removed(state, name).await;
     let removed = db::sessions::purge_archived(&state.pool, name).await?;
     if removed == 0 {
         // Raced with another purge/unarchive between the guard and the DELETE.
@@ -1582,6 +1598,9 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     if is_native {
         native::remove_session_data(name, &state.config.data_dir);
     }
+    // Close its open asks first (rev + `closed` frame each); the closed rows
+    // outlive the session row so `GET /api/asks?since=` replays the close.
+    crate::asks::close_for_session_removed(state, name).await;
     db::sessions::delete(&state.pool, name).await?;
 
     // Audit row — every destructive HTTP call records an entry. `delete` is
@@ -1769,6 +1788,14 @@ pub struct ConfigInput {
     /// Stored as a JSON array. Nothing injects it yet, so unlike model/memory it
     /// does NOT set `restart_required`.
     pub skills: Option<Vec<String>>,
+    /// Move this session to another Claude login (migration 0041's column):
+    /// the dir exported as `CLAUDE_CONFIG_DIR` at launch. Same validation as on
+    /// create (absolute, existing, `[A-Za-z0-9._/-]`). `Some("")` returns it to
+    /// the host default. A launch-line change: `restart_required: true`, and the
+    /// live agent keeps its login until its next start. Refused for a remote-host
+    /// row, and for a session with a conversation when the new dir does not share
+    /// the transcript tree (the restart would come up without that conversation).
+    pub config_dir: Option<String>,
 }
 
 pub async fn config_patch(
@@ -1968,6 +1995,45 @@ pub async fn config_patch(
         db::sessions::set_skills(&state.pool, &current, &json).await?;
         changed = true;
     }
+    if let Some(v) = patch.config_dir {
+        let row = db::sessions::get(&state.pool, &current)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("session '{current}' not found")))?;
+        let value = if v.trim().is_empty() {
+            String::new()
+        } else {
+            valid_config_dir(&v).map_err(AppError::BadRequest)?
+        };
+        if !value.is_empty() && row.host_id.is_some() {
+            return Err(AppError::BadRequest(
+                "config_dir is local-only; a remote-host session cannot take one".into(),
+            ));
+        }
+        if !value.is_empty() && !lifecycle::launches_claude(&row.provider) {
+            return Err(AppError::BadRequest(format!(
+                "config_dir only applies to Claude sessions, not '{}'",
+                row.provider
+            )));
+        }
+        // Keep the conversation: a session that has one must land on a dir that
+        // reads the same transcript tree, or its restart would boot fresh.
+        if !row.cc_conversation_id.trim().is_empty() {
+            let home = crate::claude_tools::atomic::claude_config_dir();
+            let from = claude_account::effective_home(&row.config_dir, &home);
+            let to = claude_account::effective_home(&value, &home);
+            if !claude_account::shares_transcripts(&from, &to) {
+                return Err(AppError::BadRequest(format!(
+                    "config_dir '{}' does not share this session's transcripts ({}/projects); \
+                     link its projects/ to the current one first, or the restart loses the conversation",
+                    to.display(),
+                    from.display()
+                )));
+            }
+        }
+        db::sessions::set_config_dir(&state.pool, &current, &value).await?;
+        restart_required = true;
+        changed = true;
+    }
     if patch.toggle_pin.is_some() {
         db::sessions::toggle_pin(&state.pool, &current).await?;
         changed = true;
@@ -2133,6 +2199,15 @@ async fn create_handler(
     //     cannot even learn another company exists by probing create).
     // Owner/admin (Scope::All) are unrestricted — any/no company as before.
     if let crate::scope::Scope::Company(hc) = crate::scope::Scope::of(ctx.0.as_ref()) {
+        // Which Claude login a bot boots on is the owner's decision, at create
+        // exactly as at PATCH /config: the dir is granted read-write inside the
+        // company jail, so a member naming any existing directory here would
+        // widen their own bot's sandbox to it. Members get the host default.
+        if input.config_dir.as_deref().is_some_and(|d| !d.trim().is_empty()) {
+            return Err(AppError::Forbidden(
+                "only the owner can choose which Claude login a session uses".into(),
+            ));
+        }
         match input.company_id {
             None => input.company_id = Some(hc),
             Some(c) if c == hc => {}
@@ -2200,8 +2275,32 @@ async fn git_handler(
 async fn config_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(input): Json<ConfigInput>,
+    ctx: crate::scope::OptCtx,
+    Json(mut input): Json<ConfigInput>,
 ) -> Result<Json<Envelope<SessionView>>, AppError> {
+    // Which Claude login a bot boots on is an owner decision: the dir is granted
+    // read-write inside the company jail and carries that login's credentials,
+    // so a company-scoped member may not point a bot at another one.
+    if input.config_dir.is_some()
+        && matches!(crate::scope::Scope::of(ctx.0.as_ref()), crate::scope::Scope::Company(_))
+    {
+        return Err(AppError::Forbidden(
+            "only the owner can move a session to another Claude login".into(),
+        ));
+    }
+    if input.dir.is_some() {
+        // Workspace changes serialize with feedback capture and final delivery.
+        let lock = state.lock_for(&name);
+        let _guard = lock.lock().await;
+        crate::scope::authorize_session_for_human(&state, ctx.0.as_ref(), &name).await?;
+        if let Some(jail) = crate::scope::company_jail(&state, ctx.0.as_ref()).await? {
+            let dir =
+                crate::files::path_safe::resolve_safe(input.dir.as_deref().unwrap(), Some(&jail))
+                    .await?;
+            input.dir = Some(dir.to_string_lossy().into_owned());
+        }
+        return Ok(ok(config_patch(&state, &name, input).await?));
+    }
     Ok(ok(config_patch(&state, &name, input).await?))
 }
 
@@ -2234,6 +2333,8 @@ async fn stop_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     lifecycle::stop(&state, &name).await?;
+    // A deliberate Stop: a boot audit a crash cut short must not bring it back.
+    auto_actions::forget_pending_audit(&state.config.data_dir, &name);
     // Stop is async-shaped → 202 Accepted.
     Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
 }
@@ -2696,6 +2797,25 @@ async fn connect_request_handler(
     Ok(ok(json!({ "connector_id": id })))
 }
 
+/// `POST /api/sessions/{name}/connect_request/dismiss` — the human tapped "Not
+/// now": clear the session's pending connect ask (the SAME live-state the hook
+/// producer / the store handoff set). Same two fences as the push handler.
+async fn connect_request_dismiss_handler(
+    State(state): State<AppState>,
+    ctx: crate::scope::OptCtx,
+    Path(name): Path<String>,
+) -> Result<Json<Envelope<serde_json::Value>>, AppError> {
+    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &name).await?;
+    db::sessions::get(&state.pool, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
+    let changed = state.clear_connect_request(&name);
+    if changed {
+        crate::hooks::broadcast_activity_delta(&state, &name);
+    }
+    Ok(ok(json!({ "dismissed": changed })))
+}
+
 // ── resume picker ────────────────────────────────────────────────────────────
 
 /// `GET /api/sessions/{name}/resumable` — past Claude conversations for the
@@ -3047,6 +3167,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -3438,6 +3559,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 
@@ -3503,6 +3625,7 @@ mod tests {
                 model: None,
                 memory: None,
                 skills: None,
+                config_dir: None,
             },
         )
         .await
@@ -3547,6 +3670,7 @@ mod tests {
                 model: None,
                 memory: None,
                 skills: None,
+                config_dir: None,
             },
         )
         .await
@@ -3689,6 +3813,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 
@@ -3724,6 +3849,7 @@ mod tests {
             model: None,
             memory: None,
             skills: None,
+            config_dir: None,
         }
     }
 

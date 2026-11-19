@@ -25,13 +25,16 @@ import {
   grantCandidates,
   granteeLabel,
   mayGrantAll,
+  tabGrantNeedsRestart,
   tabHost,
   tabState,
   type BrowserTab,
   type GrantCandidate,
+  type TabGrant,
 } from '@/lib/api/browser'
 import { canKeepSignedIn, keepAliveSheetRow } from '@/lib/browser/keep-signed-in'
 import { GrantControl, type GrantScope } from '@/components/store/grant-control'
+import { RestartToApply } from '@/components/roster/granted-connectors'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { cn } from '@/lib/utils'
 import { SessionPicker } from '@/components/session/session-picker'
@@ -84,6 +87,13 @@ export function TabGrantSheet({
   const [busy, setBusy] = React.useState<string | null>(null)
 
   const granted = React.useMemo(() => (tab ? activeGrantees(tab) : []), [tab])
+  // The same set as `granted`, but the ROWS — each carries the server's honest
+  // `applied` / `running` pair, which is the only way this sheet can tell "lent"
+  // from "lent and usable".
+  const liveGrants = React.useMemo<TabGrant[]>(
+    () => (tab ? tab.grants.filter((g) => g.enabled !== 0) : []),
+    [tab],
+  )
 
   // The bots the human can still HAND this tab — the tab's company-mates minus
   // whoever already holds it. This is the roster the picker offers; picking one
@@ -304,26 +314,47 @@ export function TabGrantSheet({
               </p>
             ) : (
               <ul className="flex flex-col gap-1.5">
-                {granted.map((grantee) => (
+                {liveGrants.map((g) => (
                   <li
-                    key={grantee}
-                    data-tab-grantee={grantee}
-                    className="flex min-h-11 items-center justify-between gap-2 rounded-xl border border-border px-3"
+                    key={g.grantee}
+                    data-tab-grantee={g.grantee}
+                    className="flex flex-col gap-1.5 rounded-xl border border-border px-3 py-2"
                   >
-                    <span className="min-w-0 truncate text-[12.5px] text-foreground">
-                      {granteeLabel(grantee, company?.display_name)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void revoke(grantee)}
-                      disabled={busy !== null}
-                      className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50 motion-reduce:transition-none"
-                    >
-                      {busy === grantee && (
-                        <Loader2 className="size-3 animate-spin" aria-hidden />
-                      )}
-                      Revoke
-                    </button>
+                    <div className="flex min-h-9 items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-[12.5px] text-foreground">
+                        {granteeLabel(g.grantee, company?.display_name)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void revoke(g.grantee)}
+                        disabled={busy !== null}
+                        className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50 motion-reduce:transition-none"
+                      >
+                        {busy === g.grantee && (
+                          <Loader2 className="size-3 animate-spin" aria-hidden />
+                        )}
+                        Revoke
+                      </button>
+                    </div>
+                    {/* LENT ≠ USABLE. The tab grant now carries the Shared
+                        Browser connector with it, but a connector only reaches a
+                        bot's toolset at launch — so a bot that was already
+                        running has the tab and not the `browser_*` tools yet.
+                        Saying nothing here is what left a bot improvising
+                        against the HTTP API and inventing a connect card. One
+                        sentence, and the one tap that fixes it. */}
+                    {tabGrantNeedsRestart(g) && (
+                      <div
+                        data-tab-grant-restart={g.grantee}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="text-[11.5px] leading-relaxed text-muted-foreground">
+                          Lent, but {g.grantee} is running without the browser tools.
+                          Restart it to hand them over.
+                        </span>
+                        <RestartToApply name={g.grantee} />
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

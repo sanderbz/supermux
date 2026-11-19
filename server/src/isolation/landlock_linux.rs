@@ -525,6 +525,123 @@ mod tests {
         );
     }
 
+    /// REPRO (the codex-boot bug): a confined company child must be able to
+    /// CREATE + WRITE a file inside `~/.codex`, because codex-cli opens a SQLite
+    /// state runtime there at startup. With `~/.codex` on the RO+exec list only,
+    /// the kernel denied the open and codex died before its first prompt with
+    /// `failed to initialize sqlite local db at ~/.codex/state_5.sqlite … (code:
+    /// 1544) attempt to write a readonly database`, dropping the pane to the bare
+    /// login shell (measured live 2026-09-07 on `sphere` + `reisposter-codex`).
+    ///
+    /// The spec is built against a THROWAWAY home so the probe never creates,
+    /// touches or locks anything in the operator's real `~/.codex`. The same
+    /// child also proves the jail is genuinely enforcing (an unlisted sibling dir
+    /// next to that home stays denied), so a pass cannot be a false positive from
+    /// a host that confines nothing.
+    #[test]
+    fn company_plan_can_write_the_codex_home() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
+
+        // Exit protocol. SKIP = host cannot enforce (nothing to assert).
+        // Bitmask: 1=codex-home write ok, 2=unlisted sibling DENIED (jail real).
+        const SKIP: i32 = 42;
+        const B_CODEX_WRITE: i32 = 1;
+        const B_SIBDENY: i32 = 2;
+
+        let Some(real_home) = dirs::home_dir() else {
+            eprintln!("no home dir; skipping");
+            return;
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        // Base under the REAL home, not /tmp — the allow-list grants /tmp broadly,
+        // so a sibling under it could never be denied and the control probe would
+        // be meaningless.
+        let base = real_home.join(format!(".supermux-iso-codex-{}-{}", std::process::id(), nanos));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Cleanup(base.clone());
+
+        // A throwaway $HOME whose `.codex` is the dir under test, plus the company
+        // root, plus an unlisted sibling that must stay denied.
+        let fake_home = base.join("home");
+        let codex_home = fake_home.join(".codex");
+        let root = base.join("acme");
+        let sibling = base.join("other");
+        std::fs::create_dir_all(&codex_home).expect("mk fake ~/.codex");
+        std::fs::create_dir_all(&root).expect("mk company root");
+        std::fs::create_dir_all(&sibling).expect("mk sibling");
+        std::fs::write(sibling.join("secret.txt"), b"sibling company secret").expect("write secret");
+
+        // The REAL company allow-list, against the throwaway home.
+        let spec = SandboxSpec::for_company(&root, &fake_home);
+
+        // The exact file codex-cli failed on.
+        let db_c = CString::new(codex_home.join("state_5.sqlite").as_os_str().as_bytes()).unwrap();
+        let sib_c = CString::new(sibling.join("secret.txt").as_os_str().as_bytes()).unwrap();
+
+        // SAFETY: mirrors the sibling-deny probe above — the child runs only
+        // Landlock syscalls, libc `open` on pre-owned paths, and `_exit(2)`; it
+        // never returns into the Rust runtime.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // ── child ──
+            let level = match LandlockLinux.confine(&spec) {
+                Ok(l) => l,
+                Err(_) => unsafe { libc::_exit(SKIP) },
+            };
+            if !level.is_enforced() {
+                unsafe { libc::_exit(SKIP) };
+            }
+            let mut bits = 0i32;
+            // 1) create + write the codex state DB — THE regression.
+            let wfd = unsafe { libc::open(db_c.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o600) };
+            if wfd >= 0 {
+                bits |= B_CODEX_WRITE;
+                unsafe { libc::close(wfd) };
+            }
+            // 2) control: an unlisted sibling must still be denied.
+            let sfd = unsafe { libc::open(sib_c.as_ptr(), libc::O_RDONLY) };
+            if sfd < 0 {
+                bits |= B_SIBDENY;
+            } else {
+                unsafe { libc::close(sfd) };
+            }
+            unsafe { libc::_exit(bits) };
+        }
+        assert!(pid > 0, "fork failed");
+
+        // ── parent ──
+        let mut status: libc::c_int = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let exited = (status & 0x7f) == 0;
+        let code = if exited { (status >> 8) & 0xff } else { -1 };
+
+        if code == SKIP {
+            eprintln!(
+                "landlock not enforced on this host (or confine errored); \
+                 skipping the codex-home write assertions"
+            );
+            return;
+        }
+        assert_eq!(
+            code,
+            B_CODEX_WRITE | B_SIBDENY,
+            "confined company child: expected codex-home-write|sibling-denied (bits {}), got {} \
+             (bit 1 missing ⇒ the ~/.codex RW grant regressed and codex cannot boot)",
+            B_CODEX_WRITE | B_SIBDENY,
+            code,
+        );
+    }
+
     /// REPRO (bug B): a confined company holder must be able to `openpty(3)` —
     /// i.e. open `/dev/ptmx` RW and then its `/dev/pts/N` slave. Without the
     /// device nodes on the allow-list the kernel denies `/dev/ptmx` with EACCES,

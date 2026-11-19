@@ -55,7 +55,9 @@ import { ComposerShell } from './composer-shell'
 import type { ChatItem } from './entries'
 import { buildTranscript } from './grouping'
 import { SessionHeaderPill, type HeaderWorkflow } from './header-pill'
+import { BrowserPairingButton } from '../browser-feedback/browser-pairing'
 import { LiveLayer } from './live-layer'
+import type { NativeAskView } from './ask-cards'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem, type ScheduleRef } from './transcript-item'
 import { Bubble, DownIcon, MessageRow, SystemLine } from './ui'
@@ -263,6 +265,11 @@ export interface ChatConversationProps {
   questionChosen?: number | null
   /** The line the card became once an answer landed. */
   dialogResolved?: string | null
+  /** The ask chat answers natively — straight through to the live band
+   *  (`live-layer.tsx` `nativeAsk`). */
+  nativeAsk?: NativeAskView | null
+  /** The line a delivered native answer leaves (`live-layer.tsx`). */
+  askDelivered?: string | null
   /** The pty's stall line, straight through to the live band's working row
    *  (`live-layer.tsx` `stalled`). */
   stalled?: string | null
@@ -371,6 +378,8 @@ export function ChatConversation({
   onAnswerQuestion,
   questionChosen,
   dialogResolved,
+  nativeAsk,
+  askDelivered,
   stalled,
   compacting,
   onRetryPending,
@@ -536,7 +545,7 @@ export function ChatConversation({
           pin={pin}
           surface={phone ? 'phone' : 'desktop'}
           leading={headerLeading}
-          trailing={headerTrailing}
+          trailing={<div className="flex shrink-0 items-center gap-1">{!dialog && <BrowserPairingButton session={name} label={session?.display_name || name} compact={phone} provider={session?.provider} remote={session?.host_id != null} />}{headerTrailing}</div>}
           connection={headerStatus}
           // The name opens the bot's details when the shell gives us a door
           // (mobile chat); on the desktop seam it is omitted and the name stays
@@ -681,8 +690,8 @@ export function ChatConversation({
             <ChatLoadingSkeleton />
           ) : noItemsYet ? null : (
             nodes.map((node) => (
+              <div key={node.key} data-chat-anchor={node.key} className="flow-root">
               <TranscriptItem
-                key={node.key}
                 node={node}
                 name={name}
                 surface={phone ? 'phone' : 'desktop'}
@@ -696,6 +705,7 @@ export function ChatConversation({
                 onOpenSchedule={onOpenSchedule}
                 onOpenTerminal={onOpenTerminal}
               />
+              </div>
             ))
           )}
 
@@ -735,6 +745,8 @@ export function ChatConversation({
             onAnswerQuestion={onAnswerQuestion}
             questionChosen={questionChosen}
             dialogResolved={dialogResolved}
+            nativeAsk={nativeAsk}
+            askDelivered={askDelivered}
             stalled={stalled}
             compacting={compacting}
             attention={

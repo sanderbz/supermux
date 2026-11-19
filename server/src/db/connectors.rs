@@ -90,6 +90,19 @@ pub struct Account {
     /// DISTINCT rows keyed by this; two HQ (`None`) connects still dedup to one.
     /// `SELECT *` / `FromRow` picks up the nullable column automatically.
     pub company_id: Option<i64>,
+    /// The provider's STABLE subject for this account (0042) — `sub` ▷ `id` ▷
+    /// `email` out of userinfo / the id_token. `None` = un-keyed: a pre-0042 row,
+    /// or one minted by a path that captures no identity (paste, device flow).
+    /// The dedup key for the brokered-OAuth path: a display `account_label` is
+    /// not one (it can be a shared display name, or the bare resource host), so
+    /// two identities keyed on it collapsed into one row and swapped tokens under
+    /// the first one's grants. Non-secret; never returned by the accounts API.
+    pub identity_key: Option<String>,
+    /// How many tools this account's MCP server listed in a REAL `tools/list`
+    /// (0043). `None` = never counted — a pre-0043 row, an untestable probe, or a
+    /// server that answered `initialize` but not `tools/list`. Never invented, and
+    /// a later probe that reaches no count leaves the last true value alone.
+    pub tool_count: Option<i64>,
 }
 
 /// A row of the `vault` table (opaque ciphertext — see [`crate::vault`]).
@@ -278,6 +291,52 @@ pub async fn grant(
     Ok(())
 }
 
+/// **Ensure `session_name` holds an ENABLED grant of `connector_id`** — the
+/// idempotent "make sure this is on" primitive, as opposed to [`grant`]'s "set
+/// it to this".
+///
+/// Returns `true` only when this call actually CHANGED something (the grant was
+/// absent, or present but disabled). A caller uses that to decide whether the
+/// bot needs a restart to pick the connector up — an already-enabled grant was
+/// already bound at the session's last launch, so re-stamping `granted_at` there
+/// would manufacture a false "Restart to apply".
+///
+/// Where the grant IS (re)made, `granted_at` is refreshed to now, which is what
+/// makes [`crate::connectors::api::grant_applied`] read it as not-yet-applied
+/// until the session restarts. `secret_ref` is left alone: this is for
+/// credential-free builtins (the Shared Browser), never a secret-bearing card.
+pub async fn ensure_enabled(
+    pool: &SqlitePool,
+    session_name: &str,
+    connector_id: &str,
+) -> sqlx::Result<bool> {
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT enabled FROM session_connectors WHERE session_name = ? AND connector_id = ?",
+    )
+    .bind(session_name)
+    .bind(connector_id)
+    .fetch_optional(pool)
+    .await?;
+    if existing == Some(1) {
+        return Ok(false);
+    }
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO session_connectors
+            (session_name, connector_id, secret_ref, enabled, granted_at)
+         VALUES (?, ?, NULL, 1, ?)
+         ON CONFLICT(session_name, connector_id) DO UPDATE SET
+            enabled = 1,
+            granted_at = excluded.granted_at",
+    )
+    .bind(session_name)
+    .bind(connector_id)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(true)
+}
+
 /// Account-aware [`grant`]: same idempotent upsert, but also pins which
 /// [`Account`] the grant uses (`account_ref`). Used by the connect / add-account /
 /// reconnect paths; the plain [`grant`] leaves `account_ref` untouched (a re-grant
@@ -446,6 +505,71 @@ pub async fn account_find_by_label(
     .await
 }
 
+/// The one account of a connector matching a STABLE `identity_key` within a
+/// company scope (0042) — the dedup key for the brokered-OAuth path. Same
+/// `company_id IS ?` rule as [`account_find_by_label`]. An empty key never
+/// matches (callers pass `None` instead of `Some("")`).
+pub async fn account_find_by_identity(
+    pool: &SqlitePool,
+    connector_id: &str,
+    identity_key: &str,
+    company_id: Option<i64>,
+) -> sqlx::Result<Option<Account>> {
+    if identity_key.is_empty() {
+        return Ok(None);
+    }
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts
+          WHERE connector_id = ? AND identity_key = ? AND company_id IS ?
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1",
+    )
+    .bind(connector_id)
+    .bind(identity_key)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// The one UN-KEYED (`identity_key IS NULL`) account matching `account_label` in
+/// a company scope — the upgrade bridge (0042). A row minted before identities
+/// existed, or by a path that captures none, is ADOPTED by the first identity
+/// that signs in on it (the caller stamps the key via [`account_set_identity`])
+/// instead of being duplicated. A row that already carries a DIFFERENT identity
+/// is never returned, so two identities sharing a display label stay distinct.
+pub async fn account_find_unkeyed_by_label(
+    pool: &SqlitePool,
+    connector_id: &str,
+    account_label: &str,
+    company_id: Option<i64>,
+) -> sqlx::Result<Option<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts
+          WHERE connector_id = ? AND account_label = ? AND company_id IS ?
+            AND identity_key IS NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1",
+    )
+    .bind(connector_id)
+    .bind(account_label)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stamp an account's stable `identity_key` (0042). Written right after the row is
+/// minted or adopted; keeping it out of [`account_add`]/[`account_replace`] means
+/// the label-only paths (paste, device flow) can never blank a key they never had.
+/// Returns true if the row existed.
+pub async fn account_set_identity(pool: &SqlitePool, id: &str, identity_key: &str) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE connector_accounts SET identity_key = ? WHERE id = ?")
+        .bind(identity_key)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// The company a grant TARGET resolves to — the scope an account minted for it
 /// belongs to (own > company > all, expressed as the target string, 0037):
 ///   * `*` / "all" / empty  → `None` (HQ / all-agents / global)
@@ -468,6 +592,18 @@ pub async fn company_of_grant_target(pool: &SqlitePool, session_name: &str) -> O
         .ok()
         .flatten()
         .and_then(|s| s.company_id)
+}
+
+/// The account whose sealed secret is `secret_ref` (one vault row per account,
+/// so at most one). Used by the launch-time OAuth refresh to write the honest
+/// `disconnected`/`expired` verdict on a dead refresh token.
+pub async fn account_by_secret_ref(pool: &SqlitePool, secret_ref: &str) -> sqlx::Result<Option<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT * FROM connector_accounts WHERE secret_ref = ? ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(secret_ref)
+    .fetch_optional(pool)
+    .await
 }
 
 /// Fetch one account by its id (the `account_ref`).
@@ -559,6 +695,20 @@ pub async fn account_set_health(
     Ok(res.rows_affected() > 0)
 }
 
+/// Stamp the tool count a REAL `tools/list` returned for this account (0043).
+///
+/// Only ever called with a count a probe actually enumerated, so the stored value
+/// is never invented. A probe that reached no count simply doesn't call this — the
+/// previous true count survives rather than being blanked to "unknown".
+pub async fn account_set_tool_count(pool: &SqlitePool, id: &str, tool_count: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE connector_accounts SET tool_count = ? WHERE id = ?")
+        .bind(tool_count)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 // ── vault ─────────────────────────────────────────────────────────────────────
 
 /// Insert (or replace) a vault row with an already-sealed blob. Returns nothing;
@@ -624,6 +774,7 @@ mod tests {
             github_token: None,
             statusline_tap: false,
             isolation_mode: crate::isolation::IsolationMode::BestEffort,
+            company_isolation: Vec::new(),
             human_auth: Default::default(),
             extra_origins: Vec::new(),
         };
@@ -1022,6 +1173,43 @@ mod tests {
         assert_eq!(found_b.secret_ref.as_deref(), Some("sref-B"), "no secret_ref swap");
         assert_eq!(found_a.company_id, Some(1));
         assert_eq!(found_b.company_id, Some(2));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── identity-keyed accounts (0042) ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn identity_lookup_beats_the_label_and_stays_company_scoped() {
+        // Two identities sharing ONE display label (the resource-host fallback):
+        // the key tells them apart, the label cannot.
+        let (pool, dir) = test_pool().await;
+        insert_connector(&pool, "gh").await;
+        let a = account_add(&pool, "gh", "app.example", Some("sref-A"), None).await.unwrap();
+        let b = account_add(&pool, "gh", "app.example", Some("sref-B"), None).await.unwrap();
+        account_set_identity(&pool, &a, "sub-A").await.unwrap();
+        account_set_identity(&pool, &b, "sub-B").await.unwrap();
+
+        assert_eq!(account_find_by_identity(&pool, "gh", "sub-A", None).await.unwrap().unwrap().id, a);
+        assert_eq!(account_find_by_identity(&pool, "gh", "sub-B", None).await.unwrap().unwrap().id, b);
+        assert!(account_find_by_identity(&pool, "gh", "sub-C", None).await.unwrap().is_none());
+        assert!(account_find_by_identity(&pool, "gh", "", None).await.unwrap().is_none(), "empty key matches nothing");
+        // Same key, other company scope → not this row (P2b, 0037 rule holds).
+        assert!(account_find_by_identity(&pool, "gh", "sub-A", Some(1)).await.unwrap().is_none());
+        // Both rows are keyed now, so the un-keyed bridge finds neither.
+        assert!(account_find_unkeyed_by_label(&pool, "gh", "app.example", None).await.unwrap().is_none());
+
+        // A legacy / paste-minted row (identity_key NULL) IS adoptable — once.
+        let legacy = account_add(&pool, "gh", "legacy.example", Some("sref-L"), None).await.unwrap();
+        let found = account_find_unkeyed_by_label(&pool, "gh", "legacy.example", None).await.unwrap();
+        assert_eq!(found.map(|r| r.id), Some(legacy.clone()));
+        account_set_identity(&pool, &legacy, "sub-L").await.unwrap();
+        assert!(account_find_unkeyed_by_label(&pool, "gh", "legacy.example", None).await.unwrap().is_none());
+        // account_replace must NOT blank the stamped key (the label paths share it).
+        account_replace(&pool, &legacy, "renamed", Some("sref-L2")).await.unwrap();
+        let row = account_get(&pool, &legacy).await.unwrap().unwrap();
+        assert_eq!(row.identity_key.as_deref(), Some("sub-L"));
+        assert_eq!(row.account_label, "renamed");
         pool.close().await;
         std::fs::remove_dir_all(dir).ok();
     }

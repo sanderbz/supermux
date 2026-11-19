@@ -98,6 +98,10 @@ export function goneFor(reason: string | undefined): ChatGone | null {
 }
 
 export interface ChatSnapshot {
+  conversationId?: string | null
+  sourceGeneration?: number | null
+  sourceEpoch?: string | null
+  sourceRevision?: number
   entries: readonly WireEntry[]
   state: ChatConnState
   /** A complete seed page is on screen (`seed_done` landed at least once). */
@@ -202,9 +206,13 @@ export const AUTOFETCH_CONCURRENCY = 2
 
 /** `GET /api/sessions/{name}/chat/entry/{uuid}` — `sessionRequest` unwraps the
  *  `{ok,data}` envelope and throws a `SessionError` on 404/409. */
-async function defaultFetchFull(name: string, uuid: string): Promise<unknown> {
+async function defaultFetchFull(name: string, uuid: string, source?: { conversationId: string | null; sourceGeneration: number | null; sourceEpoch: string | null }, signal?: AbortSignal): Promise<unknown> {
+  const params = new URLSearchParams()
+  if (source?.conversationId) params.set('conversation_id', source.conversationId)
+  if (source?.sourceGeneration != null) params.set('source_generation', String(source.sourceGeneration))
+  if (source?.sourceEpoch) params.set('source_epoch', source.sourceEpoch)
   const full = await sessionRequest<{ body?: unknown }>(
-    `/api/sessions/${encodeURIComponent(name)}/chat/entry/${encodeURIComponent(uuid)}`,
+    `/api/sessions/${encodeURIComponent(name)}/chat/entry/${encodeURIComponent(uuid)}?${params}`, { signal },
   )
   return full?.body
 }
@@ -231,7 +239,7 @@ export interface ChatSocketOptions {
   connect?: (url: string) => SocketLike
   token?: () => string
   baseUrl?: () => string
-  fetchFull?: (name: string, uuid: string) => Promise<unknown>
+  fetchFull?: (name: string, uuid: string, source?: { conversationId: string | null; sourceGeneration: number | null; sourceEpoch: string | null }, signal?: AbortSignal) => Promise<unknown>
   schedule?: (fn: () => void, ms: number) => number
   cancel?: (id: number) => void
   rand?: () => number
@@ -263,7 +271,10 @@ export class ChatSocket {
    *  failure. A failure is not retried: the entry keeps its "… clipped"
    *  marker, which is honest, where a retry loop against a 404 is not. */
   private readonly attempted = new Set<string>()
+  private readonly requested = new Set<string>()
   private inflight = 0
+  private fetchGeneration = 0
+  private fetchAbort = new AbortController()
   /** In-flight and failed fetch-full uuids — the two states a clipped entry's
    *  affordance renders (A6 T4.2). */
   private readonly fetching = new Set<string>()
@@ -290,6 +301,7 @@ export class ChatSocket {
   snapshot(): ChatSnapshot {
     return {
       entries: this.wire.entries,
+      conversationId: this.wire.conversationId, sourceGeneration: this.wire.sourceGeneration, sourceEpoch: this.wire.sourceEpoch, sourceRevision: this.wire.sourceRevision,
       state: this.conn,
       seeded: this.wire.seeded,
       resyncCount: this.wire.resyncCount,
@@ -353,6 +365,7 @@ export class ChatSocket {
     if (this.disposed) return
     if (this.fetching.has(uuid)) return
     this.attempted.delete(uuid)
+    this.requested.add(uuid)
     this.failed.delete(uuid)
     this.pump(uuid)
     this.emit()
@@ -361,6 +374,7 @@ export class ChatSocket {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.fetchAbort.abort()
     this.clearTimers()
     const ws = this.ws
     this.ws = null
@@ -434,6 +448,10 @@ export class ChatSocket {
       }
       const before = this.wire
       this.wire = applyFrame(this.wire, frame)
+      if (before.sourceRevision !== this.wire.sourceRevision || before.sourceEpoch !== this.wire.sourceEpoch || before.sourceGeneration !== this.wire.sourceGeneration) {
+        this.fetchGeneration++; this.fetchAbort.abort(); this.fetchAbort = new AbortController()
+        this.inflight = 0; this.attempted.clear(); this.requested.clear(); this.failed.clear(); this.fetching.clear()
+      }
       if (frame.type === 'seed_done') this.attempt = 0
       // The staleness clock (A6 T2.2). It ticks on frames the server sent
       // because something HAPPENED — a seed completing, an entry, a tail-state
@@ -441,7 +459,7 @@ export class ChatSocket {
       // never reaches here, which is the point: a socket can be perfectly open
       // against a tailer that stopped reading, and letting the handshake tick
       // this clock would hide exactly that.
-      this.lastSignalAt = this.opts.now()
+      if (this.wire !== before) this.lastSignalAt = this.opts.now()
       if (this.wire !== before) {
         this.conn = stateFor(this.wire)
         this.pump()
@@ -535,19 +553,21 @@ export class ChatSocket {
    *  is the same whoever asked. */
   private pump(extra?: string): void {
     if (this.disposed) return
-    const wanted = extra
-      ? [extra, ...truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)]
-      : truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)
+    if (extra) this.requested.add(extra)
+    const wanted = [...this.requested, ...truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)]
     for (const uuid of wanted) {
       if (this.inflight >= AUTOFETCH_CONCURRENCY) return
       if (this.attempted.has(uuid)) continue
+      const revision = this.wire.sourceRevision, fetchGeneration = this.fetchGeneration
+      const source = { conversationId: this.wire.conversationId, sourceGeneration: this.wire.sourceGeneration, sourceEpoch: this.wire.sourceEpoch }
       this.attempted.add(uuid)
+      this.requested.delete(uuid)
       this.inflight++
       this.fetching.add(uuid)
       void this.opts
-        .fetchFull(this.opts.name, uuid)
+        .fetchFull(this.opts.name, uuid, source, this.fetchAbort.signal)
         .then((body) => {
-          if (this.disposed) return
+          if (this.disposed || this.wire.sourceRevision !== revision || this.fetchGeneration !== fetchGeneration) return
           if (body === undefined) {
             // A 200 with no body is a miss, not a success: the entry stays
             // clipped, so say so rather than leaving a spinner spinning.
@@ -564,9 +584,10 @@ export class ChatSocket {
           // the other half: the failure is REMEMBERED, so the surface can
           // offer a retry instead of a `title` tooltip pointing at the
           // terminal.
-          this.failed.add(uuid)
+          if (this.wire.sourceRevision === revision && this.fetchGeneration === fetchGeneration) this.failed.add(uuid)
         })
         .finally(() => {
+          if (this.fetchGeneration !== fetchGeneration) return
           this.inflight--
           this.fetching.delete(uuid)
           if (!this.disposed) this.emit()

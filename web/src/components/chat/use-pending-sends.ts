@@ -42,12 +42,15 @@ import {
   type SendReceipt,
 } from './pending'
 import { sendGate, type ComposerNotice } from './use-composer'
+import { getDraft, setDraft } from './composer-draft'
+import { sendFailureNote } from './send-errors'
 
 /* ── the store ───────────────────────────────────────────────────────────── */
 
 const store = new Map<string, readonly PendingSend[]>()
 const listeners = new Map<string, Set<() => void>>()
 const EMPTY: readonly PendingSend[] = []
+const inFlight = new Map<string, Promise<void>>()
 
 function snapshot(name: string): readonly PendingSend[] {
   return store.get(name) ?? EMPTY
@@ -136,6 +139,8 @@ export interface UsePendingSendsOptions {
    *  while it is down, silence is evidence about the socket and nothing else.
    *  See `pending.ts::watchdogState`. */
   planeDown?: boolean
+  /** Clear only the unchanged attachment selection after a successful retry. */
+  onRetrySent?: (send: PendingSend) => void
 }
 
 export interface PendingSendsHandle {
@@ -162,6 +167,7 @@ export function usePendingSends({
   formCard = false,
   receipt = null,
   planeDown = false,
+  onRetrySent,
 }: UsePendingSendsOptions): PendingSendsHandle {
   const raw = React.useSyncExternalStore(
     React.useCallback((fn) => subscribe(name, fn), [name]),
@@ -304,138 +310,70 @@ export function usePendingSends({
     return () => window.clearTimeout(id)
   }, [deadline])
 
-  const submit = React.useCallback(
-    async (text: string) => {
-      const n = ++seq
-      const id = `send-${n}`
-      // The idempotency key travels with the row and is reused on every retry,
-      // so the server dedups a re-POST of a message it already typed.
-      const sendId = mintSendId(n)
-      const atMs = serverNowMs()
-      // The two BASELINES, captured before the POST leaves: what the transcript
-      // already held (so no entry that was on screen can be mistaken for this
-      // send's echo), and where the server's own last-send receipt stood (so a
-      // newer one is evidence about THIS send).
-      const seen: ReadonlySet<string> | null =
-        entriesRef.current.length > 0
-          ? new Set(entriesRef.current.map((e) => e.uuid))
-          : null
-      const receiptAt = receiptRef.current?.atS ?? 0
-      // WAS A TURN ALREADY RUNNING? Read here and never again: ~200ms from now
-      // the status flips because of THIS message, and a row that read the live
-      // status would then say it was queued behind itself (`deliveryLine`).
-      const wasActive = activeRef.current
-      // Drawn BEFORE the POST resolves: the echo is the acknowledgement that
-      // the user's Enter was received by this app, and it claims nothing more
-      // than that until the state below says otherwise.
-      update(name, (cur) => [
-        ...cur,
-        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt, activeAtSend: wasActive, sendId },
-      ])
+  const retryContext = React.useRef({ dialogCard, formCard, onRetrySent })
+  React.useLayoutEffect(() => { retryContext.current = { dialogCard, formCard, onRetrySent } }, [dialogCard, formCard, onRetrySent])
+
+  const deliver = React.useCallback((p: PendingSend, verify: boolean): Promise<void> => {
+    const key = `${name}:${p.id}`
+    const running = inFlight.get(key)
+    if (running) return running
+    const sendId = p.sendId ?? mintSendId(++seq)
+    patch(name, p.id, {
+      state: 'sending', atMs: serverNowMs(), note: undefined, transportError: false, sendId,
+      receiptAtS: receiptRef.current?.atS ?? 0, activeAtSend: activeRef.current,
+      seen: entriesRef.current.length ? new Set(entriesRef.current.map(e => e.uuid)) : null,
+    })
+    const attempt: Promise<void> = (async () => {
       try {
-        await input.submit(text, { sendId })
-        // RE-STAMPED on the response, not left at the moment the POST was
-        // issued. `POST /send` is not fast by construction: it can AUTO-WAKE a
-        // dead pty (`lifecycle.rs` `start()`, seconds) before it takes the
-        // session lock and types. With the old stamp an 8s wake meant the send
-        // was already past its 5s watchdog window the instant it succeeded —
-        // "this didn't reach the session", with a Retry button, over a message
-        // that had just landed (A4 review). The retry path always re-stamped;
-        // this is the same rule, applied where the clock actually starts.
-        // RECEIPTED ON 2xx — the root cure for the intermittent false "this
-        // didn't reach the session" (owner IMG_2890). `POST /send` types the text
-        // into the pty AND stamps `last_send_text` BEFORE it returns Ok (server
-        // `send_harness_text`), so a resolved submit IS the proof `receipted`
-        // means — more reliable than waiting for that same `last_send_text` to
-        // arrive back over the socket and text-match (which loses to the 1 s
-        // `last_send_at` granularity on quick successive sends). Marking it here
-        // shows the honest "the session has it" at once and makes `watchdogState`
-        // never escalate a delivered send to the false "didn't reach".
-        patch(name, id, { state: 'unconfirmed', atMs: serverNowMs(), receipted: true })
-      } catch (err) {
-        patch(name, id, {
-          state: 'undelivered',
-          note: errorNote(err),
-          transportError: isTransportError(err),
+        const lens = verify && peek ? await peek.refresh() : null
+        const gate = verify ? sendGate(lens, retryContext.current) : { send: true as const }
+        if (!gate.send) throw Object.assign(new Error(refusalNote(gate.notice)), { status: 409 })
+        await input.submit(p.text, { sendId })
+        patch(name, p.id, {
+          // Stamp receipt arrival: a slow POST must not consume the echo deadline.
+          state: 'unconfirmed', atMs: serverNowMs(), receipted: true,
+          note: 'notice' in gate && gate.notice ? refusalNote(gate.notice) : undefined,
         })
-        // Rethrown so the composer still knows the send failed (it keeps the
-        // draft in the box on this path), but MARKED: this failure is already
-        // stated on the row above, with the server's sentence and a Retry, so
-        // the banner must not say it a second time. `markInlineOwned` is the
-        // whole of the precedence rule — see `pending.ts`.
+        if (verify) {
+          // Retry sends the saved message, never the currently edited draft.
+          // Clear only the original text; a new or edited draft remains intact.
+          const original = p.composerDraft ?? p.text
+          if (getDraft(name) === original) setDraft(name, '')
+          retryContext.current.onRetrySent?.(p)
+        }
+      } catch (err) {
+        patch(name, p.id, { state: 'undelivered', note: sendFailureNote(err), transportError: isTransportError(err) })
         throw markInlineOwned(err)
       }
-    },
-    [input, name],
-  )
+    })().finally(() => { if (inFlight.get(key) === attempt) inFlight.delete(key) })
+    inFlight.set(key, attempt)
+    return attempt
+  }, [input, name, peek])
 
-  const tracked = React.useMemo<SessionInput>(
-    () => ({ ...input, submit }),
-    [input, submit],
-  )
+  const submit = React.useCallback((text: string, opts?: Parameters<SessionInput['submit']>[1]): Promise<void> => {
+    // Enter on an unchanged failed draft is the same logical send as Retry.
+    // Keep its row/key, including ambiguous lost responses. An edited message
+    // gets its own identity; an acknowledged prior message is not a retry.
+    const existing = snapshot(name).findLast(p => p.text === text && !p.receipted &&
+      (p.state === 'undelivered' || inFlight.has(`${name}:${p.id}`)))
+    if (existing) return deliver(existing, false)
+    const n = ++seq
+    const p: PendingSend = {
+      id: `send-${n}`, text, atMs: serverNowMs(), state: 'sending', sendId: mintSendId(n),
+      composerDraft: opts?.composer?.draft, attachmentPrefix: opts?.composer?.attachmentPrefix,
+      seen: entriesRef.current.length ? new Set(entriesRef.current.map(e => e.uuid)) : null,
+      receiptAtS: receiptRef.current?.atS ?? 0, activeAtSend: activeRef.current,
+    }
+    update(name, cur => [...cur, p])
+    return deliver(p, false)
+  }, [deliver, name])
 
-  const retry = React.useCallback(
-    (id: string) => {
-      const p = snapshot(name).find((x) => x.id === id)
-      // A POST in flight is not retryable — that is the double-send the
-      // watchdog's `sending` state exists to prevent. Neither is one the SERVER
-      // has already acknowledged typing into the pty: the row is not offering a
-      // Retry in that state, and this is the belt to that braces.
-      if (!p || p.state === 'sending' || p.receipted) return
-      patch(name, id, {
-        state: 'sending',
-        atMs: serverNowMs(),
-        note: undefined,
-        // A fresh attempt: drop the previous verdict's transport flag so the
-        // eviction exit re-decides on THIS attempt's outcome, never the last.
-        transportError: false,
-        // A retry is a new delivery: it needs its own receipt baseline, or the
-        // receipt for the FIRST attempt would confirm it instantly — and its own
-        // reading of whether a turn was already running, for the same reason.
-        receiptAtS: receiptRef.current?.atS ?? 0,
-        activeAtSend: activeRef.current,
-      })
-      void (async () => {
-        try {
-          const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard, formCard })
-          if (!gate.send) {
-            patch(name, id, { state: 'undelivered', note: refusalNote(gate.notice) })
-            return
-          }
-          // The SAME idempotency key as the original send: if the first POST
-          // actually reached the session (a false failure, or a dropped
-          // response), the server recognises this re-POST and does NOT type the
-          // message a second time. `p.sendId` is absent only for a row restored
-          // from before this field existed; a fresh key then is the pre-fix
-          // behaviour (a genuinely-failed send re-delivered once).
-          await input.submit(p.text, { sendId: p.sendId ?? mintSendId(++seq) })
-          // The watchdog clock restarts from the RETRY, not from the original
-          // send: it is a new delivery, and it gets its own window.
-          //
-          // A gate that let the retry THROUGH with a notice still leaves its
-          // sentence on the row: the terminal had something at its prompt that
-          // this capture could not classify, and the row is the only place this
-          // path can say so.
-          patch(name, id, {
-            state: 'unconfirmed',
-            atMs: serverNowMs(),
-            // Same as the first-send path: a resolved re-POST proves the pty has
-            // it, so mark it delivered and never let the watchdog cry "didn't
-            // reach" over a message that landed.
-            receipted: true,
-            note: gate.notice ? refusalNote(gate.notice) : undefined,
-          })
-        } catch (err) {
-          patch(name, id, {
-            state: 'undelivered',
-            note: errorNote(err),
-            transportError: isTransportError(err),
-          })
-        }
-      })()
-    },
-    [dialogCard, formCard, input, name, peek],
-  )
+  const tracked = React.useMemo<SessionInput>(() => ({ ...input, submit }), [input, submit])
+  const retry = React.useCallback((id: string) => {
+    const p = snapshot(name).find(send => send.id === id)
+    if (!p || p.state === 'sending' || p.receipted) return
+    void deliver(p, true).catch(() => { /* The retained row owns this failure. */ })
+  }, [deliver, name])
 
   const dismiss = React.useCallback((id: string) => {
     update(name, (cur) => {
@@ -458,10 +396,6 @@ export function usePendingSends({
     // is not that raiser.
     attention: null as PendingAttention | null,
   }
-}
-
-function errorNote(err: unknown): string | undefined {
-  return err instanceof Error ? err.message : undefined
 }
 
 /**
@@ -489,12 +423,12 @@ function isTransportError(err: unknown): boolean {
  *  banner to borrow. The same two facts `composer.tsx`'s `NOTICE_TITLE` states
  *  for the send path; T5's `attention.ts` is where this copy consolidates. */
 function refusalNote(notice: ComposerNotice): string {
-  if (notice.kind === 'dialog') return 'Claude is waiting on the request above — answer it first.'
+  if (notice.kind === 'dialog' || notice.kind === 'dialog-form') return 'Answer the request above before retrying.'
   if (notice.kind === 'dialog-terminal') {
     return 'The terminal is showing a prompt chat can’t answer — answer it there.'
   }
   if (notice.kind === 'tui-draft-unverified') {
     return 'Sent — the terminal’s prompt wasn’t empty, and chat couldn’t tell that text from Claude’s own suggestion.'
   }
-  return 'The terminal has an unsent draft.'
+  return 'Finish or clear the draft in Terminal, then retry.'
 }

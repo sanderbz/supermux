@@ -65,6 +65,66 @@ pub struct CompaniesConfig {
     /// with an empty list (no migration).
     #[serde(default)]
     pub agent_inboxes: Vec<AgentInbox>,
+    /// Supermux-brokered remote-MCP OAuth **clients** (RFC 7591 dynamic
+    /// registrations), keyed by `(issuer, redirect_uri)`. A DCR-issued
+    /// `client_secret` lives HERE (this file is already written 0600 via
+    /// [`write_atomic`]) because it is a per-client credential shared by every
+    /// account — a per-account vault row would be the wrong home. Defaulted, so an
+    /// older store parses byte-identically with an empty list (no migration).
+    #[serde(default)]
+    pub mcp_oauth_clients: Vec<McpOauthClient>,
+}
+
+/// One dynamically-registered OAuth client for a remote MCP server's
+/// authorization server. Never returned by any endpoint; `client_secret` (when
+/// the AS issued one despite `token_endpoint_auth_method: none`) is sent as
+/// `client_secret_post` on every token-endpoint call and evicted on
+/// `invalid_client`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct McpOauthClient {
+    pub issuer: String,
+    pub redirect_uri: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+}
+
+fn same_client_key(a: &McpOauthClient, issuer: &str, redirect_uri: &str) -> bool {
+    a.issuer.trim_end_matches('/') == issuer.trim_end_matches('/')
+        && a.redirect_uri.eq_ignore_ascii_case(redirect_uri)
+}
+
+/// The cached client for `(issuer, redirect_uri)`, if registered.
+pub fn find_mcp_oauth_client<'a>(
+    cfg: &'a CompaniesConfig,
+    issuer: &str,
+    redirect_uri: &str,
+) -> Option<&'a McpOauthClient> {
+    cfg.mcp_oauth_clients
+        .iter()
+        .find(|c| same_client_key(c, issuer, redirect_uri))
+}
+
+/// Replace-or-push a client keyed by `(issuer, redirect_uri)` — never two
+/// registrations for the same key.
+pub fn upsert_mcp_oauth_client(cfg: &mut CompaniesConfig, client: McpOauthClient) {
+    if let Some(existing) = cfg
+        .mcp_oauth_clients
+        .iter_mut()
+        .find(|c| same_client_key(c, &client.issuer, &client.redirect_uri))
+    {
+        *existing = client;
+    } else {
+        cfg.mcp_oauth_clients.push(client);
+    }
+}
+
+/// Drop the client for `(issuer, redirect_uri)`. Returns whether one was removed.
+pub fn remove_mcp_oauth_client(cfg: &mut CompaniesConfig, issuer: &str, redirect_uri: &str) -> bool {
+    let before = cfg.mcp_oauth_clients.len();
+    cfg.mcp_oauth_clients
+        .retain(|c| !same_client_key(c, issuer, redirect_uri));
+    cfg.mcp_oauth_clients.len() != before
 }
 
 /// One company's Cloudflare agent-inbox: `agent@<domain>` forwarded to a
@@ -403,6 +463,7 @@ mod tests {
             oauth_apps: vec![],
             quick_tunnel: None,
             agent_inboxes: vec![],
+            mcp_oauth_clients: vec![],
         };
         write_atomic(&d, &cfg).unwrap();
         // No temp file left behind.
@@ -520,6 +581,7 @@ mod tests {
             oauth_apps: vec![],
             quick_tunnel: None,
             agent_inboxes: vec![],
+            mcp_oauth_clients: vec![],
         };
         std::env::set_var("SUPERMUX_GOOGLE_CLIENT_SECRET", "shh");
         let merged = assemble(&d, &baseline, &store).unwrap();

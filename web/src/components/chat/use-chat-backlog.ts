@@ -78,11 +78,15 @@ async function fetchHistory(
   name: string,
   before: string | undefined,
   limit: number,
+  source?: { conversationId?: string | null; sourceGeneration?: number | null; sourceEpoch?: string | null },
 ): Promise<HistoryPage> {
   // No `before` ⇒ the route maps `before=None` to the NEWEST tail page. That is
   // the empty-seed rescue's request; every scroll-back call passes a cursor.
   const qs = new URLSearchParams({ limit: String(limit) })
   if (before) qs.set('before', before)
+  if (source?.conversationId) qs.set('conversation_id', source.conversationId)
+  if (source?.sourceGeneration != null) qs.set('source_generation', String(source.sourceGeneration))
+  if (source?.sourceEpoch) qs.set('source_epoch', source.sourceEpoch)
   return sessionRequest<HistoryPage>(
     `/api/sessions/${encodeURIComponent(name)}/chat/history?${qs.toString()}`,
   )
@@ -102,9 +106,8 @@ async function fetchHistory(
  */
 interface Backlog {
   name: string
-  /** The socket's re-seed generation. A `resync` means the server is serving a
-   *  DIFFERENT conversation, and the cursors this block was paged with are the
-   *  ones its 409 exists to reject. */
+  /** Semantic source revision: a different conversation or a reset within
+   * the same store. Ordinary lag repair and reconnect retain loaded pages. */
   epoch: number
   /** Newest-first, like the window it hangs under. */
   older: WireEntry[]
@@ -142,9 +145,24 @@ const emptyFor = (name: string, epoch: number): Backlog => ({
   pages: 0,
 })
 
-export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
-  const epoch = tail.resyncCount
+export function useChatBacklog(
+  name: string,
+  tail: ChatWireView,
+  /** Draw a row for entries the renderer has no mapping for, instead of
+   *  dropping them. On for providers mapped pragmatically (Codex) — see
+   *  `toChatEntries`. */
+  surfaceUnmapped = false,
+): ChatBacklog {
+  const epoch = tail.sourceRevision ?? tail.resyncCount
+  const requestScope = `${name}:${epoch}:${tail.sourceEpoch ?? ''}:${tail.sourceGeneration ?? ''}`
+  const latestScope = React.useRef(requestScope)
+  React.useLayoutEffect(() => { latestScope.current = requestScope }, [requestScope])
+  const source = React.useMemo(() => ({ conversationId: tail.conversationId, sourceGeneration: tail.sourceGeneration, sourceEpoch: tail.sourceEpoch }), [tail.conversationId, tail.sourceGeneration, tail.sourceEpoch])
   const [stored, setStored] = React.useState<Backlog>(() => emptyFor(name, epoch))
+  const [storedScope, setStoredScope] = React.useState(requestScope)
+  if (storedScope !== requestScope) setStoredScope(requestScope)
+  if (stored.name !== name || stored.epoch !== epoch) setStored(emptyFor(name, epoch))
+  else if (storedScope !== requestScope && stored.loading) setStored({ ...stored, loading: false })
   const state =
     stored.name === name && stored.epoch === epoch ? stored : emptyFor(name, epoch)
 
@@ -162,24 +180,13 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // One adaptation, over one list. `toChatEntries` reads oldest-first (it folds
   // each `tool_result` into the receipt above it), and answers newest-first.
   const entries = React.useMemo(
-    () => toChatEntries(merged.slice().reverse()),
-    [merged],
+    () => toChatEntries(merged.slice().reverse(), { surfaceUnmapped }),
+    [merged, surfaceUnmapped],
   )
 
-  // The conversation the server stamped into its own cursor. Everything this
-  // hook fetches is addressed within it, and a page fetched under a different
-  // one is a page from another conversation.
-  //
-  // The seed's `next_before` is the only source for it, and it is exactly as
-  // available as it needs to be: the server sends it whenever `has_more` is
-  // true, and when `has_more` is false there is no backlog to address. It
-  // survives every live frame (only a seed rewrites it), so it is still there
-  // for the fifth page and for the seam repair.
-  //
-  // …or, when the seed was EMPTY (no cursor at all), from the cursor a rescue
-  // recovered — so scroll-back keeps working through history the seed itself
-  // could not address.
-  const conversation = cursorConversation(tail.nextBefore ?? state.rescueBefore)
+  // New peers stamp a source identity even when the seed has no page cursor.
+  // Older peers fall back to the seed or rescued history cursor.
+  const conversation = tail.conversationId ?? cursorConversation(tail.nextBefore ?? state.rescueBefore)
 
   // `has_more` on the seed answers "is there anything below this window"; once a
   // page comes back with `has_more: false` the conversation is fully loaded, and
@@ -196,7 +203,7 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // Not the `loading` flag: two scroll events dispatched before the next render
   // both read the state from before the first `setStored`, and the second would
   // fire a duplicate page. This flips synchronously, inside the callback.
-  const inFlight = React.useRef(false)
+  const inFlight = React.useRef<string | null>(null)
 
   // The entry the block hangs under. Read at request time from the WINDOW, not
   // from the merged list: it is the window's own bottom edge that the seam check
@@ -205,8 +212,8 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   const windowAnchor = windowEntries[windowEntries.length - 1]?.uuid ?? null
 
   const loadOlder = React.useCallback(() => {
-    if (inFlight.current || !hasOlder || !before) return
-    inFlight.current = true
+    if (inFlight.current === requestScope || !hasOlder || !before) return
+    inFlight.current = requestScope
     setStored((prev) =>
       prev.name === name && prev.epoch === epoch
         ? {
@@ -217,8 +224,9 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
           }
         : { ...emptyFor(name, epoch), loading: true, anchor: windowAnchor },
     )
-    fetchHistory(name, before, OLDER_PAGE_LIMIT)
+    fetchHistory(name, before, OLDER_PAGE_LIMIT, source)
       .then((page) => {
+        if (latestScope.current !== requestScope) return
         // The page arrives oldest-first; the accumulator is newest-first.
         const got = (page.entries ?? []).slice().reverse()
         setStored((prev) => {
@@ -243,6 +251,7 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
         })
       })
       .catch((err: unknown) => {
+        if (latestScope.current !== requestScope) return
         const stale = err instanceof SessionError && err.status === 409
         // Retryable on purpose: `exhausted` stays false, so the head keeps the
         // control and says what happened. A silently dropped page is the defect.
@@ -258,9 +267,9 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
         })
       })
       .finally(() => {
-        inFlight.current = false
+        if (inFlight.current === requestScope) inFlight.current = null
       })
-  }, [before, epoch, hasOlder, name, windowAnchor])
+  }, [before, epoch, hasOlder, name, windowAnchor, requestScope, source])
 
   // ── the empty-seed rescue (defence in depth) ────────────────────────────────
   // A seed can land with NOTHING even though a transcript exists on disk: after
@@ -274,11 +283,11 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // RENDERED list is empty, and this is not a genuinely fresh session (the
   // server told us a transcript exists), fetch the newest history page (no
   // `before` → the route's newest tail page) and hang it under the window.
-  const rescueKey = `${name}:${epoch}`
-  const rescuing = React.useRef(false)
+  const rescueKey = requestScope
+  const rescuing = React.useRef<string | null>(null)
   const rescuedKey = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (rescuing.current || inFlight.current) return
+    if (rescuing.current === requestScope || inFlight.current === requestScope) return
     // One attempt per seed generation: it retries on the next re-seed, never in
     // a loop against a genuinely empty tail.
     if (rescuedKey.current === rescueKey) return
@@ -294,10 +303,11 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
       })
     )
       return
-    rescuing.current = true
+    rescuing.current = requestScope
     rescuedKey.current = rescueKey
-    fetchHistory(name, undefined, OLDER_PAGE_LIMIT)
+    fetchHistory(name, undefined, OLDER_PAGE_LIMIT, source)
       .then((page) => {
+        if (latestScope.current !== requestScope) return
         const got = (page.entries ?? []).slice().reverse()
         setStored((prev) => {
           if (prev.name !== name || prev.epoch !== epoch) return prev
@@ -320,13 +330,15 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
       // a hard error the reader cannot act on.
       .catch(() => {})
       .finally(() => {
-        rescuing.current = false
+        if (rescuing.current === requestScope) rescuing.current = null
       })
   }, [
     entries.length,
     epoch,
     name,
     rescueKey,
+    requestScope,
+    source,
     state.exhausted,
     state.older.length,
     tail.fresh,
@@ -349,19 +361,20 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
   // rather than something the reader asked for. It also adds its entries BELOW
   // the window — i.e. above a reader who has scrolled back — so nothing under
   // the eye moves and no scroll restoration is owed.
-  const healing = React.useRef(false)
+  const healing = React.useRef<string | null>(null)
   const windowOldest = windowEntries[windowEntries.length - 1]
   React.useEffect(() => {
-    if (healing.current || inFlight.current || !windowOldest || !conversation) return
+    if (healing.current === requestScope || inFlight.current === requestScope || !windowOldest || !conversation) return
     const anchor = state.anchor
     if (!seamOpen(windowEntries, { anchor, count: state.older.length })) return
-    healing.current = true
+    healing.current = requestScope
     void (async () => {
       const fill: WireEntry[] = []
       let cursor = oldestCursor(conversation, windowEntries)
       let bridged = false
       for (let i = 0; i < BRIDGE_MAX_PAGES && cursor; i++) {
-        const page = await fetchHistory(name, cursor, OLDER_PAGE_LIMIT)
+        const page = await fetchHistory(name, cursor, OLDER_PAGE_LIMIT, source)
+        if (latestScope.current !== requestScope) return
         const got = (page.entries ?? []).slice().reverse()
         fill.push(...got)
         if (bridges(got, anchor)) {
@@ -388,11 +401,13 @@ export function useChatBacklog(name: string, tail: ChatWireView): ChatBacklog {
       // frame that changes the transcript re-runs this effect.
       .catch(() => {})
       .finally(() => {
-        healing.current = false
+        if (healing.current === requestScope) healing.current = null
       })
   }, [
     conversation,
     epoch,
+    requestScope,
+    source,
     name,
     state.anchor,
     state.older,

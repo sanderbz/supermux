@@ -17,6 +17,7 @@ import { StatusDot } from './status-dot'
 import { TailPreview } from './tail-preview'
 import type { TileSession } from './types'
 import { sessionTitle } from '@/lib/api'
+import { agentHref } from '@/lib/agent-href'
 
 export interface QuickPeekModalProps {
   session: TileSession
@@ -242,7 +243,7 @@ export function QuickPeekModal({
             onOpenChange(false)
             void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
             toast({ message: 'Team starting', tone: 'active' })
-            navigate(`/focus/${encodeURIComponent(name)}`)
+            navigate(agentHref(name))
           }}
         />
       )}
@@ -258,7 +259,7 @@ export function QuickPeekModal({
         onNavigate={(name) => {
           setInfoOpen(false)
           onOpenChange(false)
-          navigate(`/focus/${encodeURIComponent(name)}`)
+          navigate(agentHref(name))
         }}
       />
     </Drawer.Root>

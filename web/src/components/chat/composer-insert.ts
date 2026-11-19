@@ -92,3 +92,13 @@ export function attachmentSentence(paths: readonly string[]): string {
   if (paths.length === 0) return ''
   return `${paths.map((p) => `"${p}"`).join(' ')} `
 }
+
+/** Retry owns only the attachments in its saved message. Any extra chip,
+ * including an upload still in flight, belongs to the next draft. */
+export function retryAttachmentsUnchanged(
+  attachments: readonly { uploading: boolean; error?: string; path: string | null }[],
+  prefix: string | undefined,
+): boolean {
+  return !!prefix && attachments.every(a => !a.uploading && !a.error && a.path) &&
+    attachmentSentence(attachments.map(a => a.path!)) === prefix
+}

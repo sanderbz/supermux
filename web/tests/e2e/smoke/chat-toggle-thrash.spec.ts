@@ -104,7 +104,9 @@ const wsProbe = `
 test.describe('renderer toggle thrash (fase A5 T6)', () => {
   let backend: Backend
   test.beforeEach(async () => {
-    backend = await startBackend()
+    // A personal zsh rc can ask to update and consume the firehose's first
+    // character. The transport fixture needs a plain interactive shell.
+    backend = await startBackend({ env: { SHELL: '/bin/sh', ENV: '' } })
   })
   test.afterEach(async () => {
     await backend?.dispose()

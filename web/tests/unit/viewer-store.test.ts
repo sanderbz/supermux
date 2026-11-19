@@ -49,6 +49,8 @@ function installFetch(handler: (url: string, init?: RequestInit) => unknown) {
 
 const jsonRes = (body: unknown) => ({ ok: true, status: 200, json: () => Promise.resolve(body) })
 const realFetch = globalThis.fetch
+const prevWindow = (globalThis as { window?: unknown }).window
+const prevStorage = (globalThis as { localStorage?: unknown }).localStorage
 
 // Install the environment BEFORE the first import: the store's initial state is
 // computed at module evaluation.
@@ -73,6 +75,12 @@ function reset() {
 beforeEach(reset)
 afterEach(() => {
   ;(globalThis as { fetch?: unknown }).fetch = realFetch
+  // All test files share one process: a window double left behind breaks a later
+  // file whose code only checks `typeof window` (ThemeProvider calls matchMedia).
+  if (prevWindow === undefined) delete (globalThis as { window?: unknown }).window
+  else (globalThis as { window?: unknown }).window = prevWindow
+  if (prevStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+  else (globalThis as { localStorage?: unknown }).localStorage = prevStorage
 })
 
 describe('isOwnerShell — the owner short-circuit', () => {

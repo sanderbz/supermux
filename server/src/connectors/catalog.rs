@@ -161,7 +161,9 @@ pub fn catalog_id(s: &PulseServer) -> Option<String> {
 fn emit_template(s: &PulseServer) -> Value {
     if let Some(r) = s.remotes.iter().find(|r| r.url_direct.is_some()) {
         let url = r.url_direct.clone().unwrap_or_default();
-        return json!({ "url": url });
+        // `type` is REQUIRED by Claude Code for a hosted remote (it skips a
+        // bare `{ "url" }` entry at boot); see `connector_config::with_remote_transport`.
+        return json!({ "type": "http", "url": url });
     }
     match (s.package_registry.as_deref(), s.package_name.as_deref()) {
         (Some("npm"), Some(pkg)) => json!({ "command": "npx", "args": ["-y", pkg] }),
@@ -406,9 +408,9 @@ fn one_secret(key: &str, title: &str) -> Value {
     json!([{ "key": key, "title": title, "type": "string", "sensitive": true, "required": true }])
 }
 
-/// The steer copy for a hosted remote MCP that runs its OWN OAuth in the bot's
-/// terminal (Lane D) — the honest "no key here" note.
-const MCP_OAUTH_HELP: &str = "Signs in the first time your bot uses it — approve the sign-in in the bot's own terminal. There's no key to paste here.";
+/// The steer copy for a hosted remote MCP whose sign-in supermux brokers (Lane D)
+/// — the owner signs in once in the browser; no key to paste.
+const MCP_OAUTH_HELP: &str = "Sign in once in your browser — supermux keeps the sign-in and gives it to the bots you choose.";
 
 /// The **per-connector auth descriptor + credential schema** for a curated card,
 /// keyed by id. This is the single source of the Lane taxonomy (§0 of the design):
@@ -423,7 +425,7 @@ const MCP_OAUTH_HELP: &str = "Signs in the first time your bot uses it — appro
 ///   * **Lane D `mcp_oauth`** — a hosted remote MCP whose endpoint runs its OWN
 ///     OAuth in the client (Slack/Notion/Linear/Sentry/Asana/Atlassian/PayPal/
 ///     Plaid/Square/Intercom/Cloudflare/HubSpot/Webflow/Canva/Google-Drive). NO
-///     key field — the honest "signs in in the terminal" note instead.
+///     key field — supermux brokers the browser sign-in (`connectors::oauth_code`).
 ///
 /// Returns `(auth, credentials)`; `credentials` is `[]` for `none`/`mcp_oauth`.
 fn auth_and_creds_for(id: &str) -> (Value, Value) {
@@ -692,7 +694,9 @@ pub fn featured_cards() -> Vec<Value> {
         json!({ "command": "uvx", "args": args })
     }
     fn remote(url: &str) -> Value {
-        json!({ "url": url })
+        // Claude Code refuses a hosted remote without its transport — see
+        // `connector_config::with_remote_transport` for the live warning.
+        json!({ "type": "http", "url": url })
     }
     let mut cards = vec![
         // ── Tier 1 — first-party Anthropic / MCP reference servers (official) ──
@@ -1515,7 +1519,7 @@ mod tests {
             0,
             "an mcp_oauth card carries NO credential paste field (no fake API key)"
         );
-        assert!(slack["auth"]["help_text"].as_str().unwrap().contains("terminal"));
+        assert!(slack["auth"]["help_text"].as_str().unwrap().contains("browser"), "supermux brokers the sign-in now");
         // Every curated id resolves an auth descriptor (no card left guessing).
         assert!(cards.iter().all(|c| c["auth"]["kind"].is_string()));
     }
@@ -1526,7 +1530,7 @@ mod tests {
         let get = |id: &str| cards.iter().find(|c| c["id"] == json!(id)).unwrap().clone();
 
         // The four OFFICIAL hosted remotes are mcp_oauth: a `{ url }` emit, NO paste
-        // field, and the honest "signs in in the terminal" note.
+        // field, and the honest "sign in once in your browser" note.
         for (id, url) in [
             ("pmcp-vercel", "https://mcp.vercel.com"),
             ("pmcp-box", "https://mcp.box.com"),
@@ -1541,7 +1545,7 @@ mod tests {
                 0,
                 "{id} carries no fake key field"
             );
-            assert!(c["auth"]["help_text"].as_str().unwrap().contains("terminal"));
+            assert!(c["auth"]["help_text"].as_str().unwrap().contains("browser"), "{id}: supermux brokers the sign-in now");
         }
 
         // Discord + Brave are api_key: a real "get your key" link + a sensitive paste
@@ -1604,7 +1608,7 @@ mod tests {
                 0,
                 "{id} carries no fake key field"
             );
-            assert!(c["auth"]["help_text"].as_str().unwrap().contains("terminal"));
+            assert!(c["auth"]["help_text"].as_str().unwrap().contains("browser"), "{id}: supermux brokers the sign-in now");
         }
     }
 

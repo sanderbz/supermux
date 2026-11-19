@@ -62,12 +62,14 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::model::{ChatEntry, Kind, WireEntry, SEED_MAX_BYTES};
+#[cfg(test)]
 use super::parser::parse_stream;
+use super::parser::{parse_stream_with, Dialect};
+use super::source::TranscriptSource;
 use super::store::{ChatStore, RING_CAP};
 use super::tailer::{spawn_tailer, TailState, TailStatus, TailerLease};
 use crate::db;
 use crate::error::AppError;
-use crate::sessions::resumable;
 use crate::state::AppState;
 
 /// Default backlog page size for [`history_handler`].
@@ -109,10 +111,21 @@ pub const SEED_WARMUP: Duration = Duration::from_millis(1_500);
 /// `SessionStart` used to repoint the LEAD's `cc_conversation_id` at the
 /// teammate's transcript. That is fixed at the source by the pane-attributed
 /// adoption guard in [`crate::hooks::track_conversation_pointer`] (S2), which is
-/// what makes serving a lead here safe. Remote (`host_id`) and non-Claude
-/// refusals are unchanged.
+/// what makes serving a lead here safe.
+///
+/// # Codex
+///
+/// Codex is eligible too, in its own dialect ([`super::codex`]): it writes an
+/// append-only rollout JSONL that the same byte cursor tails and the same wire
+/// carries. The rendering is deliberately PRAGMATIC, not Claude-fidelity —
+/// prompts, replies, reasoning and shell runs map onto the existing kinds, and
+/// anything unmodelled becomes `Kind::Unknown`, which the renderer draws as a
+/// visible "open the terminal" row rather than a gap.
+///
+/// `host_id` is still refused for every provider: a remote session's transcript
+/// is on the remote box, and nothing here can read it.
 pub fn chat_eligible(provider: &str, host_id: Option<i64>) -> bool {
-    provider == "claude" && host_id.is_none()
+    matches!(provider, "claude" | "codex") && host_id.is_none()
 }
 
 /// Load `name`'s row and refuse anything the chat data plane does not serve.
@@ -129,20 +142,6 @@ async fn eligible_row(state: &AppState, name: &str) -> Result<db::sessions::Sess
         return Err(AppError::NotFound(format!("chat is unavailable for session {name}")));
     }
     Ok(row)
-}
-
-/// The session's transcript file for an explicit `dir` + conversation id. A
-/// session with no pointer yet resolves to a path that cannot exist, which every
-/// reader below treats as "empty", never as an error. Split out from
-/// [`transcript_path`] because the seed path follows the CURRENT conversation
-/// (which can move under an open socket) rather than the row snapshot.
-fn transcript_path_of(config_dir: &str, dir: &str, conv: &str) -> PathBuf {
-    resumable::project_dir_for(config_dir, dir).join(format!("{conv}.jsonl"))
-}
-
-/// The session's transcript file, per the DB conversation pointer.
-fn transcript_path(row: &db::sessions::Session) -> PathBuf {
-    transcript_path_of(&row.config_dir, &row.dir, &row.cc_conversation_id)
 }
 
 // ── the history cursor ──────────────────────────────────────────────────────
@@ -324,6 +323,7 @@ pub(crate) fn seed_page(ring: Vec<WireEntry>, oldest_main_offset: Option<u64>, c
 /// it restores `entries` + `has_more` + `next_before`, so the client renders the
 /// tail AND can page `/chat/history`. Defence in depth: this hides an empty ring
 /// from ANY cause, not only the `seed_offset` degeneration.
+#[cfg(test)]
 pub(crate) fn seed_page_or_disk(
     ring: Vec<WireEntry>,
     oldest_main_offset: Option<u64>,
@@ -369,6 +369,21 @@ fn line_start_at_or_after(path: &FsPath, pos: u64) -> Option<u64> {
     (buf.last() == Some(&b'\n')).then_some(pos + n as u64)
 }
 
+/// Include the complete line whose start is below an arbitrary byte cursor.
+/// Real cursors are line starts, so snapshot reads stop exactly at that boundary.
+fn read_end(path: &FsPath, before: u64) -> u64 {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if before >= len {
+        return len;
+    }
+    if before == 0 {
+        return 0;
+    }
+    line_start_at_or_after(path, before - 1)
+        .unwrap_or(len)
+        .min(len)
+}
+
 /// The disk backlog **strictly below** `before`, newest-last.
 ///
 /// The tailer owns the live path, so this never competes with it. It answers a
@@ -383,14 +398,29 @@ fn line_start_at_or_after(path: &FsPath, pos: u64) -> Option<u64> {
 /// `before` near the start of the file). The newest page and every early
 /// scroll-back page are served from the tail, so a 55 MB team-lead transcript is
 /// not parsed whole to show its last 200 messages.
+#[cfg(test)]
 pub(crate) fn history_page(path: &FsPath, conv: &str, before: u64, limit: usize) -> Page {
-    if let Some(page) = history_page_windowed(path, conv, before, limit) {
+    history_page_with(Dialect::Claude, path, conv, before, limit)
+}
+
+pub(crate) fn history_page_with(
+    dialect: Dialect,
+    path: &FsPath,
+    conv: &str,
+    before: u64,
+    limit: usize,
+) -> Page {
+    if let Some(page) = history_page_windowed_with(dialect, path, conv, before, limit) {
         return page;
     }
     let Ok(file) = std::fs::File::open(path) else {
         return Page::empty();
     };
-    let (entries, _) = parse_stream(BufReader::new(file), 0);
+    let (entries, _) = parse_stream_with(
+        dialect,
+        BufReader::new(file.take(read_end(path, before))),
+        0,
+    );
     // Sidechain lines are dropped here for the same reason the tailer drops
     // them: the live path re-reads those turns, with their agent id, out of
     // `subagents/`. A backlog page that kept them would disagree with the seed
@@ -415,9 +445,20 @@ pub(crate) fn history_page(path: &FsPath, conv: &str, before: u64, limit: usize)
 /// would also have discarded) are the only thing the window is missing. When the
 /// window does NOT hold more than `limit` entries the true page may need older
 /// history, so this returns `None` and the caller reparses from byte 0.
+#[cfg(test)]
 fn history_page_windowed(path: &FsPath, conv: &str, before: u64, limit: usize) -> Option<Page> {
+    history_page_windowed_with(Dialect::Claude, path, conv, before, limit)
+}
+
+fn history_page_windowed_with(
+    dialect: Dialect,
+    path: &FsPath,
+    conv: &str,
+    before: u64,
+    limit: usize,
+) -> Option<Page> {
     let len = std::fs::metadata(path).ok()?.len();
-    let end = before.min(len);
+    let end = read_end(path, before).min(len);
     let win_start = line_start_at_or_after(path, end.saturating_sub(HISTORY_TAIL_WINDOW_BYTES))?;
     if win_start == 0 {
         // The window already reaches byte 0 — the full read is no more work and
@@ -426,7 +467,11 @@ fn history_page_windowed(path: &FsPath, conv: &str, before: u64, limit: usize) -
     }
     let mut file = std::fs::File::open(path).ok()?;
     file.seek(std::io::SeekFrom::Start(win_start)).ok()?;
-    let (entries, _) = parse_stream(BufReader::new(file), win_start);
+    let (entries, _) = parse_stream_with(
+        dialect,
+        BufReader::new(file.take(end.saturating_sub(win_start))),
+        win_start,
+    );
     let below: Vec<&ChatEntry> = entries
         .iter()
         .filter(|e| e.offset < before && !e.is_sidechain)
@@ -487,13 +532,17 @@ const HISTORY_SEQ: u64 = 0;
 /// NOT sealed — this is the escape hatch the cap exists to make survivable, and
 /// it is bounded by the parser's own line ceiling.
 pub(crate) fn find_full_entry(path: &FsPath, uuid: &str) -> Option<ChatEntry> {
+    find_full_entry_with(Dialect::Claude, path, uuid)
+}
+
+fn find_full_entry_with(dialect: Dialect, path: &FsPath, uuid: &str) -> Option<ChatEntry> {
     let file = std::fs::File::open(path).ok()?;
     // Streamed, stopping at the first match: collecting the whole file first
     // materialised every entry with its full, uncapped body — ~45 ms and
     // ~32 MB per request on a 49 MB transcript, and a renderer resolving
     // several truncated entries issues several of these at once.
     let mut found = None;
-    super::parser::parse_scan(BufReader::new(file), 0, |e| {
+    super::parser::parse_scan_with(dialect, BufReader::new(file), 0, |e| {
         let hit = e.uuid == uuid;
         if hit {
             found = Some(e);
@@ -691,12 +740,9 @@ fn status_frame(kind: &str, status: TailStatus, extra: &[(&str, Value)]) -> Valu
 async fn push_seed(
     socket: &mut WebSocket,
     store: &ChatStore,
-    config_dir: &str,
-    dir: &str,
-    conv: &str,
     status: TailStatus,
     resync_reason: Option<&str>,
-) -> Option<(u64, broadcast::Receiver<WireEntry>)> {
+) -> Option<(u64, u64, broadcast::Receiver<WireEntry>)> {
     if let Some(reason) = resync_reason {
         // Told BEFORE the new page lands: the client drops what it has rather
         // than splicing a second conversation onto the first.
@@ -710,24 +756,54 @@ async fn push_seed(
     // The seed compose runs on the blocking pool: it is the same disk-backed
     // read the history route already spawn_blocking's, and even the ring-only
     // path serializes every ring entry to measure the byte budget.
-    let path = transcript_path_of(config_dir, dir, conv);
-    let conv_owned = conv.to_string();
+    let source_epoch = att.source_epoch;
+    let source = att.source;
+    let generation = att.source_generation;
+    let conversation_id = source
+        .as_ref()
+        .map(|s| s.conversation_id.clone())
+        .unwrap_or_default();
     let ring = att.ring;
     let oldest = att.oldest_main_offset;
+    let read_offset = att.read_offset;
     let page = tokio::task::spawn_blocking(move || {
-        seed_page_or_disk(ring, oldest, &path, &conv_owned)
+        let Some(source) = source else {
+            return Page::empty();
+        };
+        let page = seed_page(ring, oldest, &source.conversation_id);
+        if page.entries.iter().all(|entry| entry.is_subagent()) {
+            let disk = history_page_with(
+                source.dialect,
+                &source.path(),
+                &source.conversation_id,
+                read_offset,
+                HISTORY_DEFAULT_LIMIT,
+            );
+            if disk.entries.is_empty() {
+                page
+            } else {
+                disk
+            }
+        } else {
+            page
+        }
     })
     .await
     .unwrap_or_else(|_| Page::empty());
     let mut frame = page.json();
     if let Some(obj) = frame.as_object_mut() {
         obj.insert("type".to_string(), json!("seed"));
+        obj.insert("conversation_id".to_string(), json!(conversation_id));
+        obj.insert("source_generation".to_string(), json!(generation));
+        obj.insert("source_epoch".to_string(), json!(source_epoch));
     }
     if !send_frame(socket, &frame).await {
         return None;
     }
     let done = status_frame("seed_done", status, &[("high_water", json!(high_water))]);
-    send_frame(socket, &done).await.then_some((high_water, rx))
+    send_frame(socket, &done)
+        .await
+        .then_some((high_water, generation, rx))
 }
 
 /// Give the tailer's first pass a moment to land before the first seed. A
@@ -738,22 +814,6 @@ async fn warm_up(lease: &mut TailerLease) {
         return;
     }
     let _ = tokio::time::timeout(SEED_WARMUP, lease.changed()).await;
-}
-
-/// Re-read the session's CURRENT conversation id before a re-seed.
-///
-/// The seed's `next_before` is stamped with it and [`history_handler`]
-/// validates that stamp against the row, so a re-seed carrying the id captured
-/// at socket open hands the client a cursor the history route answers 409 to —
-/// and it stays 409 for the life of the socket, because obeying the 409 by
-/// re-seeding over the same socket reissues the same stale id. A resync is
-/// exactly the moment the conversation is most likely to have moved (a
-/// `/clear`, a terminal-side `--resume`, a hook-driven retarget), so the id is
-/// refreshed there. A read failure keeps the previous id: never a guess.
-async fn refresh_conv(state: &AppState, name: &str, conv: &mut String) {
-    if let Ok(Some(row)) = db::sessions::get(&state.pool, name).await {
-        *conv = row.cc_conversation_id;
-    }
 }
 
 /// The WS close for a tailer that is gone. NOTHING restarts a tailer for an
@@ -868,9 +928,6 @@ async fn chat_socket(
     let mut lease = spawn_tailer(&state, &name);
     warm_up(&mut lease).await;
     let store = state.chat_store_for(&name);
-    // Mutable: the conversation can move under an open socket, and every seed's
-    // paging cursor is stamped with it (see `refresh_conv`).
-    let mut conv = row.cc_conversation_id.clone();
 
     let mut status = lease.status();
     // The tailer can already be gone before we seed (it exited between the
@@ -880,8 +937,8 @@ async fn chat_socket(
         close(&mut socket, stop_close_code(retry), reason).await;
         return;
     }
-    let Some((mut high_water, mut rx)) =
-        push_seed(&mut socket, &store, &row.config_dir, &row.dir, &conv, status, None).await
+    let Some((mut high_water, mut generation, mut rx)) =
+        push_seed(&mut socket, &store, status, None).await
     else {
         return;
     };
@@ -907,15 +964,21 @@ async fn chat_socket(
             live = rx.recv() => {
                 match classify_live(live, high_water) {
                     Forward::Send(w) => {
-                        if !send_frame(&mut socket, &json!({ "type": "entry", "entry": w })).await {
+                        if w.source_generation() != generation {
+                            match push_seed(&mut socket, &store, lease.status(), Some("conversation changed")).await {
+                                Some((hw, gen, fresh)) => { high_water = hw; generation = gen; rx = fresh; }
+                                None => break,
+                            }
+                            continue;
+                        }
+                        if !send_frame(&mut socket, &json!({ "type": "entry", "conversation_id": w.conversation_id(), "source_generation": w.source_generation(), "source_epoch": store.source_epoch(), "entry": w })).await {
                             break;
                         }
                     }
                     Forward::Skip => {}
                     Forward::Resync => {
-                        refresh_conv(&state, &name, &mut conv).await;
-                        match push_seed(&mut socket, &store, &row.config_dir, &row.dir, &conv, lease.status(), Some("lagged")).await {
-                            Some((hw, fresh)) => { high_water = hw; rx = fresh; }
+                        match push_seed(&mut socket, &store, lease.status(), Some("lagged")).await {
+                            Some((hw, gen, fresh)) => { high_water = hw; generation = gen; rx = fresh; }
                             None => break,
                         }
                     }
@@ -934,15 +997,14 @@ async fn chat_socket(
                             close(&mut socket, stop_close_code(retry), reason).await;
                             break;
                         }
-                        if status.resync_epoch != epoch {
+                        if status.resync_epoch != epoch && store.source_generation() != generation {
                             // The tailer re-seeded (pointer moved / file rotated):
                             // the ring now holds a DIFFERENT conversation, so
                             // the cursor we are about to issue must carry the
                             // NEW id or the history route will 409 it.
                             epoch = status.resync_epoch;
-                            refresh_conv(&state, &name, &mut conv).await;
-                            match push_seed(&mut socket, &store, &row.config_dir, &row.dir, &conv, status, Some("conversation changed")).await {
-                                Some((hw, fresh)) => { high_water = hw; rx = fresh; }
+                                match push_seed(&mut socket, &store, status, Some("conversation changed")).await {
+                                Some((hw, gen, fresh)) => { high_water = hw; generation = gen; rx = fresh; }
                                 None => break,
                             }
                         } else if !send_frame(&mut socket, &status_frame("state", status, &[])).await {
@@ -980,6 +1042,49 @@ pub struct HistoryQuery {
     pub before: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub source_generation: Option<u64>,
+    #[serde(default)]
+    pub source_epoch: Option<String>,
+}
+
+fn check_source_request(
+    source: &TranscriptSource,
+    conversation_id: Option<&str>,
+    generation: Option<u64>,
+    epoch: Option<&str>,
+    store: Option<&ChatStore>,
+) -> Result<(), AppError> {
+    if conversation_id.is_some_and(|id| id != source.conversation_id) {
+        return Err(AppError::Conflict(
+            "chat source changed — re-seed".to_string(),
+        ));
+    }
+    if store.is_none() && (epoch.is_some() || generation.is_some()) {
+        return Err(AppError::Conflict(
+            "chat source store changed — re-seed".to_string(),
+        ));
+    }
+    if let Some(store) = store {
+        if store
+            .source()
+            .is_some_and(|s| s.conversation_id != source.conversation_id)
+        {
+            return Err(AppError::Conflict(
+                "chat source changed — re-seed".to_string(),
+            ));
+        }
+        if epoch.is_some_and(|e| e != store.source_epoch())
+            || generation.is_some_and(|g| g != store.source_generation())
+        {
+            return Err(AppError::Conflict(
+                "chat source generation changed — re-seed".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `GET /api/sessions/{name}/chat/history?before=<cursor>&limit=N` — the
@@ -990,12 +1095,27 @@ pub async fn history_handler(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
     let row = eligible_row(&state, &name).await?;
+    let source = super::source::for_session(&state, &row, false).await;
+    let Some(source) = source else {
+        return Ok(Json(json!({ "ok": true, "data": Page::empty().json() })));
+    };
+    let store = state.chat_store(&name);
+    check_source_request(
+        &source,
+        q.conversation_id.as_deref(),
+        q.source_generation,
+        q.source_epoch.as_deref(),
+        store.as_deref(),
+    )?;
+    let captured_generation = store.as_ref().map(|s| s.source_generation());
+    let captured_epoch = store.as_ref().map(|s| s.source_epoch().to_string());
+    let guard_source = source.clone();
     let before = match q.before.as_deref() {
         None => u64::MAX,
         Some(raw) => {
             let cursor = HistoryCursor::parse(raw)
                 .ok_or_else(|| AppError::BadRequest("malformed chat history cursor".to_string()))?;
-            if cursor.conversation_id != row.cc_conversation_id {
+            if cursor.conversation_id != source.conversation_id {
                 // The conversation moved under the client (a `/clear`, a
                 // `--resume`, a restart). Splicing the old cursor's bytes onto
                 // the new conversation is precisely the lie A2 exists to stop.
@@ -1010,36 +1130,208 @@ pub async fn history_handler(
         .limit
         .unwrap_or(HISTORY_DEFAULT_LIMIT)
         .clamp(1, HISTORY_MAX_LIMIT);
-    let path = transcript_path(&row);
-    let conv = row.cc_conversation_id.clone();
-    let page = tokio::task::spawn_blocking(move || history_page(&path, &conv, before, limit))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("chat history read failed: {e}")))?;
-    Ok(Json(json!({ "ok": true, "data": page.json() })))
+    let conv = source.conversation_id.clone();
+    let page = tokio::task::spawn_blocking(move || {
+        history_page_with(
+            source.dialect,
+            &source.path(),
+            &source.conversation_id,
+            before,
+            limit,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("chat history read failed: {e}")))?;
+    check_source_request(
+        &guard_source,
+        Some(&guard_source.conversation_id),
+        captured_generation,
+        captured_epoch.as_deref(),
+        state.chat_store(&name).as_deref(),
+    )?;
+    check_source_request(
+        &guard_source,
+        q.conversation_id.as_deref(),
+        q.source_generation,
+        q.source_epoch.as_deref(),
+        state.chat_store(&name).as_deref(),
+    )?;
+    let mut data = page.json();
+    data["conversation_id"] = json!(conv);
+    data["source_generation"] = json!(captured_generation);
+    data["source_epoch"] = json!(captured_epoch);
+    Ok(Json(json!({ "ok": true, "data": data })))
 }
 
 /// `GET /api/sessions/{name}/chat/entry/{uuid}` — fetch-full for an entry the
 /// wire had to clip.
+#[derive(Debug, Default, Deserialize)]
+pub struct EntryQuery {
+    pub conversation_id: Option<String>,
+    pub source_generation: Option<u64>,
+    pub source_epoch: Option<String>,
+}
+
 pub async fn entry_handler(
     Path((name, uuid)): Path<(String, String)>,
+    Query(q): Query<EntryQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
     let row = eligible_row(&state, &name).await?;
     // A6 T4.1 — the whole conversation, not just the main transcript. A 404
     // from here now means "no such entry", which is what a 404 should mean.
-    let project_dir = resumable::project_dir_for(&row.config_dir, &row.dir);
-    let conv = row.cc_conversation_id.clone();
+    let store = state.chat_store(&name);
+    let source = super::source::for_session(&state, &row, false)
+        .await
+        .ok_or_else(|| AppError::NotFound("chat transcript".to_string()))?;
+    check_source_request(
+        &source,
+        q.conversation_id.as_deref(),
+        q.source_generation,
+        q.source_epoch.as_deref(),
+        store.as_deref(),
+    )?;
+    let captured_generation = store.as_ref().map(|s| s.source_generation());
+    let captured_epoch = store.as_ref().map(|s| s.source_epoch().to_string());
+    let guard_source = source.clone();
     let wanted = uuid.clone();
-    let found =
-        tokio::task::spawn_blocking(move || find_full_entry_anywhere(&project_dir, &conv, &wanted))
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("chat entry read failed: {e}")))?;
+    let found = tokio::task::spawn_blocking(move || {
+        if source.dialect == Dialect::Codex {
+            find_full_entry_with(source.dialect, &source.path(), &wanted)
+        } else {
+            find_full_entry_anywhere(&source.project, &source.conversation_id, &wanted)
+        }
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("chat entry read failed: {e}")))?;
+    check_source_request(
+        &guard_source,
+        Some(&guard_source.conversation_id),
+        captured_generation,
+        captured_epoch.as_deref(),
+        state.chat_store(&name).as_deref(),
+    )?;
+    check_source_request(
+        &guard_source,
+        q.conversation_id.as_deref(),
+        q.source_generation,
+        q.source_epoch.as_deref(),
+        state.chat_store(&name).as_deref(),
+    )?;
     let entry = found.ok_or_else(|| AppError::NotFound(format!("chat entry {uuid}")))?;
     Ok(Json(json!({ "ok": true, "data": FullEntry::from(entry) })))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn late_requests_from_old_source_or_old_store_epoch_are_rejected() {
+        use super::*;
+        let source = TranscriptSource {
+            project: PathBuf::from("/fixture"),
+            working_dir: "/fixture".into(),
+            last_started: 1,
+            owner_verified: false,
+            conversation_id: "new".into(),
+            dialect: Dialect::Codex,
+        };
+        let store = ChatStore::new();
+        store.publish_source(source.clone(), Vec::new(), false, 0);
+        assert!(matches!(
+            check_source_request(&source, Some("old"), None, None, Some(&store)),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(matches!(
+            check_source_request(
+                &source,
+                Some("new"),
+                Some(99),
+                Some(store.source_epoch()),
+                Some(&store)
+            ),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(matches!(
+            check_source_request(
+                &source,
+                Some("new"),
+                Some(1),
+                Some("epoch-before-restart"),
+                Some(&store)
+            ),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(check_source_request(
+            &source,
+            Some("new"),
+            Some(1),
+            Some(store.source_epoch()),
+            Some(&store)
+        )
+        .is_ok());
+    }
+    #[test]
+    fn codex_history_pages_and_full_entry_use_the_live_dialect() {
+        use super::*;
+        let dir = tmp_dir("codex-current");
+        let path = dir.join("rollout-root.jsonl");
+        let mut input = String::new();
+        for i in 0..6 {
+            input.push_str(&serde_json::json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":format!("call-{i}"),"command":"echo fixture","exit_code":0,"aggregated_output":format!("output-{i}")}}}).to_string());
+            input.push('\n');
+            input.push_str(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_usage_record\"}}\n",
+            );
+        }
+        std::fs::write(&path, &input).unwrap();
+        let (expected, _) =
+            parse_stream_with(Dialect::Codex, std::io::Cursor::new(input.as_bytes()), 0);
+        let mut before = u64::MAX;
+        let mut pages = Vec::new();
+        loop {
+            let page = history_page_with(Dialect::Codex, &path, "rollout-root", before, 1);
+            assert_eq!(
+                page.entries.len(),
+                2,
+                "one command line must never split between pages"
+            );
+            pages.splice(0..0, page.entries.iter().map(|w| w.uuid().to_string()));
+            if !page.has_more {
+                break;
+            }
+            before = HistoryCursor::parse(page.next_before.as_deref().unwrap())
+                .unwrap()
+                .offset;
+        }
+        assert_eq!(
+            pages,
+            expected.iter().map(|e| e.uuid.clone()).collect::<Vec<_>>()
+        );
+        let result = expected
+            .iter()
+            .find(|e| e.kind == Kind::ToolResult)
+            .unwrap();
+        let full = find_full_entry_with(Dialect::Codex, &path, &result.uuid).unwrap();
+        assert_eq!(full.kind, Kind::ToolResult);
+        assert_eq!(full.body["content"], "output-0");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn disk_seed_snapshot_excludes_appends_after_the_store_cursor() {
+        use super::*;
+        let dir = tmp_dir("codex-current");
+        let path = dir.join("rollout-root.jsonl");
+        let line = |text| {
+            serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":text}}).to_string()+"\n"
+        };
+        let first = line("seed");
+        std::fs::write(&path, first.clone() + &line("live after snapshot")).unwrap();
+        let page = history_page_with(Dialect::Codex, &path, "root", first.len() as u64, 200);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].body()["text"], "seed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use super::*;
     use crate::sessions::chat::model::{ChatEntry, Kind, MAX_ENTRY_BYTES, SEED_MAX_BYTES};
     use crate::sessions::chat::store::ChatStore;
@@ -1120,12 +1412,15 @@ mod tests {
 
     #[test]
     fn chat_eligibility_matches_the_client_guard() {
-        // web/src/components/chat/flag.ts: `provider === 'claude' && host_id ==
-        // null`. The client guard hides the UI; THIS one is what makes it a
-        // guard — a hand-rolled socket cannot tail a codex session or a remote
-        // host's transcript.
+        // web/src/components/chat/flag.ts: `(provider === 'claude' || provider
+        // === 'codex') && host_id == null`. The client guard hides the UI; THIS
+        // one is what makes it a guard — a hand-rolled socket cannot tail a
+        // remote host's transcript or a provider with no transcript at all.
         assert!(chat_eligible("claude", None));
-        assert!(!chat_eligible("codex", None), "provider must be claude");
+        assert!(
+            chat_eligible("codex", None),
+            "codex has its own rollout dialect (chat::codex) and is served too"
+        );
         // A legacy row carrying a provider supermux no longer ships must be
         // handled as "not eligible", never as an unknown that falls through.
         assert!(!chat_eligible("a-retired-provider", None));
@@ -1141,7 +1436,7 @@ mod tests {
     /// the parameter is gone entirely, so no team shape can refuse — while the
     /// two refusals that are about the DATA PLANE (not the team model) stay.
     #[test]
-    fn a_team_lead_is_chat_eligible_but_codex_and_remote_still_are_not() {
+    fn a_team_lead_is_chat_eligible_but_a_remote_one_still_is_not() {
         // The lead of a real, multi-member team: eligible. Its own
         // `<project>/<cc_conversation_id>.jsonl` is exactly the file the tailer
         // already serves; the pointer is kept honest by the pane-attributed
@@ -1150,8 +1445,11 @@ mod tests {
             chat_eligible("claude", None),
             "a team lead must be a first-class bot thread (S1)"
         );
-        // …and lifting the refusal must not lift the other two.
-        assert!(!chat_eligible("codex", None), "a codex lead has no Claude transcript");
+        // …and lifting the refusal must not lift the ones that are about the
+        // data plane. Codex is now served in its own dialect; a remote session
+        // still is not, whatever its provider.
+        assert!(chat_eligible("codex", None));
+        assert!(!chat_eligible("codex", Some(7)));
         assert!(
             !chat_eligible("claude", Some(7)),
             "a remote lead's transcript lives on the remote box"

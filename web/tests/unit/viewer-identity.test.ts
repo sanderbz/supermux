@@ -16,6 +16,10 @@
  * SEALED setters, and the three-outcome key check.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+// All test files share one process, and framer-motion reads `typeof window` once, when it
+// loads. The nav tests below import the layout with this file's window double standing,
+// which would leave `isBrowser` true for every later file: load it here, before the double.
+import 'framer-motion'
 
 type Store = Record<string, string>
 

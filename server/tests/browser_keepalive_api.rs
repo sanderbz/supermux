@@ -45,6 +45,7 @@ async fn test_app() -> (axum::Router, AppState, std::path::PathBuf) {
         statusline_tap: false,
         swarm_reaper: Default::default(),
         isolation_mode: supermux_server::isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");

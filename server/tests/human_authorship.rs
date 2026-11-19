@@ -42,6 +42,7 @@ fn temp_config() -> (Config, PathBuf) {
         github_token: None,
         statusline_tap: false,
         isolation_mode: isolation::IsolationMode::BestEffort,
+        company_isolation: Vec::new(),
         human_auth: Default::default(),
     };
     (config, dir)

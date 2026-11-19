@@ -40,12 +40,15 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
+import { agentHref } from '../../lib/agent-href'
 
 import type { HarnessEvent } from '../../lib/api/harness'
-import type { PermissionRequestInfo, QuestionRequestInfo, SessionMode } from '../../lib/api/sessions'
+import { sessionsApi, type PermissionRequestInfo, type QuestionRequestInfo, type SessionMode } from '../../lib/api/sessions'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
+import { drawable } from './ask-answer'
+import { AskCard, type NativeAskView } from './ask-cards'
 import type { DialogCardView } from './dialog-answer'
 import { stripEmojiPrefix } from './entries'
 import { toReceiptRows } from './grouping'
@@ -227,6 +230,19 @@ export interface LiveLayerProps {
    * most one is non-null); labels the row `Compacting context…`.
    */
   compacting?: string | null
+  /**
+   * The ask chat answers NATIVELY (docs/ASKS.md): an open permission / question
+   * / form whose decision hook is waiting, so an answer is Claude Code's own
+   * hook output — no keys, no screen reading, every Claude Code build. It
+   * outranks every key-pressing card below (they are the fallback for a session
+   * whose hooks predate the decision hook), and only the takeover and connect
+   * asks outrank it.
+   */
+  nativeAsk?: NativeAskView | null
+  /** The line a just-delivered native answer leaves while the session's older
+   *  hook state catches up — holds the band so the key-pressing card for the
+   *  same dialog cannot flash back up. */
+  askDelivered?: string | null
 }
 
 export function LiveLayer({
@@ -251,7 +267,10 @@ export function LiveLayer({
   dialogResolved,
   stalled = null,
   compacting = null,
+  nativeAsk = null,
+  askDelivered = null,
 }: LiveLayerProps) {
+  const native = drawable(nativeAsk, session?.elicitation) ? nativeAsk : null
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
   const working = session?.status === 'active' && turnStart != null
@@ -296,6 +315,7 @@ export function LiveLayer({
   const phase = computeLivePhase({
     working,
     asking: !!(
+      native ||
       dialog ||
       session?.question_request ||
       session?.permission_request ||
@@ -307,6 +327,7 @@ export function LiveLayer({
   // WHAT KIND of ask, for the one sentence that is spoken aloud. Same ordering
   // as the cards below, so the announcement and the pixels cannot disagree.
   const ask = askKind({
+    native: native ? nativeKind(native) : undefined,
     form: !!session?.elicitation,
     dialog: dialog?.family,
     question: !!session?.question_request,
@@ -375,7 +396,18 @@ export function LiveLayer({
           key={session.connect_request.id ?? session.connect_request.connector_id}
           request={session.connect_request}
           sessionName={name}
+          // A supermux-brokered remote MCP (`mcp_oauth`) signs in from THIS
+          // card: same-tab hop to the provider, back to this bot's THREAD.
+          // The return is a cold load carrying no router state — exactly what
+          // `/agent/<name>` exists for, and where the sibling entry point
+          // (`roster/granted-connectors`) already comes back to.
+          oauthReturnTo={agentHref(name)}
+          onDismiss={() => void sessionsApi.dismissConnectRequest(name).catch(() => {})}
         />
+      ) : native ? (
+        <AskCard view={native} dir={session?.dir} form={session?.elicitation} />
+      ) : askDelivered ? (
+        <SystemLine>{askDelivered}</SystemLine>
       ) : session?.elicitation ? (
         <FormCard
           // A NEW ASK IS A NEW FORM. The card holds the half-typed values in
@@ -566,6 +598,8 @@ export const ASK_SAY: Record<AskKind, string> = {
  *  dialog, the dialog outranks the bare hook, and the sign-in card is what is
  *  asking when it is the one on screen. */
 export function askKind(s: {
+  /** The native ask's kind — it IS the card on screen when present. */
+  native?: AskKind
   form: boolean
   dialog?: DialogCardView['family']
   /** The STRUCTURED AskUserQuestion ask (`session.question_request`). Ranked with
@@ -576,6 +610,7 @@ export function askKind(s: {
   permission: boolean
   signIn: boolean
 }): AskKind {
+  if (s.native) return s.native
   if (s.form) return 'form'
   if (s.dialog) return s.dialog
   if (s.question) return 'question'
@@ -584,6 +619,12 @@ export function askKind(s: {
   return 'unknown'
 }
 
+
+function nativeKind(v: NativeAskView): AskKind {
+  if (v.ask.kind === 'question') return 'question'
+  if (v.ask.kind === 'elicitation') return 'form'
+  return (v.ask.detail as { tool?: string }).tool === 'ExitPlanMode' ? 'plan' : 'permission'
+}
 
 /* ── the ask, answerable ─────────────────────────────────────────────────── */
 

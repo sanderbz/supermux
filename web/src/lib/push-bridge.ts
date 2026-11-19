@@ -145,12 +145,25 @@ export function tagForSession(session: string): string {
   return `session:${session}`
 }
 
-/** The session a `/focus/<name>` path is about, or `null` for anywhere else.
- *  Used to tell the SW which banner the user has just made stale. */
+/** The session a `/agent/<name>` or `/focus/<name>` path is about, or `null` for
+ *  anywhere else. Used to tell the SW which banner the user has just made stale.
+ *
+ *  BOTH addresses count: `/agent/<name>` is where a bot's thread lives now
+ *  (`lib/agent-href.ts`) and is what a notification tap opens, while `/focus`
+ *  stays the terminal — and reading either one is equally "I have seen it", so a
+ *  card that only matched `/focus` would sit on the lock screen after the human
+ *  had already answered. */
 export function sessionFromPath(pathname: string | undefined): string | null {
   if (!pathname) return null
-  const m = /^\/focus\/([^/?#]+)/.exec(pathname)
-  return m ? decodeURIComponent(m[1]) : null
+  const m = /^\/(?:agent|focus)\/([^/?#]+)/.exec(pathname)
+  if (!m) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    // A half-typed escape (`%`) is not a session name — better `null` than a
+    // thrown URIError inside a visibility handler.
+    return null
+  }
 }
 
 /** The message the page posts to the service worker when it comes to the front.

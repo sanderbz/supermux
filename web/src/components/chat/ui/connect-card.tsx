@@ -38,10 +38,12 @@ import { Check } from 'lucide-react'
 import {
   getConnector,
   grant as apiGrant,
+  oauthConnection,
   putCredential,
   toolCountLabel,
   type ConnectorCard,
 } from '../../../lib/api/connectors'
+import { RestartIfNeeded } from '../../roster/restart-to-apply'
 import type { ConnectRequestInfo } from '../../../lib/api/sessions'
 
 import { DialogShell } from './choice-card'
@@ -66,6 +68,9 @@ export interface ConnectCardProps {
   onSignIn?: (connectorId: string) => Promise<void>
   /** Dismiss ("Not now"). */
   onDismiss?: () => void
+  /** Lane D (`mcp_oauth`): where the provider sends the owner back after the
+   *  same-tab sign-in hop — this bot's chat. The grant target is `sessionName`. */
+  oauthReturnTo?: string
   /** Test seam: skip the network schema fetch, render against this card. */
   card?: ConnectorCard
 }
@@ -75,6 +80,7 @@ export function ConnectCard({
   sessionName,
   onSignIn,
   onDismiss,
+  oauthReturnTo,
   card: seedCard,
 }: ConnectCardProps) {
   const [card, setCard] = useState<ConnectorCard | null>(seedCard ?? null)
@@ -118,6 +124,13 @@ export function ConnectCard({
     }
   }, [card, fetchFailed, request.connector_id, name])
 
+  // The brokered-OAuth lane finishes OUTSIDE this component: the tab goes to the
+  // provider and comes back through a full-page redirect, so `added` is always
+  // null on the return. The card's own accounts are what survive — read them, and
+  // the card resolves to "Connected as …" instead of asking to connect again.
+  const isMcpOauth = effectiveCard?.auth?.kind === 'mcp_oauth'
+  const connected = !!effectiveCard && isMcpOauth && oauthConnection(effectiveCard).key === 'connected'
+
   const toolsLine = useMemo(() => {
     if (card) return toolCountLabel(card)
     const n = request.tool_count
@@ -127,9 +140,10 @@ export function ConnectCard({
   // Called ONLY from <ConnectFlow>'s primary button (its `submit`), so every path
   // below is behind a human tap — the bot cannot grant itself a connector.
   const seal = async ({ fields }: { fields: Record<string, string> }): Promise<ConnectFlowResult> => {
-    // No credential to seal (a `none` or `mcp_oauth` connector — the latter signs
-    // in in the bot's terminal). Just land the grant so the connector is available;
-    // the vault write path rejects an empty field-map, so never call it here.
+    // No credential to seal (a `none` connector). Just land the grant so the
+    // connector is available; the vault write path rejects an empty field-map, so
+    // never call it here. (An `mcp_oauth` card never reaches this: its connect is
+    // the brokered sign-in, which grants server-side on `complete`.)
     if (Object.keys(fields).length === 0) {
       const r = await apiGrant(request.connector_id, { session_name: sessionName })
       return { restartHint: !!r.restartHint, accountRef: null, accountLabel: null }
@@ -154,11 +168,11 @@ export function ConnectCard({
   // "added"), so its internal seal result — the account label + the test leg —
   // survives. Only the DialogShell's question swaps to the "Added" confirmation.
   return (
-    <div data-testid="chat-connect-card" data-phase={added ? 'added' : 'proposed'}>
+    <div data-testid="chat-connect-card" data-phase={added || connected ? 'added' : 'proposed'}>
       <DialogShell
         eyebrow={<>Connector · {name}</>}
         question={
-          added ? (
+          added || connected ? (
             <span className="inline-flex items-center gap-2">
               <CheckMark />
               Added{toolsLine ? ` · ${toolsLine}` : ''}
@@ -170,7 +184,7 @@ export function ConnectCard({
         why={
           added
             ? added.restartHint
-              ? 'Restart the bot to apply — grants bind at the next launch.'
+              ? 'Restart the bot to apply.'
               : undefined
             : `Your bot asked to use ${name}${toolsLine ? ` · ${toolsLine}` : ''}.`
         }
@@ -185,10 +199,19 @@ export function ConnectCard({
               // card is an OAuth-device lane, ConnectFlow runs the built-in device
               // sub-flow (code panel + poll) and auto-grants to THIS bot.
               deviceTarget={{ session: sessionName }}
+              oauthTarget={oauthReturnTo ? sessionName : undefined}
+              oauthReturnTo={oauthReturnTo}
               onSignIn={onSignIn}
               onDismiss={onDismiss}
               onSubmit={seal}
               onDone={(r) => setAdded(r)}
+              // The one-tap restart, right where the sign-in landed — and only
+              // when the SERVER says this bot is running on a launch that
+              // predates the grant. (Reached on the brokered lane only: the other
+              // lanes' chat "added" block renders no extra slot.)
+              renderAddedExtra={() => (
+                <RestartIfNeeded name={sessionName} connectorId={request.connector_id} />
+              )}
             />
           </Suspense>
         ) : (

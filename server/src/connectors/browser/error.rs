@@ -87,7 +87,16 @@ pub enum BrowserError {
 
     /// An agent tried to navigate a tab off its per-tab origin allowlist. A
     /// cookie-bearing tab pointed at an attacker-chosen host is an exfil chain.
-    #[error("browser tab '{tab}' is not allowed to visit '{host}'")]
+    ///
+    /// **The message names the remedy, because a bare refusal is what sent a bot
+    /// off to patch the allowlist itself.** Measured: a Google sign-in hops to
+    /// `accounts.google.com`, the tab was scoped to `search.google.com`, and the
+    /// agent — told only "not allowed to visit" — went and PATCHed the tab's
+    /// `origins` with the owner's bearer token to get on with its task. The
+    /// widening is a HUMAN act (the grant sheet's "Agents may open" list is where
+    /// it lives), so the refusal has to say who to ask and for what, or the next
+    /// agent will route around it again.
+    #[error("browser tab '{tab}' is not allowed to visit '{host}' — this is the human's allowlist, not yours to widen. Ask them to add '{host}' under \"Agents may open\" in the tab's sheet (a sign-in hop to an identity provider is the usual reason), then retry.")]
     OriginNotAllowed { tab: String, host: String },
 
     /// Another supermux instance already owns the durable profile (§8.6).

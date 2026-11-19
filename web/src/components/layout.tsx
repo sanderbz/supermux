@@ -1,5 +1,7 @@
 import * as React from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+
+import { OauthReturnEffect } from '@/components/store/oauth-return'
 // Primary-nav glyphs — Solar (inlined; see components/nav-glyphs.tsx). Each takes
 // `active` and renders a rich bold-duotone glyph when active (premium in the
 // accent) or a clean linear outline when idle, plus the `className` the rail
@@ -20,6 +22,7 @@ import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
 import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
 import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { agentHueVarsFor } from '@/lib/grok-agent-hue'
+import { isAgentPath } from '@/lib/agent-href'
 import { useUI } from '@/stores/ui-store'
 import { useIsOwnerPlane } from '@/stores/viewer-store'
 import {
@@ -320,10 +323,13 @@ export function activeNavIndex(
   items: ReadonlyArray<Pick<NavItem, 'to' | 'end'>>,
   pathname: string,
 ): number {
+  // `/agent/<name>` is home wearing an address, so the pill parks under Home
+  // rather than nowhere while the roster resolves the name.
+  const path = isAgentPath(pathname) ? '/' : pathname
   return items.findIndex((item) =>
     item.end
-      ? pathname === item.to
-      : pathname === item.to || pathname.startsWith(`${item.to}/`),
+      ? path === item.to
+      : path === item.to || path.startsWith(`${item.to}/`),
   )
 }
 
@@ -537,7 +543,12 @@ export function Layout() {
   // focus-route chrome to leak.)
   const { pathname } = useLocation()
   const isFocus = pathname.startsWith('/focus/')
-  const isOverview = pathname === '/'
+  // `/agent/<name>` IS home — the home thread's address (`lib/agent-href.ts`),
+  // rendering the same <Overview /> element and replaced with `/` the moment the
+  // roster has consumed the name. The shell must not wear a different shape for
+  // the frame it is on screen, so every pathname question here answers it exactly
+  // as it answers `/`.
+  const isOverview = pathname === '/' || isAgentPath(pathname)
   // The phone `/team/*` detail (Phase 6a) is a full-bleed surface like focus — no
   // top bar, no bottom nav, no `<main>` page-scroll. It is NOT a focus session,
   // so it stays out of `isFocus` (which drives the `/focus/` slug + agent hue);
@@ -708,6 +719,7 @@ export function Layout() {
           // fixed` (out of `<main>`'s flow), so clipping `<main>` changes nothing.
           className={cn('min-h-0 flex-1', chromeless ? 'overflow-hidden' : 'overflow-auto')}
         >
+          <OauthReturnEffect />
           <Outlet />
         </main>
         {!chromeless && <BottomNav grok={grok} />}

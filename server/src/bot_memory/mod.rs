@@ -175,9 +175,12 @@ pub fn install_scripts(data_dir: &Path) {
 }
 
 /// Create `dir`, write `path` if changed, chmod 0o755. Mirrors
-/// `external_edit::write_executable` (kept local to avoid widening that module's
-/// surface); idempotent so a hot restart loop never churns the inode.
-fn write_executable(dir: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
+/// `external_edit::write_executable` (which predates it and stays local to that
+/// module); idempotent so a hot restart loop never churns the inode. Shared with
+/// [`crate::hook_cli::install_scripts`], which installs the four bot→app hook
+/// wrappers into the SAME `<data_dir>/bin` with the same exec-the-server shape —
+/// a third copy of this would be one more place for the chmod to drift.
+pub(crate) fn write_executable(dir: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let up_to_date = std::fs::read_to_string(path)
         .map(|cur| cur == contents)
