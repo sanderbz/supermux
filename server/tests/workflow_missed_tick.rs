@@ -287,3 +287,39 @@ async fn a_due_tick_while_a_run_is_in_flight_records_a_skip_and_advances_the_cad
     state.pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The phantom skip: a run that takes longer than one tick is still in flight
+/// when the next tick sees ITS OWN window as due (`next_run` only moves when the
+/// run finishes). That window was fired, not missed: no `skipped` row, and the
+/// cadence is left for the finishing run to advance.
+#[tokio::test]
+async fn a_tick_that_sees_its_own_in_flight_window_records_nothing() {
+    let (state, dir) = new_state().await;
+    seed(&state, &dir, "WF-ownwin", "ownwinbot").await;
+
+    let due = Utc::now() - chrono::Duration::seconds(10);
+    set_next_run(&state, "WF-ownwin", due).await;
+    // Exactly what the firing tick leaves behind: this window's key, and its run.
+    assert!(db::workflows::claim_run_key(&state.pool, "WF-ownwin", due.timestamp()).await.unwrap());
+    let open = db::workflows::open_run(&state.pool, "WF-ownwin", "tick").await.unwrap();
+
+    workflows::tick_once(&state).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let runs = db::workflows::runs_for(&state.pool, "WF-ownwin", 20).await.unwrap();
+    assert_eq!(runs.len(), 1, "no phantom skipped row: {runs:?}");
+    assert!(runs[0].id == open && runs[0].status == "running", "the run is untouched");
+
+    let after = db::workflows::get(&state.pool, "WF-ownwin").await.unwrap().unwrap();
+    assert_eq!(
+        after.next_run.as_deref(),
+        Some(due.to_rfc3339().as_str()),
+        "the cadence is left for the finishing run to advance"
+    );
+    let sess = db::sessions::get(&state.pool, "ownwinbot").await.unwrap().unwrap();
+    assert_eq!(sess.last_send_text, "", "a second chain must never be started");
+
+    let _ = sessions::lifecycle::stop(&state, "ownwinbot").await;
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
