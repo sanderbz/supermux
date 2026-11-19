@@ -81,10 +81,8 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
-/// The pane command for a session on a remote host: the host user's own login
-/// shell, named by `$SHELL` where tmux runs. [`user_shell`] answers for the
-/// supermux machine (`/bin/zsh` on a Mac), a path that need not exist on the
-/// host, and when it does not the pane dies the moment tmux starts it.
+/// Pane command on a remote host: its own `$SHELL`, because `user_shell()` names
+/// a path of the supermux machine that need not exist there.
 const REMOTE_PANE_SHELL: &str = r#"exec "${SHELL:-/bin/bash}""#;
 
 /// The command a new pane starts with, for a local session or one on a host.
@@ -9357,9 +9355,7 @@ mod write_runtime_tests {
 mod pane_shell_tests {
     use super::*;
 
-    /// The shell of the supermux machine means nothing on a host: a pane on a
-    /// remote host must start the host user's own shell, so the same command
-    /// whatever `$SHELL` is here.
+    /// A pane on a host starts the host user's own shell, whatever `$SHELL` is here.
     #[test]
     fn a_pane_on_a_host_never_gets_the_local_shell() {
         let remote = pane_shell(Some(3));

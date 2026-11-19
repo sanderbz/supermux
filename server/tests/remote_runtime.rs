@@ -1,18 +1,5 @@
-//! A session with a `host_id` runs on that host, not on the supermux machine.
-//!
-//! `AppState::runtime_for` used to build a LOCAL tmux runtime for every row, so a
-//! session created with "Run on <host>" was spawned in a tmux on the supermux
-//! machine itself and merely carried the host's id: the agent, its shell and its
-//! files were local, while the screen reader and the file API looked on the host.
-//!
-//! The "remote" of `integration_remote.rs` is `localhost`, which cannot tell the
-//! two apart. These tests use a recording stand-in for `ssh` instead, so they
-//! need neither an sshd nor a second machine:
-//!
-//! * a session on a host spawns its tmux session through `ssh <target> -- tmux
-//!   new-session ...`, and a local session never starts `ssh`;
-//! * a session on a host that cannot be resolved has no runtime at all, rather
-//!   than falling back to a local one.
+//! A session with a `host_id` runs on that host: a recording `ssh` stand-in shows the spawn going over ssh,
+//! and a gone host gives no runtime. `integration_remote.rs` uses localhost as its "remote" and cannot tell.
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -62,9 +49,8 @@ async fn insert_session(state: &AppState, name: &str, host_id: Option<i64>) {
     }
 }
 
-/// Put an `ssh` on PATH that records its arguments and succeeds, so the host
-/// pool sees a live ControlMaster and every remote command is observable.
-/// Returns the log file the stand-in appends to.
+/// Put a recording `ssh` on PATH that always succeeds, so the host pool sees a live ControlMaster.
+/// Returns the log file it appends its arguments to.
 fn install_recording_ssh(dir: &Path) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -95,9 +81,8 @@ async fn a_session_on_a_host_spawns_its_terminal_over_ssh() {
     let _ = local.alive().await;
     assert!(ssh_log(&log).is_empty(), "a local session must not touch ssh: {}", ssh_log(&log));
 
-    // A session on a host spawns through the host's transport. The stand-in
-    // answers every command with nothing, so the spawn itself may report a
-    // problem; what matters is where the command went.
+    // The stand-in answers every command with nothing, so the spawn may report a problem;
+    // only where the command went matters.
     let remote = state.runtime_for("remote-one").await.expect("remote runtime");
     let _ = remote.spawn(Path::new("/srv/app"), &HashMap::new(), "bash").await;
 

@@ -1072,18 +1072,8 @@ impl AppState {
     /// column (migration 0024) and cached in [`session_runtimes`](Self::session_runtimes).
     ///
     /// This is the ONE replacement for the historical `Tmux::new(name)` at every
-    /// session-scoped call site. For `runtime = 'tmux'` (the entire pre-existing
-    /// fleet, by column DEFAULT) it hands back a [`TmuxRuntime`]: built LOCALLY
-    /// for a local session, identical to what `Tmux::new(name)` produced.
-    ///
-    /// A session with a `host_id` lives on that host, so its [`TmuxRuntime`] runs
-    /// over the host's SSH ControlMaster (`HostPool::transport_for`) and spawn,
-    /// send, capture and kill all reach the remote tmux. A host that cannot be
-    /// resolved or reached is an error here: the old behaviour, a local tmux
-    /// session that merely carried the host's id, started the "remote" agent on
-    /// the supermux machine itself (and, for a company session, without the
-    /// remote jail the plan assumed). The WS attach path resolves its own
-    /// transport through [`runtime_for_attach`](Self::runtime_for_attach).
+    /// session-scoped call site. A tmux session with a `host_id` runs over that host's SSH
+    /// transport; a host that cannot be reached is an error, never a local fallback.
     ///
     /// An UNKNOWN session name is not an error: it resolves to tmux, matching
     /// `Tmux::new` on a name with no row (the call then fails naturally with
@@ -1098,9 +1088,7 @@ impl AppState {
             .await
             .unwrap_or(None)
             .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
-        // Native sessions are local by definition (a native runtime combined with
-        // a host is refused at create), so only tmux rows look the host up. A
-        // database error propagates: it must never read as "local".
+        // Native sessions are local by definition, so only tmux rows look the host up.
         let transport = if kind == runtime::RUNTIME_NATIVE {
             None
         } else {

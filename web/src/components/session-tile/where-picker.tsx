@@ -89,9 +89,7 @@ interface WherePickerBaseProps {
   /** Disable the sessions section (legacy; not used now that `showSessions`
    *  exists). Kept for back-compat. Defaults to false. */
   sessionsDisabled?: boolean
-  /** The remote host the session will run on; `null` or omitted is the supermux
-   *  machine. With a host, the project list, the path suggestions and the
-   *  Create-folder row all work on that host (its home directory is the root). */
+  /** The remote host the session runs on (`null`: the supermux machine); the project list, suggestions and Create work on it. */
   hostId?: number | null
 }
 
@@ -176,9 +174,7 @@ export function WherePicker(props: WherePickerProps) {
     }
   }, [])
 
-  // Picking another host moves the folder with it: the home directory of a
-  // remote host, the default folder again for the supermux machine. The picker
-  // never shows the other machine's folders.
+  // Picking another host moves the folder with it: the host's home directory, or the default folder again.
   const onChangeRef = React.useRef(onChange)
   onChangeRef.current = onChange
   const previousHost = React.useRef(hostId)

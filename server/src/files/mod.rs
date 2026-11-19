@@ -281,9 +281,8 @@ async fn transport_for_session(
     Ok(transport::resolve(&state.host_pool, host_id))
 }
 
-/// The [`FileTransport`] for an explicit remote host, for callers that have no
-/// session to name yet. Fenced like [`transport_for_session`]: a scoped human is
-/// refused every remote host with the same uniform 404.
+/// The [`FileTransport`] for an explicit remote host (no session to name yet); a scoped
+/// human is refused remote hosts with the uniform 404, as in [`transport_for_session`].
 fn transport_for_host(
     state: &AppState,
     ctx: &crate::scope::OptCtx,
@@ -1315,10 +1314,8 @@ struct ProjectRepos {
 /// trip; the rest are listed without the git chip.
 const REMOTE_GIT_PROBES: usize = 40;
 
-/// Directory completions on a remote host: the local rules (dotfiles hidden on
-/// request, prefix match, ten results), over the host's file transport. `~`
-/// means the home directory of the SSH user. A path the file browser would
-/// refuse (the remote blocklist) lists nothing.
+/// Directory completions on a remote host with the local rules, over its file transport;
+/// `~` is the SSH user's home and a path the file browser would refuse lists nothing.
 async fn remote_dir_completions(
     transport: &Arc<dyn FileTransport>,
     q: &str,
@@ -1342,9 +1339,7 @@ async fn remote_dir_completions(
             p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         )
     };
-    // The file browser's check: the literal blocklist first, then the same path
-    // with its symlinks folded on the host, so a link into a blocked directory
-    // lists nothing either.
+    // The file browser's check: the blocklist, then the same path with symlinks folded on the host.
     if safe_path(transport, &dir.to_string_lossy(), None).await.is_err() {
         return Vec::new();
     }
@@ -1363,10 +1358,8 @@ async fn remote_dir_completions(
     out
 }
 
-/// The picker's project list for a remote host: the subdirectories of the SSH
-/// user's home directory (the root is that home directory), with the git chip
-/// probed for the first [`REMOTE_GIT_PROBES`]. Empty when the host cannot be
-/// read, so the picker falls back to the free-text field.
+/// The picker's project list for a remote host: the subdirectories of the SSH user's home
+/// (the root), git chip probed for the first [`REMOTE_GIT_PROBES`]; empty when unreadable.
 async fn remote_project_repos(transport: &Arc<dyn FileTransport>) -> ProjectRepos {
     let empty = ProjectRepos { root: String::new(), entries: Vec::new() };
     let Ok(home) = transport.realpath(Path::new(".")).await else {
