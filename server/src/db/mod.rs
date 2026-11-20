@@ -125,8 +125,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 46,
-            "expected forty-six applied migrations (0001-0005, 0007-0047)"
+            applied, 47,
+            "expected forty-seven applied migrations (0001-0005, 0007-0048)"
         );
 
         // 0037 applied cleanly: the new nullable company_id column exists and a
