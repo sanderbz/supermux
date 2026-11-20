@@ -86,6 +86,12 @@ pub fn session_has_memory(s: &Session, data_dir: &Path) -> bool {
     bot_has || role_has
 }
 
+/// Does this launch wire the memory tier? Only on this machine: the store and the recall hook's
+/// `supermux-server` binary exist here, so a session on a host would fail the hook on every prompt.
+pub fn memory_applies(s: &Session, data_dir: &Path) -> bool {
+    s.host_id.is_none() && session_has_memory(s, data_dir)
+}
+
 /// Build the [`MemoryParams`] for a session known to have memory.
 pub fn memory_params(s: &Session, data_dir: &Path) -> MemoryParams {
     MemoryParams {
@@ -391,5 +397,16 @@ mod tests {
         let mut blank_role = plain("pane2");
         blank_role.desc = "   \n ".into();
         assert!(!session_has_memory(&blank_role, data_dir), "whitespace desc is not a role");
+    }
+
+    /// A bot on a host gets no recall hook: its binary and store are not there ("hook failed" at every prompt).
+    #[test]
+    fn a_session_on_a_host_is_left_out_of_the_memory_tier() {
+        let data_dir = std::path::Path::new("/nonexistent-supermux-data-dir");
+        let mut bot = plain("worker");
+        bot.company_id = Some(7);
+        assert!(memory_applies(&bot, data_dir), "a local company bot keeps its memory");
+        bot.host_id = Some(1);
+        assert!(!memory_applies(&bot, data_dir), "the same bot on a host does not");
     }
 }

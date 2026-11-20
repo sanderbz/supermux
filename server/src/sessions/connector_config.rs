@@ -712,7 +712,7 @@ pub async fn assemble(state: &AppState, session_name: &str) -> Result<Option<Fin
     // stays byte-identical (no hook, no private dir); a bot activates the dir even
     // with zero connector grants. Best-effort: a missing session row just skips it.
     if let Some(session) = crate::db::sessions::get(&state.pool, session_name).await? {
-        if crate::bot_memory::session_has_memory(&session, &state.config.data_dir) {
+        if crate::bot_memory::memory_applies(&session, &state.config.data_dir) {
             cfg.apply_memory(crate::bot_memory::memory_params(
                 &session,
                 &state.config.data_dir,
