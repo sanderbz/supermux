@@ -1164,6 +1164,8 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
 
+    crate::agents::library::cleanup(&state.config.data_dir, name).await;
+
     // Audit row — every destructive HTTP call records an entry. `purge` is the
     // hardest-destructive session op (the row AND its archived scrollback are
     // gone), so it MUST leave a forensic trace. `?` (not `let _ =`) so a failed
@@ -1605,6 +1607,7 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // Close its open asks first (rev + `closed` frame each); the closed rows
     // outlive the session row so `GET /api/asks?since=` replays the close.
     crate::asks::close_for_session_removed(state, name).await;
+    crate::agents::library::cleanup(&state.config.data_dir, name).await;
     db::sessions::delete(&state.pool, name).await?;
 
     // Audit row — every destructive HTTP call records an entry. `delete` is

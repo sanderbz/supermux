@@ -117,6 +117,7 @@ export function AgentToolsSheet({
       description={description}
       className="sm:max-w-lg"
     >
+      <a className="inline-flex px-4 py-2 text-sm font-medium text-primary underline" href={'/store?tab=skills' + (sessionName ? '&target=' + encodeURIComponent(sessionName) : '')}>Manage agent skills</a>
       {open && (
         isCodex ? (
           <CodexToolsBody
@@ -1167,6 +1168,9 @@ function SkillRow({
         </div>
         <Play className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
       </motion.button>
+      {entry.removable && entry.scope !== 'plugin' && (
+        <a className="mt-1 inline-flex px-3 py-1.5 text-xs font-medium text-primary underline" href={'/files?' + new URLSearchParams({ path: entry.path, select: 'SKILL.md' })}>Edit skill files</a>
+      )}
     </motion.li>
   )
 }

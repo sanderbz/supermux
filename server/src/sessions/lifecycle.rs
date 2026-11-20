@@ -2798,7 +2798,7 @@ async fn company_confinement(
         // scoped to `<name>` so a confined agent cannot read a sibling session's
         // settings; the company-generic runtime paths (connectors/bin/uploads)
         // are already on `SandboxSpec::for_company`'s list.
-        p.allow_ro(home.join(".supermux/session-config").join(name));
+        p.allow_ro(state.config.data_dir.join("session-config").join(name));
         // A per-session Claude account dir (`CLAUDE_CONFIG_DIR`) is written at
         // boot (credentials cache, statsig) — RW. When a session HAS one, the
         // whole Claude home it sees is already private to it, which is the real
@@ -3393,6 +3393,8 @@ async fn start_locked_inner(
     }
 
     let freshly_spawned = !rt.alive().await;
+    let managed_skills = s.host_id.is_none() && matches!(s.provider.as_str(), "claude" | "codex");
+    let mut skill_launch = None;
     if freshly_spawned {
         // A genuinely new pane/pty is about to exist for this name. Drop any
         // cached live pty stream: it is bound to a PRIOR (now-dead) pane,
@@ -3443,6 +3445,10 @@ async fn start_locked_inner(
         // the probe measures None (the @system-service filter blocks
         // landlock_*), so under BestEffort the plan fails open and the child
         // execs UNCONFINED — behaviour-identical to a NULL-company session.
+        // Create the private skill tree before building the confinement mounts.
+        if managed_skills {
+            skill_launch = Some(crate::agents::library::prepare(&state.pool, &state.config.data_dir, &s).await?);
+        }
         let confine_plan = company_confinement(state, &s, name).await?;
         let confinement_degraded = rt.spawn_confined(&dir, &env, &shell, confine_plan).await?;
         if confinement_degraded {
@@ -3524,6 +3530,12 @@ async fn start_locked_inner(
             true
         }
         _ => {
+            if managed_skills && !freshly_spawned {
+                skill_launch = Some(crate::agents::library::prepare(&state.pool, &state.config.data_dir, &s).await?);
+            }
+            if let Some(launch) = &skill_launch {
+                connector_flags.extend_from_slice(&launch.flags);
+            }
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) =
@@ -3564,6 +3576,11 @@ async fn start_locked_inner(
         }
     };
 
+    if ready && !already_running {
+        if let Some(launch) = &skill_launch {
+            crate::agents::library::record(&state.pool, name, launch).await?;
+        }
+    }
     db::sessions::bump_start(&state.pool, name).await?;
 
     if !ready {

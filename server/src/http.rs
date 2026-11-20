@@ -216,6 +216,7 @@ fn protected_router(state: AppState) -> Router {
         .merge(crate::asks::router_for(state.clone()))
         .merge(teams::router_for(state.clone())) // GET /api/teams + settings
         .merge(agents::router_for(state.clone()))
+        .merge(agents::library::router(state.clone()))
         // Claude tools registry + MCP CRUD — P3d owner/admin-only. The MCP
         // mutators write GLOBAL config (`~/.claude.json` `mcpServers`) that Claude
         // loads into EVERY subsequently-spawned agent across ALL companies, so an
