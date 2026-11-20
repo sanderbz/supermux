@@ -3333,11 +3333,26 @@ async fn start_locked_inner(
                 tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
             }
         }
-    } else if s.provider == "codex"
-        && crate::browser_feedback::control::has_binding(state, name).await
-    {
-        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
-            connector_flags = crate::connectors::browser::mcp::codex_flags(&path);
+    } else if s.provider == "codex" {
+        // The company connectors reach Codex as per-launch `-c mcp_servers.<id>=...` overrides; secrets
+        // stay in the launch env and are inherited by name.
+        match crate::sessions::connector_config::assemble(state, name).await {
+            Ok(Some(cfg)) => {
+                let flags = cfg.codex_flags();
+                if !flags.is_empty() {
+                    env.extend(cfg.env);
+                    connector_flags = flags;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
+            }
+        }
+        if crate::browser_feedback::control::has_binding(state, name).await {
+            if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+                connector_flags.extend(crate::connectors::browser::mcp::codex_flags(&path));
+            }
         }
     }
 

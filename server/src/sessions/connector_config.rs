@@ -536,6 +536,69 @@ pub struct FinishedConfig {
     pub launch_flags: Vec<String>,
 }
 
+impl FinishedConfig {
+    /// Codex has no `--mcp-config`: the stdio connectors of this launch become per-launch
+    /// `-c mcp_servers.<id>={...}` overrides. A `${NAME}` env value is passed by name (`env_vars`,
+    /// read from the launch env), so no secret reaches the command line.
+    pub fn codex_flags(&self) -> Vec<String> {
+        codex_mcp_flags(&self.launch_flags)
+    }
+}
+
+/// The `-c` pairs that give Codex the servers of a Claude `--mcp-config` word list. Left out: hosted
+/// (`url`) servers, ids that are not a bare TOML key, and `connect` (its card is raised by a Claude hook).
+pub(crate) fn codex_mcp_flags(launch_flags: &[String]) -> Vec<String> {
+    let Some(raw) = launch_flags.iter().position(|f| f == "--mcp-config").and_then(|i| launch_flags.get(i + 1)) else {
+        return Vec::new();
+    };
+    let Ok(config) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(servers) = config.get("mcpServers").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut flags = Vec::new();
+    for (id, server) in servers {
+        if id == "connect" || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            continue;
+        }
+        let Some(command) = server.get("command").and_then(Value::as_str) else {
+            continue;
+        };
+        let args: Vec<String> = server
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(toml_string).collect())
+            .unwrap_or_default();
+        let (mut inherited, mut fixed) = (Vec::new(), Vec::new());
+        if let Some(env) = server.get("env").and_then(Value::as_object) {
+            for (key, value) in env {
+                let Some(value) = value.as_str() else { continue };
+                match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+                    Some(name) if name == key => inherited.push(toml_string(key)),
+                    Some(_) => {} // a secret under another name cannot be inherited by name
+                    None => fixed.push(format!("{}={}", toml_string(key), toml_string(value))),
+                }
+            }
+        }
+        let mut table = format!("command={},args=[{}]", toml_string(command), args.join(","));
+        if !inherited.is_empty() {
+            table.push_str(&format!(",env_vars=[{}]", inherited.join(",")));
+        }
+        if !fixed.is_empty() {
+            table.push_str(&format!(",env={{{}}}", fixed.join(",")));
+        }
+        flags.push("-c".to_string());
+        flags.push(format!("mcp_servers.{id}={{{table}}}"));
+    }
+    flags
+}
+
+/// A TOML basic string (JSON's escapes are TOML's).
+fn toml_string(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
+}
+
 /// Resolve one session's private launch config — connector grants AND bot memory —
 /// into a [`FinishedConfig`], or `None` when the session has NEITHER (then the
 /// launch is byte-identical to the pre-connector/pre-memory fleet). This is the
@@ -982,6 +1045,32 @@ pub fn with_remote_transport(mut emit: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// Codex gets the stdio connectors as `-c` overrides; secrets are inherited by name, never written out.
+    #[test]
+    fn codex_gets_stdio_connectors_as_config_overrides_without_secrets() {
+        let flags = vec![
+            "--mcp-config".to_string(),
+            json!({ "mcpServers": {
+                "gmail-imap": { "command": "python3", "args": ["/x/mail.py", "a b"],
+                    "env": { "IMAP_HOST": "imap.gmail.com", "MAIL_ADDRESS": "${MAIL_ADDRESS}", "ALIAS": "${OTHER}" } },
+                "connect": { "command": "python3", "args": ["c.py"] },
+                "hosted": { "type": "http", "url": "https://example.com/mcp" },
+                "bad.id": { "command": "x" }
+            } })
+            .to_string(),
+            "--strict-mcp-config".to_string(),
+        ];
+        let out = codex_mcp_flags(&flags);
+        assert_eq!(out.len(), 2, "one connector, one -c pair: {out:?}");
+        assert_eq!(out[0], "-c");
+        assert_eq!(
+            out[1],
+            r#"mcp_servers.gmail-imap={command="python3",args=["/x/mail.py","a b"],env_vars=["MAIL_ADDRESS"],env={"IMAP_HOST"="imap.gmail.com"}}"#
+        );
+        assert!(!out[1].contains("OTHER"), "a secret under another name is not forwarded");
+        assert!(codex_mcp_flags(&["--settings".to_string()]).is_empty(), "no mcp-config, no flags");
+    }
+
     use super::*;
 
     fn temp_dir() -> PathBuf {
