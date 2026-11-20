@@ -113,6 +113,10 @@ export const SSE_NAMED_EVENTS = [
   // `permission_request` / `question_request` fields; it is subscribed so the
   // channel is never a silent orphan.
   'asks',
+  // A Mac restart was confirmed or called off (`server/src/host_power.rs`) —
+  // payload `{ pending: { at } | null }`, owner-only. `host-power-banner.tsx`
+  // shows the countdown with Cancel on every open app.
+  'host-power',
   // A 10s keep-alive — it only resets the staleness clock.
   'ping',
 ] as const
