@@ -1674,10 +1674,19 @@ fn at_resume_picker(capture: &str) -> bool {
 /// this folder" (see [`keys_to_accept_trust`] — the option order is not fixed),
 /// which also records the dir as trusted so it never reappears for that path.
 fn at_trust_dialog(capture: &str) -> bool {
-    let c = capture.to_lowercase();
+    // The dialog is open only while its words are near the bottom of the screen. Once answered, Claude draws
+    // its own UI below it and the words scroll up into the history, where they must not refuse a send for good.
+    let mut rows: Vec<&str> = capture.lines().collect();
+    while rows.last().is_some_and(|l| l.trim().is_empty()) {
+        rows.pop();
+    }
+    let c = rows[rows.len().saturating_sub(TRUST_DIALOG_ROWS)..].join("\n").to_lowercase();
     (c.contains("trust the files") || c.contains("trust this folder") || c.contains("do you trust"))
         || (c.contains("safety check") && c.contains("trust"))
 }
+
+/// Rows from the bottom that hold a trust dialog (it is about ten tall, with its choices last).
+const TRUST_DIALOG_ROWS: usize = 16;
 
 /// The key sequence that lands on "Yes, I trust this folder" and confirms it —
 /// for whatever ORDER the trust dialog draws its options in.
@@ -5067,6 +5076,19 @@ mod agent_ready_heuristics_tests {
             agent_ui_visible(cap),
             "the ❯ menu cursor trips agent_ui_visible — trust MUST be handled first",
         );
+    }
+
+    /// The title of an answered dialog stays in the scrollback; with Claude's own UI below it, a send is not refused.
+    #[test]
+    fn an_answered_trust_dialog_in_the_history_does_not_refuse_a_send() {
+        let answered = format!(
+            "Accessing workspace:\n /opt/projects/x\n Quick safety check: Is this a project you created or one you trust?\n \
+             ❯ 1. Yes, I trust this folder\n   2. No, exit\n{}",
+            "output of the agent\n".repeat(20)
+        );
+        assert!(!at_trust_dialog(&answered), "a dialog far above the bottom is history, not a gate");
+        let open = format!("{}Accessing workspace:\n Quick safety check: do you trust this folder?\n ❯ Yes, I trust this folder\n   No, exit", "earlier output\n".repeat(20));
+        assert!(at_trust_dialog(&open), "a dialog at the bottom still is one");
     }
 
     #[test]
