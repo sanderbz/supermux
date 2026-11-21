@@ -13,6 +13,9 @@ use supermux_server::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("stream-reply") {
+        return sessions::reply_cli::run(std::env::args().skip(2)).await;
+    }
     // "Edit in native editor" bridge. When Claude's
     // built-in Ctrl+G spawns `$EDITOR`, supermux points `$EDITOR` at THIS binary's
     // hidden `__edit` subcommand: it relays Claude's input buffer to a browser

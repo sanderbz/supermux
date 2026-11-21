@@ -45,6 +45,7 @@ pub mod teams;
 pub mod tmux;
 pub mod transport;
 pub mod native;
+pub mod reply_cli;
 pub mod runtime;
 
 pub use host_pool::{spawn_reaper, HostPool};
