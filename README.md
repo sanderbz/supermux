@@ -304,6 +304,18 @@ More in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 </details>
 
+## Streaming a single reply
+
+Local integrations can run a single reply through the official provider CLIs as the signed-in user:
+
+```sh
+printf "%s" "Give me two short examples of a paper horse." | supermux-server stream-reply codex gpt-6-luna medium
+```
+
+The command reads one prompt on stdin. Stdout contains newline-delimited JSON with `delta` frames as provider text arrives and one `final` frame with the complete reply. Errors go to stderr and return a nonzero exit code. This is an isolated text turn. It does not type into a session or change its chat history, and tools are disabled.
+
+Use your existing ChatGPT or Claude Code subscription sign-in. The Codex adapter checks the included allowance and refuses a paid credit balance. For Claude, switch off **Usage credits** on your account before setting `SUPERMUX_CLAUDE_USAGE_CREDITS_OFF=1` and using `stream-reply claude haiku medium`. The command does not accept API keys.
+
 ## Contributing
 
 Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the development setup; report security issues privately through [`SECURITY.md`](SECURITY.md). CI runs the Rust tests (unit tests plus integration tests in `server/tests/`), a TypeScript build and Playwright smoke tests.
