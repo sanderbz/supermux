@@ -8,8 +8,8 @@
 //!
 //! ```text
 //! LD_LIBRARY_PATH=<chromelibs> <chromium> \
-//!   --headless=new --disable-blink-features=AutomationControlled \
-//!   --user-agent=<pinned real-Chrome UA> \
+//!   --headless=new \
+//!   --user-agent=<the binary's own UA, see BrowserIdentity> \
 //!   --remote-debugging-port=0 --remote-debugging-address=127.0.0.1 \
 //!   --no-sandbox --no-zygote --disable-gpu --disable-dev-shm-usage \
 //!   --user-data-dir=<profile> --window-size=1366,900 about:blank
@@ -322,8 +322,9 @@ pub fn launch_args(user_data_dir: &Path, width: u32, height: u32, user_agent: Op
         // Full Chromium in its modern headless mode. See the module docs: this
         // is the flag the old shell forbade and the new binary requires.
         "--headless=new".to_string(),
-        // `navigator.webdriver === false` without any init-script patching.
-        "--disable-blink-features=AutomationControlled".to_string(),
+        // No `--disable-blink-features=AutomationControlled`: hiding
+        // `navigator.webdriver` is a bot-detection dodge, and the browser presents
+        // itself honestly (Sander's choice, Core point 01a20f72).
         // Kernel-assigned port; discovered via DevToolsActivePort. Loopback only.
         "--remote-debugging-port=0".to_string(),
         "--remote-debugging-address=127.0.0.1".to_string(),
@@ -814,7 +815,6 @@ mod tests {
         let args = launch_args(Path::new("/tmp/profile"), 1366, 900, Some("UA-X"));
         for expected in [
             "--headless=new",
-            "--disable-blink-features=AutomationControlled",
             "--remote-debugging-port=0",
             "--remote-debugging-address=127.0.0.1",
             "--no-sandbox",
@@ -834,6 +834,10 @@ mod tests {
                 "missing {expected} in {args:?}"
             );
         }
+        assert!(
+            !args.iter().any(|a| a.contains("AutomationControlled")),
+            "navigator.webdriver is not hidden: {args:?}"
+        );
         assert!(
             args.iter().any(|a| a == "--user-agent=UA-X"),
             "the identity's UA rides the recipe: {args:?}"
