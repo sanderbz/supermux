@@ -28,6 +28,10 @@
 //!   consumer of the store: it never reads a transcript for the live path, so
 //!   the tailer stays the file's only reader.
 //!
+//! - [`live`]   — the OPT-IN `live` frame on the chat socket: the `/peek` pane
+//!   capture pushed on change (100 ms floor) instead of polled, one producer
+//!   per watched session.
+//!
 //! - [`statusline`] — the OPT-IN Claude statusline tap: a wrap-don't-clobber
 //!   installer for the single global `statusLine` slot, its exact uninstall, and
 //!   the hook-token-authed ingest for what the tap POSTs. Off by default and
@@ -41,5 +45,6 @@ pub mod parser;
 pub mod statusline;
 pub mod source;
 pub mod store;
+pub mod live;
 pub mod tailer;
 pub mod ws;
