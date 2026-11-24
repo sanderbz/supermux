@@ -1507,7 +1507,14 @@ const BUDGET_APP_JS = 488 * KB
 // row (both new markup carrying existing utility classes, plus the index.css hash
 // re-roll). ceil + headroom = 37, the same rule the ratchets above use, and the
 // measurement is recorded here so the crawl is visible rather than silent.
-const BUDGET_CSS = 37 * KB
+//
+// RATCHETED 37 -> 38 by the resizable roster rail (#262): the divider's grip and
+// the narrow-rail fold (two `@container gr-rail` blocks in grok-mode.css) plus
+// the header pill's `@container pill` variants. Measured 37.07 in CI (37.03
+// local) against 37.00; all of it under `[data-grok]` or a named container, so
+// nothing off the skin matches it. ceil + headroom = 38, same rule as above.
+// ENTRY gate unmoved.
+const BUDGET_CSS = 38 * KB
 
 function gzipSize(path) {
   return gzipSync(readFileSync(path), { level: 9 }).length

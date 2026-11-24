@@ -287,7 +287,13 @@ export function ChatSurface({
         // standardized fix (Safari 16+, macOS+iOS) and a no-op where unsupported.
         // `body { overscroll-behavior: none }` (globals.css) is NOT sufficient — it
         // stops the body rubber-banding the browser, not an inner list chaining into it.
-        className="chat-track min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        //
+        // `relative` makes the track the containing block of the transcript's
+        // `sr-only` live regions (`position: absolute`). Anchored to the surface
+        // instead, they escaped the track's overflow, sat below the pane at the
+        // transcript's end, and made `<main>` itself scrollable by that much — a
+        // drag that started on the header or the composer moved the whole shell.
+        className="chat-track relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
         {children}
       </div>
