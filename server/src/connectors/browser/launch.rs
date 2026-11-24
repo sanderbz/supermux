@@ -29,11 +29,15 @@
 //!   (a surface `--user-agent=` cannot touch), has `window.chrome === undefined`
 //!   and `navigator.plugins.length === 0` — the three oldest headless tells, all
 //!   read by ordinary login pages. Full Chromium passes all three unpatched.
-//! * **The UA is pinned WITH the binary** ([`CHROME_USER_AGENT`] /
-//!   [`PINNED_CHROME_MAJOR`]). A UA claiming Chrome 149 on a Chrome 151 binary is
-//!   *worse* than no spoof: the UA-CH brand version is unspoofable, so the
-//!   mismatch is itself the detection. Bump them together; a test asserts they
-//!   agree.
+//! * **The UA is the binary's own, honestly.** [`BrowserIdentity`] reads the
+//!   version from the binary itself (`<chrome> --version`, once per process)
+//!   and the platform from the host this server runs on, so the UA string and
+//!   the UA Client Hints always name the Chromium that is really running, on
+//!   the OS it is really running on. The only edit to the native UA is the
+//!   `HeadlessChrome` token, which becomes `Chrome`; there is no platform or
+//!   brand spoof (no "Google Chrome" brand on a Chromium build, no Linux UA on
+//!   a Mac). If the version cannot be read, no UA is forced at all and the
+//!   binary's native UA stands.
 //! * `--remote-debugging-port=0` lets the kernel pick a free port and Chrome
 //!   writes it to `<user-data-dir>/DevToolsActivePort`. That is race-free,
 //!   unlike "bind :0, read the port, drop the listener, hand it to Chrome".
@@ -84,28 +88,185 @@ pub const ENV_CHROME_LD_PATH: &str = "SUPERMUX_CHROME_LD_LIBRARY_PATH";
 /// cache, so pinning the shell back is a one-env-var rollback.
 const DEFAULT_CHROME_REL: &str = ".cache/ms-playwright/chromium-1228/chrome-linux64/chrome";
 
-/// Major version of the Chromium build [`DEFAULT_CHROME_REL`] points at
-/// (`Chrome/149.0.7827.55`, measured on this host 2026-08-24).
-pub const PINNED_CHROME_MAJOR: u32 = 149;
+/// What the browser honestly is: the binary's own version and this host's OS.
+///
+/// Read once per process ([`ensure_identity`]) and then used for both the
+/// launch `--user-agent` and every `Emulation.setUserAgentOverride`, so the UA
+/// string and the UA Client Hints can never disagree with each other or with
+/// the binary. Replaces the old constants pinned to one Linux build (Chrome
+/// 149), which on the Mac mini announced "X11; Linux, Chrome 149" next to
+/// native hints saying "Chromium 159, macOS".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserIdentity {
+    /// Chromium major, e.g. `159`.
+    pub major: u32,
+    /// Full version as the binary reports it, e.g. `159.0.8154.6`.
+    pub full: String,
+    /// The OS this server (and so the browser) runs on.
+    pub os: HostOs,
+    /// The OS version for `Sec-CH-UA-Platform-Version` (macOS: `sw_vers`; empty on Linux).
+    pub os_version: String,
+}
 
-/// The User-Agent we launch with. **Pinned to [`PINNED_CHROME_MAJOR`]** — see the
-/// module docs on UA/binary drift. Only the UA *string* is spoofed here; the
-/// UA-CH brand list is left alone precisely because full Chromium's is already
-/// clean (`Chromium`, `Not)A;Brand` — no `HeadlessChrome`).
-pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
-(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+/// The host OS, as the UA and the client hints name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    Mac,
+    Linux,
+}
 
-/// The User-Agent applied when a viewer negotiates a PHONE viewport, so
-/// UA-sniffing sites (Google is the loud one) serve their mobile layout — a
-/// device-metrics `mobile:true` alone only flips the viewport meta / touch, not
-/// the UA. Android Chrome, **not** iOS Safari: the engine actually running is
-/// Chromium, so the UA-CH brand list we send alongside this (see
-/// `context::user_agent_metadata`) stays honestly Chromium. Pinned to the SAME
-/// [`PINNED_CHROME_MAJOR`] as the desktop UA and the binary — a mobile UA whose
-/// Chrome major drifts from the binary is the exact UA-CH mismatch the module
-/// docs warn about.
-pub const CHROME_USER_AGENT_MOBILE: &str = "Mozilla/5.0 (Linux; Android 13; Pixel 7) \
-AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36";
+impl HostOs {
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            HostOs::Mac
+        } else {
+            HostOs::Linux
+        }
+    }
+}
+
+/// `Sec-CH-UA-Arch` for this build of the server (the browser runs on the same machine).
+fn host_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm"
+    } else {
+        "x86"
+    }
+}
+
+impl BrowserIdentity {
+    /// The desktop UA: Chrome's own reduced form for this platform and major.
+    /// Every real Chrome on macOS sends the frozen `Intel Mac OS X 10_15_7`,
+    /// on Apple silicon too, so that token is the honest one.
+    pub fn user_agent(&self) -> String {
+        let platform = match self.os {
+            HostOs::Mac => "Macintosh; Intel Mac OS X 10_15_7",
+            HostOs::Linux if cfg!(target_arch = "aarch64") => "X11; Linux aarch64",
+            HostOs::Linux => "X11; Linux x86_64",
+        };
+        format!(
+            "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36",
+            self.major
+        )
+    }
+
+    /// The UA applied when a viewer negotiates a PHONE viewport, so UA-sniffing
+    /// sites serve their mobile layout (device metrics alone only flip the
+    /// viewport meta and touch). Device emulation, as DevTools does it; the
+    /// Chromium major is still the binary's own.
+    pub fn mobile_user_agent(&self) -> String {
+        format!(
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Mobile Safari/537.36",
+            self.major
+        )
+    }
+
+    /// `navigator.platform` for the override (`platform` in `setUserAgentOverride`).
+    pub fn navigator_platform(&self, mobile: bool) -> &'static str {
+        match (mobile, self.os) {
+            (true, _) => "Linux armv8l",
+            (false, HostOs::Mac) => "MacIntel",
+            (false, HostOs::Linux) if cfg!(target_arch = "aarch64") => "Linux aarch64",
+            (false, HostOs::Linux) => "Linux x86_64",
+        }
+    }
+
+    /// The `userAgentMetadata` (UA Client Hints) that rides with an override: a
+    /// UA string without metadata leaves the high-entropy hints contradicting
+    /// it. Brands are the binary's own (`Chromium` plus the GREASE filler), with
+    /// its real major and full version; only platform/model/`mobile` follow the
+    /// emulated viewport.
+    pub fn ua_metadata(&self, mobile: bool) -> serde_json::Value {
+        let v = self.major.to_string();
+        let brands = serde_json::json!([
+            { "brand": "Chromium", "version": v },
+            { "brand": "Not.A/Brand", "version": "24" },
+        ]);
+        let full_version_list = serde_json::json!([
+            { "brand": "Chromium", "version": self.full },
+            { "brand": "Not.A/Brand", "version": "24.0.0.0" },
+        ]);
+        if mobile {
+            serde_json::json!({
+                "brands": brands, "fullVersionList": full_version_list,
+                "platform": "Android", "platformVersion": "13.0.0",
+                "architecture": "", "model": "Pixel 7", "mobile": true,
+                "bitness": "", "wow64": false,
+            })
+        } else {
+            serde_json::json!({
+                "brands": brands, "fullVersionList": full_version_list,
+                "platform": match self.os { HostOs::Mac => "macOS", HostOs::Linux => "Linux" },
+                "platformVersion": self.os_version,
+                "architecture": host_arch(), "model": "", "mobile": false,
+                "bitness": "64", "wow64": false,
+            })
+        }
+    }
+}
+
+/// Pull `(major, full)` out of `<chrome> --version` output, e.g.
+/// `Google Chrome for Testing 159.0.8154.6` or `Chromium 149.0.7827.55 `.
+pub fn parse_chrome_version(out: &str) -> Option<(u32, String)> {
+    out.split_whitespace().find_map(|w| {
+        let parts: Vec<&str> = w.split('.').collect();
+        if parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            Some((parts[0].parse().ok()?, w.to_string()))
+        } else {
+            None
+        }
+    })
+}
+
+static IDENTITY: std::sync::OnceLock<BrowserIdentity> = std::sync::OnceLock::new();
+
+/// The identity read at the first launch, if it could be read.
+pub fn identity() -> Option<&'static BrowserIdentity> {
+    IDENTITY.get()
+}
+
+/// Read the identity once (`<chrome> --version`, plus `sw_vers` on macOS) and
+/// keep it for the process. `None` when the binary does not answer in time or
+/// prints no version: then nothing is overridden and the native UA stands.
+pub async fn ensure_identity(executable: &Path, ld_library_path: Option<&str>) -> Option<&'static BrowserIdentity> {
+    if let Some(id) = IDENTITY.get() {
+        return Some(id);
+    }
+    let mut cmd = Command::new(executable);
+    cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    if let Some(ld) = ld_library_path {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    let out = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+        Ok(Ok(o)) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(Err(e)) => {
+            warn!(error = %e, "browser: `--version` failed; launching with the native UA");
+            return None;
+        }
+        Err(_) => {
+            warn!("browser: `--version` timed out; launching with the native UA");
+            return None;
+        }
+    };
+    let Some((major, full)) = parse_chrome_version(&out) else {
+        warn!(output = %out.trim(), "browser: no version in `--version`; launching with the native UA");
+        return None;
+    };
+    let os = HostOs::current();
+    let os_version = match os {
+        HostOs::Mac => Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .await
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default(),
+        HostOs::Linux => String::new(),
+    };
+    let id = BrowserIdentity { major, full, os, os_version };
+    info!(major = id.major, full = %id.full, os = ?id.os, "browser: identity from the binary");
+    Some(IDENTITY.get_or_init(|| id))
+}
 
 /// Disk-cache ceiling (256 MiB). The root filesystem on the deploy box runs hot
 /// and a durable profile's cache is otherwise unbounded (v1 spec §10 Q2).
@@ -156,14 +317,13 @@ fn home_join(rel: &str) -> PathBuf {
 
 /// The exact argv (minus the executable) the connector launches Chrome with.
 /// Split out so a test can assert the recipe without spawning anything.
-pub fn launch_args(user_data_dir: &Path, width: u32, height: u32) -> Vec<String> {
-    vec![
+pub fn launch_args(user_data_dir: &Path, width: u32, height: u32, user_agent: Option<&str>) -> Vec<String> {
+    let mut args = vec![
         // Full Chromium in its modern headless mode. See the module docs: this
         // is the flag the old shell forbade and the new binary requires.
         "--headless=new".to_string(),
         // `navigator.webdriver === false` without any init-script patching.
         "--disable-blink-features=AutomationControlled".to_string(),
-        format!("--user-agent={CHROME_USER_AGENT}"),
         // Kernel-assigned port; discovered via DevToolsActivePort. Loopback only.
         "--remote-debugging-port=0".to_string(),
         "--remote-debugging-address=127.0.0.1".to_string(),
@@ -185,7 +345,13 @@ pub fn launch_args(user_data_dir: &Path, width: u32, height: u32) -> Vec<String>
         format!("--user-data-dir={}", user_data_dir.display()),
         format!("--window-size={width},{height}"),
         "about:blank".to_string(),
-    ]
+    ];
+    // The binary's own UA with only `HeadlessChrome` → `Chrome` (see
+    // [`BrowserIdentity`]); none at all when the version is unknown.
+    if let Some(ua) = user_agent {
+        args.insert(2, format!("--user-agent={ua}"));
+    }
+    args
 }
 
 /// **Where the cookie jar lives** — the one thing that separates the two browser
@@ -386,7 +552,10 @@ impl ChromeProcess {
         // harmless no-op there.
         let _ = std::fs::remove_file(user_data_dir.join("DevToolsActivePort"));
 
-        let args = launch_args(&user_data_dir, width, height);
+        let ua = ensure_identity(executable, ld_library_path)
+            .await
+            .map(BrowserIdentity::user_agent);
+        let args = launch_args(&user_data_dir, width, height, ua.as_deref());
         let mut cmd = Command::new(executable);
         cmd.args(&args)
             .stdin(Stdio::null())
@@ -629,7 +798,7 @@ mod tests {
     /// `--headless=old` / bare `--headless` spelling.
     #[test]
     fn recipe_asks_full_chromium_for_headless_new() {
-        let args = launch_args(Path::new("/tmp/x"), 1024, 768);
+        let args = launch_args(Path::new("/tmp/x"), 1024, 768, None);
         assert!(
             args.iter().any(|a| a == "--headless=new"),
             "full Chromium must be launched in the new headless mode: {args:?}"
@@ -642,7 +811,7 @@ mod tests {
 
     #[test]
     fn recipe_matches_the_spike() {
-        let args = launch_args(Path::new("/tmp/profile"), 1366, 900);
+        let args = launch_args(Path::new("/tmp/profile"), 1366, 900, Some("UA-X"));
         for expected in [
             "--headless=new",
             "--disable-blink-features=AutomationControlled",
@@ -666,40 +835,56 @@ mod tests {
             );
         }
         assert!(
-            args.iter()
-                .any(|a| a == &format!("--user-agent={CHROME_USER_AGENT}")),
-            "the pinned UA rides the recipe: {args:?}"
+            args.iter().any(|a| a == "--user-agent=UA-X"),
+            "the identity's UA rides the recipe: {args:?}"
+        );
+        assert!(
+            !launch_args(Path::new("/tmp/profile"), 1366, 900, None)
+                .iter()
+                .any(|a| a.starts_with("--user-agent=")),
+            "an unknown version forces no UA: the binary's native one stands"
         );
     }
 
-    /// **UA/binary drift is a detection, not a cosmetic bug** (spec §10, the
-    /// UA-drift risk): the UA-CH brand version cannot be spoofed, so a UA string
-    /// whose major does not match the binary's is worse than no spoof at all.
     #[test]
-    fn the_pinned_user_agent_major_matches_the_pinned_binary() {
-        let major_of = |ua: &str| {
-            ua.split("Chrome/")
-                .nth(1)
-                .and_then(|rest| rest.split('.').next())
-                .and_then(|m| m.parse::<u32>().ok())
-                .expect("the UA carries a Chrome/<major> token")
-        };
+    fn the_version_is_read_from_the_binarys_own_output() {
         assert_eq!(
-            major_of(CHROME_USER_AGENT),
-            PINNED_CHROME_MAJOR,
-            "CHROME_USER_AGENT and PINNED_CHROME_MAJOR must be bumped together"
+            parse_chrome_version("Google Chrome for Testing 159.0.8154.6 \n"),
+            Some((159, "159.0.8154.6".to_string()))
         );
-        // The mobile UA is spoofed too and rides the SAME UA-CH major (drift is a
-        // detection, not a cosmetic bug) — and it must actually read as mobile.
         assert_eq!(
-            major_of(CHROME_USER_AGENT_MOBILE),
-            PINNED_CHROME_MAJOR,
-            "CHROME_USER_AGENT_MOBILE must be bumped with PINNED_CHROME_MAJOR too"
+            parse_chrome_version("Chromium 149.0.7827.55 snap"),
+            Some((149, "149.0.7827.55".to_string()))
         );
-        assert!(
-            CHROME_USER_AGENT_MOBILE.contains("Mobile"),
-            "the mobile UA must carry the `Mobile` token or UA-sniffers serve desktop"
+        assert_eq!(parse_chrome_version("Chromium dev build"), None);
+        assert_eq!(parse_chrome_version("1.2.3"), None);
+    }
+
+    /// **The UA and the hints name the same browser, honestly**: the binary's
+    /// own major, the host's real platform, the Chromium brand only.
+    #[test]
+    fn the_ua_and_the_hints_agree_with_the_binary_and_the_host() {
+        let mac = BrowserIdentity { major: 159, full: "159.0.8154.6".into(), os: HostOs::Mac, os_version: "26.1".into() };
+        assert_eq!(
+            mac.user_agent(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36"
         );
+        let hints = mac.ua_metadata(false);
+        assert_eq!(hints["platform"], "macOS");
+        assert_eq!(hints["platformVersion"], "26.1");
+        assert_eq!(hints["brands"][0], serde_json::json!({"brand": "Chromium", "version": "159"}));
+        assert_eq!(hints["fullVersionList"][0]["version"], "159.0.8154.6");
+        assert!(!hints.to_string().contains("Google Chrome"), "a Chromium build claims no Chrome brand");
+        assert_eq!(mac.navigator_platform(false), "MacIntel");
+
+        let linux = BrowserIdentity { major: 149, full: "149.0.7827.55".into(), os: HostOs::Linux, os_version: String::new() };
+        assert!(linux.user_agent().contains("X11; Linux") && linux.user_agent().contains("Chrome/149.0.0.0"));
+        assert_eq!(linux.ua_metadata(false)["platform"], "Linux");
+
+        let phone = mac.ua_metadata(true);
+        assert_eq!(phone["mobile"], true);
+        assert_eq!(phone["brands"][0]["version"], "159", "the phone viewport keeps the binary's major");
+        assert!(mac.mobile_user_agent().contains("Chrome/159.0.0.0 Mobile"));
     }
 
     /// A durable profile is a credential store, so its dir is created 0700 and a
@@ -764,7 +949,7 @@ mod tests {
 
     #[test]
     fn debugging_port_is_loopback_only() {
-        let args = launch_args(Path::new("/tmp/x"), 800, 600);
+        let args = launch_args(Path::new("/tmp/x"), 800, 600, None);
         assert!(args
             .iter()
             .any(|a| a == "--remote-debugging-address=127.0.0.1"));
