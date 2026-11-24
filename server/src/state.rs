@@ -612,6 +612,10 @@ pub struct AppState {
     /// Settings → Notifications — the diagnostic surface that answers "why
     /// didn't my phone ring?" without a log grep. Cheap `Arc` clone.
     pub push_attempts: Arc<crate::push::AttemptLog>,
+    /// Native iOS push (APNs): config, signing key, cached provider token and
+    /// the HTTP/2 client. Unconfigured (no key) is a normal state: devices can
+    /// still register, nothing is sent. Cheap `Arc` clone.
+    pub apns: Arc<crate::apns::Apns>,
     /// Per-session pending push debounce timers. On each notify-worthy
     /// status transition, `maybe_push_on_transition` cancels the prior handle
     /// for the session and starts a fresh one — the trailing-edge "wait for
@@ -811,6 +815,9 @@ impl AppState {
         // before `config` is moved into the Arc. Non-fatal on failure (push then
         // stays disabled; the rest of the server still boots).
         let vapid = crate::push::init_vapid(&config.data_dir, config.push_sub.as_deref());
+        // Native iOS push. Reads its own top-level `apns_*` keys from
+        // config.toml (+ env); a missing key leaves it unconfigured, never fatal.
+        let apns = crate::apns::Apns::init(&config.data_dir);
         // SSH ControlMaster pool. Cheap to build (an empty DashMap + a
         // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
         // lazily when `transport_for` is first called for a host.
@@ -839,6 +846,7 @@ impl AppState {
             server_start_ms: chrono::Utc::now().timestamp_millis(),
             vapid,
             push_attempts: Arc::new(crate::push::AttemptLog::default()),
+            apns,
             pending_pushes: Arc::new(DashMap::new()),
             session_locks: Arc::new(DashMap::new()),
             send_dedup: Arc::new(crate::sessions::send_dedup::SendDedup::default()),

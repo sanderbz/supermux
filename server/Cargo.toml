@@ -100,7 +100,9 @@ jwt-simple = { version = "0.12.16", default-features = false, features = ["pure-
 # Outbound HTTPS to push endpoints (FCM/Mozilla/Apple), rustls — matches the
 # project's TLS stack. Promoted from a dev-dependency. `json` is for the
 # edit-in-native-editor bridge's loopback self-call (open/result JSON bodies).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# `http2`: APNs (native iOS push, `apns.rs`) only speaks HTTP/2. Feature only —
+# `h2` is already in the tree through hyper, so no new crate.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
 
 # ── misc ──
 anyhow = "1.0"
