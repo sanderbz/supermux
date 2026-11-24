@@ -545,8 +545,16 @@ impl FinishedConfig {
     }
 }
 
-/// The `-c` pairs that give Codex the servers of a Claude `--mcp-config` word list. Left out: hosted
-/// (`url`) servers, ids that are not a bare TOML key, and `connect` (its card is raised by a Claude hook).
+/// The `-c` pairs that give Codex the servers of a Claude `--mcp-config` word list.
+///
+/// Left out: `connect` (its card is raised by a Claude hook) and the browser's
+/// control-only server (the launch adds that one itself, with its `enabled_tools`
+/// limit — see `start_locked_inner`). Codex expands no `${VAR}`, so whatever this
+/// cannot hand over by name — a hosted (`url`) server, an id that is not a bare
+/// TOML key, a secret stored under another name, a `${..}` inside an argument or
+/// a longer value — is left out WITH a warning naming the connector and the key
+/// (never the value), so a connector that comes up without its secret is
+/// traceable in the log instead of silently broken.
 pub(crate) fn codex_mcp_flags(launch_flags: &[String]) -> Vec<String> {
     let Some(raw) = launch_flags.iter().position(|f| f == "--mcp-config").and_then(|i| launch_flags.get(i + 1)) else {
         return Vec::new();
@@ -559,25 +567,37 @@ pub(crate) fn codex_mcp_flags(launch_flags: &[String]) -> Vec<String> {
     };
     let mut flags = Vec::new();
     for (id, server) in servers {
-        if id == "connect" || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if id == "connect" || id == "supermux_browser_control" {
+            continue;
+        }
+        if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            tracing::warn!(connector = %id, "codex: connector id is not a bare TOML key; left out");
             continue;
         }
         let Some(command) = server.get("command").and_then(Value::as_str) else {
+            tracing::warn!(connector = %id, "codex: hosted (url) connectors are not supported yet; left out");
             continue;
         };
-        let args: Vec<String> = server
+        let raw_args: Vec<&str> = server
             .get("args")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(toml_string).collect())
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
+        if raw_args.iter().any(|a| a.contains("${")) {
+            tracing::warn!(connector = %id, "codex: an argument holds a ${{VAR}} that Codex does not expand; connector left out");
+            continue;
+        }
+        let args: Vec<String> = raw_args.into_iter().map(toml_string).collect();
         let (mut inherited, mut fixed) = (Vec::new(), Vec::new());
         if let Some(env) = server.get("env").and_then(Value::as_object) {
             for (key, value) in env {
                 let Some(value) = value.as_str() else { continue };
                 match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
                     Some(name) if name == key => inherited.push(toml_string(key)),
-                    Some(_) => {} // a secret under another name cannot be inherited by name
-                    None => fixed.push(format!("{}={}", toml_string(key), toml_string(value))),
+                    _ if value.contains("${") => {
+                        tracing::warn!(connector = %id, key = %key, "codex: env value refers to a secret under another name; Codex inherits only by the same name, so this key is left out");
+                    }
+                    _ => fixed.push(format!("{}={}", toml_string(key), toml_string(value))),
                 }
             }
         }
@@ -1069,6 +1089,37 @@ mod tests {
         );
         assert!(!out[1].contains("OTHER"), "a secret under another name is not forwarded");
         assert!(codex_mcp_flags(&["--settings".to_string()]).is_empty(), "no mcp-config, no flags");
+    }
+
+    /// What Codex cannot expand stays off its command line: a `${..}` inside an
+    /// argument drops that connector, one inside a longer value drops that key; the
+    /// browser's control-only server is left to the launch, the full one is kept.
+    #[test]
+    fn codex_leaves_out_unexpandable_secrets_and_the_control_browser() {
+        let flags = vec![
+            "--mcp-config".to_string(),
+            json!({ "mcpServers": {
+                "argsecret": { "command": "node", "args": ["s.js", "--token=${TOKEN}"] },
+                "bearer": { "command": "node", "args": ["b.js"],
+                    "env": { "AUTH": "Bearer ${API_KEY}", "API_KEY": "${API_KEY}" } },
+                "browser": { "command": "python3", "args": ["/d/server.py"],
+                    "env": { "SUPERMUX_SESSION": "${SUPERMUX_SESSION}" } },
+                "supermux_browser_control": { "command": "python3", "args": ["/d/server.py", "--control-only"] }
+            } })
+            .to_string(),
+        ];
+        let out = codex_mcp_flags(&flags);
+        let joined = out.join(" ");
+        assert!(!joined.contains("argsecret"), "a ${{VAR}} argument drops the connector: {joined}");
+        assert!(!joined.contains("TOKEN"));
+        assert!(
+            joined.contains(r#"mcp_servers.bearer={command="node",args=["b.js"],env_vars=["API_KEY"]}"#),
+            "the embedded ${{..}} key is dropped, the same-name secret kept: {joined}"
+        );
+        assert!(!joined.contains("Bearer"));
+        assert!(joined.contains("mcp_servers.browser="), "the full browser server stays");
+        assert!(!joined.contains("supermux_browser_control"), "the control server is added by the launch");
+        assert_eq!(out.len(), 4, "two connectors, two -c pairs: {out:?}");
     }
 
     use super::*;

@@ -3378,9 +3378,11 @@ async fn start_locked_inner(
     // paths and secrets from this machine's vault; shipping them to a host would
     // copy credentials there, and `env` would carry decrypted secrets to the
     // remote pane. Until connectors can run on a host, a remote session starts
-    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`).
+    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`). That
+    // holds for Codex too: its `-c mcp_servers.*` overrides point at this
+    // machine's paths, so a remote Codex session takes the same branch.
     let remote_skips_connectors = s.host_id.is_some()
-        && launches_claude(&s.provider)
+        && (launches_claude(&s.provider) || s.provider == "codex")
         && !crate::db::connectors::grants_for_session(&state.pool, name)
             .await
             .unwrap_or_default()
@@ -3416,7 +3418,14 @@ async fn start_locked_inner(
                 tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
             }
         }
-        if crate::browser_feedback::control::has_binding(state, name).await {
+        // A live browser binding adds the control-only server, unless the Shared
+        // Browser grant already brought the full one (the same rule `assemble`
+        // applies for Claude). `codex_mcp_flags` leaves the control server out, so
+        // it arrives here once, with its `enabled_tools` limit.
+        let full_browser = format!("mcp_servers.{}=", crate::connectors::browser::mcp::SERVER_KEY);
+        if !connector_flags.iter().any(|f| f.starts_with(&full_browser))
+            && crate::browser_feedback::control::has_binding(state, name).await
+        {
             if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
                 connector_flags.extend(crate::connectors::browser::mcp::codex_flags(&path));
             }
