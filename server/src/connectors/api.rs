@@ -782,18 +782,8 @@ pub async fn grant(
     Path(id): Path<String>,
     Json(body): Json<GrantBody>,
 ) -> Result<Json<Value>, AppError> {
-    if !valid_connector_id(&id) {
-        return Err(AppError::BadRequest("invalid connector id".into()));
-    }
     let session = normalize_session(&body.session_name);
-    // P3d: confine a member's grant target to their own company scope
-    // (`@company:<their id>` or an own-company session). `*` (global) / another
-    // company / a foreign session all collapse to a uniform 404. Owner/admin: no-op.
-    crate::scope::authorize_connector_target(&state, ctx.0.as_ref(), &session).await?;
-    // Grant-time install: a curated catalog card is materialized into the registry
-    // the first time anyone grants it, so the chat connect card (which never runs
-    // the store's client-side install) works on FIRST use. An unknown id still 404s.
-    let connector = ensure_installed(&state, &id, "grant").await?;
+    let connector = authorize_grant(&state, ctx.0.as_ref(), &id, &session).await?;
     match body.account_ref.as_deref().filter(|s| !s.is_empty()) {
         // Account-aware grant (pins which account this grant feeds). FENCE (§2.8):
         // the account must belong to THIS connector and — for a scoped member —
@@ -835,6 +825,66 @@ pub async fn grant(
     }
     audit(&state, "connector.grant", &id, json!({ "session": session, "enabled": body.enabled })).await;
     Ok(Json(json!({ "ok": true, "id": id, "session_name": session, "restartHint": true })))
+}
+
+/// The checks every grant runs before it writes a row, shared by [`grant`] and
+/// `POST /api/sessions {connectors}`: a well-formed id, a target the caller may
+/// grant to, and an installed connector.
+async fn authorize_grant(
+    state: &AppState,
+    ctx: Option<&crate::auth_human::AuthContext>,
+    id: &str,
+    session: &str,
+) -> Result<connectors::Connector, AppError> {
+    if !valid_connector_id(id) {
+        return Err(AppError::BadRequest("invalid connector id".into()));
+    }
+    // P3d: confine a member's grant target to their own company scope
+    // (`@company:<their id>` or an own-company session). `*` (global) / another
+    // company / a foreign session all collapse to a uniform 404. Owner/admin: no-op.
+    crate::scope::authorize_connector_target(state, ctx, session).await?;
+    // Grant-time install: a curated catalog card is materialized into the registry
+    // the first time anyone grants it, so the chat connect card (which never runs
+    // the store's client-side install) works on FIRST use. An unknown id still 404s.
+    ensure_installed(state, id, "grant").await
+}
+
+/// Pre-flight for `POST /api/sessions {connectors}`, run BEFORE the session row
+/// exists: every id must be well-formed and either installed or a catalog card
+/// [`ensure_installed`] can materialize. Any miss is a 400 so the create writes
+/// nothing. Returns the ids de-duplicated, in request order.
+pub(crate) async fn check_grantable(state: &AppState, ids: &[String]) -> Result<Vec<String>, AppError> {
+    let mut out: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !valid_connector_id(id) {
+            return Err(AppError::BadRequest(format!("invalid connector id '{id}'")));
+        }
+        if out.contains(id) {
+            continue;
+        }
+        let installed = connectors::get(&state.pool, id).await.map_err(db_err)?.is_some();
+        if !installed && catalog_card(id).await.is_none() {
+            return Err(AppError::BadRequest(format!("unknown connector '{id}'")));
+        }
+        out.push(id.clone());
+    }
+    Ok(out)
+}
+
+/// A plain, enabled session-level grant of `id` to `session` (no account, no
+/// secret), with the same checks and audit row as `POST /api/connectors/{id}/grant`.
+pub(crate) async fn grant_to_session(
+    state: &AppState,
+    ctx: Option<&crate::auth_human::AuthContext>,
+    id: &str,
+    session: &str,
+) -> Result<(), AppError> {
+    authorize_grant(state, ctx, id, session).await?;
+    connectors::grant(&state.pool, session, id, None, true)
+        .await
+        .map_err(db_err)?;
+    audit(state, "connector.grant", id, json!({ "session": session, "enabled": true })).await;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
