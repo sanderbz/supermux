@@ -7,35 +7,51 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, bot_memory, config, connectors, db, external_access, external_edit, hook_cli, http,
+    agents, bot_memory, cli, config, connectors, db, external_access, external_edit, hook_cli, http,
     sessions, state, teams, workflows,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // "Edit in native editor" bridge. When Claude's
-    // built-in Ctrl+G spawns `$EDITOR`, supermux points `$EDITOR` at THIS binary's
-    // hidden `__edit` subcommand: it relays Claude's input buffer to a browser
-    // editor sheet and writes the edited text back. Checked BEFORE init_tracing /
-    // the server boot so the bridge process stays lean (no DB, no listener) and
-    // exits cleanly. The temp-file path is the last argv after `__edit`.
-    if std::env::args().nth(1).as_deref() == Some("__edit") {
-        return external_edit::run_bridge(std::env::args().nth(2)).await;
-    }
-
-    // BOT MEMORY hooks/CLI. The recall hook (`UserPromptSubmit`/`SessionStart`)
-    // and the `supermux-memory` write CLI both `exec` THIS binary with a hidden
-    // subcommand (version-matched, no separate artifact), same as `__edit`.
-    // Dispatched here so the hook process stays lean — no DB, no listener — and
-    // resolves its store purely from `BOT_MEMORY_*` env. The recall path is
-    // best-effort: it prints nothing and exits 0 on any failure so a broken
-    // store can never wedge the user's prompt.
-    match std::env::args().nth(1).as_deref() {
-        Some("__memory-recall") => {
+    // Every first argument is classified up front ([`cli::parse`]); only NO
+    // argument boots the server. An unknown argument used to fall through into a
+    // full boot (migrations, reconcile, seeding) against the live data dir.
+    match cli::parse(std::env::args().nth(1).as_deref()) {
+        cli::Invocation::Serve => {}
+        cli::Invocation::Version => {
+            println!("{}", cli::version_line());
+            return Ok(());
+        }
+        cli::Invocation::Help => {
+            print!("{}", cli::USAGE);
+            return Ok(());
+        }
+        cli::Invocation::Unknown(arg) => {
+            eprintln!("supermux-server: unknown argument '{arg}'\n");
+            eprint!("{}", cli::USAGE);
+            std::process::exit(2);
+        }
+        // "Edit in native editor" bridge. When Claude's
+        // built-in Ctrl+G spawns `$EDITOR`, supermux points `$EDITOR` at THIS binary's
+        // hidden `__edit` subcommand: it relays Claude's input buffer to a browser
+        // editor sheet and writes the edited text back. Checked BEFORE init_tracing /
+        // the server boot so the bridge process stays lean (no DB, no listener) and
+        // exits cleanly. The temp-file path is the last argv after `__edit`.
+        cli::Invocation::Edit => {
+            return external_edit::run_bridge(std::env::args().nth(2)).await;
+        }
+        // BOT MEMORY hooks/CLI. The recall hook (`UserPromptSubmit`/`SessionStart`)
+        // and the `supermux-memory` write CLI both `exec` THIS binary with a hidden
+        // subcommand (version-matched, no separate artifact), same as `__edit`.
+        // Dispatched here so the hook process stays lean — no DB, no listener — and
+        // resolves its store purely from `BOT_MEMORY_*` env. The recall path is
+        // best-effort: it prints nothing and exits 0 on any failure so a broken
+        // store can never wedge the user's prompt.
+        cli::Invocation::MemoryRecall => {
             let _ = bot_memory::run::run_recall_hook();
             return Ok(());
         }
-        Some("__memory-save") => {
+        cli::Invocation::MemorySave => {
             let argv: Vec<String> = std::env::args().skip(2).collect();
             if let Err(e) = bot_memory::run::run_save_cli(&argv) {
                 eprintln!("supermux-memory: {e}");
@@ -49,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         // `Bash(curl …)` line the permission classifier stops an unattended bot
         // on. Dispatched here so the call stays lean — no DB, no listener — and
         // resolves everything from the pane's `SUPERMUX_*` env.
-        Some("__hook-cli") => {
+        cli::Invocation::HookCli => {
             let argv: Vec<String> = std::env::args().skip(2).collect();
             if let Err(e) = hook_cli::run(&argv).await {
                 eprintln!("{e}");
@@ -57,28 +73,26 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        _ => {}
-    }
-
-    // NATIVE (tmux-less) session runtime: the pty holder. The daemon spawns
-    // THIS binary as `pty-holder …` for every native session; the holder owns
-    // the pty master, spools raw output to disk and serves one daemon
-    // connection over a unix socket. Because the unit uses `KillMode=process`,
-    // a deploy restarts only the daemon — holders (and the agents inside them)
-    // survive, and the new daemon reconnects + replays the spool. Dispatched
-    // here, alongside `__edit` and before any server boot, so the holder
-    // process stays lean: no config, no DB, no listener.
-    if std::env::args().nth(1).as_deref() == Some("pty-holder") {
-        init_tracing();
-        return sessions::native::holder::main(std::env::args().skip(2)).await;
-    }
-
-    // Operator maintenance: sweep leaked `claude-swarm-*` agent-team tmux
-    // servers once and exit. `--dry-run` reports without killing anything.
-    // Needs no DB and no listener; `--help`-less by convention (see pty-holder).
-    if std::env::args().nth(1).as_deref() == Some("swarm-reaper") {
-        init_tracing();
-        return sessions::swarm::cli(std::env::args().skip(2)).await;
+        // NATIVE (tmux-less) session runtime: the pty holder. The daemon spawns
+        // THIS binary as `pty-holder …` for every native session; the holder owns
+        // the pty master, spools raw output to disk and serves one daemon
+        // connection over a unix socket. Because the unit uses `KillMode=process`,
+        // a deploy restarts only the daemon — holders (and the agents inside them)
+        // survive, and the new daemon reconnects + replays the spool. Dispatched
+        // here, alongside `__edit` and before any server boot, so the holder
+        // process stays lean: no config, no DB, no listener — and no server lock
+        // (holders run alongside the server).
+        cli::Invocation::PtyHolder => {
+            init_tracing();
+            return sessions::native::holder::main(std::env::args().skip(2)).await;
+        }
+        // Operator maintenance: sweep leaked `claude-swarm-*` agent-team tmux
+        // servers once and exit. `--dry-run` reports without killing anything.
+        // Needs no DB and no listener; `--help`-less by convention (see pty-holder).
+        cli::Invocation::SwarmReaper => {
+            init_tracing();
+            return sessions::swarm::cli(std::env::args().skip(2)).await;
+        }
     }
 
     init_tracing();
@@ -103,6 +117,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = config::load()?;
+
+    // ONE server per data dir. Taken before anything below writes into the data
+    // dir (scripts, the DB, migrations, the boot reconcile), so a second
+    // instance exits here with no side effect instead of failing later on the
+    // taken port. Held for the life of the process; the kernel drops it on exit.
+    let _server_lock = match cli::lock_data_dir(&config.data_dir) {
+        Ok(lock) => lock,
+        Err(e) => {
+            tracing::error!("{e}; refusing to start");
+            eprintln!("supermux-server: {e}; refusing to start");
+            std::process::exit(1);
+        }
+    };
 
     // Install the `$EDITOR` bridge wrapper (`<data_dir>/bin/supermux-edit`) that
     // `sessions::lifecycle` exports into each pane. Idempotent; a failure here only
