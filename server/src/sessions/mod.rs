@@ -1163,6 +1163,13 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         // Raced with another purge/unarchive between the guard and the DELETE.
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
+    // The same grant sweep as `delete`: the row is gone, so its own grants must
+    // not wait for a later session with this name.
+    if let Err(e) =
+        db::connectors::delete_grants_for_sessions(&state.pool, &[name.to_string()]).await
+    {
+        tracing::warn!(session = %name, error = %e, "purge: could not drop connector grants");
+    }
 
     // Audit row — every destructive HTTP call records an entry. `purge` is the
     // hardest-destructive session op (the row AND its archived scrollback are
