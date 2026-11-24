@@ -118,6 +118,7 @@ nix = { version = "0.29", features = ["signal", "process", "fs", "term"] }  # SI
 # DIRECT dep so the pty holder can name `libc::TIOCSWINSZ` / `TIOCSCTTY` and the
 # `pre_exec` setsid dance. Adds 0 crates to the lockfile.
 libc = "0.2"
+zeroize = { version = "1.8", features = ["serde"] }  # wipe the restart password from memory (host_power)
 # ── native (tmux-less) session runtime ──
 # Server-side VT: parses the holder's pty byte stream into a real terminal grid
 # (viewport + reflowing scrollback) so the daemon can serve captures, seeds and
