@@ -1170,9 +1170,16 @@ export const sessionsApi = {
    *  "Where" picker does this so the suggestions never surface noise the user
    *  has to scroll past. Default (`false`) preserves the legacy contract.
    *  Returns `[]` on any failure so the field degrades to a plain input. */
-  autocompleteDir: async (q: string, noHidden = false): Promise<string[]> => {
+  autocompleteDir: async (
+    q: string,
+    noHidden = false,
+    hostId: number | null = null,
+  ): Promise<string[]> => {
     try {
-      const query = `q=${encodeURIComponent(q)}${noHidden ? '&hidden=0' : ''}`
+      // `host_id`: complete on that remote host instead of the supermux machine.
+      const query = `q=${encodeURIComponent(q)}${noHidden ? '&hidden=0' : ''}${
+        hostId != null ? `&host_id=${hostId}` : ''
+      }`
       const body = await sessReq<unknown>(`/api/autocomplete/dir?${query}`)
       const arr = Array.isArray(body)
         ? body
@@ -1340,9 +1347,13 @@ export const projectsApi = {
    *  `SUPERMUX_PROJECT_DIRS` entry with `is_git_repo` set per `.git` presence.
    *  Returns `{ root: '', entries: [] }` on any failure so the picker degrades
    *  to the free-text input. */
-  list: async (): Promise<ProjectReposResponse> => {
+  list: async (hostId: number | null = null): Promise<ProjectReposResponse> => {
     try {
-      const body = await sessReq<unknown>('/api/projects/repos')
+      // With a `host_id` the list is the home directory of the SSH user on that
+      // host (and `root` is that directory).
+      const body = await sessReq<unknown>(
+        hostId != null ? `/api/projects/repos?host_id=${hostId}` : '/api/projects/repos',
+      )
       const obj = (body ?? {}) as { root?: unknown; entries?: unknown }
       const root = typeof obj.root === 'string' ? obj.root : ''
       const entries = Array.isArray(obj.entries)

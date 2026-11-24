@@ -314,6 +314,9 @@ async fn delete_handler(
     }
 
     hosts::soft_delete(&state.pool, id).await?;
+    // Runtime handles built over this host's transport must not outlive it.
+    state.runtime_invalidate_all();
+    state.host_down_until.remove(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -342,6 +345,8 @@ async fn check_handler(
         .await?
         .filter(|h| h.deleted_at.is_none())
         .ok_or_else(|| AppError::NotFound(format!("host id={id}")))?;
+    // A manual Check is a retry: lift the fail-fast window for this host.
+    state.host_down_until.remove(&id);
 
     let report = run_reachability_check(&state, id).await?;
     Ok(ok(report))

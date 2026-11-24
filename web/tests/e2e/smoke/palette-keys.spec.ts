@@ -13,7 +13,7 @@
 // that no longer exists. Escape is plain Radix dismiss, asserted as such.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 test.describe('the command palette answers its keyboard', () => {
   let backend: Backend
@@ -30,6 +30,7 @@ test.describe('the command palette answers its keyboard', () => {
   }) => {
     test.setTimeout(75_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(() => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })
@@ -160,6 +161,7 @@ test.describe('the palette does not eat the keyboard', () => {
   test('Tab keeps the caret in the box, and Escape hands focus back', async ({ page }) => {
     test.setTimeout(75_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(() => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })

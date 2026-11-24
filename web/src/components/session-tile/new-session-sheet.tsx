@@ -14,7 +14,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
-import { sessionsApi, SessionError } from '@/lib/api'
+import { sessionsApi, SessionError, projectsApi } from '@/lib/api'
 import { modelOptions } from '@/lib/model-options'
 import { useConnectors } from '@/stores/connectors-store'
 import { HostPicker } from '@/components/host-picker'
@@ -348,7 +348,13 @@ function AgentForm({
     } else if (ownFolder) {
       dir = where.dir.trim()
     } else {
-      const folder = await createProjectFolder(slug)
+      // A session on a host runs in a folder on that host: named after the
+      // session, in the home directory of the SSH user there.
+      const hostRoot = hostId != null ? (await projectsApi.list(hostId)).root : ''
+      const folder = await createProjectFolder(
+        slug,
+        hostId != null ? { hostId, root: hostRoot } : undefined,
+      )
       if (!folder) {
         setError('Could not create the folder — pick your own folder in Advanced.')
         setAdvanced(true)
@@ -896,6 +902,7 @@ function DescribeStep(props: {
                       onChange={props.setWhere}
                       showSessions={false}
                       gitHint="info"
+                      hostId={props.hostId}
                     />
                   </Field>
                 )}

@@ -26,7 +26,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
 
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 /**
  * The `ready` guard for the shipped `/` scans: a real session TILE on the roster,
@@ -183,6 +183,7 @@ test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
   test('the violation set is exactly the enumerated baseline', async ({ page }) => {
     test.setTimeout(240_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     const found: string[] = []
     for (const theme of THEMES) {

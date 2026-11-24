@@ -24,7 +24,7 @@
 // detach is effectively immediate) — a clean, race-free open/closed marker.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 import {
   PEEK_STICKY_MS,
   PEEK_LEAVE_GRACE_MS,
@@ -49,6 +49,7 @@ test.describe('peek dismiss after type + mouse-leave', () => {
     // Desktop 1440 (fine pointer) → hover-peek + type-on-hover are active.
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
 
     const A = api(backend)
     // A live shell session: create + start so the pty exists and the live peek

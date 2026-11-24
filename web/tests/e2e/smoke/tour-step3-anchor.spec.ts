@@ -14,7 +14,7 @@
 // the screen.
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 // The step's copy comes from the SOURCE, not from a string pasted here.
 // `fefe47f8` rewrote step 3 from "Schedules live in Settings now…" to "Workflows
 // are in Settings — …" and this spec went on waiting for the old sentence: a
@@ -38,6 +38,7 @@ test.describe('onboarding tour', () => {
   }) => {
     test.setTimeout(90_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(() => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
       // Deliberately DO NOT set `supermux-first-launch` — the tour only offers

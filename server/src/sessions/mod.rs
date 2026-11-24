@@ -324,6 +324,9 @@ pub struct SessionView {
     /// company switcher reads it to scope the roster client-side. Always present
     /// on the wire (serialised as `null` for a main bot).
     pub company_id: Option<i64>,
+    /// The host this session runs on, or `null` on this machine. The client's chat eligibility
+    /// reads it: without it a remote session looked local and got a chat surface it cannot have.
+    pub host_id: Option<i64>,
     /// Which terminal backend drives this session (migration 0024): `"tmux"` or
     /// `"native"`. ADDITIVE field — always present, `"tmux"` for the entire
     /// existing fleet, so no client that ignores it sees any change. Exposed so
@@ -686,6 +689,7 @@ fn view(
         // The read-path addition host_id never got: the switcher reads this to
         // scope the roster. NULL for a main bot; the whole existing fleet.
         company_id: s.company_id,
+        host_id: s.host_id,
         // Rows written before migration 0024 (and the test-only
         // `insert_minimal`) can read back empty; present them as the tmux
         // default so the field is never blank on the wire.
@@ -2333,6 +2337,8 @@ async fn stop_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     lifecycle::stop(&state, &name).await?;
+    // A deliberate Stop: a boot audit a crash cut short must not bring it back.
+    auto_actions::forget_pending_audit(&state.config.data_dir, &name);
     // Stop is async-shaped → 202 Accepted.
     Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
 }

@@ -351,8 +351,14 @@ impl PtyStream {
         if session.runtime == super::runtime::RUNTIME_NATIVE {
             return super::native::reader_for(&self.name, &self.data_dir());
         }
+        // A host row whose pane still runs HERE (created before remote spawn
+        // worked, #240) is read locally while that pane lives — the same rule as
+        // `AppState::session_transport`, so stream and runtime agree.
+        let legacy_local = session.host_id.is_some()
+            && super::tmux::Tmux::new(&self.name).exists().await.unwrap_or(false);
         match session.host_id {
             None => Ok(Box::new(LocalPtyReader::new(self))),
+            Some(_) if legacy_local => Ok(Box::new(LocalPtyReader::new(self))),
             Some(host_id) => Ok(Box::new(SshPtyReader::new(
                 self,
                 host_pool.clone(),
@@ -850,16 +856,16 @@ impl SshPtyReader {
         (fifo, log)
     }
 
-    /// Ensure the remote FIFO exists. Idempotent — any non-zero exit from
-    /// `mkfifo` is treated as "already there" (the common EEXIST), matching
-    /// the local path's behaviour. Errors only when the transport itself
-    /// fails to spawn (e.g. ssh binary missing).
+    /// Ensure the remote FIFO exists and is one, creating its directory first: on a
+    /// fresh host `~/.supermux-remote` is missing, every later step then failed
+    /// silently and the pane only refreshed on reload. A non-zero exit is not
+    /// fatal here; `pipe-pane` surfaces a real failure. Errors only when the
+    /// transport itself fails to spawn.
     ///
-    /// Runs `sh -c 'mkfifo -- "$HOME/…"'` so the `$HOME` token is expanded
-    /// by the remote shell (see [`remote_paths`] for the quoting rationale).
+    /// The script runs under the remote `sh -c` so the `$HOME` token expands
+    /// there (see [`remote_paths`] for the quoting rationale).
     async fn ensure_remote_fifo(transport: &Transport, fifo: &Path) -> Result<()> {
-        let fifo_str = fifo.to_string_lossy();
-        let script = format!(r#"mkfifo -- "{fifo_str}""#);
+        let script = Self::mkfifo_script_for(fifo);
         let out = transport
             .spawn_command("sh", &["-c", &script])
             .stdout(Stdio::null())
@@ -872,6 +878,14 @@ impl SshPtyReader {
         // `pipe-pane` fails. Don't fail here just on the exit code.
         let _ = out;
         Ok(())
+    }
+
+    /// The remote script that makes the FIFO and its directory. A plain file at that path (left by a
+    /// keep-alive whose `9>` ran before the FIFO existed) is replaced: `cat` would replay it endlessly.
+    pub fn mkfifo_script_for(fifo: &Path) -> String {
+        let f = fifo.to_string_lossy();
+        let dir = fifo.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        format!(r#"mkdir -p -m 700 -- "{dir}" && {{ [ -p "{f}" ] || {{ rm -f -- "{f}"; mkfifo -- "{f}"; }}; }}"#)
     }
 
     /// Build the un-spawned `sh -c 'cat -- "$HOME/…"'` reader Command. Split

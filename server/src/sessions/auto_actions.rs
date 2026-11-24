@@ -1706,12 +1706,76 @@ pub const AUDIT_DELAY: Duration = Duration::from_secs(20);
 /// One session the audit will hold to account: it was RUNNING when this daemon
 /// (or the previous one) went down, so after an update it had better be
 /// attached again.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuditTarget {
     pub name: String,
     /// The persisted `last_status` as it was BEFORE `reconcile_on_boot` rewrote
     /// it — the whole point of snapshotting separately.
     pub was: String,
+}
+
+// ── the pending list: "was running at shutdown" survives a crash mid-audit ──
+//
+// `reconcile_on_boot` stamps every dead session `stopped` right at boot, and the
+// audit only heals them [`AUDIT_DELAY`] later, one at a time. If the machine
+// goes down again inside that window (two power cuts in a row), the next boot
+// reads `stopped` for every session not yet healed and would leave them down
+// for good. So the target list is written to the data dir BEFORE the reconcile,
+// each target leaves it only once the audit has a verdict on it, and the next
+// boot's snapshot carries over whatever is still listed.
+
+/// The pending list, next to `data.db`.
+const PENDING_AUDIT_FILE: &str = "boot-audit-pending.json";
+
+/// Serialises read-modify-write of the pending list (the audit and a Stop can
+/// both touch it).
+static PENDING_AUDIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn pending_audit_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(PENDING_AUDIT_FILE)
+}
+
+/// The targets a previous boot listed and never gave a verdict. A missing or
+/// unreadable file is an empty list: this is a safety net, never a boot blocker.
+fn read_pending_audit(data_dir: &std::path::Path) -> Vec<AuditTarget> {
+    let path = pending_audit_path(data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            tracing::warn!(path = %path.display(), error = %e, "post-update audit: unreadable pending list, ignored");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Replace the pending list; an empty list removes the file. Best-effort.
+fn write_pending_audit(data_dir: &std::path::Path, targets: &[AuditTarget]) {
+    let path = pending_audit_path(data_dir);
+    let res = if targets.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(anyhow::Error::from(e)),
+            _ => Ok(()),
+        }
+    } else {
+        serde_json::to_string(targets)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| crate::bot_memory::store::write_atomic(&path, &json))
+    };
+    if let Err(e) = res {
+        tracing::warn!(path = %path.display(), error = %e, "post-update audit: could not write the pending list");
+    }
+}
+
+/// `name` no longer owes the audit a verdict: it got one, or the user stopped
+/// it on purpose. Removes it from the pending list.
+pub fn forget_pending_audit(data_dir: &std::path::Path, name: &str) {
+    let _g = PENDING_AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut pending = read_pending_audit(data_dir);
+    let before = pending.len();
+    pending.retain(|t| t.name != name);
+    if pending.len() != before {
+        write_pending_audit(data_dir, &pending);
+    }
 }
 
 /// What one audit pass found. Every field is in the single summary line.
@@ -1756,7 +1820,7 @@ pub async fn snapshot_for_audit(state: &AppState) -> Vec<AuditTarget> {
         .map(|r| (r.name.as_str(), r.last_status.as_str()))
         .collect();
 
-    sessions
+    let fresh: Vec<AuditTarget> = sessions
         .iter()
         .filter(|s| s.archived == 0 && s.runtime == RUNTIME_NATIVE && s.host_id.is_none())
         .filter_map(|s| {
@@ -1771,7 +1835,36 @@ pub async fn snapshot_for_audit(state: &AppState) -> Vec<AuditTarget> {
                 was: was.to_string(),
             })
         })
-        .collect()
+        .collect();
+    carry_over_pending(&state.config.data_dir, &sessions, fresh)
+}
+
+/// Add the targets a previous boot never gave a verdict (if still eligible:
+/// not archived, native, local), then persist the full list — BEFORE the caller
+/// runs `reconcile_on_boot` erases the statuses it came from.
+fn carry_over_pending(
+    data_dir: &std::path::Path,
+    sessions: &[db::sessions::Session],
+    mut targets: Vec<AuditTarget>,
+) -> Vec<AuditTarget> {
+    let _g = PENDING_AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let eligible: HashSet<&str> = sessions
+        .iter()
+        .filter(|s| s.archived == 0 && s.runtime == RUNTIME_NATIVE && s.host_id.is_none())
+        .map(|s| s.name.as_str())
+        .collect();
+    for t in read_pending_audit(data_dir) {
+        if eligible.contains(t.name.as_str()) && !targets.iter().any(|x| x.name == t.name) {
+            tracing::info!(
+                name = %t.name,
+                was = %t.was,
+                "post-update audit: carried over from an audit that a crash cut short",
+            );
+            targets.push(t);
+        }
+    }
+    write_pending_audit(data_dir, &targets);
+    targets
 }
 
 /// Schedule the one-shot post-update attach audit. Returns immediately; the
@@ -1806,30 +1899,11 @@ pub async fn post_update_audit(state: &AppState, targets: &[AuditTarget]) -> Aud
     };
     for t in targets {
         let name = t.name.as_str();
-        let ok = crate::sessions::native::attached(name)
-            || crate::sessions::native::holder_alive(name, &state.config.data_dir);
-        if ok {
-            summary.reattached += 1;
-            continue;
-        }
-        // MID-START is not a failure. `snapshot_for_audit` deliberately includes
-        // `starting` sessions, and a start that is still running has by
-        // definition no holder to be attached to yet — the holder is what it is
-        // busy spawning. WARNing about that would be noise, and healing it would
-        // be worse: `auto_heal` → `start` blocks on the very lock the running
-        // start holds, then starts the session a SECOND time behind it.
-        if is_mid_start(state, name).await {
-            tracing::info!("post-update audit: '{name}' is mid-start — no verdict");
-            summary.skipped += 1;
-            continue;
-        }
-        let reason = crate::sessions::native::death_reason(name, &state.config.data_dir)
-            .unwrap_or_else(|| "no exit marker — the holder vanished".to_string());
-        tracing::warn!("post-update audit: '{name}' failed to re-attach ({reason})");
-        match auto_heal(state, name, &reason).await {
-            Heal::Healed => summary.healed += 1,
-            _ => summary.failed += 1,
-        }
+        audit_one(state, name, &mut summary).await;
+        // A verdict either way, so it leaves the pending list. Mid-start counts
+        // too: a start in flight writes `starting`, which the next boot's
+        // snapshot picks up on its own.
+        forget_pending_audit(&state.config.data_dir, name);
     }
     tracing::info!(
         "post-update audit: {} sessions checked, {} re-attached, {} healed, {} failed, \
@@ -1841,6 +1915,34 @@ pub async fn post_update_audit(state: &AppState, targets: &[AuditTarget]) -> Aud
         summary.skipped,
     );
     summary
+}
+
+/// The audit's verdict on ONE target, counted into `summary`.
+async fn audit_one(state: &AppState, name: &str, summary: &mut AuditSummary) {
+    let ok = crate::sessions::native::attached(name)
+        || crate::sessions::native::holder_alive(name, &state.config.data_dir);
+    if ok {
+        summary.reattached += 1;
+        return;
+    }
+    // MID-START is not a failure. `snapshot_for_audit` deliberately includes
+    // `starting` sessions, and a start that is still running has by
+    // definition no holder to be attached to yet — the holder is what it is
+    // busy spawning. WARNing about that would be noise, and healing it would
+    // be worse: `auto_heal` → `start` blocks on the very lock the running
+    // start holds, then starts the session a SECOND time behind it.
+    if is_mid_start(state, name).await {
+        tracing::info!("post-update audit: '{name}' is mid-start — no verdict");
+        summary.skipped += 1;
+        return;
+    }
+    let reason = crate::sessions::native::death_reason(name, &state.config.data_dir)
+        .unwrap_or_else(|| "no exit marker — the holder vanished".to_string());
+    tracing::warn!("post-update audit: '{name}' failed to re-attach ({reason})");
+    match auto_heal(state, name, &reason).await {
+        Heal::Healed => summary.healed += 1,
+        _ => summary.failed += 1,
+    }
 }
 
 /// Is a `start` for `name` running RIGHT NOW? Two independent signs, either of
@@ -4293,6 +4395,102 @@ mod recovery_tests {
         reset_heal_state("audit-lost");
         drop_transcript(cc);
         crate::sessions::native::forget("audit-up");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Two power cuts in a row (seen on a Mac mini): boot #1 snapshots the
+    /// running sessions, the reconcile stamps them all `stopped`, and the audit
+    /// gets through only the first one before the power goes again. Boot #2
+    /// reads `stopped` for the rest; without the pending list they owed the
+    /// audit nothing and stayed down for good.
+    #[tokio::test]
+    async fn a_crash_mid_audit_does_not_lose_the_sessions_it_had_not_reached() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        // Listed most-recently-used first, as `db::sessions::list` orders them.
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            native_row(&state, name, "shell", "idle").await;
+            reset_heal_state(name);
+        }
+
+        // ── boot #1 ────────────────────────────────────────────────────────
+        let boot1 = snapshot_for_audit(&state).await;
+        assert_eq!(boot1.len(), 3);
+        reconcile_on_boot(&state).await;
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            let rt = db::sessions::runtime(&state.pool, name).await.unwrap().unwrap();
+            assert_eq!(rt.last_status, "stopped", "{name}: the reconcile erased 'was running'");
+        }
+        // The audit reaches the first target only; then the power goes.
+        let first = boot1.iter().find(|t| t.name == "cut-recent").unwrap().clone();
+        let s1 = post_update_audit(&state, std::slice::from_ref(&first)).await;
+        assert_eq!(s1.healed, 1);
+        db::sessions::set_last_status(&state.pool, "cut-recent", "idle").await.unwrap();
+
+        // ── boot #2: a fresh process (no heal memory), same disk ─────────────
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            reset_heal_state(name);
+        }
+        let mut boot2 = snapshot_for_audit(&state).await;
+        boot2.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            boot2,
+            vec![
+                AuditTarget { name: "cut-old-a".into(), was: "idle".into() },
+                AuditTarget { name: "cut-old-b".into(), was: "idle".into() },
+                AuditTarget { name: "cut-recent".into(), was: "idle".into() },
+            ],
+            "the two the first audit never reached are still owed a heal",
+        );
+        reconcile_on_boot(&state).await;
+        let s2 = post_update_audit(&state, &boot2).await;
+        assert_eq!(s2, AuditSummary { checked: 3, healed: 3, ..Default::default() });
+        assert!(
+            !pending_audit_path(&dir).exists(),
+            "an audit that finished leaves no pending list behind",
+        );
+
+        // ── boot #3: nothing left over, nothing healed twice ─────────────────
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            db::sessions::set_last_status(&state.pool, name, "stopped").await.unwrap();
+        }
+        assert!(snapshot_for_audit(&state).await.is_empty());
+
+        for name in ["cut-recent", "cut-old-a", "cut-old-b"] {
+            reset_heal_state(name);
+        }
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The pending list only carries what can still be healed, and a deliberate
+    /// Stop takes a session off it.
+    #[tokio::test]
+    async fn the_pending_list_drops_gone_sessions_and_deliberate_stops() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "left-over", "shell", "stopped").await;
+        native_row(&state, "stopped-by-hand", "shell", "stopped").await;
+        native_row(&state, "now-tmux", "shell", "stopped").await;
+        db::sessions::set_runtime(&state.pool, "now-tmux", "tmux").await.unwrap();
+        let t = |n: &str| AuditTarget { name: n.into(), was: "idle".into() };
+        write_pending_audit(
+            &dir,
+            &[t("left-over"), t("stopped-by-hand"), t("now-tmux"), t("deleted-since")],
+        );
+
+        forget_pending_audit(&dir, "stopped-by-hand");
+        let names: Vec<String> = snapshot_for_audit(&state).await.into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["left-over"], "no row, a tmux row and a hand Stop are not carried over");
+        assert_eq!(read_pending_audit(&dir), vec![t("left-over")]);
+
+        forget_pending_audit(&dir, "left-over");
+        assert!(!pending_audit_path(&dir).exists(), "an emptied list is removed");
+
+        // A corrupt file is an empty list, never a failed boot.
+        std::fs::write(pending_audit_path(&dir), "{not json").unwrap();
+        assert!(snapshot_for_audit(&state).await.is_empty());
+
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

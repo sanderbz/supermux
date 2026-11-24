@@ -148,10 +148,11 @@ export const filesApi = {
   /** `POST /api/fs/mkdir` — create a directory (parents included). The TARGET
    *  must not exist: an idempotent mkdir is a silent no-op that hides a typo on
    *  a shared drive, so the server 409s instead. */
-  mkdir: (path: string): Promise<{ ok: boolean; path: string }> =>
+  mkdir: (path: string, hostId: number | null = null): Promise<{ ok: boolean; path: string }> =>
     fsRequest('/api/fs/mkdir', {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      // `host_id`: create the directory on that remote host (no session exists yet).
+      body: JSON.stringify(hostId != null ? { path, host_id: hostId } : { path }),
     }),
 
   /** `POST /api/fs/rename` — rename, which is also MOVE (the destination is

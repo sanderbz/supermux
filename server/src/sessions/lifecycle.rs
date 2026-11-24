@@ -81,6 +81,19 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
+/// Pane command on a remote host: its own `$SHELL`, because `user_shell()` names
+/// a path of the supermux machine that need not exist there.
+const REMOTE_PANE_SHELL: &str = r#"exec "${SHELL:-/bin/bash}""#;
+
+/// The command a new pane starts with, for a local session or one on a host.
+fn pane_shell(host_id: Option<i64>) -> String {
+    if host_id.is_some() {
+        REMOTE_PANE_SHELL.to_string()
+    } else {
+        user_shell()
+    }
+}
+
 /// Resolve the URL a REMOTE session's hook `curl` should dial back to.
 /// Resolution order:
 ///
@@ -221,6 +234,43 @@ pub(crate) fn launches_claude(provider: &str) -> bool {
 /// this: it comes from the server's own config file, it is trusted the way the
 /// rest of that file is, and an operator may legitimately have written their own
 /// quoting there.
+/// Whether these launch flag words ask Claude for bypass permissions:
+/// `--dangerously-skip-permissions`, or `--permission-mode bypassPermissions`
+/// (also as `--permission-mode=bypassPermissions`). Word-exact, so a path, a
+/// model name or a prompt that merely contains the text never matches. Pure.
+pub(crate) fn flags_request_bypass<'a>(words: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut prev_was_mode = false;
+    for w in words {
+        if w == "--dangerously-skip-permissions"
+            || w == "--permission-mode=bypassPermissions"
+            || (prev_was_mode && w == "bypassPermissions")
+        {
+            return true;
+        }
+        prev_was_mode = w == "--permission-mode";
+    }
+    false
+}
+
+/// The guarded `IS_SANDBOX=1` export for a root Claude session with bypass
+/// permissions, or "" — which is the default for every install. See
+/// [`crate::config::ProviderDefaults::allow_root_bypass_permissions`].
+fn root_sandbox_export(config: &crate::config::Config, s: &Session) -> &'static str {
+    let defaults = &config.provider_defaults;
+    let wants_bypass = flags_request_bypass(
+        defaults.claude_flags.split_whitespace().chain(s.flags.split_whitespace()),
+    );
+    if defaults.allow_root_bypass_permissions && launches_claude(&s.provider) && wants_bypass {
+        tracing::warn!(
+            session = %s.name,
+            "allow_root_bypass_permissions is on: this session sets IS_SANDBOX=1 when it runs as root",
+        );
+        r#"[ "$(id -u)" = 0 ] && export IS_SANDBOX=1; "#
+    } else {
+        ""
+    }
+}
+
 fn quoted_flag_words(flags: &str) -> Vec<String> {
     flags
         .split_whitespace()
@@ -600,6 +650,11 @@ fn config_dir_export(s: &Session) -> String {
     }
 }
 
+/// Printed in a remote session's pane before its launch line when the session
+/// has connector grants: connectors run on this machine only, so the session
+/// starts without them (see `start_locked_inner`).
+pub(crate) const REMOTE_NO_CONNECTORS_NOTE: &str = "printf '%s\\n' 'supermux: connectors are not available on remote hosts yet; this session starts without them.'; ";
+
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
 /// Claude resumes via `cc_session_name` → `cc_conversation_id` → fresh `--name`.
@@ -838,11 +893,17 @@ fn build_launch_command(
     // above; it lands AFTER the profile sources so a user `~/.zprofile` that
     // sets its own CLAUDE_CONFIG_DIR cannot override it, and BEFORE `{agent}`
     // so the launched provider inherits it.
+    // As root, Claude refuses bypass permissions unless IS_SANDBOX=1. That guard
+    // stays ON unless the operator opted out in config.toml
+    // (`[provider_defaults] allow_root_bypass_permissions = true`), and even then
+    // only for a Claude session whose flags ask for bypass. The `id -u` test runs
+    // in the pane, so it checks the uid where the session actually runs.
+    let sandbox_export = root_sandbox_export(config, s);
     let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
          source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; \
          export PATH='{bin_dir}':\"$PATH\":\"$HOME/.local/bin\"; \
-         {config_dir_export}{agent}"
+         {sandbox_export}{config_dir_export}{agent}"
     );
     (command, resume_intended)
 }
@@ -1847,6 +1908,72 @@ fn classify_ready_tick(
     ReadyTick::Wait
 }
 
+/// A `Ready` read off the screen is only believed while the pty's foreground
+/// process is no longer the login shell. The `❯` glyph `agent_ui_visible` keys
+/// on is also the last character of a powerlevel10k prompt, so a launch that
+/// never started an agent (a bare shell, or zsh waiting at `quote>` after a
+/// mangled line) used to read "ready" one tick after Enter. While the shell
+/// still owns the terminal no agent can be at the wheel; `None` (the runtime can
+/// not tell) keeps the screen's verdict, as before.
+fn believe_ready(tick: ReadyTick, shell_foreground: Option<bool>) -> ReadyTick {
+    match (tick, shell_foreground) {
+        (ReadyTick::Ready, Some(true)) => ReadyTick::Wait,
+        (tick, _) => tick,
+    }
+}
+
+/// Longest launch line typed into the pane as-is. A local pty in canonical
+/// mode (the state a fresh shell is in until its line editor starts) keeps at
+/// most `MAX_CANON` bytes of a line, 1024 on macOS: the rest is dropped. A
+/// longer launch typed into a shell still sourcing its rc files therefore lost
+/// its tail, often a closing quote, and zsh sat at `quote>` swallowing every
+/// later launch (2026-11-23, session max: 1193 bytes, cut at 1024).
+const MAX_TYPED_LAUNCH: usize = 900;
+
+/// The line actually typed to launch the agent: `cmd` itself when it is short,
+/// else `. '<session-config>/<name>/launch.sh'` with `cmd` written to that file
+/// (0600, the same session-private dir as the settings overlay), so what is
+/// typed stays far below `MAX_CANON`. A remote session keeps the full line: the
+/// file would not exist on the other host. Any write problem falls back to the
+/// full line, i.e. the old behaviour.
+fn launch_line(data_dir: &Path, s: &Session, cmd: &str) -> String {
+    if cmd.len() <= MAX_TYPED_LAUNCH || s.host_id.is_some() {
+        return cmd.to_string();
+    }
+    let dir = crate::sessions::connector_config::settings_dir(data_dir, &s.name);
+    let path = dir.join("launch.sh");
+    let shown = path.display().to_string();
+    if shown.contains('\'') {
+        return cmd.to_string();
+    }
+    match write_private(&dir, &path, cmd) {
+        Ok(()) => format!(". '{shown}'"),
+        Err(e) => {
+            tracing::warn!(name = %s.name, error = %e, "start: could not write launch.sh; typing the full launch line");
+            cmd.to_string()
+        }
+    }
+}
+
+/// Write `body` to `path` with mode 0600, via a temp file and a rename so a
+/// launch never sources a half-written file.
+fn write_private(dir: &Path, path: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension("sh.tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(body.as_bytes())?;
+    f.write_all(b"\n")?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Confirm the pane shell is live (and let it print a prompt).
 async fn settle_shell(rt: &dyn SessionRuntime) -> bool {
     for _ in 0..10 {
@@ -1899,8 +2026,9 @@ async fn wait_for_agent_ready(
             // ready arm keys on `agent_at_the_wheel`, so a picker left open on an
             // INTENDED resume (which we deliberately do not escape) reads Wait, not
             // Ready — a heal that only reaches the picker is a FAILED heal.
-            match classify_ready_tick(&cap, resume_intended, escaped, trusted, resume_ids, bg_stop_tried)
-            {
+            let tick =
+                classify_ready_tick(&cap, resume_intended, escaped, trusted, resume_ids, bg_stop_tried);
+            match believe_ready(tick, rt.shell_is_foreground().await) {
                 ReadyTick::AcceptTrust => {
                     // NEVER a bare Enter: a newer Claude Code lists "No, exit" first
                     // and selects it by default, so Enter alone quits the session.
@@ -3130,6 +3258,12 @@ async fn start_locked_inner(
             tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
         }
     }
+    // A host row re-resolves on every start: a cached handle may still point at
+    // the local pane it ran in before remote spawn worked (#240), and once that
+    // pane is gone the next start belongs on the host.
+    if s.host_id.is_some() {
+        state.runtime_invalidate(name);
+    }
     // Runtime seam: `runtime_for` returns the backend for the row's `runtime`
     // column, built exactly as `Tmux::new(name)` built it here before.
     let rt = state.runtime_for(name).await?;
@@ -3249,7 +3383,22 @@ async fn start_locked_inner(
     // ignores these flags); best-effort — a failure logs and launches without
     // connectors rather than blocking start.
     let mut connector_flags: Vec<String> = Vec::new();
-    if launches_claude(&s.provider) {
+    // REMOTE sessions get no overlay. Connectors are local processes with local
+    // paths and secrets from this machine's vault; shipping them to a host would
+    // copy credentials there, and `env` would carry decrypted secrets to the
+    // remote pane. Until connectors can run on a host, a remote session starts
+    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`).
+    let remote_skips_connectors = s.host_id.is_some()
+        && launches_claude(&s.provider)
+        && !crate::db::connectors::grants_for_session(&state.pool, name)
+            .await
+            .unwrap_or_default()
+            .is_empty();
+    if s.host_id.is_some() {
+        if remote_skips_connectors {
+            tracing::warn!(name = %name, "remote session: starting without its connectors (not supported on hosts yet)");
+        }
+    } else if launches_claude(&s.provider) {
         match crate::sessions::connector_config::assemble(state, name).await {
             Ok(Some(cfg)) => {
                 env.extend(cfg.env);
@@ -3269,7 +3418,7 @@ async fn start_locked_inner(
     }
 
     let dir = PathBuf::from(&s.dir);
-    let shell = user_shell();
+    let shell = pane_shell(s.host_id);
 
     // ORPHAN REAPING (native, local only). A holder that died while its CHILD
     // survived leaves the child reparented to `init` with `meta.json` still
@@ -3455,6 +3604,12 @@ async fn start_locked_inner(
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) =
                 build_launch_command(&state.config, &s, &connector_flags);
+            let cmd = if remote_skips_connectors {
+                format!("{REMOTE_NO_CONNECTORS_NOTE}{cmd}")
+            } else {
+                cmd
+            };
+            let cmd = launch_line(&state.config.data_dir, &s, &cmd);
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -3721,13 +3876,10 @@ pub async fn kill_teammate_pane(
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
-    let s = require_session(state, name).await?;
-    // Respect the session's transport (local vs remote-host SSH) like the WS
-    // attach path does — a remote lead's panes live on the remote box.
-    let transport = match s.host_id {
-        Some(h) => Some(state.host_pool.transport_for(h).await?),
-        None => None,
-    };
+    require_session(state, name).await?;
+    // Respect the session's transport (local vs remote-host SSH) through the
+    // same resolver as the WS attach — a remote lead's panes live on the host.
+    let transport = state.session_transport(name).await?;
     let tmux = match transport.as_deref() {
         Some(t) => Tmux::new_on(t, name),
         None => Tmux::new(name),
@@ -6004,7 +6156,7 @@ mod company_confinement_gate_tests {
         }
     }
 
-    fn session(name: &str, dir: &str, company_id: Option<i64>) -> Session {
+    pub(super) fn session(name: &str, dir: &str, company_id: Option<i64>) -> Session {
         Session {
             name: name.into(),
             display_name: name.into(),
@@ -7159,6 +7311,46 @@ mod build_env_tests {
         assert!(argv.contains(&"--name".to_string()), "argv: {argv:?}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── root + bypass permissions: IS_SANDBOX=1 only on an explicit opt-in ──
+
+    const ROOT_EXPORT: &str = r#"[ "$(id -u)" = 0 ] && export IS_SANDBOX=1;"#;
+
+    #[test]
+    fn root_bypass_stays_guarded_unless_the_operator_opts_in() {
+        let mut config = cfg();
+        let bypass = claude_session("root-bot", "--dangerously-skip-permissions");
+        let (cmd, _) = build_launch_command(&config, &bypass, &[]);
+        assert!(!cmd.contains("IS_SANDBOX"), "off by default, even as root with bypass: {cmd}");
+
+        config.provider_defaults.allow_root_bypass_permissions = true;
+        let (cmd, _) = build_launch_command(&config, &bypass, &[]);
+        assert!(cmd.contains(ROOT_EXPORT), "opted in + bypass → the guarded export: {cmd}");
+        assert!(
+            cmd.find(ROOT_EXPORT).unwrap() < cmd.find("--dangerously-skip-permissions").unwrap(),
+            "the export precedes the agent it is for: {cmd}",
+        );
+
+        let plain = claude_session("plain-bot", "--model sonnet");
+        let (cmd, _) = build_launch_command(&config, &plain, &[]);
+        assert!(!cmd.contains("IS_SANDBOX"), "opted in but no bypass → nothing: {cmd}");
+
+        // The host-wide default flags count too.
+        config.provider_defaults.claude_flags = "--permission-mode bypassPermissions".into();
+        let (cmd, _) = build_launch_command(&config, &plain, &[]);
+        assert!(cmd.contains(ROOT_EXPORT), "bypass from provider defaults: {cmd}");
+    }
+
+    #[test]
+    fn bypass_is_read_from_flag_words_not_from_text() {
+        assert!(flags_request_bypass(["--dangerously-skip-permissions"]));
+        assert!(flags_request_bypass(["--permission-mode", "bypassPermissions"]));
+        assert!(flags_request_bypass(["--permission-mode=bypassPermissions"]));
+        assert!(!flags_request_bypass(["--permission-mode", "default"]));
+        assert!(!flags_request_bypass(["bypassPermissions"]), "a bare word is not the flag");
+        assert!(!flags_request_bypass(["--add-dir", "/srv/bypassPermissions-notes"]));
+        assert!(!flags_request_bypass(["--model", "--dangerously-skip-permissions-x"]));
     }
 }
 
@@ -9357,5 +9549,69 @@ mod write_runtime_tests {
         assert_eq!(rt.key_calls.load(Ordering::SeqCst),0);
         state.pool.close().await;
         let _=std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod pane_shell_tests {
+    use super::*;
+
+    /// A pane on a host starts the host user's own shell, whatever `$SHELL` is here.
+    #[test]
+    fn a_pane_on_a_host_never_gets_the_local_shell() {
+        let remote = pane_shell(Some(3));
+        assert_eq!(remote, REMOTE_PANE_SHELL);
+        assert!(remote.contains("${SHELL"), "resolved on the host, not here: {remote}");
+        assert_ne!(pane_shell(None), REMOTE_PANE_SHELL, "a local pane keeps the local shell");
+    }
+}
+
+#[cfg(test)]
+mod launch_ready_tests {
+    use super::*;
+
+    /// The 2026-11-23 screen: a powerlevel10k prompt (ending in `❯`) with zsh
+    /// stuck at `quote>` after a launch line lost its tail. The glyph alone reads
+    /// as an agent; the foreground process says it is still the shell.
+    const P10K_QUOTE: &str = "  ~/projects/MaxMax on \u{e0a0} main \u{276f} ource ~/.zprofile 2>/dev/null; claude --resume 'abc' --append-system-prompt 'Je bent Max\nquote> ";
+
+    #[test]
+    fn a_prompt_glyph_is_not_ready_while_the_shell_is_in_the_foreground() {
+        let tick = classify_ready_tick(P10K_QUOTE, true, false, false, &[], false);
+        assert_eq!(tick, ReadyTick::Ready, "precondition: the screen alone reads as ready");
+        assert_eq!(believe_ready(tick, Some(true)), ReadyTick::Wait);
+    }
+
+    #[test]
+    fn believe_ready_only_vetoes_ready_when_the_shell_owns_the_terminal() {
+        assert_eq!(believe_ready(ReadyTick::Ready, Some(false)), ReadyTick::Ready, "agent in front");
+        assert_eq!(believe_ready(ReadyTick::Ready, None), ReadyTick::Ready, "can not tell: screen decides");
+        assert_eq!(believe_ready(ReadyTick::Wait, Some(true)), ReadyTick::Wait);
+        assert_eq!(believe_ready(ReadyTick::AcceptTrust, Some(true)), ReadyTick::AcceptTrust);
+    }
+
+    #[test]
+    fn a_long_local_launch_is_typed_as_a_short_source_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = std::env::temp_dir().join(format!("supermux-launch-{}", uuid::Uuid::new_v4()));
+        let s = super::company_confinement_gate_tests::session("longbot", "/tmp", None);
+
+        let short = "claude --resume 'abc'";
+        assert_eq!(launch_line(&data, &s, short), short, "a short line is typed as-is");
+        assert!(!data.exists(), "and writes nothing");
+
+        let long = format!("export A=1; claude --append-system-prompt '{}'", "x".repeat(1200));
+        let typed = launch_line(&data, &s, &long);
+        let file = data.join("session-config").join("longbot").join("launch.sh");
+        assert_eq!(typed, format!(". '{}'", file.display()));
+        assert!(typed.len() < 1024, "far below MAX_CANON: {}", typed.len());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{long}\n"));
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "session-private");
+
+        let mut remote = s.clone();
+        remote.host_id = Some(7);
+        assert_eq!(launch_line(&data, &remote, &long), long, "a remote host has no such file");
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

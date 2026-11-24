@@ -26,7 +26,7 @@
 //     `::view-transition-*` wholesale, and `navigateMorph` skips the API).
 
 import { expect, test, type Locator } from '@playwright/test'
-import { injectGlobals, startBackend, type Backend } from './harness'
+import { injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 /** The rail link for a nav label, matched on its LABEL PREFIX rather than on the
  *  whole accessible name.
@@ -65,6 +65,7 @@ test.describe('nav: the active pill is one view-transition group', () => {
   }) => {
     test.setTimeout(90_000)
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(() => {
       localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
       localStorage.setItem('supermux-first-launch', String(Date.now()))

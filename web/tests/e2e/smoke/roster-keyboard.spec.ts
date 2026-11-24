@@ -21,7 +21,7 @@
 // all three of these ship green.
 
 import { expect, test, type Page } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend, PIN_CLASSIC_SURFACE } from './harness'
 
 const SESSIONS = ['rk-alpha', 'rk-bravo', 'rk-charlie', 'rk-delta']
 
@@ -61,6 +61,7 @@ test.describe('roster keyboard + actions', () => {
 
   test('the roster is ONE tab stop and the arrows choose the row', async ({ page }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -127,6 +128,7 @@ test.describe('roster keyboard + actions', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -149,6 +151,7 @@ test.describe('roster keyboard + actions', () => {
 
   test('Rename opens the same panel with its name editor armed', async ({ page }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -165,6 +168,7 @@ test.describe('roster keyboard + actions', () => {
     // is under test is the render, and the arithmetic that gets a row into the
     // tier has its own suite (`tests/unit/attention-tiers.test.ts`).
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.addInitScript(
       ([name]) => {
         // A cursor from 1970 — every row has spoken since.
@@ -199,6 +203,7 @@ test.describe('roster keyboard + actions', () => {
     // `tile.tsx` falls back to a literal `0` outside a provider. The ⋯ trigger
     // was a peer stop on top of that, so a 40-session roster was 41 stops.
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -277,6 +282,7 @@ test.describe('roster keyboard + actions', () => {
     // The replacement for the kebab's own tab stop: the platform's own
     // secondary-action keys on the row that already owns the tab stop.
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -299,6 +305,7 @@ test.describe('roster keyboard + actions', () => {
     // same column), never as an index, because the index is what was wrong.
     await page.setViewportSize({ width: 760, height: 900 })
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -346,6 +353,7 @@ test.describe('roster keyboard + actions', () => {
     //       matched no session name, every cursor was judged dead and the whole
     //       map was rewritten to `{}` on the first render after boot.
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -390,6 +398,7 @@ test.describe('roster keyboard + actions', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(backend.baseUrl)
     await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
 
@@ -448,6 +457,7 @@ test.describe('roster keyboard + actions', () => {
     // refresh or a link wrote no cursor at all — and without a cursor the tier
     // function reports `quiet` for that session forever.
     await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript(PIN_CLASSIC_SURFACE)
     await page.goto(`${backend.baseUrl}/focus/${SESSIONS[0]}`)
     await expect(page.getByText(SESSIONS[0]!).first()).toBeVisible()
 

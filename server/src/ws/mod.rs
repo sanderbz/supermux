@@ -581,19 +581,19 @@ async fn handle_socket(
     //    captures the lead's content, not whichever pane tmux thinks is active)
     //    — same byte-for-byte behaviour as today for non-team sessions.
     let (_replay, mut rx) = stream.subscribe();
-    // Resolve the session's transport ONCE (local vs remote-host SSH) and build
-    // the `tmux` handle over it. Historically the handle was always local
-    // (`Tmux::new`/`for_pane`), so seed + history captures on a remote-host
-    // session mis-targeted the local box — this threads the same transport the
-    // pty reader uses. `Some/None` fallback to the local builders degrades to
-    // exactly the old behaviour when resolution fails.
+    // Resolve the session's transport ONCE (local vs remote-host SSH) through
+    // the same resolver `runtime_for` uses, so attach and every other call site
+    // agree on where the session lives. A host that cannot be reached closes the
+    // socket with that reason: it used to fall back to a LOCAL handle, which
+    // seeded the viewer from the wrong machine.
     let transport: Option<Arc<crate::sessions::transport::Transport>> =
-        match crate::db::sessions::get(&state.pool, &name).await {
-            Ok(Some(s)) => match s.host_id {
-                Some(h) => state.host_pool.transport_for(h).await.ok(),
-                None => None,
-            },
-            _ => None,
+        match state.session_transport(&name).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(session = %name, error = %e, "ws closed: host unreachable");
+                close(&mut socket, close_code::ERROR, "host unreachable").await;
+                return;
+            }
         };
     // Runtime seam. `runtime_for_attach` reproduces the exact four-way handle
     // the WS built before the seam — `(transport, lead_pane)` → `for_pane_on` /

@@ -492,6 +492,16 @@ pub struct ProviderDefaults {
     /// [`crate::sessions::claude_account`].
     #[serde(default)]
     pub claude_accounts_dir: Option<PathBuf>,
+    /// Let a Claude session that runs as ROOT with bypass permissions start, by
+    /// exporting `IS_SANDBOX=1` for it. Claude Code refuses that combination by
+    /// default because a root shell without permission prompts can change
+    /// anything on the machine. Turn this on only where that risk is contained:
+    /// a throwaway container or VM. Off by default. Only sessions whose flags ask
+    /// for bypass (`--dangerously-skip-permissions` or `--permission-mode
+    /// bypassPermissions`) get the export, and only when `id -u` is 0 where the
+    /// pane runs. Read at each session start.
+    #[serde(default)]
+    pub allow_root_bypass_permissions: bool,
 }
 
 /// On-disk `config.toml` shape — every field optional so a partial file is valid.
