@@ -61,7 +61,7 @@ async fn events(
     // frame) BEFORE it is serialized — the payload carries session names/dirs, so
     // the drop must precede serialization, and it does.
     let scope = crate::scope::Scope::of(ctx.0.as_ref());
-    let stream = event_stream(state.sse_tx.subscribe(), scope);
+    let stream = with_hello(event_stream(state.sse_tx.subscribe(), scope));
     Sse::new(stream).keep_alive(
         // axum's transport-level keep-alive (a `:` comment line) is a belt-and
         // -braces guard against dead proxies; the explicit `ping` event below is
@@ -100,6 +100,17 @@ fn event_stream(
     events.merge(pings)
 }
 
+/// Lead with one `: connected` comment line so the response's first bytes go
+/// out right after the headers. Without it nothing is flushed until the first
+/// real event or the 10s ping, and a client cannot tell for up to 10s whether
+/// the stream is open. A comment dispatches nothing in EventSource and is not a
+/// data frame, so the web client's staleness watchdog is unaffected.
+fn with_hello(
+    stream: impl Stream<Item = Result<Event, Infallible>>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    tokio_stream::once(Ok(Event::default().comment("connected"))).chain(stream)
+}
+
 /// Render an [`SseEvent`] as a named SSE frame: `event: <type>` + JSON `data:`.
 fn to_sse_event(ev: &SseEvent) -> Event {
     let data = serde_json::to_string(&ev.payload).unwrap_or_else(|_| "null".to_string());
@@ -136,6 +147,24 @@ mod tests {
         assert!(data.contains("\"name\":\"demo\""));
         assert!(data.contains("\"status\":\"idle\""));
         assert_eq!(ev.event, "sessions");
+    }
+
+    /// The first frame is the `: connected` comment, sent before any event or
+    /// ping, so the stream is visibly open at once.
+    #[tokio::test]
+    async fn the_stream_opens_with_a_comment_before_any_event() {
+        use axum::response::IntoResponse;
+        use http_body_util::BodyExt;
+        let (_tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(8);
+        let resp = Sse::new(with_hello(event_stream(rx, crate::scope::Scope::All))).into_response();
+        let mut body = resp.into_body();
+        let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .expect("first bytes within 1s, not after the 10s ping")
+            .expect("body not ended")
+            .expect("frame ok");
+        let bytes = frame.into_data().expect("data frame");
+        assert_eq!(&bytes[..], b": connected\n\n");
     }
 
     #[tokio::test]
