@@ -424,9 +424,11 @@ const BENCH_PIN = '2.1.231'
  *  binary its fingerprint was captured on, and nothing wider. */
 const BENCH_QUESTION_PIN = '2.1.233'
 /** A version nothing was ever captured against: every option renders, none of
- *  them presses a key. That is the state a CC bump puts every user in, so it is
- *  on the bench beside the working one. */
-const BENCH_UNPINNED = '2.9.0'
+ *  them presses a key. OLDER than the newest capture on purpose: a NEWER version
+ *  whose screen is exactly the captured one now gets its one-off rows by
+ *  structure (`registry/index.ts`), so the plain refusal is what an unknown older
+ *  version — or a newer one whose dialog changed — still sees. */
+const BENCH_UNPINNED = '2.1.300'
 
 /**
  * What a sequence that ABORTED says. Not invented copy — the sentence

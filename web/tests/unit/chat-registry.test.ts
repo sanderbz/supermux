@@ -168,12 +168,24 @@ describe('registry — what may be acted on, and what may not', () => {
 
 describe('registry — the version pin', () => {
   test('an unpinned version hard-disables every option', () => {
-    const r = entryFor(lensOf('perm-bash.txt'), '2.2.0')
+    // An unknown version OLDER than the newest capture never gets a structural
+    // match (`STRUCTURE_BASE`), so this is still the plain pin refusal.
+    const r = entryFor(lensOf('perm-bash.txt'), '2.1.300')
     expect(r.degraded).toBe(true)
     expect(r.attention).toBe('registry-version-mismatch')
     expect(r.entry!.options.every((o) => !o.actOn)).toBe(true)
     expect(r.entry!.escape.actOn).toBe(false)
-    expect(r.entry!.options[0].disabledReason).toContain('2.2.0')
+    expect(r.entry!.options[0].disabledReason).toContain('2.1.300')
+  })
+
+  test('a NEWER unpinned version on an exact screen gets the one-off rows only', () => {
+    // perm-bash.txt is the three-row Bash dialog, exactly as 2.1.331 still draws
+    // it with auto mode off, so 2.2.0 gets Yes / No / Esc and nothing more
+    // (`chat-registry-structure.test.ts` covers the refusals).
+    const r = entryFor(lensOf('perm-bash.txt'), '2.2.0')
+    expect(r.degraded).toBe(false)
+    expect(r.basis).toBe('structure')
+    expect(r.entry!.options.map((o) => o.actOn)).toEqual([true, false, true])
   })
 
   test('an unreadable banner is a mismatch, not a pass', () => {
