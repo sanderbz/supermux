@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helpers for nightly.sh: compare a fresh capture set against the newest corpus, and copy it in redacted.
+"""Helpers for weekly.sh: compare a fresh capture set against the newest corpus, and copy it in redacted.
 
   corpus.py compare <new-dir> <base-dir> <T>   → prints JSON {identical, compared, diffs[]}; exit 0 either way
   corpus.py redact  <src-dir> <dst-dir>        → copies every file, replacing the shell prompt <user>@<host>

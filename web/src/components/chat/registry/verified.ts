@@ -7,7 +7,7 @@
 // tests (`chat-cc321.test.ts`) fail for a version that is listed without one,
 // so this list cannot be widened on a promise.
 //
-// `tools/cc-dialog-verify/nightly.sh` appends here when a new release drew
+// `scripts/cc-dialog-verify/weekly.sh` appends here when a new release drew
 // exactly the same dialogs; a human still merges that PR (one merge point per
 // version).
 

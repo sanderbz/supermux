@@ -1,7 +1,8 @@
 #!/bin/bash
-# Nightly re-verification of chat's dialog registry against the newest Claude Code release.
+# Weekly re-verification of chat's dialog registry against the newest Claude Code release
+# (run once a week, Monday 05:30, by the supermux agent; this script holds no schedule itself).
 #
-#   nightly.sh [version]        (no version: the release channel's `latest`)
+#   weekly.sh [version]         (no version: the release channel's `latest`)
 #
 # Runs entirely OUTSIDE production: an isolated test server (testserver.sh) with the release's real binary
 # behind a local fake API, in a throwaway HOME, plus a throwaway git worktree. It never touches the live
@@ -150,11 +151,11 @@ python3 -I "$HERE/corpus.py" redact "$C" "$dst" >/dev/null
 if [ -n "$NO_PR" ]; then report would-open-pr "\"$WT\""; exit 0; fi
 cd "$WT" && git add -A web && git commit -q -m "feat(chat): dialog registry verified on Claude Code $V
 
-Nightly re-verification (scripts/cc-dialog-verify/nightly.sh): the release binary
+Weekly re-verification (scripts/cc-dialog-verify/weekly.sh): the release binary
 (checksum + signature checked) on an isolated test server behind a fake API drew
 dialogs identical to $newest, and all eight live cases landed their effects." \
   && git push -q -u origin "$BR" \
-  && url=$(gh pr create --base main --head "$BR" --title "feat(chat): dialog registry verified on Claude Code $V" --body "Nightly re-verification by \`scripts/cc-dialog-verify/nightly.sh\`.
+  && url=$(gh pr create --base main --head "$BR" --title "feat(chat): dialog registry verified on Claude Code $V" --body "Weekly re-verification by \`scripts/cc-dialog-verify/weekly.sh\`.
 
 - Release binary $V for darwin-arm64, SHA-256 checked against the release manifest, plus Anthropic's code signature.
 - Isolated test server behind a local fake API, with a throwaway HOME. Production was not touched.

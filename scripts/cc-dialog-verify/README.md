@@ -5,11 +5,16 @@ only for versions whose dialogs were captured **and** driven (`web/src/component
 evidence in `web/tests/fixtures/tui/cc321/README.md`). Claude Code updates almost daily, so this directory
 holds the rig that verifies a new release.
 
+It runs **once a week** (Monday 05:30, as a rhythm the supermux agent's session is given; the script holds
+no schedule of its own) against the release channel's `latest`. Releases in between are not verified one by
+one: a session on a newer, unverified version still gets the one-off answers by exact structure (#285),
+and the next weekly run adds whatever `latest` is then.
+
 ## Running it
 
 ```bash
-scripts/cc-dialog-verify/nightly.sh            # the release channel's latest
-scripts/cc-dialog-verify/nightly.sh 2.1.332    # one version
+scripts/cc-dialog-verify/weekly.sh             # the release channel's latest
+scripts/cc-dialog-verify/weekly.sh 2.1.332     # one version
 NO_PR=1 BASE=origin/<branch> …                 # testing this script: everything except commit/push/PR
 ```
 
@@ -48,7 +53,7 @@ It never touches the live server, its data, or any other session.
 
 | file | what |
 |---|---|
-| `nightly.sh` | the orchestrator above |
+| `weekly.sh` | the orchestrator above |
 | `testserver.sh` | starts and stops the isolated server and fake API |
 | `fake-api.py` | scripted Anthropic API, with one scenario per dialog family |
 | `corpus.py` | compares captures, redacts them (`<user>@<host>` → placeholder at equal width), adds a version |
