@@ -30,6 +30,19 @@
 //! If the socket dies, the reader task fails every pending command with
 //! [`BrowserError::Transport`] and marks the client closed, so callers get a
 //! prompt typed error instead of hanging until their timeout.
+//!
+//! # A JS dialog parks the page's commands
+//!
+//! While a page shows `alert()` / `confirm()` / `prompt()` / `beforeunload`,
+//! Chrome does not answer any command that needs its renderer (measured against
+//! the pinned Chrome 149: `Runtime.evaluate`, `Page.captureScreenshot`,
+//! `Emulation.setDeviceMetricsOverride`/`setUserAgentOverride`,
+//! `Page.getFrameTree` — and the very `Input.dispatchMouseEvent` whose click
+//! opened the dialog). They are parked and answered only once the dialog
+//! closes, so an awaited one blocks its caller for the full
+//! [`DEFAULT_CALL_TIMEOUT`]. The reader therefore tracks, per flat-mode session,
+//! whether a dialog is open ([`CdpClient::dialog`]), and
+//! [`CdpClient::call_unless_dialog`] stops waiting the moment one is.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -38,7 +51,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
@@ -72,8 +85,46 @@ pub struct CdpClient {
     outbound: mpsc::UnboundedSender<Message>,
     pending: Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>,
     events: broadcast::Sender<CdpEvent>,
+    /// Per flat-mode session: the open JS dialog's `Page.javascriptDialogOpening`
+    /// params, or `None`. Kept by the reader, so it is right from the first
+    /// event — no subscriber has to have been listening when the dialog opened.
+    dialogs: Dialogs,
     closed: Arc<AtomicBool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+type Dialogs = Arc<std::sync::Mutex<HashMap<String, watch::Sender<Option<Value>>>>>;
+
+/// The dialog channel of one session, created on first use.
+fn dialog_tx(dialogs: &Dialogs, session_id: &str) -> watch::Sender<Option<Value>> {
+    let mut map = dialogs.lock().unwrap_or_else(|p| p.into_inner());
+    map.entry(session_id.to_string())
+        .or_insert_with(|| watch::channel(None).0)
+        .clone()
+}
+
+/// Fold one CDP event into the per-session dialog state. Called by the reader
+/// BEFORE the event is fanned out, so anyone who sees the event and then reads
+/// [`CdpClient::dialog`] agrees with it.
+fn track_dialog(dialogs: &Dialogs, method: &str, params: &Value, session_id: Option<&str>) {
+    match (method, session_id) {
+        ("Page.javascriptDialogOpening", Some(sid)) => {
+            dialog_tx(dialogs, sid).send_replace(Some(params.clone()));
+        }
+        ("Page.javascriptDialogClosed", Some(sid)) => {
+            dialog_tx(dialogs, sid).send_replace(None);
+        }
+        // The session is gone, and its dialog with it.
+        ("Target.detachedFromTarget", _) => {
+            if let Some(sid) = params.get("sessionId").and_then(Value::as_str) {
+                let mut map = dialogs.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(tx) = map.remove(sid) {
+                    tx.send_replace(None);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 impl std::fmt::Debug for CdpClient {
@@ -96,6 +147,7 @@ impl CdpClient {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAP);
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<_>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let dialogs: Dialogs = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
 
         // Writer: serialises every outbound frame through one task so `call`
@@ -114,6 +166,7 @@ impl CdpClient {
         let reader = {
             let pending = pending.clone();
             let events = events.clone();
+            let dialogs = dialogs.clone();
             let closed = closed.clone();
             tokio::spawn(async move {
                 while let Some(next) = source.next().await {
@@ -146,14 +199,17 @@ impl CdpClient {
                             let _ = tx.send(outcome);
                         }
                     } else if let Some(method) = value.get("method").and_then(Value::as_str) {
+                        let params = value.get("params").cloned().unwrap_or(json!({}));
+                        let session_id = value
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        track_dialog(&dialogs, method, &params, session_id.as_deref());
                         // A send error only means "nobody is subscribed".
                         let _ = events.send(CdpEvent {
                             method: method.to_string(),
-                            params: value.get("params").cloned().unwrap_or(json!({})),
-                            session_id: value
-                                .get("sessionId")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
+                            params,
+                            session_id,
                         });
                     }
                 }
@@ -171,6 +227,7 @@ impl CdpClient {
             outbound,
             pending,
             events,
+            dialogs,
             closed,
             tasks: Mutex::new(vec![reader, writer]),
         }))
@@ -179,6 +236,19 @@ impl CdpClient {
     /// Subscribe to the raw event stream (all targets, all methods).
     pub fn subscribe(&self) -> broadcast::Receiver<CdpEvent> {
         self.events.subscribe()
+    }
+
+    /// The JS dialog open on this flat-mode session right now — its
+    /// `Page.javascriptDialogOpening` params — or `None`.
+    pub fn dialog(&self, session_id: &str) -> Option<Value> {
+        let map = self.dialogs.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(session_id).and_then(|tx| tx.borrow().clone())
+    }
+
+    /// Forget a session's dialog state (its target is being closed).
+    pub fn forget_dialog(&self, session_id: &str) {
+        let mut map = self.dialogs.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(session_id);
     }
 
     /// Has the socket gone away?
@@ -211,6 +281,55 @@ impl CdpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value> {
+        let (id, rx) = self.send_command(session_id, method, params).await?;
+        self.await_answer(id, method, rx, timeout).await
+    }
+
+    /// As [`call_with_timeout`](Self::call_with_timeout) on a page session,
+    /// except that it **stops waiting when a JS dialog is (or becomes) open on
+    /// that page**: `Ok(None)`.
+    ///
+    /// The command has still been sent. Chrome parks it behind the dialog and
+    /// runs it once the dialog is answered (measured: a parked
+    /// `Runtime.evaluate` / `Page.captureScreenshot` is answered right after
+    /// `Page.handleJavaScriptDialog`), so for a WRITE — an input event, a
+    /// viewport override — `None` means "queued", not "lost". Its late answer is
+    /// dropped: the pending slot is released here, not left to time out.
+    pub async fn call_unless_dialog(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Option<Value>> {
+        // Subscribed BEFORE the send: a dialog the command itself opens (a click
+        // on a button that calls `alert()`) must not slip between the two.
+        let mut dialog = dialog_tx(&self.dialogs, session_id).subscribe();
+        let (id, rx) = self.send_command(Some(session_id), method, params).await?;
+        let opened = async {
+            if dialog.wait_for(Option::is_some).await.is_err() {
+                // The session was forgotten (its target is going away): the
+                // answer, or the deadline, decides.
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            biased;
+            answer = self.await_answer(id, method, rx, timeout) => answer.map(Some),
+            () = opened => {
+                self.pending.lock().await.remove(&id);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Put one command on the wire and register its answer slot.
+    async fn send_command(
+        &self,
+        session_id: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<(i64, oneshot::Receiver<std::result::Result<Value, String>>)> {
         if self.is_closed() {
             return Err(BrowserError::Transport("CDP socket closed".to_string()));
         }
@@ -229,7 +348,17 @@ impl CdpClient {
             self.pending.lock().await.remove(&id);
             return Err(BrowserError::Transport("CDP writer is gone".to_string()));
         }
+        Ok((id, rx))
+    }
 
+    /// Await one command's answer, bounded by `timeout`.
+    async fn await_answer(
+        &self,
+        id: i64,
+        method: &str,
+        rx: oneshot::Receiver<std::result::Result<Value, String>>,
+        timeout: Duration,
+    ) -> Result<Value> {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(message))) => Err(BrowserError::Protocol {
