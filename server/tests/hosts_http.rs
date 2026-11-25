@@ -165,6 +165,48 @@ async fn duplicate_name_returns_409() {
     cleanup(dir);
 }
 
+// ── a removed host's name can be used again (supermux-ios, 2026-11-25) ──────
+
+#[tokio::test]
+async fn a_deleted_host_name_can_be_added_again() {
+    let (app, dir, state) = test_app().await;
+    let body = json!({ "name": "again", "ssh_target": UNROUTABLE_TARGET });
+
+    let (status, first) = send(&app, Method::POST, "/api/hosts", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let first_id = first["data"]["id"].as_i64().unwrap();
+    let (status, _) = send(&app, Method::DELETE, &format!("/api/hosts/{first_id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Used to be 409 "taken by a soft-deleted row".
+    let (status, second) = send(&app, Method::POST, "/api/hosts", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    assert_eq!(second["data"]["name"], json!("again"));
+    assert_ne!(second["data"]["id"].as_i64().unwrap(), first_id);
+
+    // A live duplicate is still a 409.
+    let (status, _) = send(&app, Method::POST, "/api/hosts", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // An OLD tombstone (deleted before the rename existed) is freed on create.
+    let old = db::hosts::create(&state.pool, "legacy", "u@h", None).await.unwrap();
+    sqlx::query("UPDATE hosts SET deleted_at = 1 WHERE id = ?")
+        .bind(old.id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let (status, v) = send(
+        &app,
+        Method::POST,
+        "/api/hosts",
+        Some(json!({ "name": "legacy", "ssh_target": UNROUTABLE_TARGET })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+
+    cleanup(dir);
+}
+
 // ── active session blocks delete ──────────────────────────────────────────────
 
 #[tokio::test]
