@@ -412,7 +412,20 @@ describe('the card the surface draws', () => {
     expect(view.escape?.actOn).toBe(false)
     expect(view.note).toBe(DIALOG_TERMINAL_NOTE)
     expect(view.attention).toBe('registry-version-mismatch')
-    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232', '2.1.233'])
+    expect(view.verifiedVersions).toEqual([
+      '2.1.227',
+      '2.1.231',
+      '2.1.232',
+      '2.1.233',
+      // the three-row Bash shape, re-verified with auto mode off (`cc321/noauto/`)
+      '2.1.321',
+      '2.1.322',
+      '2.1.325',
+      '2.1.326',
+      '2.1.327',
+      '2.1.329',
+      '2.1.331',
+    ])
   })
 
   // AskUserQuestion is `pinExempt`: its rows are the MODEL'S, so a Claude Code
