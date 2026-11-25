@@ -108,6 +108,22 @@ export interface RegistryEntry {
    * that reworded the gate degrades through `shapeHolds` instead.
    */
   pinExempt?: boolean
+  /** The EXACT screen this entry's newest capture showed (`STRUCTURE_BASE`).
+   *  A session on a version NEWER than every pin may still be answered when its
+   *  dialog matches this field for field — and then only the rows that grant
+   *  nothing beyond this one call (`entryFor`, `./index.ts`). Absent = no
+   *  structural match for this entry, ever. */
+  structure?: RegistryStructure
+}
+
+/** A dialog's exact shape. Every literal is compared WHOLE (whitespace
+ *  normalised, case kept); a pattern is used only where the dialog prints a
+ *  value of its own — a file name in the question, a directory or a command in
+ *  a grant row — and is anchored at both ends with that slot as the only
+ *  freedom. */
+export interface RegistryStructure {
+  question: string | RegExp
+  rows: readonly (string | RegExp)[]
 }
 
 /**
@@ -198,6 +214,23 @@ const CC233 = '2.1.233'
  *  first and in full, the rest by the same script. */
 const CC32X = ['2.1.321', '2.1.322', '2.1.325', '2.1.326', '2.1.327', '2.1.329', '2.1.331'] as const
 
+/** The newest version every `structure` below was captured AND driven on. Only a
+ *  version newer than this can be matched by structure: an older one that is not
+ *  on a pin list was skipped on purpose or never seen, and gets nothing. */
+export const STRUCTURE_BASE = '2.1.331'
+
+const PROCEED = 'Do you want to proceed?'
+/** Bash row 2, exactly: the three forms 2.1.233–2.1.331 print, each with its own
+ *  slot (`cc233/` 01/05/06, `cc321/` 01/05/06). Never pressed either way. */
+const BASH_GRANT_ROW =
+  /^Yes, (?:and always allow access to \S.* from this project|allow reading from \S.* from this project|and don’t ask again for: \S.*)$/
+const SWITCH_TO_AUTO_ROW = 'Yes, and switch to auto mode · auto mode handles these prompts for you'
+/** Write/Edit row 2 on 2.1.32x, with the outside-project grant as its one
+ *  optional slot (`cc321/noauto/20-write-caret1.txt`). Never pressed under a
+ *  structural match: it switches the whole session. */
+const ACCEPT_EDITS_ROW =
+  /^Yes, and switch to accept edits \(auto-approve file edits and common file commands\) for this session(?:; Yes, and always allow access to \S.* for this session)? \(shift\+tab\)$/
+
 /** a0 §3, Family 1: "Pinned v2.1.227, Bash variant re-verified structurally
  *  identical v2.1.231." The Bash capture therefore holds on both; the Edit
  *  capture in `tests/fixtures/tui/` is recorded at 2.1.231 and the Write one at
@@ -280,6 +313,7 @@ function permissionEntry(
   variant: NonNullable<DialogSighting['variant']>,
   verifiedVersions: readonly string[],
   second: RegistryOption,
+  structure?: RegistryStructure,
 ): RegistryEntry {
   return {
     id,
@@ -288,6 +322,7 @@ function permissionEntry(
     verifiedVersions,
     options: [PERMISSION_YES, second, PERMISSION_NO],
     escape: PERMISSION_ESCAPE,
+    ...(structure ? { structure } : {}),
   }
 }
 
@@ -737,7 +772,10 @@ const BASH_ROW_2: RegistryOption = {
 }
 
 export const ENTRIES: readonly RegistryEntry[] = [
-  permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, BASH_ROW_2),
+  permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, BASH_ROW_2, {
+    question: PROCEED,
+    rows: ['Yes', BASH_GRANT_ROW, 'No'],
+  }),
 
   // 2.1.32x with auto mode available: four rows, `No` on row 4 (see `CC32X`).
   {
@@ -746,6 +784,7 @@ export const ENTRIES: readonly RegistryEntry[] = [
     variant: 'bash',
     verifiedVersions: PERMISSION_BASH_AUTO_VERSIONS,
     options: [PERMISSION_YES, BASH_ROW_2, PERMISSION_SWITCH_TO_AUTO, PERMISSION_NO_ROW4],
+    structure: { question: PROCEED, rows: ['Yes', BASH_GRANT_ROW, SWITCH_TO_AUTO_ROW, 'No'] },
     escape: PERMISSION_ESCAPE,
   },
 
@@ -773,13 +812,27 @@ export const ENTRIES: readonly RegistryEntry[] = [
     rowPattern: /^yes, allow all edits during this session\b/i,
   }),
 
-  permissionEntry('permission.edit', 'edit', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X),
-  permissionEntry('permission.write', 'write', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X),
+  permissionEntry('permission.edit', 'edit', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X, {
+    question: /^Do you want to make this edit to \S.*\?$/,
+    rows: ['Yes', ACCEPT_EDITS_ROW, 'No'],
+  }),
+  permissionEntry('permission.write', 'write', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X, {
+    question: /^Do you want to create \S.*\?$/,
+    rows: ['Yes', ACCEPT_EDITS_ROW, 'No'],
+  }),
 
   {
     id: 'plan.approval',
     family: 'plan',
     verifiedVersions: PLAN_VERSIONS,
+    structure: {
+      question: 'Would you like to proceed?',
+      rows: [
+        'Yes, and use auto mode',
+        'Yes, manually approve edits',
+        'Tell Claude what to change shift+tab to approve with this feedback',
+      ],
+    },
     // The REAL 2.1.231 labels — NOT the master plan's "auto-accept / manual /
     // keep planning" phrasing, which a0 §3 corrected against the capture.
     options: [

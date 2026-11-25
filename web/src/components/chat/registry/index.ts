@@ -25,18 +25,26 @@
 import type { AttentionCause } from '../attention'
 import type { DialogSighting, PeekLens } from '../peek-lens'
 
-import { entriesForSighting, type RegistryEntry, type RegistryOption } from './claude'
+import {
+  entriesForSighting,
+  STRUCTURE_BASE,
+  type RegistryEntry,
+  type RegistryOption,
+  type RegistryStructure,
+} from './claude'
 
 export {
   ENTRIES,
   entryById,
   entriesForSighting,
   entryForSighting,
+  STRUCTURE_BASE,
   type OptionEffect,
   type RegistryEntry,
   type RegistryEscape,
   type RegistryId,
   type RegistryOption,
+  type RegistryStructure,
 } from './claude'
 export { keyPlan, navigationSteps } from './plan'
 export {
@@ -60,6 +68,10 @@ export interface RegistryMatch {
   /** The card the surface should raise, `null` when there is nothing wrong
    *  (including the ordinary case of no dialog at all). */
   attention: AttentionCause | null
+  /** Why this card may be answered: `pin` — the session's version was captured
+   *  and driven; `structure` — a NEWER version whose dialog is exactly the newest
+   *  capture, with every session-wide grant switched off. Absent on a refusal. */
+  basis?: 'pin' | 'structure'
 }
 
 const NO_MATCH: RegistryMatch = { entry: null, degraded: false, attention: null }
@@ -112,6 +124,21 @@ export function entryFor(
   // fitting falls through to `shapeHolds` below on the first, which refuses.
   const entry = pinned.find((e) => shapeHolds(e, sighting)) ?? pinned[0] ?? candidates[0]
   if (!entry.pinExempt && (!pinnedVersion || !entry.verifiedVersions.includes(pinnedVersion))) {
+    // A version NEWER than every capture may still be answered — but only when
+    // its dialog is exactly the newest captured one, and only on the rows that
+    // grant nothing beyond this one call. See `structurallyMatched`.
+    const structural =
+      pinnedVersion && isNewer(pinnedVersion, STRUCTURE_BASE)
+        ? candidates.find((e) => e.structure && structureHolds(e.structure, sighting))
+        : undefined
+    if (structural) {
+      return {
+        entry: structurallyMatched(structural, pinnedVersion!),
+        degraded: false,
+        attention: null,
+        basis: 'structure',
+      }
+    }
     const checked = [...new Set(candidates.flatMap((e) => e.verifiedVersions))].join(', ')
     return {
       entry: disabled(
@@ -136,7 +163,7 @@ export function entryFor(
     }
   }
 
-  return { entry, degraded: false, attention: null }
+  return { entry, degraded: false, attention: null, basis: 'pin' }
 }
 
 /** The TUI folds a sub-hint sitting UNDER an option into that option's own row:
@@ -205,5 +232,47 @@ function disabled(entry: RegistryEntry, reason: string): RegistryEntry {
     ...entry,
     options: entry.options.map((o) => ({ ...o, actOn: false, disabledReason: reason })),
     escape: { ...entry.escape, actOn: false, disabledReason: reason },
+  }
+}
+
+/** `a` is a strictly newer Claude Code version than `b` (numeric, part by part). */
+export function isNewer(a: string, b: string): boolean {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  if (pa.some(Number.isNaN) || pb.some(Number.isNaN)) return false
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return false
+}
+
+const norm = (t: string) => t.replace(/\s+/g, ' ').trim()
+const fits = (want: string | RegExp, got: string | undefined) =>
+  typeof got === 'string' && (typeof want === 'string' ? norm(got) === norm(want) : want.test(norm(got)))
+
+/** The screen is EXACTLY the captured one: the question, the row count, and
+ *  every row — whole literals, or a pattern whose only freedom is the value the
+ *  dialog prints itself. Stricter than `shapeHolds`, whose prefix patterns are
+ *  enough only once the version itself was captured. */
+function structureHolds(structure: RegistryStructure, sighting: DialogSighting): boolean {
+  if (!fits(structure.question, sighting.question)) return false
+  if (sighting.options.length !== structure.rows.length) return false
+  return structure.rows.every((want, i) => fits(want, sighting.options[i]))
+}
+
+/** The entry as a structural match may offer it: a row whose effect reaches
+ *  past this one call (`accept-session` — accept edits, auto mode, “don’t ask
+ *  again”) is switched off, because the same words could do something else on a
+ *  version nobody drove (2.1.233 did exactly that to Bash row 2). Yes, No, the
+ *  plan’s manual approval, “tell Claude what to change” and Esc stay as
+ *  captured. */
+function structurallyMatched(entry: RegistryEntry, version: string): RegistryEntry {
+  const reason = `Claude Code ${version} is newer than the last captured version (${STRUCTURE_BASE}). Its dialog matches that capture exactly, so the one-off answers work here, but a row that grants something for the whole session stays off until ${version} itself has been captured.`
+  return {
+    ...entry,
+    options: entry.options.map((o) =>
+      o.effect === 'accept-session' && o.actOn ? { ...o, actOn: false, disabledReason: reason } : o,
+    ),
   }
 }
