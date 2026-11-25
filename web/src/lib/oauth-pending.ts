@@ -145,6 +145,10 @@ export const CONNECT_ERROR_COPY: Record<string, string> = {
 export const PENDING_LOST_COPY =
   'That sign-in finished in another tab — tap Sign in again here to finish it.'
 
+/** `complete` answered `pending`: the provider never sent the browser back. */
+export const PENDING_NOT_FINISHED_COPY =
+  'That sign-in has not finished yet — tap Sign in again to retry.'
+
 /** `complete` itself failed. The server's own reason when it gave one, and always
  *  the way forward. */
 export function completeFailedCopy(reason?: string | null): string {
@@ -158,6 +162,9 @@ export function connectErrorCopy(code: string, name: string): string {
 }
 
 export interface CompleteResult {
+  /** `pending`: the provider callback has not arrived yet (the server keeps the
+   *  flow and sends no account fields). Absent on older servers = connected. */
+  status?: 'connected' | 'pending'
   account_ref: string
   label: string
   health: {
@@ -226,6 +233,11 @@ export async function handleOauthReturn(search: string, deps: ReturnDeps): Promi
   clearPending(deps.store)
   try {
     const r = await deps.complete(pending.id, { state: pending.state })
+    if (r.status === 'pending') {
+      deps.toast(PENDING_NOT_FINISHED_COPY, 'error')
+      deps.invalidate(pending.target)
+      return { kind: 'connect_failed', id: pending.id }
+    }
     const ok = r.health?.status === 'ok'
     const n = r.health?.tool_count
     // A green carries the count the server actually listed (a real tools/list),
