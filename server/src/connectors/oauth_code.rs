@@ -778,13 +778,28 @@ pub fn new_state() -> String {
 
 // ── return_to + redirect host ───────────────────────────────────────────────────
 
+/// The one non-path `return_to` the server accepts: the native app's
+/// `ASWebAuthenticationSession` callback. Allowlisted LITERALLY (no other scheme,
+/// host, path or query); the server appends only `ok` (+ `error`). Like the SPA
+/// redirect it carries neither a token nor the `state` (the app already holds
+/// it from `start`), and `complete` still requires the initiator's credential.
+pub const APP_RETURN_URL: &str = "supermux://oauth/return";
+
+fn is_app_return(s: &str) -> bool {
+    s == APP_RETURN_URL
+}
+
 /// Validate the SPA's `return_to` path: ASCII, ≤ 512, charset
 /// `[A-Za-z0-9/_.\-?=&%~]`, starts with `/` (not `//`), no `..` segment; resolved
-/// against a dummy origin it must stay on that origin. Empty → `/store`.
+/// against a dummy origin it must stay on that origin. Empty → `/store`. The
+/// single exception is the exact [`APP_RETURN_URL`].
 pub fn validate_return_to(s: &str) -> Result<String, AppError> {
     let s = s.trim();
     if s.is_empty() {
         return Ok("/store".to_string());
+    }
+    if is_app_return(s) {
+        return Ok(s.to_string());
     }
     let bad = || AppError::BadRequest("invalid return_to".into());
     if s.len() > 512 || !s.is_ascii() {
@@ -1393,7 +1408,8 @@ pub struct CallbackQuery {
 }
 
 fn redirect_to(path: &str) -> Response {
-    let loc = if path.starts_with('/') && !path.starts_with("//") { path.to_string() } else { "/store".to_string() };
+    let app = path.split('?').next().is_some_and(is_app_return);
+    let loc = if app || (path.starts_with('/') && !path.starts_with("//")) { path.to_string() } else { "/store".to_string() };
     (
         StatusCode::FOUND,
         [
@@ -1404,8 +1420,21 @@ fn redirect_to(path: &str) -> Response {
         .into_response()
 }
 
+/// Failure redirect. The SPA reads `connect_error=<code>`; the app return gets
+/// `ok=0&error=<code>` (the same fixed set of codes).
 fn error_redirect(return_to: &str, code: &str) -> Response {
+    if is_app_return(return_to) {
+        return redirect_to(&append_query(return_to, &format!("ok=0&error={code}")));
+    }
     redirect_to(&append_query(return_to, &format!("connect_error={code}")))
+}
+
+/// Success redirect: `oauth_pending=1` for the SPA, `ok=1` for the app.
+fn pending_redirect(return_to: &str) -> Response {
+    if is_app_return(return_to) {
+        return redirect_to(&append_query(return_to, "ok=1"));
+    }
+    redirect_to(&append_query(return_to, "oauth_pending=1"))
 }
 
 /// `GET /api/oauth/callback` — PUBLIC; uniform 302 on every failure.
@@ -1471,7 +1500,7 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
     if !ok {
         return error_redirect(&snap.return_to, "state");
     }
-    redirect_to(&append_query(&snap.return_to, "oauth_pending=1"))
+    pending_redirect(&snap.return_to)
 }
 
 /// `POST token_endpoint` with the authorization code (+ PKCE verifier + resource
@@ -1639,15 +1668,44 @@ pub async fn complete(
     let now = chrono::Utc::now().timestamp();
     let not_found = || AppError::NotFound("sign-in not found".into());
     let identity = identity_of(ctx.0.as_ref());
-    // Single-use: remove first, then check every binding; any miss is uniform.
-    let Some((_, flow)) = state.oauth_code_flows.remove(&body.state) else { return Err(not_found()) };
+    let bound = |f: &CodeFlow| f.connector_id == id && f.initiator == identity;
+    // Look first (short lock, never across an await). The rightful initiator
+    // asking about a flow that still waits for the provider callback gets
+    // `pending` and the flow STAYS, so a client whose redirect was lost (the app
+    // was killed mid sign-in) can poll. Everything else is as before: a wrong
+    // identity or connector, or an expired flow, consumes it (uniform 404).
+    enum Seen {
+        Missing,
+        Burn,
+        Pending,
+        Exchanged,
+    }
+    let seen = match state.oauth_code_flows.get(&body.state) {
+        None => Seen::Missing,
+        Some(f) if !bound(&f) || f.expires_at < now => Seen::Burn,
+        Some(f) if matches!(f.stage, FlowStage::Started) => Seen::Pending,
+        Some(_) => Seen::Exchanged,
+    };
+    match seen {
+        Seen::Missing => return Err(not_found()),
+        Seen::Burn => {
+            state.oauth_code_flows.remove(&body.state);
+            return Err(not_found());
+        }
+        Seen::Pending => return Ok(Json(json!({ "ok": true, "status": "pending" }))),
+        Seen::Exchanged => {}
+    }
+    // Single-use: consume atomically, and only a finished exchange bound to us.
+    let Some((_, flow)) = state
+        .oauth_code_flows
+        .remove_if(&body.state, |_, f| bound(f) && f.expires_at >= now && matches!(f.stage, FlowStage::Exchanged { .. }))
+    else {
+        return Err(not_found());
+    };
     let FlowStage::Exchanged { tokens, identity: account_identity } = flow.stage.clone() else {
         return Err(not_found());
     };
     let label = account_identity.label.clone();
-    if flow.connector_id != id || flow.expires_at < now || flow.initiator != identity {
-        return Err(not_found());
-    }
     authorize_connector_target(&state, ctx.0.as_ref(), &flow.session).await.map_err(|_| not_found())?;
 
     let (account_ref, secret_ref) = seal_and_grant(&state, &flow, &tokens, &account_identity).await?;
@@ -1696,6 +1754,7 @@ pub async fn complete(
     let _ = secret_ref;
     Ok(Json(json!({
         "ok": true,
+        "status": "connected",
         "account_ref": account_ref,
         "label": label,
         "health": {
@@ -2383,6 +2442,20 @@ mod tests {
         assert_eq!(validate_return_to("/store/x?y=1").unwrap(), "/store/x?y=1");
         assert_eq!(validate_return_to("/s/bot/tools").unwrap(), "/s/bot/tools");
         assert_eq!(validate_return_to("").unwrap(), "/store");
+        // The app return is allowlisted literally — nothing near it passes.
+        assert_eq!(validate_return_to("supermux://oauth/return").unwrap(), "supermux://oauth/return");
+        for near in [
+            "supermux://oauth/return?x=1",
+            "supermux://oauth/return/",
+            "supermux://oauth/returnx",
+            "SUPERMUX://oauth/return",
+            "supermux://evil/return",
+            "supermux:oauth/return",
+            "other://oauth/return",
+            "https://oauth/return",
+        ] {
+            assert!(validate_return_to(near).is_err(), "{near:?}");
+        }
         assert_eq!(append_query("/store/x?y=1", "connect_error=denied"), "/store/x?y=1&connect_error=denied");
         assert_eq!(append_query("/store", "oauth_pending=1"), "/store?oauth_pending=1");
     }

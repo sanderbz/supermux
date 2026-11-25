@@ -103,6 +103,8 @@ export interface McpOauthStart {
 
 export interface McpOauthComplete {
   ok: boolean
+  /** `pending` while the provider callback has not arrived (no account fields then). */
+  status?: 'connected' | 'pending'
   account_ref: string
   /** The connected identity ("sander@…"), or the resource host as a fallback. */
   label: string
