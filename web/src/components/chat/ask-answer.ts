@@ -282,9 +282,24 @@ export function formOf(ask: Ask, fallback?: ElicitationAsk | null): ElicitationA
 /** Can this ask be drawn as a native card at all? A question ask without
  *  parseable questions, or a form without a form, falls back to the older
  *  paths rather than drawing an empty card. */
+/**
+ * Permission asks whose HOOK answer Claude Code does not act on, so a card that
+ * answers them through the hook would be a button that does nothing.
+ *
+ * `ExitPlanMode`, found live on the Mac mini and reproduced on an isolated
+ * server (Claude Code 2.1.321, 2026-11-25): Claude draws its own plan dialog
+ * beside the PermissionRequest hook, and an `allow` from the hook neither closes
+ * that dialog nor leaves a decision in the transcript — the card cleared, the
+ * plan stayed. (The same `allow` on a Bash ask does land: "Allowed by
+ * PermissionRequest hook".) Until that is resolved, no hook card is drawn for
+ * it, and the plan is answered by the terminal-dialog card instead (registry
+ * `plan.approval`, keys into the dialog itself — verified per version).
+ */
+const HOOK_ANSWER_NOT_HONOURED: ReadonlySet<string> = new Set(['ExitPlanMode'])
+
 export function drawable(view: { ask: Ask; questions: readonly AskQuestion[] } | null | undefined, form?: ElicitationAsk | null): boolean {
   if (!view) return false
   if (view.ask.kind === 'question') return view.questions.length > 0
   if (view.ask.kind === 'elicitation') return formOf(view.ask, form) != null
-  return view.ask.kind === 'permission'
+  return view.ask.kind === 'permission' && !HOOK_ANSWER_NOT_HONOURED.has(permissionTool(view.ask))
 }
