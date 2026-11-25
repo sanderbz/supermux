@@ -30,6 +30,11 @@ const fn always(_: &AppState) -> bool {
     true
 }
 
+/// APNs can actually deliver: a readable key was configured at boot.
+fn apns_configured(state: &AppState) -> bool {
+    state.apns.configured()
+}
+
 /// THE registry — the only place capability strings are spelled.
 ///
 /// APPEND-ONLY: add a string when a client-visible feature ships; never rename
@@ -43,6 +48,11 @@ pub const REGISTRY: &[Capability] = &[
     Capability { name: "session_host_id", enabled: always },
     // #263: `POST /api/sessions` accepts the connectors to grant at creation.
     Capability { name: "create_session_connectors", enabled: always },
+    // #268: native iOS push. `/api/push/apns/register` exists on every build; this
+    // says pushes can really be SENT (an APNs key is configured).
+    Capability { name: "apns", enabled: apns_configured },
+    // #267: the chat WS accepts `{"type":"live",...}` and streams live frames.
+    Capability { name: "chat_live", enabled: always },
 ];
 
 /// The capability names this server offers right now, in registry order.
@@ -169,7 +179,8 @@ mod tests {
             .iter()
             .map(|c| c.as_str().unwrap())
             .collect();
-        assert_eq!(caps, vec!["capabilities", "session_host_id", "create_session_connectors"]);
+        // No APNs key in the test config → no `apns`.
+        assert_eq!(caps, vec!["capabilities", "session_host_id", "create_session_connectors", "chat_live"]);
         assert_eq!(d["limits"]["upload_json_max_bytes"], 20 * 1024 * 1024);
         assert_eq!(d["limits"]["ws_subscribers_per_session"], 32);
         let _ = std::fs::remove_dir_all(dir);
@@ -184,6 +195,24 @@ mod tests {
         // The same layer stack still hides the admin-only version route.
         let (s, _) = get_as(&state, "/api/version", Some(member())).await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn apns_is_offered_only_once_a_key_is_configured() {
+        let (mut state, dir) = test_state().await;
+        assert!(!enabled(&state).contains(&"apns"));
+        let pem = jwt_simple::prelude::ES256KeyPair::generate().to_pem().unwrap();
+        state.apns = std::sync::Arc::new(crate::apns::Apns::for_test(
+            &pem,
+            "KEYID12345",
+            "TEAMID1234",
+            "com.supermux.app",
+            "http://127.0.0.1:9",
+        ));
+        let caps = enabled(&state);
+        assert!(caps.contains(&"apns"), "{caps:?}");
+        assert_eq!(caps.last(), Some(&"chat_live"), "registry order is kept");
         let _ = std::fs::remove_dir_all(dir);
     }
 
