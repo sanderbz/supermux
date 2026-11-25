@@ -315,6 +315,25 @@ fn home_join(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+/// Flags only one operating system needs.
+///
+/// **macOS: `--use-mock-keychain`.** Full Chrome for Testing on macOS reads its
+/// "Safe Storage" key from the login keychain before it loads anything from the
+/// network. Started by a launchd agent or a server (no GUI session to answer
+/// the keychain), it waits on that forever: `data:` URLs render, every network
+/// load hangs, and every CDP call behind it times out. Found live on the Mac mini
+/// on 2026-11-25 — a tab got its url but never a title, the page server never saw
+/// the request, and closing the tab took 60 s — so the Browser tab there loaded
+/// no page at all. The mock keychain keeps cookies in the profile, encrypted with
+/// a fixed key: this is a dedicated automation browser, not anyone's own Chrome.
+/// Linux (Strato) has no keychain and needs nothing.
+pub fn platform_args(target_os: &str) -> &'static [&'static str] {
+    match target_os {
+        "macos" => &["--use-mock-keychain"],
+        _ => &[],
+    }
+}
+
 /// The exact argv (minus the executable) the connector launches Chrome with.
 /// Split out so a test can assert the recipe without spawning anything.
 pub fn launch_args(user_data_dir: &Path, width: u32, height: u32, user_agent: Option<&str>) -> Vec<String> {
@@ -344,8 +363,9 @@ pub fn launch_args(user_data_dir: &Path, width: u32, height: u32, user_agent: Op
         format!("--disk-cache-size={DISK_CACHE_BYTES}"),
         format!("--user-data-dir={}", user_data_dir.display()),
         format!("--window-size={width},{height}"),
-        "about:blank".to_string(),
     ];
+    args.extend(platform_args(std::env::consts::OS).iter().map(|a| a.to_string()));
+    args.push("about:blank".to_string());
     // The binary's own UA with only `HeadlessChrome` → `Chrome` (see
     // [`BrowserIdentity`]); none at all when the version is unknown.
     if let Some(ua) = user_agent {
@@ -945,6 +965,28 @@ mod tests {
         assert_ne!(a, b, "each scratch launch gets its own jar");
         let _ = std::fs::remove_dir_all(&a);
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn macos_chrome_never_waits_on_the_keychain() {
+        // Live on the Mac mini (2026-11-25): without this flag the server's
+        // Chrome loaded no network page at all.
+        assert_eq!(platform_args("macos"), &["--use-mock-keychain"]);
+        assert!(platform_args("linux").is_empty(), "Linux has no keychain to mock");
+    }
+
+    #[test]
+    fn the_recipe_carries_this_hosts_platform_flags_before_the_first_page() {
+        let args = launch_args(Path::new("/tmp/x"), 800, 600, None);
+        for flag in platform_args(std::env::consts::OS) {
+            assert!(args.iter().any(|a| a == flag), "missing {flag} on this host: {args:?}");
+        }
+        assert_eq!(args.last().map(String::as_str), Some("about:blank"), "the page stays last: {args:?}");
+        assert_eq!(
+            args.iter().any(|a| a == "--use-mock-keychain"),
+            cfg!(target_os = "macos"),
+            "the mock keychain is a macOS-only flag: {args:?}"
+        );
     }
 
     #[test]
