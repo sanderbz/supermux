@@ -47,6 +47,7 @@ export {
   type RegistryStructure,
 } from './claude'
 export { keyPlan, navigationSteps } from './plan'
+export { CC_VERIFIED_CURRENT, corpusDirFor } from './verified'
 export {
   armedFamilyOf,
   armedRefusal,

@@ -21,6 +21,8 @@
 
 import type { DialogSighting } from '../peek-lens'
 
+import { CC_VERIFIED_CURRENT } from './verified'
+
 export type RegistryId =
   | 'permission.bash'
   | 'permission.edit'
@@ -209,15 +211,20 @@ const CC233 = '2.1.233'
  * All seven versions drew the same rows; 2.1.329 and 2.1.331 only add a
  * `↑ N more lines` scroll hint inside the plan body, above the rows.
  */
-/** Every 2.1.32x/2.1.33x version a production bot was running on 2026-11-25,
- *  each captured AND driven on its own (`cc321/v<NNN>/`); 2.1.321 and 2.1.325
- *  first and in full, the rest by the same script. */
-const CC32X = ['2.1.321', '2.1.322', '2.1.325', '2.1.326', '2.1.327', '2.1.329', '2.1.331'] as const
+/** Every version the current shapes were captured AND driven on: the list lives
+ *  in `./verified.ts` (one line per version, each with its own corpus). */
+const CC32X = CC_VERIFIED_CURRENT
 
-/** The newest version every `structure` below was captured AND driven on. Only a
- *  version newer than this can be matched by structure: an older one that is not
- *  on a pin list was skipped on purpose or never seen, and gets nothing. */
-export const STRUCTURE_BASE = '2.1.331'
+/** The newest version every `structure` below was captured AND driven on — the
+ *  newest entry of that list. Only a version newer than this can be matched by
+ *  structure: an older one that is not on a pin list was skipped on purpose or
+ *  never seen, and gets nothing. */
+export const STRUCTURE_BASE: string = newestOf(CC_VERIFIED_CURRENT)
+
+function newestOf(versions: readonly string[]): string {
+  const key = (v: string) => v.split('.').map((n) => n.padStart(6, '0')).join('.')
+  return [...versions].sort((a, b) => (key(a) < key(b) ? -1 : 1)).at(-1)!
+}
 
 const PROCEED = 'Do you want to proceed?'
 /** Bash row 2, exactly: the three forms 2.1.233–2.1.331 print, each with its own
