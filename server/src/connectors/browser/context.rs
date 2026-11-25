@@ -79,6 +79,20 @@ pub const MAX_DEVICE_SCALE: f64 = 2.0;
 /// other direction.
 const DRIVE_EVERY_NTH: u32 = 4;
 
+/// How long after the last input event the **post-input still** is taken.
+///
+/// [`DRIVE_EVERY_NTH`] has a cost the drive profile cannot see: a click whose
+/// handler repaints ONCE (a toggled button, a checked box, a menu opening)
+/// produces one or two compositor frames, and unless one of them lands on the
+/// 4th, chrome emits nothing — and a page that then sits still never paints
+/// again, so the human never sees what their click did (measured on the pinned
+/// Chrome 149: 4 of 5 single clicks on a repaint-once button gave no frame). So
+/// input under a throttled cast is followed by one `Page.captureScreenshot`
+/// fanned out as a frame. Trailing: a burst of input (typing, a drag) yields one
+/// still after it settles, not one per event. Long enough for the handler's
+/// repaint to land, short enough to read as the click's own feedback.
+const REPAINT_AFTER_INPUT: Duration = Duration::from_millis(150);
+
 /// How long after the last navigation signal a page counts as **settled** and
 /// the expensive reads (history, title, favicon) are worth issuing. Short enough
 /// that the address bar feels immediate; long enough that a redirect chain is
@@ -763,6 +777,10 @@ pub struct AgentContext {
     metrics: Arc<DeviceMetrics>,
     /// Live screencast pump, if one is running.
     screencast: Mutex<Option<Screencast>>,
+    /// When the post-input still is due — see [`REPAINT_AFTER_INPUT`]. `None`
+    /// when none is pending; `Some` while its task sleeps, and moved forward by
+    /// every further input so a burst ends in exactly one still.
+    repaint_due: Arc<std::sync::Mutex<Option<Instant>>>,
     /// Live nav-state watcher, if one is running (P1-5).
     nav: Mutex<Option<NavWatcher>>,
     /// Which User-Agent override is currently applied: `-1` never touched (the
@@ -925,6 +943,7 @@ impl AgentContext {
             lock: DriveLock::new(session),
             metrics: Arc::new(DeviceMetrics::new(width, height, 1.0, false)),
             screencast: Mutex::new(None),
+            repaint_due: Arc::default(),
             nav: Mutex::new(None),
             ua_applied: AtomicI8::new(-1),
         };
@@ -1685,6 +1704,10 @@ impl AgentContext {
     /// method — plus the [`INPUT_METHODS`](Self::INPUT_METHODS) allowlist.
     pub async fn dispatch_input(&self, actor: Actor, method: &str, params: Value) -> Result<()> {
         self.lock.gate(actor)?;
+        // Scheduled BEFORE the dispatch is awaited: the still is taken
+        // `REPAINT_AFTER_INPUT` from now either way, and an input whose answer
+        // is slow must not cost the human the picture of what it did.
+        self.repaint_after_input();
         if !Self::INPUT_METHODS.contains(&method) {
             return Err(BrowserError::Protocol {
                 method: method.to_string(),
@@ -1692,6 +1715,79 @@ impl AgentContext {
             });
         }
         self.session_call(method, params).await.map(|_| ())
+    }
+
+    /// **Make sure the repaint that follows an input reaches the viewer** — see
+    /// [`REPAINT_AFTER_INPUT`] for why a throttled cast loses it.
+    ///
+    /// Only under a throttled cast (`everyNthFrame > 1`, the drive profile):
+    /// with no cast there is nobody to show, and the watch profile streams every
+    /// frame already. The throttle itself stays — motion still arrives at every
+    /// 4th frame; this adds one still per input burst, fanned out on the cast's
+    /// own channel with the live box as its metadata (like the seed still), so
+    /// every consumer maps it exactly like a frame.
+    fn repaint_after_input(&self) {
+        let tx = match self.screencast.try_lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(sc) if sc.options.every_nth_frame > 1 => sc.tx.clone(),
+                _ => return,
+            },
+            // A start/stop holds the slot for a round trip; the next input
+            // schedules again.
+            Err(_) => return,
+        };
+        let idle = {
+            let mut due = self.repaint_due.lock().unwrap_or_else(|p| p.into_inner());
+            let idle = due.is_none();
+            *due = Some(Instant::now() + REPAINT_AFTER_INPUT);
+            idle
+        };
+        if !idle {
+            // The pending task re-reads the deadline when it wakes.
+            return;
+        }
+        let due = self.repaint_due.clone();
+        let client = self.client.clone();
+        let session = self.cdp_session_id.clone();
+        let metrics = self.metrics.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(at) = *due.lock().unwrap_or_else(|p| p.into_inner()) else {
+                    return;
+                };
+                tokio::time::sleep_until(at).await;
+                let mut slot = due.lock().unwrap_or_else(|p| p.into_inner());
+                if *slot == Some(at) {
+                    *slot = None;
+                    break;
+                }
+            }
+            if tx.receiver_count() == 0 {
+                return;
+            }
+            let shot = client
+                .call_on(
+                    Some(&session),
+                    "Page.captureScreenshot",
+                    json!({ "format": "jpeg", "quality": 70 }),
+                )
+                .await;
+            match shot {
+                Ok(v) => {
+                    let data = v.get("data").and_then(Value::as_str).unwrap_or_default();
+                    if data.is_empty() {
+                        return;
+                    }
+                    let (w, h) = metrics.css();
+                    let _ = tx.send(ScreencastFrame {
+                        data: data.to_string(),
+                        metadata: super::takeover::seed_metadata(w, h),
+                        ack: None,
+                    });
+                }
+                Err(e) => debug!(error = %e, "browser: post-input still"),
+            }
+        });
     }
 
     /// One-shot JPEG of the current page, base64. Needed because a static page
