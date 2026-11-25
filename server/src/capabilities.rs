@@ -53,6 +53,10 @@ pub const REGISTRY: &[Capability] = &[
     Capability { name: "apns", enabled: apns_configured },
     // #267: the chat WS accepts `{"type":"live",...}` and streams live frames.
     Capability { name: "chat_live", enabled: always },
+    // #279: OAuth accepts `return_to=supermux://oauth/return` (the callback lands
+    // back in the native app) and `complete` answers `status:"pending"` while the
+    // callback has not arrived, so the app can poll it.
+    Capability { name: "oauth_app_return", enabled: always },
 ];
 
 /// The capability names this server offers right now, in registry order.
@@ -180,7 +184,10 @@ mod tests {
             .map(|c| c.as_str().unwrap())
             .collect();
         // No APNs key in the test config → no `apns`.
-        assert_eq!(caps, vec!["capabilities", "session_host_id", "create_session_connectors", "chat_live"]);
+        assert_eq!(
+            caps,
+            vec!["capabilities", "session_host_id", "create_session_connectors", "chat_live", "oauth_app_return"]
+        );
         assert_eq!(d["limits"]["upload_json_max_bytes"], 20 * 1024 * 1024);
         assert_eq!(d["limits"]["ws_subscribers_per_session"], 32);
         let _ = std::fs::remove_dir_all(dir);
@@ -212,7 +219,7 @@ mod tests {
         ));
         let caps = enabled(&state);
         assert!(caps.contains(&"apns"), "{caps:?}");
-        assert_eq!(caps.last(), Some(&"chat_live"), "registry order is kept");
+        assert_eq!(caps.last(), Some(&"oauth_app_return"), "registry order is kept");
         let _ = std::fs::remove_dir_all(dir);
     }
 
