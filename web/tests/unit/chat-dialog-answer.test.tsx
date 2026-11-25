@@ -26,6 +26,7 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatConversation } from '../../src/components/chat/conversation'
+import { CC_VERIFIED_CURRENT } from '../../src/components/chat/registry/verified'
 import {
   answerDialog,
   answerNotice,
@@ -428,13 +429,7 @@ describe('the card the surface draws', () => {
       '2.1.232',
       '2.1.233',
       // the three-row Bash shape, re-verified with auto mode off (`cc321/noauto/`)
-      '2.1.321',
-      '2.1.322',
-      '2.1.325',
-      '2.1.326',
-      '2.1.327',
-      '2.1.329',
-      '2.1.331',
+      ...CC_VERIFIED_CURRENT,
     ])
   })
 

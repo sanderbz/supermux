@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { readLens, type DialogSighting } from '../../src/components/chat/peek-lens'
 import {
+  CC_VERIFIED_CURRENT,
   ENTRIES,
   entryById,
   entryFor,
@@ -61,7 +62,7 @@ const pinned = (entry: RegistryEntry) =>
 
 /** The 2.1.32x corpus — provenance in `../fixtures/tui/cc321/README.md`. */
 const cc321Of = (name: string) => readLens(readFileSync(join(DIR, 'cc321', name), 'utf8'))
-const CC32X = ['2.1.321', '2.1.322', '2.1.325', '2.1.326', '2.1.327', '2.1.329', '2.1.331']
+const CC32X: readonly string[] = CC_VERIFIED_CURRENT
 /** An entry pinned ONLY to 2.1.32x describes a shape the older captures do not
  *  have (four Bash rows, the reworded Write/Edit row 2), so its fixture is the
  *  2.1.32x capture of that shape. */

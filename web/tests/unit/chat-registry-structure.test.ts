@@ -14,12 +14,20 @@ import { describe, expect, test } from 'bun:test'
 
 import { answerDialog, sightingKey, type AnswerDeps } from '../../src/components/chat/dialog-answer'
 import { continuityOf, readLens, type DialogContinuity } from '../../src/components/chat/peek-lens'
-import { entryFor, isNewer, STRUCTURE_BASE, type RegistryId } from '../../src/components/chat/registry'
+import {
+  CC_VERIFIED_CURRENT,
+  corpusDirFor,
+  entryFor,
+  isNewer,
+  STRUCTURE_BASE,
+  type RegistryId,
+} from '../../src/components/chat/registry'
 import type { KeyName } from '../../src/lib/session-input/types'
 
 const TUI = join(import.meta.dir, '../fixtures/tui')
-const V331 = join(TUI, 'cc321/v331')
-const NEXT = '2.1.332'
+/** The newest corpus, and a version one patch past it that nobody captured. */
+const V331 = join(TUI, 'cc321', corpusDirFor(STRUCTURE_BASE))
+const NEXT = STRUCTURE_BASE.replace(/\d+$/, (n) => String(Number(n) + 1))
 
 const raw = (dir: string, f: string) => readFileSync(join(dir, f), 'utf8')
 const lens = (dir: string, f: string, c?: DialogContinuity | null) => readLens(raw(dir, f), c)
@@ -27,11 +35,12 @@ const bits = (m: ReturnType<typeof entryFor>) => m.entry?.options.map((o) => (o.
 
 describe('structure — what a newer version gets when the screen is exact', () => {
   test('the base is the newest captured version', () => {
-    expect(STRUCTURE_BASE).toBe('2.1.331')
+    for (const v of CC_VERIFIED_CURRENT) expect(isNewer(v, STRUCTURE_BASE)).toBe(false)
+    expect(CC_VERIFIED_CURRENT).toContain(STRUCTURE_BASE)
     expect(isNewer(NEXT, STRUCTURE_BASE)).toBe(true)
-    expect(isNewer('2.1.330', STRUCTURE_BASE)).toBe(false)
-    expect(isNewer('2.2.0', STRUCTURE_BASE)).toBe(true)
-    expect(isNewer('2.1.331', STRUCTURE_BASE)).toBe(false)
+    expect(isNewer('2.1.330', '2.1.331')).toBe(false)
+    expect(isNewer('2.2.0', '2.1.331')).toBe(true)
+    expect(isNewer('2.1.331', '2.1.331')).toBe(false)
   })
 
   test('Bash, four rows: Yes and No pressable, the grant and auto mode off', () => {

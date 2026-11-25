@@ -18,22 +18,23 @@ import {
   type AnswerOutcome,
 } from '../../src/components/chat/dialog-answer'
 import { continuityOf, readLens, type DialogContinuity } from '../../src/components/chat/peek-lens'
-import { entryFor, pinFor, type RegistryId } from '../../src/components/chat/registry'
+import {
+  CC_VERIFIED_CURRENT,
+  corpusDirFor,
+  entryFor,
+  pinFor,
+  type RegistryId,
+} from '../../src/components/chat/registry'
 import type { KeyName } from '../../src/lib/session-input/types'
 
 const ROOT = join(import.meta.dir, '../fixtures/tui/cc321')
 
-/** version → its corpus directory. 2.1.321 is the root of the corpus. */
-const CORPORA: Record<string, string> = {
-  '2.1.321': ROOT,
-  '2.1.322': join(ROOT, 'v322'),
-  '2.1.325': join(ROOT, 'v325'),
-  '2.1.326': join(ROOT, 'v326'),
-  '2.1.327': join(ROOT, 'v327'),
-  '2.1.329': join(ROOT, 'v329'),
-  '2.1.331': join(ROOT, 'v331'),
-}
-const VERSIONS = Object.keys(CORPORA).filter((v) => existsSync(CORPORA[v]))
+/** version → its corpus directory, for EVERY version the registry lists. No
+ *  existence filter: a listed version without a corpus must fail here. */
+const VERSIONS: readonly string[] = CC_VERIFIED_CURRENT
+const CORPORA: Record<string, string> = Object.fromEntries(
+  VERSIONS.map((v) => [v, join(ROOT, corpusDirFor(v))]),
+)
 
 const lensAt = (dir: string, file: string, continuing?: DialogContinuity | null) =>
   readLens(readFileSync(join(dir, file), 'utf8'), continuing)
@@ -63,6 +64,13 @@ describe('cc321 — the corpus pins what it says', () => {
     expect(VERSIONS).toContain('2.1.321')
     expect(VERSIONS).toContain('2.1.325')
   })
+
+  for (const v of VERSIONS) {
+    test(`${v}: listed, so it has its own corpus`, () => {
+      expect(existsSync(join(CORPORA[v], '00-boot-banner.txt'))).toBe(true)
+      expect(existsSync(join(CORPORA[v], 'live'))).toBe(true)
+    })
+  }
 
   for (const v of VERSIONS) {
     test(`${v}: the boot banner IS the pin`, () => {
