@@ -126,13 +126,21 @@ export interface AnswerOutcome {
 export const DISMISS_ATTEMPTS = 2
 export const DISMISS_DELAY_MS = 300
 
-/** How many times a navigation step re-reads the screen while the caret is still
- *  where it was. Three looks over ~240 ms — the observed repaint lag on a live
- *  2.1.233 question dialog was under one. */
-export const CARET_SETTLE_ATTEMPTS = 3
-/** The gap between those looks. Short, because this sits between a user's tap
- *  and the answer landing; long enough that three of them outlast a repaint. */
+/** The gap between the looks a navigation step takes while the caret is still
+ *  where it was. Short, because this sits between a user's tap and the answer
+ *  landing — a repaint that lands quickly is followed quickly. */
 export const CARET_SETTLE_MS = 120
+/** How LONG a navigation step keeps re-reading the screen while the caret is
+ *  still where it was. The repaint lag on a quiet 2.1.233 test host was under
+ *  one look (~120 ms); on the live Mac mini (2.1.321, 30 sessions) a moved caret
+ *  was still unpainted after three looks (~240 ms), so every registry answer
+ *  that needed an arrow stopped there (2026-11-25). Budget TIME, not looks: a
+ *  fresh peek every `CARET_SETTLE_MS` until the repaint lands or ~2.5 s are out.
+ *  Only "not moved yet" is ever waited for (see the loop); the cost of a caret
+ *  that truly never moves is this wait, then the same refusal as before. */
+export const CARET_SETTLE_BUDGET_MS = 2500
+/** The looks that budget buys (the first look is immediate). */
+export const CARET_SETTLE_ATTEMPTS = Math.floor(CARET_SETTLE_BUDGET_MS / CARET_SETTLE_MS) + 1
 
 export interface AnswerDeps {
   /** Peek NOW. `null` = could not look (never `EMPTY_LENS` — "the screen is
