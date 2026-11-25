@@ -496,15 +496,33 @@ pub(super) fn browser_err(e: BrowserError) -> AppError {
         // Honest expiry: a distinct, actionable 409 the agent can report.
         BrowserError::TabNeedsLogin { .. } => AppError::Conflict(e.to_string()),
         BrowserError::ProfileLocked { .. } => AppError::Conflict(e.to_string()),
+        // **No browser to drive** — not installed, would not start, gone away,
+        // or not answering. That is a fact about this host, not a supermux bug,
+        // so it is a 503 with a stable code and a sentence a person can act on,
+        // never the opaque 500 it used to be (which also hid the reason).
         BrowserError::ChromeMissing(_)
         | BrowserError::Launch(_)
         | BrowserError::Transport(_)
-        | BrowserError::Protocol { .. }
         | BrowserError::Timeout(_)
-        | BrowserError::Evaluate(_)
-        | BrowserError::ShuttingDown => AppError::Internal(anyhow::anyhow!(e.to_string())),
+        | BrowserError::ShuttingDown => AppError::Unavailable {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            code: BROWSER_UNAVAILABLE,
+            message: format!("the browser is not available on this server: {e}"),
+        },
+        // The browser IS there but refused the command or the page threw: a bad
+        // answer from the thing upstream, so 502 — still never a 500.
+        BrowserError::Protocol { .. } | BrowserError::Evaluate(_) => AppError::Unavailable {
+            status: axum::http::StatusCode::BAD_GATEWAY,
+            code: BROWSER_ERROR,
+            message: format!("the browser could not do that: {e}"),
+        },
     }
 }
+
+/// Machine code for "there is no working browser on this host" (503).
+pub(super) const BROWSER_UNAVAILABLE: &str = "browser_unavailable";
+/// Machine code for "the browser answered, but with an error" (502).
+pub(super) const BROWSER_ERROR: &str = "browser_error";
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key)
@@ -1133,9 +1151,10 @@ mod tests {
             .oneshot(tool_request("carol", "tok-carol", "Bash", json!({})))
             .await
             .unwrap();
-        // The name is rejected before the browser is ever asked for a context.
+        // Never dispatched: a 400 for the name, or — on a box with no chrome,
+        // where the context is asked for first — the 503 `browser_unavailable`.
         assert!(
-            resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
+            resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::SERVICE_UNAVAILABLE,
             "unknown tool must not be dispatched: {}",
             resp.status()
         );

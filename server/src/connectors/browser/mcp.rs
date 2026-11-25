@@ -227,6 +227,21 @@ pub async fn seed(state: &AppState) {
     tracing::info!(connector = BROWSER_ID, "seeded the built-in Shared Browser connector");
 }
 
+/// Once per boot, before [`backfill_tab_grants`]: remove grants to bot ids that
+/// do not exist ([`crate::db::browser_tabs::delete_orphan_grants`]). Logs the
+/// counts when it removed anything; best-effort.
+pub async fn sweep_orphan_grants(state: &AppState) {
+    match crate::db::browser_tabs::delete_orphan_grants(&state.pool, BROWSER_ID).await {
+        Ok((0, 0)) => {}
+        Ok((tabs, conns)) => tracing::info!(
+            tab_grants = tabs,
+            connector_grants = conns,
+            "shared-browser: removed grants to bots that do not exist"
+        ),
+        Err(e) => tracing::warn!(error = %e, "shared-browser: orphan-grant sweep failed"),
+    }
+}
+
 /// **Every bot the human has already lent a tab gets the connector grant.**
 ///
 /// `browser::api::lend_the_browser` does this at grant time, but installs

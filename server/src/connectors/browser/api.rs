@@ -783,6 +783,16 @@ async fn grant_handler(
     if grantee.is_empty() {
         return Err(AppError::BadRequest("a grant needs a grantee".into()));
     }
+    // **A grant names a bot that exists.** Checked before anything is written:
+    // the old door accepted any string, stored the tab grant AND minted a
+    // `shared-browser` connector grant for it — so a typo, or a bot created
+    // later under that name, inherited the browser. `*` and `@company:<id>` are
+    // the broadcast keyspace, not bot ids.
+    if !is_sentinel(grantee)
+        && crate::db::sessions::get(&state.pool, grantee).await?.is_none()
+    {
+        return Err(AppError::NotFound(format!("bot '{grantee}' does not exist")));
+    }
     let target_company = db_connectors::company_of_grant_target(&state.pool, grantee).await;
     if row.company_id != target_company {
         return Err(AppError::BadRequest(format!(
@@ -1144,11 +1154,7 @@ mod tests {
 
         // Another company's sentinel, and the ALL-AGENTS sentinel, are refused:
         // `*` resolves to HQ/global, which is not this tab's company.
-        for hostile in [
-            format!("@company:{}", other.id),
-            "*".to_string(),
-            "stranger".to_string(),
-        ] {
+        for hostile in [format!("@company:{}", other.id), "*".to_string()] {
             let (st, v) = send(
                 &state,
                 "POST",
@@ -1174,6 +1180,108 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["revoked"], json!(false), "{v}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A grant names a bot that exists** (supermux-ios finding, 2026-11-25).
+    /// The door used to store a tab grant for ANY string and mint a
+    /// `shared-browser` connector grant for it too, so a typo — or a bot created
+    /// later under that name — held the browser. Now: 404 before a single write,
+    /// enabling or not, while the broadcast sentinels keep working.
+    #[tokio::test]
+    async fn a_grant_to_a_bot_that_does_not_exist_is_refused_and_writes_nothing() {
+        let (state, dir) = test_state().await;
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": "https://a.test/" })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+
+        for body in [json!({ "grantee": "ghost" }), json!({ "grantee": " ghost ", "enabled": false })] {
+            let (st, v) = send(&state, "POST", &format!("/api/browser/tabs/{id}/grant"), body).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+            assert!(v["error"].as_str().unwrap_or_default().contains("bot 'ghost' does not exist"), "{v}");
+        }
+        assert!(db_tabs::grants_for_tab(&state.pool, &id).await.unwrap().is_empty(), "no tab grant may be written");
+        assert!(
+            db_connectors::grants_for_session(&state.pool, "ghost").await.unwrap().is_empty(),
+            "no connector grant may be left behind"
+        );
+
+        // The broadcast keyspace is not a bot id: an HQ tab may still go to `*`.
+        let (st, v) = send(&state, "POST", &format!("/api/browser/tabs/{id}/grant"), json!({ "grantee": "*" })).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The boot sweep removes what the old door already let in: tab grants to a
+    /// bot id with no session, and the `shared-browser` grant that lend implied —
+    /// leaving real bots and the `*` / `@company:<id>` sentinels alone, and
+    /// writing nothing the second time.
+    #[tokio::test]
+    async fn the_boot_sweep_removes_grants_to_bots_that_do_not_exist() {
+        let (state, dir) = test_state().await;
+        super::super::mcp::seed(&state).await;
+        crate::db::sessions::insert_minimal(&state.pool, "real-bot", "/tmp", "claude").await.unwrap();
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": "https://a.test/" })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+        for grantee in ["ghost", "real-bot", "*", "@company:7"] {
+            db_tabs::grant(&state.pool, &id, grantee, true).await.unwrap();
+        }
+        for who in ["ghost", "real-bot"] {
+            db_connectors::ensure_enabled(&state.pool, who, super::super::mcp::BROWSER_ID).await.unwrap();
+        }
+
+        super::super::mcp::sweep_orphan_grants(&state).await;
+
+        let mut left: Vec<String> = db_tabs::grants_for_tab(&state.pool, &id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|g| g.grantee)
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["*", "@company:7", "real-bot"]);
+        assert!(db_connectors::grants_for_session(&state.pool, "ghost").await.unwrap().is_empty());
+        assert_eq!(db_connectors::grants_for_session(&state.pool, "real-bot").await.unwrap().len(), 1);
+        assert_eq!(
+            db_tabs::delete_orphan_grants(&state.pool, super::super::mcp::BROWSER_ID).await.unwrap(),
+            (0, 0),
+            "a clean database writes nothing"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **No browser is a 503 `browser_unavailable`, never a 500** (supermux-ios
+    /// finding, 2026-11-25). With no chrome on the host every page verb used to
+    /// answer an opaque `internal server error`; a client could not tell "this
+    /// server has no browser" from "supermux broke".
+    #[tokio::test]
+    async fn the_page_verbs_without_a_browser_are_503_browser_unavailable() {
+        let (mut state, dir) = test_state().await;
+        state.browser = crate::connectors::browser::BrowserService::new(crate::connectors::browser::BrowserConfig {
+            executable: std::path::PathBuf::from("/nonexistent/chrome"),
+            profile: crate::connectors::browser::launch::ProfileMode::Durable(dir.join("profile")),
+            ..crate::connectors::browser::BrowserConfig::default()
+        });
+        let (_, tab) = send(&state, "POST", "/api/browser/tabs", json!({ "url": "https://a.test/" })).await;
+        let id = tab["id"].as_str().unwrap().to_string();
+        for (verb, body) in [
+            ("open", json!({})),
+            ("navigate", json!({ "url": "https://example.com/" })),
+            ("back", json!({})),
+            ("forward", json!({})),
+            ("reload", json!({})),
+            ("stop", json!({})),
+        ] {
+            let (st, v) = send(&state, "POST", &format!("/api/browser/tabs/{id}/{verb}"), body).await;
+            assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{verb}: {v}");
+            assert_eq!(v["code"], json!("browser_unavailable"), "{verb}: {v}");
+            let detail = v["detail"].as_str().unwrap_or_default();
+            assert!(detail.contains("not available") && detail.contains("/nonexistent/chrome"), "{verb}: {v}");
+        }
+        // Create-and-open keeps its own contract: the row exists, so 200 + open_error.
+        let (st, v) = send(&state, "POST", "/api/browser/tabs?open=true", json!({ "url": "https://a.test/" })).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(v["open_error"].as_str().is_some(), "{v}");
+        assert!(!state.browser.is_running().await);
         std::fs::remove_dir_all(&dir).ok();
     }
 

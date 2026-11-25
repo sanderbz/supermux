@@ -295,6 +295,41 @@ pub async fn delete_for_company(pool: &SqlitePool, company_id: i64) -> sqlx::Res
 // ── per-tab grants ────────────────────────────────────────────────────────────
 
 /// Every grant on a tab (the human's grant sheet).
+/// **Sweep grants that name a bot which does not exist.** Removes every
+/// `browser_tab_grants` row whose grantee is a bot slug (not `*`, not
+/// `@company:<id>`) with no `sessions` row, plus the `shared-browser` connector
+/// grant such a row implied (`connector_id` = `browser_connector`), which is the
+/// one other trace a tab lend leaves. Returns `(tab_grants, connector_grants)`
+/// removed. Idempotent — a clean database writes nothing.
+///
+/// Why it exists: a tab could be lent to an id that was never a bot (the grant
+/// door did not check), and that lend also minted a connector grant. Were a bot
+/// later created under that name, it would inherit both silently. Other
+/// connectors' grants are deliberately NOT touched here: they can carry an
+/// account/secret link, and deleting those is not this sweep's decision.
+pub async fn delete_orphan_grants(pool: &SqlitePool, browser_connector: &str) -> sqlx::Result<(u64, u64)> {
+    let tabs = sqlx::query(
+        "DELETE FROM browser_tab_grants WHERE grantee <> ? AND grantee NOT LIKE ? \
+         AND grantee NOT IN (SELECT name FROM sessions)",
+    )
+    .bind(ALL_AGENTS)
+    .bind(format!("{COMPANY_PREFIX}%"))
+    .execute(pool)
+    .await?
+    .rows_affected();
+    let conns = sqlx::query(
+        "DELETE FROM session_connectors WHERE connector_id = ? AND session_name <> ? \
+         AND session_name NOT LIKE ? AND session_name NOT IN (SELECT name FROM sessions)",
+    )
+    .bind(browser_connector)
+    .bind(ALL_AGENTS)
+    .bind(format!("{COMPANY_PREFIX}%"))
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok((tabs, conns))
+}
+
 pub async fn grants_for_tab(pool: &SqlitePool, tab_id: &str) -> sqlx::Result<Vec<TabGrant>> {
     sqlx::query_as::<_, TabGrant>(
         "SELECT * FROM browser_tab_grants WHERE tab_id = ? ORDER BY grantee ASC",
