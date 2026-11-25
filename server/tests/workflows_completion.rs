@@ -134,9 +134,14 @@ async fn run_row(state: &AppState, run_id: i64) -> db::workflows::WorkflowRun {
 #[tokio::test]
 async fn the_connector_send_is_an_instruction_to_the_bot_and_says_asked_not_sent() {
     let (state, dir) = new_state().await;
-    bot(&state, &dir, "scout", None).await;
-    let account = install_gmail(&state, "scout").await;
-    let (_, run) = finished_run(&state, "WF-ask", "scout", r#"{"kind":"none"}"#).await;
+    // Its OWN bot name: this is the only test here that starts a real pane, and
+    // tests run in parallel on one tmux server. The other tests end with
+    // `stop("scout")`, which finds a live `supermux-scout` pane and types
+    // `exit` into it — killing this test's pane (and, as the last session, the
+    // tmux server) between start and send-keys.
+    bot(&state, &dir, "scout-ask", None).await;
+    let account = install_gmail(&state, "scout-ask").await;
+    let (_, run) = finished_run(&state, "WF-ask", "scout-ask", r#"{"kind":"none"}"#).await;
 
     let outcome = complete::fire(
         &state,
@@ -153,11 +158,11 @@ async fn the_connector_send_is_an_instruction_to_the_bot_and_says_asked_not_sent
     let CompletionOutcome::Asked(text) = outcome else {
         panic!("a reachable connector send is an ASK, got {outcome:?}");
     };
-    assert_eq!(text, "asked scout to send via Gmail");
+    assert_eq!(text, "asked scout-ask to send via Gmail");
     assert!(!text.contains("sent"), "the server cannot send anything itself: {text}");
 
     // What actually left the server is an instruction, in the bot's pane.
-    let sess = db::sessions::get(&state.pool, "scout").await.unwrap().unwrap();
+    let sess = db::sessions::get(&state.pool, "scout-ask").await.unwrap().unwrap();
     assert_eq!(
         sess.last_send_text,
         "Use the Gmail connector (account sander@acme.com) to send the summary of this workflow \
@@ -166,7 +171,7 @@ async fn the_connector_send_is_an_instruction_to_the_bot_and_says_asked_not_sent
     // …and the run is still ok. Nothing failed.
     assert_eq!(run_row(&state, run.id).await.status, "ok");
 
-    let _ = sessions::lifecycle::stop(&state, "scout").await;
+    let _ = sessions::lifecycle::stop(&state, "scout-ask").await;
     state.pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
 }
