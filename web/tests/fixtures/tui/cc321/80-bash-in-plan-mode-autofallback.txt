@@ -1,0 +1,83 @@
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/claude-501/sr1/work
+
+
+❯ /clear                                                                        
+
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/claude-501/sr1/work
+
+
+❯ /clear                                                                        
+
+❯ scenario:edit:1                                                               
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(edit1.txt)
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/claude-501/sr1/work
+
+
+❯ /clear                                                                        
+
+❯ scenario:plan:1                                                               
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+────────────────────────────────────────────────────────────────────────────────
+ Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Plan: Add hello1.txt
+
+⏺ Updated plan
+  ⎿  /plan to preview
+  ⎿  User rejected Claude's plan:
+     ╭────────────────────────────────────────────────────────────────────╮
+     │ Plan: Add hello1.txt                                               │
+     │                                                                    │
+     │ Context                                                            │
+     │                                                                    │
+     │ The user wants a greeting file in the work dir.                    │
+     │                                                                    │
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/claude-501/sr1/work
+
+
+❯ /clear                                                                        
+
+❯ scenario:bashaccess:11                                                        
+
+⏺ Bash(touch /private/tmp/claude-501/sr1/work/bash11.txt)
+  ⎿  Waiting…
+
+⏺ Auto mode can't check actions in this session. Its safety check runs
+  on the server, and your requests go through 127.0.0.1:53533, which
+  doesn't pass it through. Actions that need the check now ask for your
+  approval. To work without these prompts, switch permission mode with
+  Shift+Tab. To use auto mode, ask whoever runs 127.0.0.1:53533 to pass
+  Claude Code's server-side safety check through: https://code.claude.co
+  m/docs/en/permission-modes#server-side-classifier-review
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Create empty file bash11.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch /private/tmp/claude-501/sr1/work/bash11.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Auto mode can't check actions in this session, so this one needs your
+ │ approval
+
+ Do you want to proceed?
+ ❯ No
+   Yes
+
+ Esc to cancel · Tab to amend
+──────────────────────────────────────────────────────────────────── spike-321 ─

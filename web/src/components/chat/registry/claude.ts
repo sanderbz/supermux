@@ -162,16 +162,59 @@ const A4C = '2.1.232'
  */
 const CC233 = '2.1.233'
 
+/**
+ * 2.1.321 and 2.1.325 — the fourth live re-verification, 2026-11-25: the versions
+ * production actually runs (the Mac mini boots 2.1.321, most Strato bots 2.1.325).
+ *
+ * Captured on an isolated test server with each version's REAL Claude Code
+ * binary (2.1.325 fetched from Anthropic's release bucket, its checksum checked
+ * against the release manifest) behind a local fake Anthropic API, with a
+ * throwaway HOME and work dir. The tool calls come from that script, not from a
+ * model; the CLI draws its own dialogs around them exactly as it would around a
+ * model's call. Every family was captured with the caret on each row, then
+ * DRIVEN by `answerDialog()` through `GET /peek` and `POST /keys`. Index,
+ * verdicts and side-effect proofs: `tests/fixtures/tui/cc321/README.md`.
+ *
+ * WHAT CHANGED SINCE 2.1.233
+ *
+ *   Bash        a FOURTH row whenever auto mode is available —
+ *                 `3. Yes, and switch to auto mode · auto mode handles these
+ *                 prompts for you` — so `No` moved from row 3 to row 4. With
+ *                 auto mode disabled (`permissions.disableAutoMode`) the dialog
+ *                 keeps the 2.1.233 three-row shape. Both shapes are captured on
+ *                 both versions, both are entries below, and `entryFor` takes the
+ *                 one whose rows the screen actually shows.
+ *   Write/Edit  row 2 reworded AND widened: `2. Yes, and switch to accept edits
+ *               (auto-approve file edits and common file commands) for this
+ *               session (shift+tab)`; for a file outside the project it appends
+ *               `; Yes, and always allow access to <dir> for this session`.
+ *   Plan        byte-identical rows.
+ *
+ * All seven versions drew the same rows; 2.1.329 and 2.1.331 only add a
+ * `↑ N more lines` scroll hint inside the plan body, above the rows.
+ */
+/** Every 2.1.32x/2.1.33x version a production bot was running on 2026-11-25,
+ *  each captured AND driven on its own (`cc321/v<NNN>/`); 2.1.321 and 2.1.325
+ *  first and in full, the rest by the same script. */
+const CC32X = ['2.1.321', '2.1.322', '2.1.325', '2.1.326', '2.1.327', '2.1.329', '2.1.331'] as const
+
 /** a0 §3, Family 1: "Pinned v2.1.227, Bash variant re-verified structurally
  *  identical v2.1.231." The Bash capture therefore holds on both; the Edit
  *  capture in `tests/fixtures/tui/` is recorded at 2.1.231 and the Write one at
  *  2.1.227, so each variant pins exactly what its own bytes prove. Widening a
- *  list without a new capture is the one edit this file forbids. */
-const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231', A4C, CC233] as const
+ *  list without a new capture is the one edit this file forbids.
+ *
+ *  The 2.1.32x versions are on the Bash list for the THREE-row shape only (auto
+ *  mode disabled: `cc321/noauto/`); their four-row shape is its own entry,
+ *  pinned by `PERMISSION_BASH_AUTO_VERSIONS`. */
+const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231', A4C, CC233, ...CC32X] as const
+const PERMISSION_BASH_AUTO_VERSIONS = CC32X
 const PERMISSION_EDIT_VERSIONS = ['2.1.231', A4C, CC233] as const
 const PERMISSION_WRITE_VERSIONS = ['2.1.227', A4C, CC233] as const
-/** a0 §3, Family 2 (ExitPlanMode): pinned v2.1.231. */
-const PLAN_VERSIONS = ['2.1.231', A4C, CC233] as const
+/** Write and Edit on 2.1.32x: the reworded row 2 (`ACCEPT_EDITS_32X`). */
+const PERMISSION_EDITS_32X_VERSIONS = CC32X
+/** a0 §3, Family 2 (ExitPlanMode): pinned v2.1.231; rows unchanged through 2.1.32x. */
+const PLAN_VERSIONS = ['2.1.231', A4C, CC233, ...CC32X] as const
 
 /** Option 1 is the same row on all three permission variants: exactly `1. Yes`
  *  — which is also the family's own fingerprint anchor (a0 §3), so a sighting
@@ -192,6 +235,34 @@ const PERMISSION_NO: RegistryOption = {
   actOn: true,
   effect: 'deny',
   rowPattern: /^no$/i,
+}
+
+/** 2.1.32x, auto mode available: the row that turns the session over to auto
+ *  mode. Rendered, never pressed — chat does not move a session into a mode
+ *  where Claude approves its own tool calls. */
+const PERMISSION_SWITCH_TO_AUTO: RegistryOption = {
+  label: 'Yes, and switch to auto mode',
+  tuiIndex: 2,
+  actOn: false,
+  disabledReason:
+    'This row runs the command AND switches the whole session to auto mode, where Claude approves its own tool calls from then on. Chat does not switch a session into auto mode for you; choose it in the terminal if you mean it.',
+  effect: 'accept-session',
+  rowPattern: /^yes, and switch to auto mode\b/i,
+}
+
+/** `No` on the four-row Bash dialog: the same row, one place lower. */
+const PERMISSION_NO_ROW4: RegistryOption = { ...PERMISSION_NO, tuiIndex: 3 }
+
+/** Write/Edit row 2 on 2.1.32x. Prefix-anchored because the row grows a
+ *  second grant for a file outside the project (`…; Yes, and always allow
+ *  access to <dir> for this session`); both forms were pressed live and both
+ *  landed a session-scoped grant (`cc321/README.md`). */
+const ACCEPT_EDITS_32X: RegistryOption = {
+  label: 'Yes, and switch to accept edits for this session',
+  tuiIndex: 1,
+  actOn: true,
+  effect: 'accept-session',
+  rowPattern: /^yes, and switch to accept edits\b/i,
 }
 
 /** a0 §3: "Escape cancels → `⎿ Interrupted · What should Claude do instead?` +
@@ -629,39 +700,54 @@ const REFUSAL_FALLBACK_ENTRY: RegistryEntry = {
   },
 }
 
+/** Row 2 of the Bash dialog, on every shape and version this file maps (see
+ *  `BASH_ALWAYS_ALLOW`). Shared so the three-row and four-row entries cannot
+ *  drift apart on the one row neither of them will press. */
+const BASH_ROW_2: RegistryOption = {
+  // The fallback words only — the live row wins in `optionLabel()`, and on
+  // 2.1.233 the live row is the ONLY honest description of this grant (see
+  // `BASH_ALWAYS_ALLOW`). Everything variable stays out of the label: the
+  // directory, the command pattern, the verb.
+  label: 'Yes, and don’t ask again',
+  tuiIndex: 1,
+  // STILL false, and now for a stronger reason than a0's "persistence NOT
+  // FOUND". 2.1.233 was driven end to end (`cc233/README.md` §option-2
+  // semantics) and the answer is that this ONE row does TWO different things:
+  //
+  //   `don’t ask again for: python3 *` → writes `"Bash(python3 *)"` into
+  //      <project>/.claude/settings.local.json `permissions.allow`
+  //      (cc233/10-optsem-cmdrule-98-artifact.txt) — a rule on DISK, in the
+  //      user's repo, that outlives the session and the next `python3` command
+  //      ran with no prompt at all (11-optsem-cmdrule-99-rule-applies.txt);
+  //   `always allow access to <dir>/` → writes NOTHING, and instead flips the
+  //      whole session into `⏵⏵ accept edits on`
+  //      (cc233/12-optsem-access-98-artifact.txt).
+  //
+  // Neither is what this file's vocabulary can say. `accept-session` — the
+  // widest word it has — would render as “Allowed for this session”
+  // (`resolutionLine`), which for the first form is simply false: the grant is
+  // still there tomorrow, in a file the user may well commit. Chat does not get
+  // to describe a persistent grant as a temporary one, so chat does not press
+  // this row.
+  actOn: false,
+  disabledReason:
+    'This row grants more than one thing on 2.1.233 — for a command pattern it writes a permanent rule into this project’s .claude/settings.local.json, for a directory it switches the whole session to auto-accept. Chat has no honest way to say which, so choose it in the terminal if you mean it.',
+  effect: 'accept-session',
+  rowPattern: BASH_ALWAYS_ALLOW,
+}
+
 export const ENTRIES: readonly RegistryEntry[] = [
-  permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, {
-    // The fallback words only — the live row wins in `optionLabel()`, and on
-    // 2.1.233 the live row is the ONLY honest description of this grant (see
-    // `BASH_ALWAYS_ALLOW`). Everything variable stays out of the label: the
-    // directory, the command pattern, the verb.
-    label: 'Yes, and don’t ask again',
-    tuiIndex: 1,
-    // STILL false, and now for a stronger reason than a0's "persistence NOT
-    // FOUND". 2.1.233 was driven end to end (`cc233/README.md` §option-2
-    // semantics) and the answer is that this ONE row does TWO different things:
-    //
-    //   `don’t ask again for: python3 *` → writes `"Bash(python3 *)"` into
-    //      <project>/.claude/settings.local.json `permissions.allow`
-    //      (cc233/10-optsem-cmdrule-98-artifact.txt) — a rule on DISK, in the
-    //      user's repo, that outlives the session and the next `python3` command
-    //      ran with no prompt at all (11-optsem-cmdrule-99-rule-applies.txt);
-    //   `always allow access to <dir>/` → writes NOTHING, and instead flips the
-    //      whole session into `⏵⏵ accept edits on`
-    //      (cc233/12-optsem-access-98-artifact.txt).
-    //
-    // Neither is what this file's vocabulary can say. `accept-session` — the
-    // widest word it has — would render as “Allowed for this session”
-    // (`resolutionLine`), which for the first form is simply false: the grant is
-    // still there tomorrow, in a file the user may well commit. Chat does not get
-    // to describe a persistent grant as a temporary one, so chat does not press
-    // this row.
-    actOn: false,
-    disabledReason:
-      'This row grants more than one thing on 2.1.233 — for a command pattern it writes a permanent rule into this project’s .claude/settings.local.json, for a directory it switches the whole session to auto-accept. Chat has no honest way to say which, so choose it in the terminal if you mean it.',
-    effect: 'accept-session',
-    rowPattern: BASH_ALWAYS_ALLOW,
-  }),
+  permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, BASH_ROW_2),
+
+  // 2.1.32x with auto mode available: four rows, `No` on row 4 (see `CC32X`).
+  {
+    id: 'permission.bash',
+    family: 'permission',
+    variant: 'bash',
+    verifiedVersions: PERMISSION_BASH_AUTO_VERSIONS,
+    options: [PERMISSION_YES, BASH_ROW_2, PERMISSION_SWITCH_TO_AUTO, PERMISSION_NO_ROW4],
+    escape: PERMISSION_ESCAPE,
+  },
 
   permissionEntry('permission.edit', 'edit', PERMISSION_EDIT_VERSIONS, {
     // Live row: `2. Yes, allow all edits during this session` + the folded
@@ -686,6 +772,9 @@ export const ENTRIES: readonly RegistryEntry[] = [
     effect: 'accept-session',
     rowPattern: /^yes, allow all edits during this session\b/i,
   }),
+
+  permissionEntry('permission.edit', 'edit', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X),
+  permissionEntry('permission.write', 'write', PERMISSION_EDITS_32X_VERSIONS, ACCEPT_EDITS_32X),
 
   {
     id: 'plan.approval',
@@ -758,12 +847,23 @@ export const ENTRIES: readonly RegistryEntry[] = [
  *  `question` is the one family whose entry is DERIVED rather than looked up —
  *  its rows are the model's, not Claude Code's (see `questionEntry`). */
 export function entryForSighting(sighting: DialogSighting): RegistryEntry | null {
-  if (sighting.family === 'question') return questionEntry(sighting)
-  return (
-    ENTRIES.find(
-      (e) => e.family === sighting.family && e.variant === sighting.variant,
-    ) ?? null
-  )
+  return entriesForSighting(sighting)[0] ?? null
+}
+
+/** Every entry that could cover this sighting, in file order.
+ *
+ *  Usually one. More than one when a Claude Code version changed a dialog's
+ *  SHAPE rather than its words — 2.1.32x's Bash dialog has four rows with auto
+ *  mode available and three without — so each shape is its own entry with its
+ *  own capture and its own pin, and `entryFor` (`./index.ts`) picks the one the
+ *  pin AND the rows on screen agree with. Nothing here is a looser match: a
+ *  sighting no candidate fits still degrades exactly as before. */
+export function entriesForSighting(sighting: DialogSighting): readonly RegistryEntry[] {
+  if (sighting.family === 'question') {
+    const q = questionEntry(sighting)
+    return q ? [q] : []
+  }
+  return ENTRIES.filter((e) => e.family === sighting.family && e.variant === sighting.variant)
 }
 
 export function entryById(id: RegistryId): RegistryEntry | null {

@@ -1,0 +1,225 @@
+{
+ "case": "case1-bash-deny",
+ "session": "spike-325",
+ "at": "2026-11-25T17:07:39.567Z",
+ "scenario": "scenario:bashaccess:11",
+ "livePin": "2.1.325",
+ "pinUsed": "2.1.325",
+ "pinOverridden": false,
+ "entryId": "permission.bash",
+ "target": 3,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Down",
+   "Down",
+   "Down",
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "deny"
+ },
+ "looks": [
+  {
+   "tag": "case1-bash-deny-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-04-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-05-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-06-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 2,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-07-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 2,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-08-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 3,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 3,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case1-bash-deny-09-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr5/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}

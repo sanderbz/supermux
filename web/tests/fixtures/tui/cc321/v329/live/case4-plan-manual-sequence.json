@@ -1,0 +1,109 @@
+{
+ "case": "case4-plan-manual",
+ "session": "spike-cca",
+ "at": "2026-11-25T17:30:14.263Z",
+ "scenario": "scenario:plan:14",
+ "livePin": "2.1.329",
+ "pinUsed": "2.1.329",
+ "pinOverridden": false,
+ "entryId": "plan.approval",
+ "target": 1,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Down",
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "accept"
+ },
+ "looks": [
+  {
+   "tag": "case4-plan-manual-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   },
+   "returned": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   }
+  },
+  {
+   "tag": "case4-plan-manual-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   },
+   "returned": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   }
+  },
+  {
+   "tag": "case4-plan-manual-03-continuity",
+   "anchor": {
+    "family": "plan",
+    "question": "Would you like to proceed?",
+    "options": [
+     "Yes, and use auto mode",
+     "Yes, manually approve edits",
+     "Tell Claude what to change shift+tab to approve with this feedback"
+    ]
+   },
+   "strict": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   },
+   "returned": {
+    "family": "plan",
+    "caret": 0,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   }
+  },
+  {
+   "tag": "case4-plan-manual-04-continuity",
+   "anchor": {
+    "family": "plan",
+    "question": "Would you like to proceed?",
+    "options": [
+     "Yes, and use auto mode",
+     "Yes, manually approve edits",
+     "Tell Claude what to change shift+tab to approve with this feedback"
+    ]
+   },
+   "strict": {
+    "family": "plan",
+    "caret": 1,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   },
+   "returned": {
+    "family": "plan",
+    "caret": 1,
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+   }
+  },
+  {
+   "tag": "case4-plan-manual-05-continuity",
+   "anchor": {
+    "family": "plan",
+    "question": "Would you like to proceed?",
+    "options": [
+     "Yes, and use auto mode",
+     "Yes, manually approve edits",
+     "Tell Claude what to change shift+tab to approve with this feedback"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}

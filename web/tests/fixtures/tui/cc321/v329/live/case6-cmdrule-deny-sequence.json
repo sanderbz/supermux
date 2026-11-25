@@ -1,0 +1,225 @@
+{
+ "case": "case6-cmdrule-deny",
+ "session": "spike-cca",
+ "at": "2026-11-25T17:30:36.649Z",
+ "scenario": "scenario:bashcmd:16",
+ "livePin": "2.1.329",
+ "pinUsed": "2.1.329",
+ "pinOverridden": false,
+ "entryId": "permission.bash",
+ "target": 3,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Down",
+   "Down",
+   "Down",
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "deny"
+ },
+ "looks": [
+  {
+   "tag": "case6-cmdrule-deny-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-04-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-05-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-06-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 2,
+    "key": "unknown/-/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-07-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 2,
+    "key": "unknown/-/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-08-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 3,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 3,
+    "key": "permission/bash/Yes|Yes, and don’t ask again for: python3 *|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case6-cmdrule-deny-09-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and don’t ask again for: python3 *",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}
