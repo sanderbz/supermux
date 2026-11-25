@@ -248,11 +248,9 @@ async fn create_handler(
         if existing.deleted_at.is_none() {
             return Err(AppError::Conflict(format!("host '{name}' already exists")));
         }
-        // A tombstone with the same name is genuinely a conflict too — the row
-        // still occupies the UNIQUE slot.
-        return Err(AppError::Conflict(format!(
-            "host name '{name}' is taken by a soft-deleted row; choose a different name"
-        )));
+        // A removed host's name is free again. Tombstones written before
+        // `soft_delete` renamed them still sit on it: rename that one now.
+        hosts::release_tombstoned_name(&state.pool, name).await?;
     }
 
     let created = match hosts::create(&state.pool, name, ssh_target, ssh_key_path).await {

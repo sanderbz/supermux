@@ -8,8 +8,9 @@
 //!   * `create` + `get_by_name` round-trip.
 //!   * Duplicate `name` violates `UNIQUE` and surfaces as an `Err`.
 //!   * `update_status(Reachable)` bumps `last_seen`; other transitions don't.
-//!   * `soft_delete` tombstones the row: `list()` filters it out, but
-//!     `get_by_name()` (the historical-resolution path) still returns it.
+//!   * `soft_delete` tombstones the row: `list()` filters it out, `get(id)`
+//!     (the historical-resolution path) still returns it, and the name is
+//!     given back so the same name can be added again.
 //!   * `host_id` defaults to `NULL` on every session row that predates the
 //!     `host_id` migration (the non-empty-existing-db migration regression).
 
@@ -155,7 +156,7 @@ async fn update_status_reachable_bumps_last_seen() {
 }
 
 #[tokio::test]
-async fn soft_delete_filters_list_but_get_by_name_still_resolves() {
+async fn soft_delete_filters_list_keeps_the_row_and_frees_the_name() {
     let (pool, dir) = test_pool().await;
     let h = hosts::create(&pool, "tombstone", "u@h", None)
         .await
@@ -171,20 +172,46 @@ async fn soft_delete_filters_list_but_get_by_name_still_resolves() {
         "soft-deleted host must not appear in list()"
     );
 
-    // …but get_by_name still resolves: historical sessions referencing this
-    // host_id need their label/ssh_target back.
-    let tomb = hosts::get_by_name(&pool, "tombstone")
-        .await
-        .unwrap()
-        .expect("get_by_name keeps tombstones");
-    assert!(
-        tomb.deleted_at.is_some(),
-        "tombstone carries deleted_at != NULL"
-    );
+    // …but the row survives: historical sessions resolve it by host_id and
+    // get its (renamed, still recognisable) label and ssh_target back.
+    let tomb = hosts::get(&pool, h.id).await.unwrap().unwrap();
+    assert!(tomb.deleted_at.is_some(), "tombstone carries deleted_at != NULL");
+    assert_eq!(tomb.name, hosts::tombstone_name("tombstone", h.id));
+    assert_eq!(tomb.ssh_target, "u@h");
 
-    // Same via get(id).
-    let tomb2 = hosts::get(&pool, h.id).await.unwrap().unwrap();
-    assert!(tomb2.deleted_at.is_some());
+    // The name is free: nothing answers to it, and it can be created again.
+    assert!(hosts::get_by_name(&pool, "tombstone").await.unwrap().is_none());
+    let again = hosts::create(&pool, "tombstone", "u@h2", None).await.unwrap();
+    assert_ne!(again.id, h.id);
+    // Deleting the second one too does not collide with the first tombstone.
+    hosts::soft_delete(&pool, again.id).await.unwrap();
+    hosts::soft_delete(&pool, again.id).await.unwrap(); // idempotent: no double suffix
+    let tomb_b = hosts::get(&pool, again.id).await.unwrap().unwrap();
+    assert_eq!(tomb_b.name, hosts::tombstone_name("tombstone", again.id));
+
+    pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tombstone written BEFORE `soft_delete` renamed them still holds its name;
+/// `release_tombstoned_name` frees it and never touches a live row.
+#[tokio::test]
+async fn release_tombstoned_name_frees_only_old_tombstones() {
+    let (pool, dir) = test_pool().await;
+    // An old-style tombstone: deleted_at stamped, name kept.
+    let old = hosts::create(&pool, "pi", "u@pi", None).await.unwrap();
+    sqlx::query("UPDATE hosts SET deleted_at = 1 WHERE id = ?")
+        .bind(old.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let live = hosts::create(&pool, "live", "u@live", None).await.unwrap();
+
+    assert_eq!(hosts::release_tombstoned_name(&pool, "live").await.unwrap(), 0, "live rows are never renamed");
+    assert_eq!(hosts::get(&pool, live.id).await.unwrap().unwrap().name, "live");
+    assert_eq!(hosts::release_tombstoned_name(&pool, "pi").await.unwrap(), 1);
+    assert_eq!(hosts::get(&pool, old.id).await.unwrap().unwrap().name, hosts::tombstone_name("pi", old.id));
+    hosts::create(&pool, "pi", "u@pi", None).await.expect("the name is free again");
 
     pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
