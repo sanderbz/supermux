@@ -59,7 +59,9 @@ const TEXT_LIMIT: usize = 1024 * 1024; // 1 MB (logs and configs are the 200 KB 
 const CSV_LIMIT: usize = 5 * 1024 * 1024; // 5 MB
 const IMAGE_MAX: u64 = 5 * 1024 * 1024; // 5 MB
 const PDF_MAX: u64 = 10 * 1024 * 1024; // 10 MB
-const UPLOAD_MAX: usize = 20 * 1024 * 1024; // base64 single-file cap
+/// Base64 single-file cap for `POST /api/upload` (decoded bytes). `pub(crate)`
+/// so `GET /api/capabilities` reports the real value instead of a copy.
+pub(crate) const UPLOAD_MAX: usize = 20 * 1024 * 1024;
 const FS_UPLOAD_MAX: u64 = 200 * 1024 * 1024; // multipart cap
 
 const IMAGE_EXTS: &[&str] = &[

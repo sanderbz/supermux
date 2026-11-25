@@ -273,6 +273,10 @@ fn protected_router(state: AppState) -> Router {
         // gate as the rest of /api — auto-update is admin-equivalent. P3d
         // owner/admin-only.
         .merge(updates::router_for(state.clone()).route_layer(from_fn(require_admin_mw)))
+        // `GET /api/capabilities` — build identity + feature list + limits. Owner
+        // AND members (it is on the member allowlist): a client gates features on
+        // it before it knows which role it has. No I/O, nothing company-specific.
+        .merge(crate::capabilities::router_for(state.clone()))
         // ── P3d DENY-BY-DEFAULT MEMBER BACKSTOP ──
         // The class fix: a route-layer over EVERY merged protected route, INNER to
         // the `auth_context_middleware` below (so `AuthContext` is already stamped
