@@ -1,0 +1,14 @@
+operator@supermux-host-01 work % source ~/.zprofile 2>/dev/null; source ~/.bash_
+profile 2>/dev/null; source ~/.profile 2>/dev/null; export EDITOR='/private/tmp/
+claude-501/sr6/d/bin/supermux-edit' VISUAL='/private/tmp/claude-501/sr6/d/bin/su
+permux-edit'; export PATH='/private/tmp/claude-501/sr6/d/bin':"$PATH":"$HOME/.lo
+cal/bin"; claude --name spike-cc
+ ▐▛███▛█   Claude Code v2.1.326
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /private/tmp/claude-501/sr6/work
+
+
+───────────────────────────────────────────────────────────────────── spike-cc ─
+❯  
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts

@@ -25,11 +25,12 @@
 import type { AttentionCause } from '../attention'
 import type { DialogSighting, PeekLens } from '../peek-lens'
 
-import { entryForSighting, type RegistryEntry, type RegistryOption } from './claude'
+import { entriesForSighting, type RegistryEntry, type RegistryOption } from './claude'
 
 export {
   ENTRIES,
   entryById,
+  entriesForSighting,
   entryForSighting,
   type OptionEffect,
   type RegistryEntry,
@@ -97,19 +98,27 @@ export function entryFor(
   const sighting = lens.dialog
   if (!sighting) return NO_MATCH
 
-  const entry = entryForSighting(sighting)
-  if (!entry) return { entry: null, degraded: true, attention: 'dialog-unmapped' }
+  const candidates = entriesForSighting(sighting)
+  if (candidates.length === 0) return { entry: null, degraded: true, attention: 'dialog-unmapped' }
 
   // A gate that draws BEFORE the boot banner has no version to be pinned
   // against — see `RegistryEntry.pinExempt`, which is claimed by exactly the
   // entries whose every row is pinned to an exact sentence instead.
+  const pinned = candidates.filter(
+    (e) => e.pinExempt || (!!pinnedVersion && e.verifiedVersions.includes(pinnedVersion)),
+  )
+  // Several pinned candidates = one version, several captured SHAPES (see
+  // `entriesForSighting`): take the one whose rows the screen shows. None
+  // fitting falls through to `shapeHolds` below on the first, which refuses.
+  const entry = pinned.find((e) => shapeHolds(e, sighting)) ?? pinned[0] ?? candidates[0]
   if (!entry.pinExempt && (!pinnedVersion || !entry.verifiedVersions.includes(pinnedVersion))) {
+    const checked = [...new Set(candidates.flatMap((e) => e.verifiedVersions))].join(', ')
     return {
       entry: disabled(
         entry,
         pinnedVersion
-          ? `This session booted Claude Code ${pinnedVersion}; these options were only checked against ${entry.verifiedVersions.join(', ')}.`
-          : `Chat could not read this session’s Claude Code version, and these options were only checked against ${entry.verifiedVersions.join(', ')}.`,
+          ? `This session booted Claude Code ${pinnedVersion}; these options were only checked against ${checked}.`
+          : `Chat could not read this session’s Claude Code version, and these options were only checked against ${checked}.`,
       ),
       degraded: true,
       attention: 'registry-version-mismatch',

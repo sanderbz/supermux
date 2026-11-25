@@ -1,0 +1,119 @@
+{
+ "case": "case3-write-option2",
+ "session": "spike-325",
+ "at": "2026-11-25T17:08:01.835Z",
+ "scenario": "scenario:write:13",
+ "livePin": "2.1.325",
+ "pinUsed": "2.1.325",
+ "pinOverridden": false,
+ "entryId": "permission.write",
+ "target": 1,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Down",
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "accept-session"
+ },
+ "looks": [
+  {
+   "tag": "case3-write-option2-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case3-write-option2-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case3-write-option2-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "write",
+    "question": "Do you want to create write13.txt?",
+    "options": [
+     "Yes",
+     "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case3-write-option2-04-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "write",
+    "question": "Do you want to create write13.txt?",
+    "options": [
+     "Yes",
+     "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 1,
+    "key": "permission/write/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case3-write-option2-05-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "write",
+    "question": "Do you want to create write13.txt?",
+    "options": [
+     "Yes",
+     "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}

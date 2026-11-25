@@ -1,0 +1,169 @@
+{
+ "case": "case7-noauto-bash-deny",
+ "session": "spike-ccb",
+ "at": "2026-11-25T17:26:00.242Z",
+ "scenario": "scenario:bashaccess:17",
+ "livePin": "2.1.326",
+ "pinUsed": "2.1.326",
+ "pinOverridden": false,
+ "entryId": "permission.bash",
+ "target": 2,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Down",
+   "Down",
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "deny"
+ },
+ "looks": [
+  {
+   "tag": "case7-noauto-bash-deny-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-04-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-05-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "unknown",
+    "caret": 1,
+    "key": "unknown/-/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 1,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-06-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "No"
+    ]
+   },
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 2,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|No"
+   }
+  },
+  {
+   "tag": "case7-noauto-bash-deny-07-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}
