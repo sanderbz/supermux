@@ -292,6 +292,20 @@ describe('the native card outranks every key-pressing card', () => {
     expect(out).toContain('chat-permission-card')
   })
 
+  // Found live on the Mac mini (2026-11-25, Claude Code 2.1.321) and reproduced
+  // on an isolated server: an `allow` on an ExitPlanMode ask clears the card but
+  // Claude keeps its own plan dialog open and records no decision. A card whose
+  // button does nothing must not be drawn; the plan is answered by the
+  // terminal-dialog card (registry `plan.approval`) instead.
+  test('an ExitPlanMode permission ask draws no hook card; the plan dialog card answers it', () => {
+    const plan = ask({ detail: { tool: 'ExitPlanMode' }, input: { tool_input: { plan: '1. Do it' } } })
+    expect(drawable(view(plan))).toBe(false)
+    // The same kind of ask for any other tool is still drawn: the hook answer lands there.
+    expect(drawable(view(ask({ detail: { tool: 'Bash' } })))).toBe(true)
+    const out = html(<LiveLayer name="api-worker" session={session()} turnStart={null} nativeAsk={view(plan)} />)
+    expect(out).not.toContain('chat-ask-permission')
+  })
+
   test('a form ask draws a live form', () => {
     const a = ask({
       id: 'ask_f',
