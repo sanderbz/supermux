@@ -277,6 +277,10 @@ async fn main() -> anyhow::Result<()> {
     // now; this is for the rows written before it did, whose bots are the ones
     // sitting in the broken state (a tab in the DB, no browser tools in their
     // launch). Idempotent — a steady-state boot writes nothing.
+    //
+    // The orphan sweep runs FIRST: a tab lent to an id that is not a bot must not
+    // be backfilled into a connector grant for that id.
+    connectors::browser::mcp::sweep_orphan_grants(&state).await;
     connectors::browser::mcp::backfill_tab_grants(&state).await;
     // The built-in Company Group Chat connector card (kind `builtin_groupchat`).
     // Seeding the row grants nothing: a bot reaches the channel only through its
