@@ -52,7 +52,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use super::cdp::{CdpClient, CdpEvent};
+use super::cdp::{CdpClient, CdpEvent, DEFAULT_CALL_TIMEOUT};
 use super::error::{BrowserError, Result};
 use super::lock::{Actor, DriveLock, DriveMode};
 
@@ -524,6 +524,17 @@ pub struct PageDialog {
     pub default_prompt: String,
 }
 
+impl PageDialog {
+    /// From a `Page.javascriptDialogOpening` payload.
+    fn from_cdp(params: &Value) -> Self {
+        Self {
+            kind: str_of(params.get("type")),
+            message: str_of(params.get("message")),
+            default_prompt: str_of(params.get("defaultPrompt")),
+        }
+    }
+}
+
 /// **What the address bar shows** — the live nav state of one page.
 ///
 /// Produced by [`AgentContext::watch_nav`] and consumed twice: pushed to the
@@ -648,26 +659,41 @@ fn main_frame_committed(params: &Value) -> bool {
     }
 }
 
+/// One of the watcher's settle reads on a flat-mode session, or `None`.
+///
+/// Bounded by [`NAV_READ_BUDGET`], never sent while a JS dialog is open, and
+/// given up the moment one opens: a dialog raised mid-settle used to hold the
+/// pump in its reads — and so hold back the very `nav_state` announcing the
+/// dialog — for up to a budget per read.
+async fn read_on(client: &CdpClient, session: &str, method: &str, params: Value) -> Option<Value> {
+    if client.dialog(session).is_some() {
+        return None;
+    }
+    client
+        .call_unless_dialog(session, method, params, NAV_READ_BUDGET)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// `Runtime.evaluate` on a flat-mode session, value or [`Value::Null`].
 ///
 /// A free function because the pump owns no `&self`: it holds the client and the
 /// session id directly so it can outlive nothing and borrow nothing.
 async fn eval_on(client: &CdpClient, session: &str, expression: &str) -> Value {
-    client
-        .call_with_timeout(
-            Some(session),
-            "Runtime.evaluate",
-            json!({
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": true,
-            }),
-            NAV_READ_BUDGET,
-        )
-        .await
-        .ok()
-        .and_then(|v| v.get("result").and_then(|r| r.get("value")).cloned())
-        .unwrap_or(Value::Null)
+    read_on(
+        client,
+        session,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": true,
+        }),
+    )
+    .await
+    .and_then(|v| v.get("result").and_then(|r| r.get("value")).cloned())
+    .unwrap_or(Value::Null)
 }
 
 /// The `Emulation.setDeviceMetricsOverride` payload — **one builder**, shared by
@@ -1055,6 +1081,41 @@ impl AgentContext {
             .await
     }
 
+    /// Is a JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`) open on
+    /// this page right now? Free: the CDP reader keeps it per session.
+    pub fn dialog_open(&self) -> bool {
+        self.client.dialog(&self.cdp_session_id).is_some()
+    }
+
+    /// **A read that needs the renderer** (`Runtime.evaluate`,
+    /// `Page.captureScreenshot`). A blocked renderer answers it only once the
+    /// dialog is closed, so it is refused with [`BrowserError::DialogOpen`] while
+    /// one is open — never sent, so a parked read cannot run late — and given up
+    /// on the moment one opens mid-call, instead of waiting out the 30 s CDP
+    /// deadline.
+    async fn render_read(&self, method: &str, params: Value) -> Result<Value> {
+        if self.dialog_open() {
+            return Err(BrowserError::DialogOpen);
+        }
+        self.client
+            .call_unless_dialog(&self.cdp_session_id, method, params, DEFAULT_CALL_TIMEOUT)
+            .await?
+            .ok_or(BrowserError::DialogOpen)
+    }
+
+    /// **A write that must not wait behind a dialog** — an input event or a
+    /// viewport override. Sent either way; while a dialog is open Chrome parks it
+    /// and applies it once the dialog is answered, so this returns as soon as a
+    /// dialog is (or becomes) open. That is the click whose handler calls
+    /// `alert()`: its `mouseReleased` is only answered when the alert closes, and
+    /// awaiting it froze the takeover socket for 30 s.
+    async fn page_write(&self, method: &str, params: Value) -> Result<()> {
+        self.client
+            .call_unless_dialog(&self.cdp_session_id, method, params, DEFAULT_CALL_TIMEOUT)
+            .await
+            .map(|_| ())
+    }
+
     // ── navigation + reading (reads are ungated) ────────────────────────────
 
     /// Navigate and wait (bounded) for the load event.
@@ -1205,7 +1266,7 @@ impl AgentContext {
     /// takeover UI needs to read page state while the human drives.
     pub async fn evaluate(&self, expression: &str) -> Result<Value> {
         let out = self
-            .session_call(
+            .render_read(
                 "Runtime.evaluate",
                 json!({
                     "expression": expression,
@@ -1268,7 +1329,7 @@ impl AgentContext {
     pub async fn click(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
         for kind in ["mousePressed", "mouseReleased"] {
-            self.session_call(
+            self.page_write(
                 "Input.dispatchMouseEvent",
                 json!({
                     "type": kind, "x": x, "y": y,
@@ -1283,18 +1344,17 @@ impl AgentContext {
     /// Move the pointer (hover) without clicking.
     pub async fn move_mouse(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchMouseEvent",
             json!({ "type": "mouseMoved", "x": x, "y": y, "buttons": 0 }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Scroll by a wheel delta at a point.
     pub async fn scroll(&self, actor: Actor, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchMouseEvent",
             json!({
                 "type": "mouseWheel", "x": x, "y": y,
@@ -1302,16 +1362,14 @@ impl AgentContext {
             }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Insert text as if pasted / committed by an IME. Handles non-ASCII and
     /// emoji, which per-key events do not.
     pub async fn insert_text(&self, actor: Actor, text: &str) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call("Input.insertText", json!({ "text": text }))
+        self.page_write("Input.insertText", json!({ "text": text }))
             .await
-            .map(|_| ())
     }
 
     /// Press and release a named key with the full CDP payload.
@@ -1335,7 +1393,7 @@ impl AgentContext {
                     params["unmodifiedText"] = json!(text);
                 }
             }
-            self.session_call("Input.dispatchKeyEvent", params).await?;
+            self.page_write("Input.dispatchKeyEvent", params).await?;
         }
         Ok(())
     }
@@ -1345,7 +1403,7 @@ impl AgentContext {
     /// binds mouse handlers — Chrome then synthesises the compatibility click.
     pub async fn tap(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchTouchEvent",
             json!({
                 "type": "touchStart",
@@ -1353,12 +1411,11 @@ impl AgentContext {
             }),
         )
         .await?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchTouchEvent",
             json!({ "type": "touchEnd", "touchPoints": [] }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Toggle touch emulation for this target.
@@ -1419,7 +1476,10 @@ impl AgentContext {
         } else {
             1.0
         };
-        self.session_call(
+        // `page_write`: behind an open dialog this is parked, not refused, and
+        // chrome lays the page out at it once the dialog is answered — so the
+        // box below is still the truth.
+        self.page_write(
             "Emulation.setDeviceMetricsOverride",
             device_metrics_params(width, height, scale, mobile),
         )
@@ -1470,7 +1530,7 @@ impl AgentContext {
             return Ok(());
         };
         let ua = if mobile { id.mobile_user_agent() } else { id.user_agent() };
-        self.session_call(
+        self.page_write(
             "Emulation.setUserAgentOverride",
             json!({
                 "userAgent": ua,
@@ -1514,11 +1574,10 @@ impl AgentContext {
     /// Ungated: this is a restoration of an override an actor already passed
     /// the lock to set, not a new claim on the page.
     pub async fn repair_capture(&self) -> Result<()> {
-        self.session_call("Emulation.clearDeviceMetricsOverride", json!({}))
+        self.page_write("Emulation.clearDeviceMetricsOverride", json!({}))
             .await?;
-        self.session_call("Emulation.setDeviceMetricsOverride", self.metrics.cdp_params())
-            .await?;
-        Ok(())
+        self.page_write("Emulation.setDeviceMetricsOverride", self.metrics.cdp_params())
+            .await
     }
 
     // ── screencast (phase 2 consumes this) ──────────────────────────────────
@@ -1691,7 +1750,7 @@ impl AgentContext {
                 message: "not an allowed input method".to_string(),
             });
         }
-        self.session_call(method, params).await.map(|_| ())
+        self.page_write(method, params).await
     }
 
     /// One-shot JPEG of the current page, base64. Needed because a static page
@@ -1699,7 +1758,7 @@ impl AgentContext {
     /// would otherwise see a blank canvas.
     pub async fn screenshot(&self) -> Result<String> {
         let out = self
-            .session_call(
+            .render_read(
                 "Page.captureScreenshot",
                 json!({ "format": "jpeg", "quality": 70 }),
             )
@@ -1793,6 +1852,7 @@ impl AgentContext {
         {
             debug!(session = %self.session, error = %e, "browser: closeTarget");
         }
+        self.client.forget_dialog(&self.cdp_session_id);
         // **Only a scratch context is disposed.** Disposing the DEFAULT context
         // would be a protocol error at best and would nuke every other workspace
         // tab — and the profile's cookies with them — at worst (v1 §2.3 R5). A
@@ -1848,6 +1908,18 @@ async fn nav_pump(
     // `Some(deadline)` ⇒ a settle is pending. Seeded to "now" so the first thing
     // the pump does is read the page it attached to.
     let mut settle_at: Option<Instant> = Some(Instant::now());
+    // A pump started on a page that is ALREADY blocked (a takeover attaching to
+    // a scratch context whose agent clicked an `alert()` button) never sees the
+    // opening event, and chrome does not repeat it. The CDP reader kept it.
+    if let Some(params) = client.dialog(&want) {
+        state.dialog = Some(PageDialog::from_cdp(&params));
+        // The opening event names the page it blocks — the only url a blocked
+        // renderer will give us until the dialog is answered.
+        state.url = str_of(params.get("url"));
+        state.secure = secure_scheme(&state.url);
+        settle_at = None;
+        publish_nav(&tx, &state);
+    }
 
     loop {
         let settle = async {
@@ -1924,11 +1996,7 @@ async fn nav_pump(
                         settle_at = Some(Instant::now() + NAV_SETTLE);
                     }
                     "Page.javascriptDialogOpening" if ours => {
-                        state.dialog = Some(PageDialog {
-                            kind: str_of(ev.params.get("type")),
-                            message: str_of(ev.params.get("message")),
-                            default_prompt: str_of(ev.params.get("defaultPrompt")),
-                        });
+                        state.dialog = Some(PageDialog::from_cdp(&ev.params));
                         // Publish IMMEDIATELY and cancel any pending settle: the
                         // renderer is blocked from this instant, and this frame
                         // is the human's only way to learn it.
@@ -1968,13 +2036,8 @@ async fn nav_pump(
                 settle_at = None;
                 // See the doc comment: a blocked renderer answers no reads.
                 if state.dialog.is_none() {
-                    let read = client.call_with_timeout(
-                        Some(&want),
-                        "Page.getNavigationHistory",
-                        json!({}),
-                        NAV_READ_BUDGET,
-                    );
-                    if let Ok(v) = read.await {
+                    let read = read_on(&client, &want, "Page.getNavigationHistory", json!({}));
+                    if let Some(v) = read.await {
                         let history = NavHistory::from_cdp(&v);
                         state.can_go_back = history.can_go_back();
                         state.can_go_forward = history.can_go_forward();
@@ -1990,13 +2053,8 @@ async fn nav_pump(
                     if main_frame.is_none() {
                         // Seed the main frame id so a subframe cannot spin the
                         // spinner for the rest of this page's life.
-                        let read = client.call_with_timeout(
-                            Some(&want),
-                            "Page.getFrameTree",
-                            json!({}),
-                            NAV_READ_BUDGET,
-                        );
-                        if let Ok(v) = read.await {
+                        let read = read_on(&client, &want, "Page.getFrameTree", json!({}));
+                        if let Some(v) = read.await {
                             main_frame = v
                                 .pointer("/frameTree/frame/id")
                                 .and_then(Value::as_str)

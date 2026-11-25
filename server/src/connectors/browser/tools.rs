@@ -495,6 +495,9 @@ pub(super) fn browser_err(e: BrowserError) -> AppError {
         BrowserError::OriginNotAllowed { .. } => AppError::Forbidden(e.to_string()),
         // Honest expiry: a distinct, actionable 409 the agent can report.
         BrowserError::TabNeedsLogin { .. } => AppError::Conflict(e.to_string()),
+        // A state of the page, not a broken browser: the human answers it in
+        // the tab, then the same call works.
+        BrowserError::DialogOpen => AppError::Conflict(e.to_string()),
         BrowserError::ProfileLocked { .. } => AppError::Conflict(e.to_string()),
         // **No browser to drive** — not installed, would not start, gone away,
         // or not answering. That is a fact about this host, not a supermux bug,

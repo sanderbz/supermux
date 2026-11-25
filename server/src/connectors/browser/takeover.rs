@@ -1663,6 +1663,16 @@ fn spawn_nav(ctx: &Arc<AgentContext>, subject: &str, cmd: NavCmd) {
     });
 }
 
+/// The page's address for a `target` frame. Read from the page itself, and —
+/// when it cannot answer, which is what a page blocked on an `alert()` does —
+/// from the nav watcher's last known url rather than an empty string.
+async fn page_url(ctx: &AgentContext) -> String {
+    match ctx.current_url().await {
+        Ok(url) => url,
+        Err(_) => ctx.nav_now().await.map(|n| n.url).unwrap_or_default(),
+    }
+}
+
 /// Truncate to `max` BYTES on a char boundary (never mid-UTF-8).
 fn clip(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -1866,7 +1876,7 @@ async fn drive(
     // Seed: the target line, a still frame, and the current mode. The still is
     // load-bearing — a static page produces NO screencast frames (gotcha #1),
     // so without it a client attaching to an idle page sees a blank canvas.
-    let url = ctx.current_url().await.unwrap_or_default();
+    let url = page_url(ctx).await;
     // The REAL render size, not the `0, 0` this used to claim: it is the box we
     // last pushed with `setDeviceMetricsOverride`, so the client can scale its
     // canvas correctly on the very first frame.
@@ -2074,7 +2084,7 @@ async fn drive(
                                 // 5. And say what it is now looking at — the
                                 //    seed's `Target` was the OLD size, and the
                                 //    url may have moved since.
-                                let url = ctx.current_url().await.unwrap_or_default();
+                                let url = page_url(ctx).await;
                                 if socket
                                     .send(ServerMsg::Target { session, url, width: req.width, height: req.height }.to_frame())
                                     .await
