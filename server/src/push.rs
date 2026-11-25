@@ -122,6 +122,11 @@ pub struct PushAttempt {
     /// didn't my phone ring" — this does. `None` for a send that was not muted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The native iOS (APNs) share of this fan-out, present when at least one
+    /// APNs device was tried. Its counts are ALSO included in the totals above,
+    /// so `delivered` stays "devices that got it" across both transports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apns: Option<crate::apns::Tally>,
 }
 
 /// In-memory bounded ring of recent send attempts. Wrapped in a `std::sync::Mutex`
@@ -224,7 +229,9 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/push/prefs", get(get_prefs).put(put_prefs))
         .route("/api/push/attempts", get(get_attempts))
         .route("/api/push/preview", get(get_preview))
-        .with_state(state)
+        .with_state(state.clone())
+        // Native iOS devices (`/api/push/apns*`): same admin-only mount.
+        .merge(crate::apns::router_for(state))
 }
 
 /// `GET /api/push/key` — the VAPID PUBLIC key (base64url) the browser passes to
@@ -531,12 +538,12 @@ pub async fn send_push_for(
             failed: 0,
             muted: true,
             reason: Some(reason.clone()),
+            apns: None,
         });
         tracing::debug!(category = cat.as_str(), reason = %reason, "send_push_for: muted");
         return 0;
     }
-    let encoded = serde_json::to_vec(payload).unwrap_or_default();
-    send_encoded(state, cat.as_str(), &payload.title, &encoded).await
+    fan_out(state, cat.as_str(), payload, session).await
 }
 
 /// Which mute layer, if any, stops this send. `None` = it goes out.
@@ -586,24 +593,85 @@ pub async fn send_push_inner(
     // make the phone buzz, so it must not be coalesced away.
     let payload =
         crate::notify::PushPayload::simple(title, body, url, crate::notify::Tier::Attention);
-    let encoded = serde_json::to_vec(&payload).unwrap_or_default();
-    send_encoded(state, category, title, &encoded).await
+    fan_out(state, category, &payload, None).await
 }
 
-/// Fan an ALREADY-ENCODED payload out to every stored subscription. The one
-/// place in the process that talks to a push service.
-async fn send_encoded(state: &AppState, category: &str, title: &str, payload: &[u8]) -> usize {
+/// Fan a payload that already passed the gate out to BOTH transports — every
+/// Web Push subscription and every native iOS (APNs) device — concurrently, and
+/// record one attempt for the pair. The one place in the process that talks to
+/// a push service, so a future gate cannot reach one transport and miss the
+/// other. `session` is the bot the gate was evaluated for (APNs threads by it).
+async fn fan_out(
+    state: &AppState,
+    category: &str,
+    payload: &crate::notify::PushPayload,
+    session: Option<&str>,
+) -> usize {
+    let encoded = serde_json::to_vec(payload).unwrap_or_default();
+    let (web, apns) = tokio::join!(
+        send_web(state, &encoded),
+        crate::apns::send(state, payload, session),
+    );
+    let attempted = web.attempted + apns.attempted;
+    if attempted == 0 {
+        // Nobody subscribed on either transport: no network, no ring entry.
+        return 0;
+    }
+    let delivered = web.delivered + apns.delivered;
+    let pruned = web.pruned + apns.pruned;
+    let failed = web.failed + apns.failed;
+    // One-line fan-out summary at INFO so any push attempt is observable in the
+    // default-level service journal (matches the existing "push subscription
+    // stored" cadence — one info per user-visible event).
+    tracing::info!(
+        category,
+        attempted,
+        delivered,
+        pruned,
+        failed,
+        apns_attempted = apns.attempted,
+        apns_delivered = apns.delivered,
+        "send_push: fan-out complete",
+    );
+    // Record into the diagnostic ring so the Settings "Recent activity" panel
+    // can answer "why didn't my phone ring just now?" without a log grep.
+    state.push_attempts.record(PushAttempt {
+        at: chrono::Utc::now().timestamp(),
+        category: category.to_string(),
+        title: payload.title.clone(),
+        attempted,
+        delivered,
+        pruned,
+        failed,
+        muted: false,
+        reason: None,
+        apns: (apns.attempted > 0).then_some(apns),
+    });
+    delivered
+}
+
+/// Web Push counts for one fan-out (folded into the attempt by [`fan_out`]).
+#[derive(Default)]
+struct WebTally {
+    attempted: usize,
+    delivered: usize,
+    pruned: usize,
+    failed: usize,
+}
+
+/// Fan an ALREADY-ENCODED payload out to every stored Web Push subscription.
+async fn send_web(state: &AppState, payload: &[u8]) -> WebTally {
     let subs = match db::push::list(&state.pool).await {
         Ok(subs) => subs,
         Err(e) => {
             // Failing to list subs means NO push goes out — surface at warn so it's
             // visible at default log level (the user's only diagnosis channel).
             tracing::warn!(error = %e, "send_push: listing subscriptions failed");
-            return 0;
+            return WebTally::default();
         }
     };
     if subs.is_empty() {
-        return 0;
+        return WebTally::default();
     }
 
     let total = subs.len();
@@ -645,31 +713,12 @@ async fn send_encoded(state: &AppState, category: &str, title: &str, payload: &[
             }
         }
     }
-    // One-line fan-out summary at INFO so any push attempt is observable in the
-    // default-level service journal (matches the existing "push subscription
-    // stored" cadence — one info per user-visible event).
-    tracing::info!(
-        category,
-        attempted = total,
-        delivered,
-        pruned,
-        failed,
-        "send_push: fan-out complete",
-    );
-    // Record into the diagnostic ring so the Settings "Recent activity" panel
-    // can answer "why didn't my phone ring just now?" without a log grep.
-    state.push_attempts.record(PushAttempt {
-        at: chrono::Utc::now().timestamp(),
-        category: category.to_string(),
-        title: title.to_string(),
+    WebTally {
         attempted: total,
         delivered,
         pruned,
         failed,
-        muted: false,
-        reason: None,
-    });
-    delivered
+    }
 }
 
 /// Outcome of a single-device push that the caller branches on.
