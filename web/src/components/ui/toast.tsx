@@ -41,6 +41,7 @@ const TONE_DOT: Record<ToastTone, string> = {
   default: 'hsl(var(--brand))',
   active: 'hsl(var(--status-active))',
   waiting: 'hsl(var(--status-waiting))',
+  ready: 'hsl(var(--status-ready))',
   error: 'hsl(var(--status-error))',
 }
 

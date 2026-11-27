@@ -172,10 +172,11 @@ function PickerBody({
         message: res.confirmed
           ? `Switched to ${row.label} ${where}.`
           : `Sent the switch to ${row.label} ${where}, but Claude Code's answer could not be read — check the chip.`,
-        // A confirmed switch is a plain confirmation: the brand tone. Amber
-        // (`active`) reads as "this bot is busy / wants you" everywhere else in
-        // the app; it stays for the unconfirmed case, red for a refusal.
-        tone: res.confirmed ? 'default' : 'waiting',
+        // A confirmed switch is a plain "it worked": the status green. Both the
+        // brand and `active` tones are amber, which reads as "busy / wants you"
+        // across the app. Unconfirmed asks for a look at the chip (`waiting`,
+        // the blue "needs you"); a refusal is `error`.
+        tone: res.confirmed ? 'ready' : 'waiting',
       })
       onDone()
     } catch (e) {

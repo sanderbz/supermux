@@ -6,7 +6,10 @@
 
 import { createContext, useContext } from 'react'
 
-export type ToastTone = 'default' | 'active' | 'waiting' | 'error'
+/** `ready` is the status palette's green (`--status-ready`, the roster's "done"):
+ *  a plain "it worked". The brand and `active` tones are both amber, which
+ *  reads as "busy / wants you" everywhere else in the app. */
+export type ToastTone = 'default' | 'active' | 'waiting' | 'ready' | 'error'
 
 /** An optional inline action rendered inside the toast (e.g. "Undo"). Clicking
  *  it runs `onClick` then dismisses the toast — used by the overview archive flow
