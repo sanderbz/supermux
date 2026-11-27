@@ -177,6 +177,9 @@ export interface ChatConversationProps {
   /** Open this session's Schedules sheet — the destination of a `⏱` chip
    *  (fase B4 T3/T8). Omit and the chip stays plain emphasis. */
   onOpenSchedule?: (ref: ScheduleRef) => void
+  /** Open a file Claude named in the quick look. Relative paths resolve on
+   *  `session.dir`. Omit and paths stay plain code. */
+  onOpenPath?: (path: string) => void
   /**
    * A hand-off this client dispatched and the ledger has not confirmed yet
    * (fase B4 T5) — the ONLY thing that draws the handoff pill. The pill
@@ -355,6 +358,7 @@ export function ChatConversation({
   showActions = false,
   onOpenSession,
   onOpenSchedule,
+  onOpenPath,
   workflow = null,
   handoff,
   nowMs,
@@ -704,6 +708,8 @@ export function ChatConversation({
                 onOpenSession={onOpenSession}
                 onOpenSchedule={onOpenSchedule}
                 onOpenTerminal={onOpenTerminal}
+                onOpenPath={onOpenPath}
+                cwd={session?.dir}
               />
               </div>
             ))

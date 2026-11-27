@@ -17,6 +17,9 @@
  *   pre        `BubbleCode` — the fenced read of the approved Patch board
  *   a          the speaker's own pigment via `.sm-ink-accent`, underlined on
  *              hover only (a link is quiet until it is aimed at)
+ *   file path  an inline code span or a link href that names a FILE
+ *              (`file-path.ts` decides) wears the same pigment and opens the
+ *              quick look instead of navigating — see `fileLink` below
  *   table      a hairline grid that scrolls inside its own box, so a wide table
  *              never widens the bubble
  *   img        `CapturedFrameCard` at bubble width — the same warm object a
@@ -44,6 +47,7 @@ import type { MarkPin } from '../../../brand/marks'
 import { basename } from '../../../lib/path'
 import { cn } from '../../../lib/utils'
 import { mentionSegments } from '../grouping'
+import { resolveFilePath } from './file-path'
 import {
   ACCENT_INK_CLASS,
   accentInkVarsForSeed,
@@ -72,6 +76,13 @@ export interface ChatMarkdownContext {
    *  module renders inside a lazy chunk and must not learn about the router.
    *  Absent → the chip is a `<span>`, exactly as in the non-markdown path. */
   onOpenSession?: (slug: string) => void
+  /** Open a file named in the prose in the quick look. Injected for the same
+   *  reason `onOpenSession` is; absent → every path stays plain code, exactly
+   *  as before. Receives the RESOLVED path (`file-path.ts`). */
+  onOpenPath?: (path: string) => void
+  /** The session's working directory — what a RELATIVE path is relative to.
+   *  Absent → only absolute and `~/` paths become links. */
+  cwd?: string
 }
 
 const EMPTY_INDEX: ReadonlyMap<string, string> = new Map()
@@ -186,6 +197,76 @@ function diffNodes(lines: readonly string[]): React.ReactNode {
   )
 }
 
+/* ── file links ──────────────────────────────────────────────────────────── */
+
+/**
+ * A file named in the prose, made openable.
+ *
+ * A `<span role="button">` rather than a `<button>`: a button is an ATOMIC
+ * inline box, so a long path inside one cannot wrap across lines and would
+ * either widen the bubble or clip — the inline code it replaces wraps like
+ * text, and this keeps it doing so. The two keys a real button answers to are
+ * wired by hand.
+ *
+ * The click FOCUSES the span before it opens anything. Radix returns focus on
+ * close to whatever held it at open, and WebKit does not focus a clicked
+ * non-input element on its own — without this, Safari would hand focus back to
+ * the page body and the reader would lose their place in the transcript.
+ *
+ * The accessible name is the verb and the file ("Open plan.md"); the full path
+ * is the tooltip, because a 90-character path read aloud is noise.
+ */
+function fileLink(
+  path: string,
+  onOpen: (path: string) => void,
+  inner: React.ReactNode,
+  ink: { className?: string; style?: React.CSSProperties },
+): React.ReactNode {
+  const open = (event: React.SyntheticEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.focus()
+    onOpen(path)
+  }
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-file-link={path}
+      aria-label={`Open ${basename(path)}`}
+      title={path}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') open(event)
+      }}
+      style={ink.style}
+      className={cn(
+        ink.className,
+        'cursor-pointer rounded-[8px] underline decoration-transparent underline-offset-2',
+        'sm-t-hover hover:decoration-current',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      )}
+    >
+      {inner}
+    </span>
+  )
+}
+
+/** A markdown link's href as a filesystem path, when it is one: `file://`
+ *  dropped, percent-escapes decoded, any `?query`/`#fragment` cut (a `#L42`
+ *  citation is the file, not the line). `null` for anything with a scheme. */
+function hrefAsPath(href: string | undefined): string | null {
+  if (!href) return null
+  let raw = href.startsWith('file://') ? href.slice('file://'.length) : href
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw) || raw.startsWith('#')) return null
+  raw = raw.split(/[?#]/, 1)[0]
+  try {
+    return decodeURI(raw)
+  } catch {
+    return raw
+  }
+}
+
 /* ── the map ─────────────────────────────────────────────────────────────── */
 
 export function chatComponents(ctx: ChatMarkdownContext): Components {
@@ -202,6 +283,15 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
     : {}
 
   const heading = 'mt-[10px] text-[15px] font-semibold leading-[1.35] tracking-[-0.1px] first:mt-0'
+
+  // Inline code is the shape Claude writes a path in. When it names a file the
+  // chip keeps its wash and its type and takes the link's pigment — the same
+  // object, now aimed at something.
+  const inlineCode = (children: React.ReactNode) => {
+    const filePath = ctx.onOpenPath ? resolveFilePath(plainText(children), ctx.cwd) : null
+    if (!filePath || !ctx.onOpenPath) return <InlineCode>{children}</InlineCode>
+    return fileLink(filePath, ctx.onOpenPath, <InlineCode>{children}</InlineCode>, linkInk)
+  }
 
   return {
     // Every level renders at ONE size — the sentence that leads. The tag is
@@ -247,6 +337,15 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       ),
     a: ({ node: _node, href, className, children, ...rest }) => {
       const external = !!href && /^https?:/i.test(href)
+      // `[plan](docs/plan.md)` — a link to a file on disk. As an `<a>` it would
+      // have navigated the SPA to a route that does not exist.
+      const filePath =
+        !external && ctx.onOpenPath
+          ? resolveFilePath(hrefAsPath(href) ?? '', ctx.cwd, { href: true })
+          : null
+      if (filePath && ctx.onOpenPath) {
+        return fileLink(filePath, ctx.onOpenPath, withMentions(children, ctx), linkInk)
+      }
       return (
         <a
           {...rest}
@@ -340,7 +439,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
           {children}
         </code>
       ) : (
-        <InlineCode>{children}</InlineCode>
+        inlineCode(children)
       ),
     pre: ({ node: _node, className, children }) => {
       // A diff is drawn as a diff (the approved Patch board), whatever language

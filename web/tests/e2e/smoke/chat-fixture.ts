@@ -139,8 +139,22 @@ function projectDir(workDir: string): string {
   return join(process.env.CLAUDE_CONFIG_DIR as string, 'projects', encoded)
 }
 
-/** One JSONL line the chat parser turns into exactly one `prompt` entry. */
-function line(conv: string, uuid: string, text: string, tsMs: number): string {
+/** A transcript line: a bare string is the user's prompt; `{ assistant }` is
+ *  Claude answering — one text block, the shape Claude Code writes. */
+export type FixtureLine = string | { assistant: string }
+
+/** One JSONL line the chat parser turns into exactly one `prompt` (or
+ *  `assistant`) entry. */
+function line(conv: string, uuid: string, text: FixtureLine, tsMs: number): string {
+  if (typeof text !== 'string') {
+    return JSON.stringify({
+      type: 'assistant',
+      uuid,
+      timestamp: new Date(tsMs).toISOString(),
+      sessionId: conv,
+      message: { role: 'assistant', content: [{ type: 'text', text: text.assistant }] },
+    })
+  }
   return JSON.stringify({
     type: 'user',
     uuid,
@@ -158,9 +172,9 @@ export interface ChatFixture {
   /** Replace a conversation file wholesale. A LENGTH GOING BACKWARDS is what
    *  the tailer reads as a rotation, so this is also how a spec forces a
    *  re-seed without moving the pointer. */
-  write(conv: string, texts: readonly string[]): void
+  write(conv: string, texts: readonly FixtureLine[]): void
   /** Append lines — the live path. */
-  append(conv: string, texts: readonly string[]): void
+  append(conv: string, texts: readonly FixtureLine[]): void
   /** Fire a real hook event. `conv` moves the conversation pointer
    *  (`SessionStart` carries `session_id`); omitting it just proves the hooks
    *  are alive, which is what `classify_pointer` needs to say `Live`. */
