@@ -155,6 +155,10 @@ drives every screen that has not migrated yet.
   transparent-background SVG for embedding in chrome / docs.
 - **Raster export**: `scripts/build-icons.sh` → `icon-192.png`, `icon-512.png`,
   `apple-touch-icon.png` (180×180). Re-run when `icon.svg` changes.
+- **Notification badge**: [`web/public/badge.svg`](../../public/badge.svg) →
+  `badge-96.png` (same script). The mark alone, white on transparent: Android
+  draws a push notification's status-bar badge from its alpha channel, so the
+  full-bleed app tile there is a white square. Re-run when the mark changes.
 - **Splash / no white flash**: `--background`, manifest `background_color` +
   `theme_color`, and the `index.html` `theme-color` are all `#0a0a0a` — which
   is also the tile color behind the mark. The first-frame paint equals the
