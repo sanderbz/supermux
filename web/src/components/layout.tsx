@@ -93,7 +93,7 @@ interface NavItem {
    *  Base app (grok off) keeps it. Set on the Focus entry (under grok the roster
    *  IS the way into a thread, so the rail's Focus redirect is redundant — and
    *  Focus is `desktopOnly` so mobile drops it either way) and on Settings
-   *  (under grok the top-right `.gr-me` avatar is the Settings doorway). */
+   *  (under grok the roster's top-right gear is the Settings doorway). */
   grokHidden?: boolean
   /** Render this item ONLY under the Grok skin (`[data-grok]`), on BOTH the
    *  desktop SideNav and the mobile BottomNav. The inverse of `grokHidden`:
@@ -159,7 +159,7 @@ const NAV: NavItem[] = [
     // `grokHidden` anyway; this makes it true off grok too, so a kill-switched
     // skin cannot hand a colleague the door.)
     ownerOnly: true,
-    // Under grok the roster's top-right `.gr-me` avatar IS the Settings doorway
+    // Under grok the roster's top-right gear IS the Settings doorway
     // (grok-roster.tsx — `onClick navigate('/settings')`), and the Settings
     // route grows its own close-X, so a redundant nav slot only crowds the
     // grok rail/tab bar. Both nav surfaces honour `grokHidden`, so the item

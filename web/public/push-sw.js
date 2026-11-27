@@ -125,7 +125,11 @@ function notificationOptions(payload) {
   return {
     body: p.body || 'An agent needs your attention.',
     icon: p.icon || '/icon-192.png',
-    badge: '/icon-192.png',
+    // The STATUS-BAR glyph, not the app icon: Android draws `badge` from its
+    // alpha channel alone and tints it, so the full-bleed app tile
+    // (icon-192.png) came out as a solid white square. badge-96.png is the
+    // chevron mark in white on transparent (source: badge.svg).
+    badge: '/badge-96.png',
     tag: p.tag || p.url || 'supermux',
     renotify: p.renotify === true,
     data: { url: p.url || '/', tier: p.tier || 'attention', session: p.session || null },
