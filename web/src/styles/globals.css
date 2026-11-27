@@ -1815,3 +1815,99 @@
     opacity: 0.4;
   }
 }
+
+/* ══ CODE-BLOCK COPY — the confirmation's motion (APPENDED) ══════════════════
+   `BubbleCode`'s copy affordance. ONE authored moment: a sweep of the check's
+   own ink across the whole code well, because the thing a copy button fixes is
+   not knowing whether a drag caught every line — the confirmation shows the
+   EXTENT of what was taken, not just a tick in a corner. The corner supports
+   it: the check lands (scale from 0.6 on the app's curve), the label unrolls
+   beside it, and the resting glyph fades back when the 1.5s window closes.
+
+   Colour is `currentColor` mixed down: the sweep element carries
+   `text-status-active-ink`, so it is whatever the active skin says the check
+   is — no literal, and the grok skin re-tints it for free.
+
+   Reduce Motion keeps the MEANING (the well acknowledges, the check appears)
+   and drops the travel: the sweep becomes a still wash that fades, the check
+   and the label simply fade. */
+@keyframes sm-code-copied-sweep {
+  from {
+    transform: translateX(-100%);
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+.sm-code-copied-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 10%,
+    color-mix(in oklab, currentColor 16%, transparent) 50%,
+    transparent 90%
+  );
+  animation: sm-code-copied-sweep 0.52s cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+@keyframes sm-code-copied-check {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-12deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sm-code-copied-check {
+  animation: sm-code-copied-check 0.26s cubic-bezier(0.2, 0, 0, 1) both;
+}
+@keyframes sm-code-copied-label {
+  from {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+.sm-code-copied-label {
+  animation: sm-code-copied-label 0.22s cubic-bezier(0.2, 0, 0, 1) 0.04s both;
+}
+@keyframes sm-code-copy-idle {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.sm-code-copy-idle {
+  animation: sm-code-copy-idle 0.15s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes sm-code-copied-wash {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  .sm-code-copied-sweep::after {
+    background: color-mix(in oklab, currentColor 10%, transparent);
+    animation: sm-code-copied-wash 0.6s ease-out forwards;
+  }
+  .sm-code-copied-check,
+  .sm-code-copied-label {
+    animation: sm-code-copy-idle 0.15s ease-out both;
+  }
+}

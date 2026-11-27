@@ -190,6 +190,10 @@ export function BubbleCode({
   copyText?: string
 }) {
   const [copied, setCopied] = useState(false)
+  // Bumped on every successful copy: it KEYS the sweep below, so a second copy
+  // inside the 1.5s window remounts it and the sweep runs again instead of
+  // sitting finished.
+  const [copies, setCopies] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const preRef = useRef<HTMLPreElement>(null)
 
@@ -205,6 +209,7 @@ export function BubbleCode({
     void copyText(textToCopy).then((ok) => {
       if (!ok) return // never a false ✓ / buzz on a denied or insecure clipboard
       setCopied(true)
+      setCopies((n) => n + 1)
       navigator.vibrate?.(10)
       if (timer.current) clearTimeout(timer.current)
       timer.current = setTimeout(() => setCopied(false), 1500)
@@ -231,7 +236,10 @@ export function BubbleCode({
       onClick={textToCopy === undefined ? undefined : onTap}
       className={cn(
         'overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
-        textToCopy === undefined ? 'mt-[11px]' : 'pt-8',
+        textToCopy === undefined
+          ? 'mt-[11px]'
+          : // The finger lands → the well answers before the clipboard does.
+            'pt-8 transition-[border-color] duration-150 [@media(pointer:coarse)]:active:border-hairline',
         className,
       )}
     >
@@ -244,6 +252,17 @@ export function BubbleCode({
   return (
     <div data-code-block className="relative mt-[11px]">
       {pre}
+      {/* What was taken, shown: one sweep over the WHOLE well. The problem this
+          button solves is never knowing whether a drag caught every line, so the
+          confirmation spans the block, not just the corner. Inert, clipped to the
+          well's radius, keyed so a repeat copy replays it. */}
+      {copies > 0 && (
+        <span
+          key={copies}
+          aria-hidden
+          className="sm-code-copied-sweep pointer-events-none absolute inset-0 overflow-hidden rounded-[12px] text-status-active-ink"
+        />
+      )}
       {/* The button stays mounted through the copy (focus survives); only its
           content and label swap. Under a coarse pointer the whole block is the tap
           target and the hint below takes the corner, so the button goes visually
@@ -263,11 +282,11 @@ export function BubbleCode({
       >
         {copied ? (
           <>
-            <Check className="size-3.5 text-status-active-ink" aria-hidden />
-            Copied
+            <Check className="sm-code-copied-check size-3.5 text-status-active-ink" aria-hidden />
+            <span className="sm-code-copied-label">Copied</span>
           </>
         ) : (
-          <Copy className="size-3.5" aria-hidden />
+          <Copy className={cn('size-3.5', copies > 0 && 'sm-code-copy-idle')} aria-hidden />
         )}
       </button>
       <span
@@ -276,11 +295,11 @@ export function BubbleCode({
       >
         {copied ? (
           <>
-            <Check className="size-3 text-status-active-ink" aria-hidden />
-            Copied
+            <Check className="sm-code-copied-check size-3 text-status-active-ink" aria-hidden />
+            <span className="sm-code-copied-label">Copied</span>
           </>
         ) : (
-          'Tap to copy'
+          <span className={copies > 0 ? 'sm-code-copy-idle' : undefined}>Tap to copy</span>
         )}
       </span>
       <span className="sr-only" aria-live="polite">
