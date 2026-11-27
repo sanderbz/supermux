@@ -78,6 +78,10 @@ import { ProvisionalTail } from './provisional-tail'
 import type { ScheduleRef } from './transcript-item'
 import { exposeLatency, latencySummary, serverNowMs } from './latency'
 
+// The file quick look — FileViewer, CodeMirror and the markdown viewer behind
+// it — loads on the first click of a path, never with the chat.
+const FileQuickLook = React.lazy(() => import('@/components/files/file-quicklook'))
+
 export default function ChatPanel({
   name,
   session,
@@ -235,6 +239,38 @@ export default function ChatPanel({
   // list rather than inventing a destination.
   const openSchedule = React.useCallback(
     (ref: ScheduleRef) => navigate(ref.id ? workflowHref(ref.id) : WORKFLOWS_ROUTE),
+    [navigate],
+  )
+  // A file Claude named, opened in the quick look OVER the chat (chat file
+  // quick-look). State, not a route: closing it must put the reader back
+  // exactly where they were, and a route change is what loses that. `open` is
+  // kept apart from `path` so the sheet can animate out with its content still
+  // drawn; the next click replaces both.
+  const [quickLook, setQuickLook] = React.useState<{ path: string; open: boolean } | null>(null)
+  const openPath = React.useCallback((path: string) => setQuickLook({ path, open: true }), [])
+  const closeQuickLook = React.useCallback(
+    () => setQuickLook((q) => (q ? { ...q, open: false } : q)),
+    [],
+  )
+  // Once the exit has finished, unmount it: a closed quick look left mounted
+  // would keep its file query alive and refetch on every window focus. Guarded
+  // on `!open` so a re-open during the exit animation is not undone.
+  const quickLookClosed = React.useCallback(
+    () => setQuickLook((q) => (q && !q.open ? null : q)),
+    [],
+  )
+  // "Go to file" — the one exit that does leave the chat, into the Files view
+  // at that file (`?path=` the folder, `?select=` the name: the route's own
+  // deep link, so the company-root clamp applies there as it does everywhere).
+  const goToFile = React.useCallback(
+    (path: string, isDir: boolean) => {
+      setQuickLook(null)
+      const slash = path.lastIndexOf('/')
+      const dir = isDir ? path : slash > 0 ? path.slice(0, slash) : '/'
+      const q = new URLSearchParams({ path: dir })
+      if (!isDir) q.set('select', path.slice(slash + 1))
+      navigate(`/files?${q.toString()}`)
+    },
     [navigate],
   )
   // The human path (fase B4 T9): the composer's clock opens the COMPOSER with
@@ -760,6 +796,7 @@ export default function ChatPanel({
       showActions
       onOpenSession={openSession}
       onOpenSchedule={openSchedule}
+      onOpenPath={openPath}
       // The handoff pill's ONLY source (fase B4 T5): a POST this client made
       // and the ledger has not confirmed yet. The activity-string heuristic
       // that used to draw it is gone — see `live-layer.tsx::pendingHandoff`.
@@ -948,6 +985,17 @@ export default function ChatPanel({
         />
       }
     />
+    {quickLook && (
+      <React.Suspense fallback={null}>
+        <FileQuickLook
+          path={quickLook.path}
+          open={quickLook.open}
+          onClose={closeQuickLook}
+          onClosed={quickLookClosed}
+          onGoToFile={goToFile}
+        />
+      </React.Suspense>
+    )}
     </TruncationProvider>
   )
 }
