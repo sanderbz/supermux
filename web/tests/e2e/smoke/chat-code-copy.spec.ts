@@ -46,13 +46,15 @@ function appendAssistant(fx: ChatFixture, conv: string, text: string): void {
   )
 }
 
-async function seed(backend: Backend, page: Page, name: string): Promise<void> {
+async function seed(backend: Backend, page: Page, name: string, answer = ANSWER): Promise<void> {
   const fx = await chatSession(backend, name)
   fx.write('copy-conv', ['CODE-COPY-SEED'])
-  appendAssistant(fx, 'copy-conv', ANSWER)
+  appendAssistant(fx, 'copy-conv', answer)
   await fx.hook('copy-conv')
   await primePage(page, backend)
 }
+
+const TALL = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n')
 
 const readClipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText())
 
@@ -114,7 +116,8 @@ test.describe('code-block copy', () => {
       await expect(button).toBeAttached()
       const box = await button.boundingBox()
       expect(box === null || (box.width <= 1 && box.height <= 1)).toBe(true)
-      await expect(block.getByText('Tap to copy')).toBeVisible()
+      // The corner hint; its trailing twin waits (opacity 0) until the top scrolls away.
+      await expect(block.getByText('Tap to copy').first()).toBeVisible()
 
       await pre.tap({ position: { x: 40, y: 40 } })
       await expect.poll(() => readClipboard(page)).toBe(BASH)
@@ -125,4 +128,34 @@ test.describe('code-block copy', () => {
       await expect.poll(() => readClipboard(page)).toBe(JSON_SRC)
     })
   })
+  test.describe('phone (touch)', () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+    test('a tall block read from the middle keeps "Tap to copy" on its visible bottom edge', async ({ page }) => {
+      test.setTimeout(120_000)
+      await seed(backend, page, 'copy-tall', 'CODE-COPY-ANSWER a tall one.\n\n```text\n' + TALL + '\n```\n')
+      await page.setViewportSize({ width: 390, height: 844 })
+      await page.goto(`${backend.baseUrl}/focus/copy-tall`)
+      await expectTokenOnce(page, 'CODE-COPY-ANSWER')
+
+      const pre = page.locator('pre', { hasText: 'line 60' })
+      const block = page.locator('[data-code-block]', { has: pre })
+      const trailing = block.locator('div[aria-hidden]', { hasText: 'Tap to copy' })
+
+      // Top corner on screen: the trailing twin stays out of sight.
+      await block.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+      await expect(trailing).toHaveCSS('opacity', '0')
+
+      // Read from the middle: the corner is gone above, the twin rides the bottom.
+      // The block is taller than the phone: centring it cuts its top off.
+      await block.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+      await expect(trailing).toHaveCSS('opacity', '1')
+      await expect(trailing.getByText('Tap to copy')).toBeInViewport()
+
+      // And a tap there still copies the whole block.
+      await pre.tap()
+      await expect.poll(() => readClipboard(page)).toBe(TALL)
+    })
+  })
 })
+

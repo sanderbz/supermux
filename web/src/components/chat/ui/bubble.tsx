@@ -190,12 +190,13 @@ export function BubbleCode({
   copyText?: string
 }) {
   const [copied, setCopied] = useState(false)
-  // Bumped on every successful copy: it KEYS the sweep below, so a second copy
-  // inside the 1.5s window remounts it and the sweep runs again instead of
-  // sitting finished.
-  const [copies, setCopies] = useState(0)
+  // The corner hint has scrolled out above the viewport while the block is still
+  // on screen: a tall fence read from the middle. The hint then also rides the
+  // block's bottom-right edge, so "Tap to copy" is never only off screen.
+  const [topGone, setTopGone] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const preRef = useRef<HTMLPreElement>(null)
+  const topRef = useRef<HTMLSpanElement>(null)
 
   useEffect(
     () => () => {
@@ -204,12 +205,30 @@ export function BubbleCode({
     [],
   )
 
+  useEffect(() => {
+    const top = topRef.current
+    const block = top?.parentElement
+    if (!top || !block || typeof IntersectionObserver === 'undefined') return
+    // The sentinel sits at the block's very top, so "block on screen, sentinel
+    // not" can only mean the top is cut off ABOVE. Measured against whatever
+    // clips it (the transcript's own scroller, under the header), not the
+    // window: an IO with the default root intersects through every overflow
+    // ancestor.
+    const seen = new Map<Element, boolean>()
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) seen.set(e.target, e.isIntersecting)
+      setTopGone(!!seen.get(block) && !seen.get(top))
+    })
+    io.observe(top)
+    io.observe(block)
+    return () => io.disconnect()
+  }, [textToCopy])
+
   const doCopy = useCallback(() => {
     if (textToCopy === undefined) return
     void copyText(textToCopy).then((ok) => {
       if (!ok) return // never a false ✓ / buzz on a denied or insecure clipboard
       setCopied(true)
-      setCopies((n) => n + 1)
       navigator.vibrate?.(10)
       if (timer.current) clearTimeout(timer.current)
       timer.current = setTimeout(() => setCopied(false), 1500)
@@ -238,8 +257,12 @@ export function BubbleCode({
         'overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
         textToCopy === undefined
           ? 'mt-[11px]'
-          : // The finger lands → the well answers before the clipboard does.
-            'pt-8 transition-[border-color] duration-150 [@media(pointer:coarse)]:active:border-hairline',
+          : cn(
+              // The finger lands → the well answers before the clipboard does;
+              // a copy → the well's edge takes the check's ink for the window.
+              'pt-8 transition-[border-color] duration-200 [@media(pointer:coarse)]:active:border-hairline',
+              copied && 'border-status-active-ink',
+            ),
         className,
       )}
     >
@@ -248,21 +271,22 @@ export function BubbleCode({
   )
   if (textToCopy === undefined) return pre
 
-  const chip = 'absolute right-1.5 top-1.5 items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] leading-none'
+  const chip = 'items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] leading-none'
+  const corner = 'absolute right-1.5 top-1.5'
+  // The touch hint's face, shared by the corner and the trailing edge.
+  const hint = copied ? (
+    <>
+      <Check className="sm-code-copied-check size-3 text-status-active-ink" aria-hidden />
+      <span className="sm-code-copied-label">Copied</span>
+    </>
+  ) : (
+    'Tap to copy'
+  )
+  const coarseOnly = 'hidden [@media(pointer:coarse)]:inline-flex'
   return (
     <div data-code-block className="relative mt-[11px]">
+      <span ref={topRef} aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-8" />
       {pre}
-      {/* What was taken, shown: one sweep over the WHOLE well. The problem this
-          button solves is never knowing whether a drag caught every line, so the
-          confirmation spans the block, not just the corner. Inert, clipped to the
-          well's radius, keyed so a repeat copy replays it. */}
-      {copies > 0 && (
-        <span
-          key={copies}
-          aria-hidden
-          className="sm-code-copied-sweep pointer-events-none absolute inset-0 overflow-hidden rounded-[12px] text-status-active-ink"
-        />
-      )}
       {/* The button stays mounted through the copy (focus survives); only its
           content and label swap. Under a coarse pointer the whole block is the tap
           target and the hint below takes the corner, so the button goes visually
@@ -276,6 +300,7 @@ export function BubbleCode({
         className={cn(
           'peer',
           chip,
+          corner,
           'inline-flex bg-code-bg text-ink-3 transition-colors hover:bg-muted/60 hover:text-ink [@media(pointer:coarse)]:sr-only [@media(pointer:coarse)]:focus-visible:not-sr-only [@media(pointer:coarse)]:focus-visible:absolute [@media(pointer:coarse)]:focus-visible:px-1.5 [@media(pointer:coarse)]:focus-visible:py-1',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
@@ -286,22 +311,28 @@ export function BubbleCode({
             <span className="sm-code-copied-label">Copied</span>
           </>
         ) : (
-          <Copy className={cn('size-3.5', copies > 0 && 'sm-code-copy-idle')} aria-hidden />
+          <Copy className="size-3.5" aria-hidden />
         )}
       </button>
       <span
         aria-hidden
-        className={cn(chip, 'pointer-events-none hidden text-ink-3 [@media(pointer:coarse)]:inline-flex [@media(pointer:coarse)]:peer-focus-visible:hidden')}
+        className={cn(chip, corner, coarseOnly, 'pointer-events-none text-ink-3 [@media(pointer:coarse)]:peer-focus-visible:hidden')}
       >
-        {copied ? (
-          <>
-            <Check className="sm-code-copied-check size-3 text-status-active-ink" aria-hidden />
-            <span className="sm-code-copied-label">Copied</span>
-          </>
-        ) : (
-          <span className={copies > 0 ? 'sm-code-copy-idle' : undefined}>Tap to copy</span>
-        )}
+        {hint}
       </span>
+      {/* The trailing twin: in flow after the pre, pulled up over its bottom-right
+          corner, and sticky to the scroller's bottom edge — so while the corner is
+          scrolled away it rides the visible bottom of the block, and it can never
+          leave the block it belongs to. Inert: a tap falls through to the pre. */}
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none sticky bottom-[calc(var(--sm-chat-reserve,0px)+6px)] -mt-[30px] flex h-[30px] items-end justify-end px-1.5 pb-1.5 transition-opacity duration-150',
+          topGone ? 'opacity-100' : 'opacity-0',
+        )}
+      >
+        <span className={cn(chip, coarseOnly, 'bg-code-bg text-ink-3')}>{hint}</span>
+      </div>
       <span className="sr-only" aria-live="polite">
         {copied ? 'Copied' : ''}
       </span>
