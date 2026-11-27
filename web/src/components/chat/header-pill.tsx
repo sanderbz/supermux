@@ -549,7 +549,7 @@ export function SessionHeaderPill({
                 </span>
               )}
               {phoneModel && (
-                <ModelChip session={session} phone />
+                <ModelChip name={name} session={session} phone locked={!!modeLocked} />
               )}
               </div>
               {/* The app's status affordance, not a lookalike — which is how the
@@ -566,7 +566,7 @@ export function SessionHeaderPill({
                   fact the user changes per task, and the one Claude Code hides
                   until a statusline is drawn. See `ModelChip`. */}
               {!phone && (
-                <ModelChip session={session} phone={false} />
+                <ModelChip name={name} session={session} phone={false} locked={!!modeLocked} />
               )}
               {/* THE UNRECOVERED AGENT ERROR, AS A LEGIBLE CHIP — not a bare dot.
                   `session.error` is the durable `StopFailure` field the roster,
@@ -660,42 +660,106 @@ export function SessionHeaderPill({
 
 export default SessionHeaderPill
 
-/** Does the model chip render? Only for a Claude session whose main agent's
- *  model is KNOWN: the statusline when tapped, else the transcript's last
- *  main-agent signal (`live_model`). Never guessed from the launch-line
- *  `--model`, which goes stale the moment anyone runs `/model`. */
+/** The picker body, lazily: it is reached only by a tap on the chip, so its
+ *  popover / sheet and its pref query stay out of the chat chunk until then. */
+const ModelPicker = React.lazy(() => import('./model-picker'))
+
+/** Does the model chip render for this session? A running Claude session
+ *  always gets one: a fresh session has no reply in its transcript yet (and no
+ *  statusline without the tap), and that is exactly when someone wants to pick
+ *  a model — before the first prompt. Unknown reads as "Model", never a guess. */
 function modelChipShows(session: TileSession | null): boolean {
-  return (
-    session?.provider === 'claude' &&
-    session.status !== 'stopped' &&
-    shortModelName(session.live_model) != null
-  )
+  return session?.provider === 'claude' && session.status !== 'stopped'
 }
 
 /**
- * The model chip — `Opus 5.5` on the desktop, `Opus` on the phone. Display
- * only: it says which model the MAIN agent is on, and nothing on it acts.
+ * The model chip — `Opus 5.5` on the desktop, `Opus` on the phone — and the
+ * door to the model picker.
+ *
+ * The words are the server's `live_model`: the statusline when the tap is on,
+ * else the main agent's last word in its own transcript (its last reply's
+ * model, or a later `/model` answer). Never the launch-line `--model`, which
+ * goes stale the moment anyone runs `/model`; unknown reads "Model".
+ *
+ * Tappable only when a pick can actually be sent: the agent idle at its prompt
+ * and no dialog up (`locked`, the same gate as the mode chip — a key typed into
+ * an open prompt answers it). Otherwise the picker still opens and says why its
+ * rows are disabled; the server re-reads the screen before typing anyway.
  */
-function ModelChip({ session, phone }: { session: TileSession | null; phone: boolean }) {
+function ModelChip({
+  name,
+  session,
+  phone,
+  locked,
+}: {
+  name: string
+  session: TileSession | null
+  phone: boolean
+  locked: boolean
+}) {
+  const ref = React.useRef<HTMLButtonElement>(null)
+  const [open, setOpen] = React.useState(false)
+  // Mounted on first open and kept, so the popover/sheet can animate closed.
+  const [mounted, setMounted] = React.useState(false)
   if (!modelChipShows(session)) return null
   const live = session?.live_model ?? null
   const full = shortModelName(live)
-  const shown = phone ? modelFamilyLabel(live) : full
+  const shown = (phone ? modelFamilyLabel(live) : full) ?? 'Model'
+  const canPick = session?.status === 'idle' && !locked
   return (
-    <span
-      data-testid="chat-header-model"
-      title={live?.display_name}
-      aria-label={`Model: ${full}`}
-      className={cn(
-        'inline-flex flex-none items-center whitespace-nowrap text-[11.5px] font-medium leading-[16px] tracking-[0.1px] text-ink-2',
-        phone
-          // The subtitle under the name: no pill.
-          ? 'self-start'
-          : 'rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px]',
+    <>
+      <button
+        ref={ref}
+        type="button"
+        data-testid="chat-header-model"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={full ? `Model: ${full} — change model` : 'Choose model'}
+        title={full ? `${live?.display_name} — change model` : 'Choose model'}
+        onClick={() => {
+          setMounted(true)
+          setOpen(true)
+        }}
+        className={cn(
+          'inline-flex flex-none items-center gap-0.5 whitespace-nowrap text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
+          'cursor-pointer transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          phone
+            // The subtitle under the name: no pill, and a hit area grown past
+            // its 16px line (to ~44px tall) without moving the layout. `z-10`
+            // puts it above the name button's own grown hit area.
+            ? "relative z-10 self-start rounded leading-[16px] after:absolute after:-inset-x-2 after:-inset-y-3.5 after:content-['']"
+            : 'rounded-full border-[0.5px] border-hairline-soft bg-fill-soft py-[3px] pl-2 pr-1.5 leading-[16px] hover:bg-fill-soft-2',
+        )}
+      >
+        {shown}
+        <svg
+          viewBox="0 0 24 24"
+          width="11"
+          height="11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="shrink-0 opacity-70"
+          aria-hidden="true"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {mounted && (
+        <React.Suspense fallback={null}>
+          <ModelPicker
+            name={name}
+            current={live}
+            canPick={canPick}
+            open={open}
+            onOpenChange={setOpen}
+            anchorRef={ref}
+          />
+        </React.Suspense>
       )}
-    >
-      {shown}
-    </span>
+    </>
   )
 }
 

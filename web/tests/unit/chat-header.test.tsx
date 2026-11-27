@@ -493,7 +493,11 @@ describe('the chat-header workflow chip', () => {
  */
 describe('the header name as the details door', () => {
   test('without a handler the name stays an inert span', () => {
-    const out = pill(session())
+    // The model chip beside the name is its own door; the NAME is the subject.
+    const out = pill(session()).replace(
+      /<button[^>]*data-testid="chat-header-model"[\s\S]*?<\/button>/,
+      '',
+    )
     expect(out).toContain(FOCUS)
     expect(out).not.toContain('data-testid="chat-header-title"')
     expect(out).not.toContain('aria-haspopup="dialog"')
@@ -550,13 +554,14 @@ describe('the header name as the details door', () => {
 describe('the chat-header model chip', () => {
   const FABLE = { id: 'claude-fable-5-2', display_name: 'Fable 5.2' }
   const chipOf = (html: string) =>
-    html.match(/<span[^>]*data-testid="chat-header-model"[^>]*>.*?<\/span>/)?.[0]
+    html.match(/<button[^>]*data-testid="chat-header-model"[^>]*>.*?<\/button>/)?.[0]
 
   test('names the live model in its short form beside the name', () => {
     const chip = chipOf(pill(session({ live_model: FABLE })))
     expect(chip).toBeDefined()
     expect(text(chip!)).toBe('Fable 5.2')
-    expect(chip).toContain('aria-label="Model: Fable 5.2"')
+    expect(chip).toContain('aria-label="Model: Fable 5.2 — change model"')
+    expect(chip).toContain('aria-haspopup="dialog"')
   })
 
   test('drops the parenthetical, keeps the version', () => {
@@ -566,28 +571,38 @@ describe('the chat-header model chip', () => {
     expect(text(chip!)).toBe('Opus 5')
   })
 
-  test('the phone shows the family alone, under the name', () => {
+  test('the phone shows the family alone', () => {
     const out = renderToStaticMarkup(
       <SessionHeaderPill name={FOCUS} session={session({ live_model: FABLE })} surface="phone" />,
     )
     expect(text(chipOf(out)!)).toBe('Fable')
-    expect(out).toContain('flex min-w-0 flex-1 flex-col justify-center')
   })
 
-  test('display only — nothing on it acts', () => {
-    const chip = chipOf(pill(session({ live_model: FABLE })))!
-    expect(chip).not.toContain('<button')
-    expect(chip).not.toContain('aria-haspopup')
-  })
-
-  test('unknown model → no chip, and the launch-line model is never used instead', () => {
-    expect(chipOf(pill(session()))).toBeUndefined()
-    expect(chipOf(pill(session({ live_model: null })))).toBeUndefined()
-    expect(chipOf(pill(session({ model: 'opus' } as Partial<TileSession>)))).toBeUndefined()
+  test('unknown model → a "Model" chip, so a fresh session can pick before its first prompt', () => {
+    // No statusline and no reply in the transcript yet. Still a door — and the
+    // launch-line model is never used to fill the gap.
+    for (const s of [
+      session(),
+      session({ live_model: null }),
+      session({ model: 'opus' } as Partial<TileSession>),
+    ]) {
+      const chip = chipOf(pill(s))
+      expect(text(chip!)).toBe('Model')
+      expect(chip).toContain('aria-label="Choose model"')
+    }
   })
 
   test('only for a running Claude session', () => {
     expect(chipOf(pill(session({ provider: 'codex', live_model: FABLE })))).toBeUndefined()
     expect(chipOf(pill(session({ status: 'stopped', live_model: FABLE })))).toBeUndefined()
+  })
+
+  test('the picker is lazy — nothing of it renders until the chip is tapped', () => {
+    expect(pill(session({ live_model: FABLE }))).not.toContain('model-picker')
+    const src = readFileSync(
+      new URL('../../src/components/chat/header-pill.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(src).toContain("React.lazy(() => import('./model-picker'))")
   })
 })

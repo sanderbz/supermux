@@ -5,6 +5,12 @@ import {
 /** The `prefs` k/v key behind the automatic recovery switch. Mirrors
  *  `db::prefs::AUTO_HEAL_PREF_KEY` — one string, both sides. */
 const AUTO_HEAL_KEY = 'recovery.auto_heal'
+/** The `prefs` key behind "Model picks apply to this session only". The same
+ *  string as `MODEL_PICK_SCOPE_KEY` in `lib/model-name.ts` (read by the chat
+ *  header's picker) and the server allowlist in `prefs.rs`. Spelled out here
+ *  rather than imported: a module shared by this route and the chat chunk
+ *  becomes its own chunk, and its name lands in the ENTRY's preload map. */
+const MODEL_PICK_SCOPE_KEY = 'model.pick_scope'
 import * as React from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
@@ -54,6 +60,8 @@ import {
 } from '@/stores/ui-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { botModeOn, BOT_KILL_SWITCH_KEY } from '@/lib/bot-mode-flag'
+import { useIsOwnerPlane } from '@/stores/viewer-store'
+import { useToast } from '@/components/ui/use-toast'
 import { GROK_KILL_SWITCH_KEY } from '@/lib/grok-mode-flag'
 import { useConnectors } from '@/stores/connectors-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
@@ -170,6 +178,58 @@ function ModelPicker() {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+/** Where a pick from the chat header's model chip lands. ON (the default, and
+ *  what an absent pref reads as): this session only — Claude Code's picker `s`.
+ *  OFF: Claude Code's own `/model <alias>`, which also saves the pick as the
+ *  default for every new session. Account-wide (`/api/prefs`), so it follows the
+ *  user phone↔desktop like the other cross-device settings. */
+function ModelPickScopeRow() {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['pref', MODEL_PICK_SCOPE_KEY],
+    queryFn: () => settingsApi.getPref(MODEL_PICK_SCOPE_KEY),
+  })
+  const [saving, setSaving] = React.useState(false)
+  const { toast } = useToast()
+  // Only the owner/admin may write account prefs (a member's PUT 404s), and
+  // only they may save a model as the default — a member's picks are always
+  // this session only, so the switch is shown, locked on.
+  const ownerPlane = useIsOwnerPlane()
+  // Absent reads as ON, like `pickScopeFrom` in `lib/model-name.ts`.
+  const sessionOnly = !ownerPlane || data?.trim() !== 'default'
+  const set = (next: boolean) => {
+    setSaving(true)
+    void settingsApi
+      .putPref(MODEL_PICK_SCOPE_KEY, next ? 'session' : 'default')
+      .then(() => qc.invalidateQueries({ queryKey: ['pref', MODEL_PICK_SCOPE_KEY] }))
+      .catch((e: unknown) =>
+        toast({
+          message: `Couldn’t save — ${e instanceof Error ? e.message : 'request failed'}`,
+          tone: 'error',
+        }),
+      )
+      .finally(() => setSaving(false))
+  }
+  return (
+    <Row
+      label="Model picks apply to this session only"
+      hint={
+        sessionOnly
+          ? 'Picking a model from the chat header changes this session only. New sessions keep your default.'
+          : 'Picking a model from the chat header also makes it the default for new sessions, as Claude Code’s /model does.'
+      }
+      control={
+        <Switch
+          ariaLabel="Model picks apply to this session only"
+          checked={sessionOnly}
+          onCheckedChange={set}
+          disabled={!ownerPlane || saving || isLoading}
+        />
+      }
+    />
   )
 }
 
@@ -1351,6 +1411,7 @@ export function Settings() {
               hint="Used when you boot a new agent."
               control={<ModelPicker />}
             />
+            <ModelPickScopeRow />
           </Section>
 
           <HostsSection />

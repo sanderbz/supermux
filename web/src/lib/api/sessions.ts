@@ -733,6 +733,21 @@ export interface LiveModel {
   display_name: string
 }
 
+/** A model the header picker can switch to — Claude Code's own aliases. */
+export type ModelAlias = 'opus' | 'fable' | 'sonnet' | 'haiku'
+
+/** Where a header pick lands: this session only, or also as the default for new
+ *  sessions (Claude Code's `/model <alias>`). */
+export type ModelPickScope = 'session' | 'default'
+
+/** Result of `POST /api/sessions/{name}/model`. `confirmed` is whether Claude
+ *  Code's own "Set model to …" answer was read back off the screen. */
+export interface SetModelResult {
+  model: ModelAlias
+  scope: ModelPickScope
+  confirmed: boolean
+}
+
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode
  *  ACTUALLY in effect after the op (the UI reflects truth, never an optimistic
  *  guess). `converged` is false when the Shift+Tab cycle couldn't reach the

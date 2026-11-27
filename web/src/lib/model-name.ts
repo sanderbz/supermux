@@ -12,13 +12,24 @@
  * whose resolver has no `@/` paths.
  */
 
-/** The families Claude Code offers as `/model` aliases. */
+/** The families the header picker offers — Claude Code's own aliases. */
 export const MODEL_FAMILIES = ['opus', 'fable', 'sonnet', 'haiku'] as const
 export type ModelFamily = (typeof MODEL_FAMILIES)[number]
 
 export interface LiveModelLike {
   id: string
   display_name: string
+}
+
+/** The `prefs` key behind Settings → Model → "Model picks apply to this session
+ *  only". Mirrors the server allowlist in `prefs.rs`. */
+export const MODEL_PICK_SCOPE_KEY = 'model.pick_scope'
+
+/** Where a header pick lands. Absent (or anything but `default`) reads as
+ *  session-only: the failure the picker exists to prevent is a pick for one
+ *  task silently becoming every new session's model. */
+export function pickScopeFrom(raw: string | null | undefined): 'session' | 'default' {
+  return raw?.trim() === 'default' ? 'default' : 'session'
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
