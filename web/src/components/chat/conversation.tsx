@@ -97,8 +97,8 @@ const STAT_ROW = 30
  * How much floor the track reserves for the composer — MEASURED (QA #12).
  *
  * It used to be a constant, and the composer is not: it grows with the draft up
- * to 136px (`use-composer`'s cap), and it grows again when the refusal banner
- * appears under it. With a 92px reserve under a 136px composer, streaming text
+ * to 15 lines (`COMPOSER_MAX_LINES`, viewport-bounded), and it grows again when
+ * the refusal banner appears under it. With a 92px reserve under a tall composer, streaming text
  * and the newest bubble slid under the glass exactly while they were being
  * written — measured on the live instance in `33-long-draft.png`,
  * `25-reload-t3.7s.png`, `27-back-online.png`, `11-scrolled-top.png`.

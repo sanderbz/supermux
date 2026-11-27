@@ -23,10 +23,21 @@ import type { SessionInput } from '../../lib/session-input'
 
 import { insertAtCaret, type Selection } from './composer-insert'
 
-/** The textarea's ceiling — the same 120px `ui/composer.tsx` caps the field at.
- *  Beyond it the field scrolls instead of growing, so the transcript never
- *  disappears behind a composer that ate the pane. */
-export const COMPOSER_MAX_H = 120
+/** The textarea's ceiling is the SMALLER of two bounds (it was a flat 120px, ~5
+ *  lines, which cut a pasted paragraph off long before the screen did):
+ *   - 15 lines: enough to read back a pasted block without the pill turning
+ *     into an editor;
+ *   - a share of the VISIBLE viewport, so a short window (or a phone with the
+ *     keyboard up, where `visualViewport` is about half the screen) never lets
+ *     the composer cover the pane. 40% on a mouse; 30% on `(pointer: coarse)`,
+ *     where the keyboard already ate half and header + chips + pill chrome still
+ *     have to fit above it.
+ *  The floor is the old 120px so no viewport ever gets a SMALLER field than
+ *  before. Beyond the cap the field scrolls instead of growing. The CSS twin of
+ *  the viewport bound is `max-h` on `FIELD` in `ui/composer.tsx` (it keeps the
+ *  bound live between keystrokes, e.g. when the keyboard opens). */
+export const COMPOSER_MAX_LINES = 15
+const COMPOSER_MIN_CAP = 120
 
 const drafts = new Map<string, string>()
 const listeners = new Map<string, Set<() => void>>()
@@ -291,6 +302,18 @@ export function composerSessionInput(
 export function growTextarea(el: ComposerField | null): void {
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`
+  el.style.height = `${Math.min(el.scrollHeight, composerMaxHeight(el))}px`
 }
 
+/** See `COMPOSER_MAX_LINES`. Measured off the field's own computed style so the
+ *  15 lines track the 15px desktop / 16px phone type and the 7px padding. */
+export function composerMaxHeight(el: HTMLElement): number {
+  const cs = getComputedStyle(el)
+  const font = parseFloat(cs.fontSize) || 15
+  // `normal` parses to NaN; 1.4 is the app's body line-height (globals.css).
+  const line = parseFloat(cs.lineHeight) || font * 1.4
+  const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+  const vh = window.visualViewport?.height ?? window.innerHeight
+  const share = window.matchMedia?.('(pointer: coarse)').matches ? 0.3 : 0.4
+  return Math.round(Math.max(COMPOSER_MIN_CAP, Math.min(COMPOSER_MAX_LINES * line + pad, vh * share)))
+}
