@@ -270,21 +270,74 @@ const ANSWER_PREFIXES: &[&str] = &[
 ];
 
 /// The `/model` answer lines on a capture, oldest first: `⎿` lines that start
-/// like an answer to `/model`. Counted before and after a pick, so only an
-/// answer that is NEW can say anything about this pick.
+/// like an answer to `/model`.
 ///
 /// Only answer-shaped lines count, because `⎿` is not only answers: live on
 /// 2.1.326 a `⎿  Tip: Use Plan Mode …` line is drawn under a running command
 /// and then removed — read as "the answer", it turned a confirmed default pick
-/// into an error, and its coming and going would shift a plain count.
+/// into an error.
+///
+/// Claude Code HARD-WRAPS its own `⎿` lines to the pane: under ~50 columns
+/// `⎿  Set model to Sonnet 5.5 for this session only` arrives as two rows, the
+/// second indented under the text. Those continuation rows are joined back on
+/// (with one space) before anything reads the answer.
 pub fn answers(capture: &str) -> Vec<String> {
-    capture
-        .lines()
-        .filter_map(|l| l.trim_start().strip_prefix('⎿'))
-        .map(str::trim)
-        .filter(|a| ANSWER_PREFIXES.iter().any(|p| a.starts_with(p)))
-        .map(str::to_string)
-        .collect()
+    let lines: Vec<&str> = capture.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
+        let Some(col) = line.find('⎿') else {
+            continue;
+        };
+        if !line[..col].trim().is_empty() {
+            continue;
+        }
+        let mut text = line[col + '⎿'.len_utf8()..].trim().to_string();
+        // Continuation rows: indented PAST the `⎿`, and not a new item.
+        while let Some(next) = lines.get(i) {
+            let indent = next.len() - next.trim_start().len();
+            let t = next.trim();
+            if t.is_empty() || indent <= col || t.starts_with(['⎿', '❯', '─', '⏵']) {
+                break;
+            }
+            text.push(' ');
+            text.push_str(t);
+            i += 1;
+        }
+        if ANSWER_PREFIXES.iter().any(|p| text.starts_with(p)) {
+            out.push(text);
+        }
+    }
+    out
+}
+
+/// A column-0 `❯ /model…` row: the echo of a `/model` command Claude Code ran
+/// (or the composer still holding one we typed, which is never followed by an
+/// answer). Picker rows are indented, so they never match.
+fn is_model_echo(line: &str) -> bool {
+    line.starts_with("❯ /model")
+}
+
+/// How many `/model` echoes the capture holds. Compared before and after a
+/// pick ONLY to prove ours was echoed (the count must rise): a window that
+/// lost an old echo off its top can hide ours, which waits out to "not
+/// confirmed" — never to a false confirmation.
+pub fn model_echoes(capture: &str) -> usize {
+    capture.lines().filter(|l| is_model_echo(l)).count()
+}
+
+/// The answers to the LAST `/model` the capture shows, i.e. to ours once its
+/// echo is there. Anchored on our own echo rather than on a count of answers:
+/// drawing the picker scrolls ~15–25 rows, which can push an OLD answer off the
+/// top of any fixed window and make a count lie.
+pub fn answers_since_last_echo(capture: &str) -> Vec<String> {
+    let lines: Vec<&str> = capture.lines().collect();
+    match lines.iter().rposition(|l| is_model_echo(l)) {
+        Some(at) => answers(&lines[at + 1..].join("\n")),
+        None => Vec::new(),
+    }
 }
 
 /// What Claude Code's answer to the pick says.
@@ -577,6 +630,26 @@ mod tests {
 
     #[test]
     fn answers_are_read_and_classified_against_the_pick() {
+        // Hard-wrapped in a narrow pane: the continuation row is joined back.
+        let narrow = "❯ /model\n  ⎿  Set model to Sonnet 5.5 for this\n     session only\n\n❯ ";
+        assert_eq!(
+            answers(narrow),
+            ["Set model to Sonnet 5.5 for this session only"]
+        );
+        assert_eq!(
+            classify_answer(&answers(narrow)[0], "Sonnet", Scope::Session),
+            Answer::Confirmed
+        );
+        // Only the answers under OUR echo count; an old pick above does not.
+        let two = "❯ /model\n  ⎿  Set model to Opus 5.5 for this session only\n\n❯ /model sonnet\n  ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions\n❯ ";
+        assert_eq!(model_echoes(two), 2);
+        assert_eq!(
+            answers_since_last_echo(two),
+            ["Set model to Sonnet 5.5 and saved as your default for new sessions"]
+        );
+        // Our command still in the composer (not yet run): nothing under it.
+        let typed = "❯ /model\n  ⎿  Set model to Opus 5.5 for this session only\n❯ /model \n──────\n  ⏵⏵ auto mode on";
+        assert!(answers_since_last_echo(typed).is_empty());
         // A transient tip under the running command is not an answer.
         let tip = "❯ /model sonnet\n  ⎿  Tip: Use Plan Mode to prepare for a complex request\n";
         assert!(answers(tip).is_empty());

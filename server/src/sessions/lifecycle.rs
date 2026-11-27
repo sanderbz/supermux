@@ -5153,9 +5153,11 @@ const MODEL_PICK_POLL: Duration = Duration::from_millis(100);
 /// Per-key budget for the cursor to be SEEN where the key should have put it.
 const MODEL_STEP_POLLS: usize = 20;
 const MODEL_STEP_POLL: Duration = Duration::from_millis(50);
-/// How much scrollback the answer count reads. Only our own few lines can be
-/// appended while the agent is idle, so a window this deep cannot lose a
-/// line off its top during one pick.
+/// How much scrollback the answer read takes. NOT a promise that nothing
+/// scrolls off its top — drawing the picker scrolls ~15–25 rows — which is
+/// why the answer is anchored on the echo of our own command
+/// (`answers_since_last_echo`) instead of on a count; this only has to reach
+/// back past one picker's worth of rows to that echo.
 const MODEL_ANSWER_LINES: usize = 400;
 
 /// One fresh, plain read of the visible screen.
@@ -5163,9 +5165,9 @@ async fn plain_screen(rt: &dyn SessionRuntime) -> Option<String> {
     rt.capture_screen_ansi().await.ok().map(|raw| status::prepare_capture(&raw))
 }
 
-/// The `⎿` answers in the deep capture (see [`MODEL_ANSWER_LINES`]).
-async fn answer_lines(rt: &dyn SessionRuntime) -> Option<Vec<String>> {
-    rt.capture_plain(MODEL_ANSWER_LINES).await.ok().map(|c| super::model_pick::answers(&c))
+/// The deep capture the answer is read from (see [`MODEL_ANSWER_LINES`]).
+async fn answer_capture(rt: &dyn SessionRuntime) -> Option<String> {
+    rt.capture_plain(MODEL_ANSWER_LINES).await.ok()
 }
 
 /// Switch the session's MAIN agent to `alias`, for this session only or as the
@@ -5275,8 +5277,12 @@ async fn drive_model_pick(
 
     let family = alias.label();
     let refuse = |why: String| AppError::Conflict(format!("{why} — nothing was changed"));
-    // Counted BEFORE anything is typed: only an answer past this count is ours.
-    let before = answer_lines(rt.as_ref()).await.map(|a| a.len()).unwrap_or(0);
+    // Read BEFORE anything is typed, so the echo of OUR command can be told
+    // from older ones. No baseline, no keys: a capture that fails here refuses.
+    let Some(baseline) = answer_capture(rt.as_ref()).await else {
+        return Err(refuse(format!("could not read session '{name}'s screen")));
+    };
+    let echoes_before = super::model_pick::model_echoes(&baseline);
 
     // The trailing space matters for the session form: live on 2.1.326 it
     // closes the slash-completion menu (`/model  [model]`) while Enter still
@@ -5379,16 +5385,21 @@ async fn drive_model_pick(
         rt.send_key("s").await?;
     }
 
-    // Claude Code's answer: a NEW `⎿` line, read against what was asked.
+    // Claude Code's answer: the newest answer under the echo of OUR command
+    // (the echo count has risen, so the last echo is ours), read against what
+    // was asked.
     for _ in 0..MODEL_PICK_POLLS {
         tokio::time::sleep(MODEL_PICK_POLL).await;
-        let Some(now) = answer_lines(rt.as_ref()).await else {
+        let Some(cap) = answer_capture(rt.as_ref()).await else {
             continue;
         };
-        if now.len() <= before {
+        if super::model_pick::model_echoes(&cap) <= echoes_before {
             continue;
         }
-        let newest = now.last().expect("len > before >= 0");
+        let now = super::model_pick::answers_since_last_echo(&cap);
+        let Some(newest) = now.last() else {
+            continue;
+        };
         return match classify_answer(newest, family, scope) {
             Answer::Confirmed => Ok(SetModelResult {
                 model: alias.as_str(),

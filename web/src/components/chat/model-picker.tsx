@@ -151,7 +151,12 @@ function PickerBody({
   })
   const ownerPlane = useIsOwnerPlane()
   // A member cannot save a default (the server answers 403), so their picks are
-  // this session only whatever the account pref says.
+  // this session only whatever the account pref says. The two gates are the
+  // same set: the server's `is_admin_or_owner` is "no company AND role
+  // owner/admin", and the web's owner plane is "no company" (`viewerFromMe`) —
+  // a company-less human is by schema the owner or an admin-all
+  // (`human_users.company_id`: "NULL = owner / admin-all"). So an admin human
+  // reads as `owner` here and may save the default, exactly as the server allows.
   const scope = ownerPlane ? pickScopeFrom(rawScope) : 'session'
 
   const selected = modelFamily(current)
