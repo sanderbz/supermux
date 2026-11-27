@@ -69,8 +69,11 @@ describe('copy affordance', () => {
   test('a fence renders a copy button', () => {
     expect(fence('desktop')).toContain('aria-label="Copy code"')
   })
-  test('the button hides under a coarse pointer', () => {
-    expect(fence('desktop')).toContain('[@media(pointer:coarse)]:hidden')
+  test('the button goes sr-only under a coarse pointer, not hidden', () => {
+    const out = fence('desktop')
+    expect(out).toContain('[@media(pointer:coarse)]:sr-only')
+    expect(out).toContain('[@media(pointer:coarse)]:focus-visible:not-sr-only')
+    expect(out).not.toContain('[@media(pointer:coarse)]:hidden')
   })
   test('a fence shows a tap hint only under a coarse pointer', () => {
     const out = fence('phone')

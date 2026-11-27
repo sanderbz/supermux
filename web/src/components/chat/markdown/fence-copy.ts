@@ -1,4 +1,12 @@
 /**
+ * Pure text derivations of a fenced code block.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Two readings of the same source: how a diff is drawn (`diffLines`) and what a
+ * copy puts on the clipboard (`fenceCopyText`). No React and no DOM, so both
+ * are unit-testable as plain truth tables.
+ */
+
+/**
  * Is this fence a DIFF?
  *
  * `board-patch-focused.png` gives the one fenced block the approved design
@@ -24,7 +32,7 @@ export function diffLines(text: string): string[] | null {
   return lines
 }
 
-/** What the copy button puts on the clipboard for a fence. Verbatim, minus the
+/** What the copy button or a tap puts on the clipboard for a fence. Verbatim, minus the
  *  one trailing newline the parser leaves. A diff copies as its post-change
  *  version: context and added lines with the marker column stripped, removed
  *  lines dropped. */
@@ -35,10 +43,4 @@ export function fenceCopyText(raw: string): string {
     .filter((l) => !l.startsWith('-'))
     .map((l) => l.slice(1))
     .join('\n')
-}
-
-/** Tap-to-copy guard: only on a coarse pointer, and never when the tap is
- *  really the end of a text selection inside the block. */
-export function shouldTapCopy(coarse: boolean, selectionInside: boolean): boolean {
-  return coarse && !selectionInside
 }

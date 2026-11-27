@@ -322,10 +322,11 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       // the author labelled the fence with — `rehype-highlight`'s spans are
       // discarded for it, because two inks say more about a change than six
       // token colours do.
-      const diff = diffLines(plainText(children))
+      const raw = plainText(children)
+      const diff = diffLines(raw)
       return (
         <BubbleCode
-          copyText={fenceCopyText(plainText(children))}
+          copyText={fenceCopyText(raw)}
           className={cn(
             // ON THE PHONE THE FENCE WRAPS (daily-driver QA #18).
             //

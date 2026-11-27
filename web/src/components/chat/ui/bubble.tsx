@@ -23,7 +23,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
-import { shouldTapCopy } from '../markdown/fence-copy'
 import { copyText } from '../message-export'
 import { BUBBLE_MAX } from './metrics'
 
@@ -213,20 +212,18 @@ export function BubbleCode({
   }, [textToCopy])
 
   const onTap = useCallback(() => {
-    const coarse = window.matchMedia('(pointer: coarse)').matches
+    if (!window.matchMedia('(pointer: coarse)').matches) return
+    // The tap that ends a text selection inside the block must not copy; a
+    // selection that only partly overlaps the block counts as inside.
     const sel = window.getSelection()
     const pre = preRef.current
-    const selectionInside = !!(
-      sel &&
-      pre &&
-      !sel.isCollapsed &&
-      sel.rangeCount > 0 &&
-      pre.contains(sel.getRangeAt(0).commonAncestorContainer)
-    )
-    if (shouldTapCopy(coarse, selectionInside)) doCopy()
+    if (sel && pre && !sel.isCollapsed && sel.containsNode(pre, true)) return
+    doCopy()
   }, [doCopy])
 
-  // Touch-only convenience; keyboard and pointer users have the real button.
+  // Touch-only convenience for pointer users; the button below stays in the a11y
+  // tree and the Tab order on touch devices, so it is the keyboard/screen-reader
+  // route (the pre itself has no role).
   const pre = (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <pre
@@ -245,19 +242,22 @@ export function BubbleCode({
 
   const chip = 'absolute right-1.5 top-1.5 items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] leading-none'
   return (
-    <div className="relative mt-[11px]">
+    <div data-code-block className="relative mt-[11px]">
       {pre}
       {/* The button stays mounted through the copy (focus survives); only its
-          content and label swap. Hidden under a coarse pointer, where the whole
-          block is the target and the hint below takes its place. */}
+          content and label swap. Under a coarse pointer the whole block is the tap
+          target and the hint below takes the corner, so the button goes visually
+          away (sr-only: still announced, still tabbable) and returns on keyboard
+          focus, when the hint steps aside (peer). */}
       <button
         type="button"
         aria-label={copied ? 'Copied' : 'Copy code'}
         title={copied ? 'Copied' : 'Copy'}
         onClick={doCopy}
         className={cn(
+          'peer',
           chip,
-          'inline-flex bg-code-bg text-ink-3 transition-colors hover:bg-muted/60 hover:text-ink [@media(pointer:coarse)]:hidden',
+          'inline-flex bg-code-bg text-ink-3 transition-colors hover:bg-muted/60 hover:text-ink [@media(pointer:coarse)]:sr-only [@media(pointer:coarse)]:focus-visible:not-sr-only [@media(pointer:coarse)]:focus-visible:absolute [@media(pointer:coarse)]:focus-visible:px-1.5 [@media(pointer:coarse)]:focus-visible:py-1',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
       >
@@ -272,7 +272,7 @@ export function BubbleCode({
       </button>
       <span
         aria-hidden
-        className={cn(chip, 'pointer-events-none hidden text-ink-3 [@media(pointer:coarse)]:inline-flex')}
+        className={cn(chip, 'pointer-events-none hidden text-ink-3 [@media(pointer:coarse)]:inline-flex [@media(pointer:coarse)]:peer-focus-visible:hidden')}
       >
         {copied ? (
           <>

@@ -4,7 +4,7 @@
 //   - fine pointer: the corner button copies the fence source (no trailing
 //     newline) and flips to "Copied";
 //   - coarse pointer on the DESKTOP surface (a tablet: 1024x768, touch): the
-//     button is hidden, the "Tap to copy" hint shows, and tapping the block
+//     button is visually hidden (sr-only) but reachable, the "Tap to copy" hint shows, and tapping the block
 //     copies;
 //   - fine pointer: a click inside the <pre> does NOT copy (tap-to-copy is
 //     coarse-only), so selecting text with a mouse never clobbers the clipboard.
@@ -84,17 +84,16 @@ test.describe('code-block copy', () => {
     await page.waitForTimeout(300)
     expect(await readClipboard(page)).toBe('SENTINEL')
 
-    const block = pre.locator('xpath=..')
+    const block = page.locator('[data-code-block]', { has: pre })
     await block.getByRole('button', { name: 'Copy code' }).click()
     expect(await readClipboard(page)).toBe(BASH)
     await expect(block.getByRole('button', { name: 'Copied' })).toBeVisible()
-    await expect(block.getByText('Copied').locator('visible=true')).not.toHaveCount(0)
   })
 
   test.describe('tablet (touch, desktop surface)', () => {
     test.use({ viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true })
 
-    test('coarse pointer: hint shown, button hidden, tapping the block copies', async ({ page }) => {
+    test('coarse pointer: hint shown, button visually hidden but reachable, tapping the block copies', async ({ page }) => {
       test.setTimeout(120_000)
       await seed(backend, page, 'copy-touch')
       // primePage pins 1280x800; the tablet geometry is the subject.
@@ -109,13 +108,21 @@ test.describe('code-block copy', () => {
 
       const pre = page.locator('pre', { hasText: 'npm run build' })
       await expect(pre).toBeVisible()
-      const block = pre.locator('xpath=..')
-      await expect(block.getByRole('button', { name: 'Copy code' })).toBeHidden()
+      const block = page.locator('[data-code-block]', { has: pre })
+      // Visually gone (sr-only: a 1px box) but still in the a11y tree.
+      const button = block.getByRole('button', { name: 'Copy code' })
+      await expect(button).toBeAttached()
+      const box = await button.boundingBox()
+      expect(box === null || (box.width <= 1 && box.height <= 1)).toBe(true)
       await expect(block.getByText('Tap to copy')).toBeVisible()
 
       await pre.tap({ position: { x: 40, y: 40 } })
       await expect.poll(() => readClipboard(page)).toBe(BASH)
       await expect(block.getByText('Copied').locator('visible=true')).not.toHaveCount(0)
+
+      // The multi-line JSON fence, through the real highlight-span pipeline.
+      await page.locator('pre', { hasText: '"ok": true' }).tap({ position: { x: 40, y: 40 } })
+      await expect.poll(() => readClipboard(page)).toBe(JSON_SRC)
     })
   })
 })
