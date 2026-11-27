@@ -55,6 +55,7 @@ import type { TileSession } from '../session-tile/types'
 
 import { errorBadgeLabel, statesSameBlock } from './agent-error'
 import { sessionAccentVarsFor } from './session-accent'
+import { HEADER_CHIP_BASE } from './header-chip'
 import { MARK_SIZE, PHONE } from './ui'
 
 /**
@@ -148,9 +149,10 @@ function ModeChip({
   label?: string
 }) {
   const cls = cn(
-    'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
+    HEADER_CHIP_BASE,
+    'border-hairline-soft bg-fill-soft text-ink-2',
     onOpen &&
-      'inline-flex items-center gap-1 cursor-pointer transition-colors hover:bg-fill-soft-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      'gap-1 cursor-pointer transition-colors hover:bg-fill-soft-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
     className,
   )
   if (onOpen) {
