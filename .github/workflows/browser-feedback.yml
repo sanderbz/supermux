@@ -45,6 +45,8 @@ jobs:
         run: node extension/tests/browser.mjs
       - name: Verify connected Chrome browser control
         run: node extension/tests/control-browser.mjs
+      - name: Verify pairing then one-click control
+        run: node extension/tests/pair-browser.mjs
       - name: Photograph actual Chrome capture and review
         run: node extension/scripts/showcase.mjs
       - uses: actions/upload-artifact@v7

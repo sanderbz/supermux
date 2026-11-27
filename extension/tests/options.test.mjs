@@ -66,3 +66,48 @@ test('an expired saved code renews once without showing the server form or loopi
  const count=calls.length;await new Promise(resolve=>setTimeout(resolve,70));assert.equal(calls.length,count);
  dom.window.close();
 });
+test('after a claimed code one primary click connects and allows control, still showing agent and exact origin',async()=>{
+ for(const choice of ['confirm','confirm-only']){
+  const dom=new JSDOM(html,{url:'https://extension.test/options.html?site=https%3A%2F%2Fsite.example&from=nonce-1',runScripts:'outside-only'});
+  const w=dom.window,calls=[];
+  w.endpointOrigin=endpointOrigin;w.permissionFor=permissionFor;
+  w.chrome={permissions:{contains:async()=>true,request:async()=>true},runtime:{sendMessage:async m=>{
+   calls.push(m);let data;
+   if(m.type==='connection.get')data={origin:'https://server.example',paired:false};
+   if(m.type==='pair.start')data={id:'pair-1',code:'1234'};
+   if(m.type==='pair.poll')data={status:'awaiting-confirmation',id:'pair-1',server_origin:'https://server.example',control_tab:true,binding:{id:'binding-1',origin:'https://site.example',session:'agent-1',session_label:'Release agent',company_label:'Company'}};
+   if(m.type==='pair.confirm')data={origin:'https://server.example',paired:true,session:'agent-1',session_label:'Release agent',company_label:'Company',...(m.allow_control?{control:{state:'active'}}:{})};
+   return {ok:true,data};
+  }}};
+  w.eval(script);await settle();
+  const $=id=>w.document.getElementById(id);
+  assert.equal($('confirmation').hidden,false);
+  assert.equal($('confirm-site').textContent,'https://site.example');
+  assert.equal($('confirm-target').textContent,'Company · Release agent (agent-1)');
+  assert.equal($('confirm-title').textContent,'Connect and allow control?');
+  assert.equal($('confirm').textContent,'Connect and allow control');
+  assert.equal($('confirm-control').hidden,false);assert.match($('confirm-control').textContent,/tab you started from on https:\/\/site\.example/);
+  assert.equal($('confirm-only').hidden,false);
+  assert.ok(calls.every(c=>c.from==='nonce-1'),'the settings page forwards only the worker-issued nonce');
+  $(choice).click();await settle();
+  const sent=JSON.parse(JSON.stringify(calls.at(-1)));
+  assert.deepEqual(sent,{type:'pair.confirm',site:'https://site.example',from:'nonce-1',id:'pair-1',binding_id:'binding-1',server_origin:'https://server.example',...(choice==='confirm'?{allow_control:true}:{})});
+  assert.equal(calls.filter(c=>c.type==='pair.confirm').length,1,'a single click');
+  assert.equal($('connected').hidden,false);
+  if(choice==='confirm')assert.match($('connected-site').textContent,/now controls the tab you started from on https:\/\/site\.example/);
+  else assert.equal($('connected-site').textContent,'Feedback from https://site.example goes to this agent.');
+  dom.window.close();
+ }
+});
+test('without an originating tab the confirmation only connects the website',async()=>{
+ const dom=new JSDOM(html,{url:'https://extension.test/options.html?site=https%3A%2F%2Fsite.example',runScripts:'outside-only'});
+ const w=dom.window,calls=[];
+ w.endpointOrigin=endpointOrigin;w.permissionFor=permissionFor;
+ w.chrome={permissions:{contains:async()=>true},runtime:{sendMessage:async m=>{calls.push(m);return {ok:true,data:m.type==='connection.get'?{origin:'https://server.example',control_tab:false,pending:{id:'pair-1',candidate:{id:'binding-1',origin:'https://site.example',session:'agent-1'}}}:{origin:'https://server.example',paired:true,session:'agent-1'}};}}};
+ w.eval(script);await settle();
+ const $=id=>w.document.getElementById(id);
+ assert.equal($('confirm').textContent,'Connect this website');assert.equal($('confirm-control').hidden,true);assert.equal($('confirm-only').hidden,true);
+ $('confirm').click();await settle();
+ assert.equal(calls.at(-1).allow_control,undefined);
+ dom.window.close();
+});

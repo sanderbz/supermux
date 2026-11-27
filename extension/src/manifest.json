@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Supermux \u00b7 Point & tell",
   "description": "Annotate a website or let its paired Supermux agent control this tab.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "permissions": [
     "activeTab",
     "scripting",
