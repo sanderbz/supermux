@@ -93,6 +93,11 @@ const DRIVE_EVERY_NTH: u32 = 4;
 /// repaint to land, short enough to read as the click's own feedback.
 const REPAINT_AFTER_INPUT: Duration = Duration::from_millis(150);
 
+/// How long an input event waits for one of OUR screenshots to finish before it
+/// is sent anyway — see [`AgentContext::shot_gate`]. A still takes tens of
+/// milliseconds; this only bounds a stalled one, so input never hangs on it.
+const INPUT_WAITS_FOR_SHOT: Duration = Duration::from_secs(1);
+
 /// How long after the last navigation signal a page counts as **settled** and
 /// the expensive reads (history, title, favicon) are worth issuing. Short enough
 /// that the address bar feels immediate; long enough that a redirect chain is
@@ -847,6 +852,17 @@ pub struct AgentContext {
     /// when none is pending; `Some` while its task sleeps, and moved forward by
     /// every further input so a burst ends in exactly one still.
     repaint_due: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// **Input and our own screenshots take turns.** Under a device-scale
+    /// override `Page.captureScreenshot` re-emulates the view at
+    /// `css × deviceScaleFactor` for the length of the capture
+    /// (`PageHandler::CaptureScreenshot`), and an `Input.*` event chrome
+    /// handles inside that window is mapped through it: a tap at (100,200) on
+    /// a 2× phone lands at (50,100). Measured through the takeover at a 150 ms
+    /// tap cadence — the post-input still's own delay — ~40 % of taps landed at
+    /// half their coordinates. Every capture holds this for its round trip and
+    /// every input holds it for its dispatch; tokio's mutex is FIFO, so inputs
+    /// keep their order. Input waits at most [`INPUT_WAITS_FOR_SHOT`].
+    shot_gate: Arc<tokio::sync::Mutex<()>>,
     /// Live nav-state watcher, if one is running (P1-5).
     nav: Mutex<Option<NavWatcher>>,
     /// Which User-Agent override is currently applied: `-1` never touched (the
@@ -1010,6 +1026,7 @@ impl AgentContext {
             metrics: Arc::new(DeviceMetrics::new(width, height, 1.0, false)),
             screencast: Mutex::new(None),
             repaint_due: Arc::default(),
+            shot_gate: Arc::default(),
             nav: Mutex::new(None),
             ua_applied: AtomicI8::new(-1),
         };
@@ -1821,6 +1838,11 @@ impl AgentContext {
                 message: "not an allowed input method".to_string(),
             });
         }
+        // Not while one of our screenshots has the view re-emulated — see
+        // `shot_gate`. A stalled capture costs a bounded wait, never the input.
+        let _turn = tokio::time::timeout(INPUT_WAITS_FOR_SHOT, self.shot_gate.lock())
+            .await
+            .ok();
         self.page_write(method, params).await
     }
 
@@ -1857,6 +1879,7 @@ impl AgentContext {
         let client = self.client.clone();
         let session = self.cdp_session_id.clone();
         let metrics = self.metrics.clone();
+        let gate = self.shot_gate.clone();
         tokio::spawn(async move {
             loop {
                 let Some(at) = *due.lock().unwrap_or_else(|p| p.into_inner()) else {
@@ -1872,6 +1895,7 @@ impl AgentContext {
             if tx.receiver_count() == 0 {
                 return;
             }
+            let turn = gate.lock().await;
             let shot = client
                 .call_on(
                     Some(&session),
@@ -1879,6 +1903,7 @@ impl AgentContext {
                     json!({ "format": "jpeg", "quality": 70 }),
                 )
                 .await;
+            drop(turn);
             match shot {
                 Ok(v) => {
                     let data = v.get("data").and_then(Value::as_str).unwrap_or_default();
@@ -1901,6 +1926,8 @@ impl AgentContext {
     /// emits no screencast frames (gotcha #1) — a client attaching mid-idle
     /// would otherwise see a blank canvas.
     pub async fn screenshot(&self) -> Result<String> {
+        // Input waits while this runs — see `shot_gate`.
+        let _turn = self.shot_gate.lock().await;
         let out = self
             .render_read(
                 "Page.captureScreenshot",
