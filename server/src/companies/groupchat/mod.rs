@@ -307,6 +307,7 @@ fn to_entry(row: &Row) -> ChatEntry {
         is_sidechain: false,
         agent_id: None,
         is_meta: false,
+        model: None,
         oversize: false,
         body: json!({
             "text": row.body,

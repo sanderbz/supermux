@@ -378,6 +378,33 @@ impl FileCursor {
     }
 }
 
+/// The model the MAIN agent's newest line in `entries` names, if any.
+///
+/// File order is transcript order, so the LAST signal wins: a `/model` answer
+/// written after the last reply shows before the next turn, and the next reply
+/// confirms (or corrects) it. Subagent lines never count — the main file's
+/// sidechain records carry `isSidechain`, and the `subagents/agent-*.jsonl`
+/// re-reads carry an `agent_id` — because a subagent's model is not the
+/// session's.
+///
+/// Returned with the line's own timestamp, so the caller can drop a signal
+/// written before the session's current start: a resumed conversation's last
+/// reply names the model it was on THEN, not the one the new process boots on.
+fn main_model(entries: &[ChatEntry]) -> Option<(&str, i64)> {
+    entries
+        .iter()
+        .rev()
+        .filter(|e| !e.is_sidechain && e.agent_id.is_none())
+        .find_map(|e| e.model.as_deref().map(|m| (m, e.ts_ms)))
+}
+
+/// Is a signal stamped `ts_ms` from the session's CURRENT process (started at
+/// `last_started`, epoch seconds)? Two seconds of slack for the clocks: both
+/// stamps come from this host, but one is Claude Code's and one is ours.
+fn signal_is_current(ts_ms: i64, last_started: i64) -> bool {
+    ts_ms >= last_started.saturating_mul(1000).saturating_sub(2000)
+}
+
 /// Where a cold cursor over `path` starts: `budget` bytes back from EOF, snapped
 /// FORWARD past the partial line that lands in the middle of.
 ///
@@ -888,6 +915,9 @@ struct Pass {
     /// poll — the live ground truth for `AppState::mark_subagent_active`. Free:
     /// read off the entries the pass already produced, no extra filesystem work.
     subagent_appended: bool,
+    /// The main agent's newest model signal in this pass ([`main_model`]),
+    /// read off the unsealed entries before they are sealed for the wire.
+    main_model: Option<(String, i64)>,
 }
 
 /// One filesystem pass. `want_siblings` gates the project-dir scan: it is a
@@ -901,6 +931,7 @@ fn blocking_pass(mut core: Tailer, want_siblings: bool) -> (Tailer, Pass) {
     let poll = core.poll();
     let meta = std::fs::metadata(core.transcript_path()).ok();
     let subagent_appended = poll.entries.iter().any(|e| e.is_sidechain);
+    let main_model = main_model(&poll.entries).map(|(m, ts)| (m.to_string(), ts));
     let pass = Pass {
         entries: poll
             .entries
@@ -908,6 +939,7 @@ fn blocking_pass(mut core: Tailer, want_siblings: bool) -> (Tailer, Pass) {
             .map(super::model::WireEntry::seal_pending)
             .collect(),
         subagent_appended,
+        main_model,
         resync: poll.resync,
         pointer_exists: meta.is_some(),
         pointer_mtime_ms: meta.as_ref().and_then(mtime_ms),
@@ -1056,6 +1088,32 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // (Mirrors the ring-reset condition just above.)
         if pass.subagent_appended && !pass.resync && !rebuilt {
             state.mark_subagent_active(&name);
+        }
+        // THE MODEL CHIP'S FALLBACK PLANE. With no statusline tap (the default)
+        // the transcript is the only place the main agent's model is written:
+        // each reply's `message.model`, and the `/model` answer the moment a
+        // pick lands. These are lines this pass already parsed, so it costs a
+        // scan of the batch and nothing else. Only a CHANGE fans a delta out,
+        // and only while the tap is silent for this session (the statusline
+        // wins in `view` and moves the chip itself).
+        let current = pass
+            .main_model
+            .as_ref()
+            .filter(|(_, ts)| signal_is_current(*ts, row.last_started))
+            .and_then(|(m, _)| crate::sessions::LiveModel::from_transcript(m));
+        if let Some(next) = current {
+            // Suppressed only while the statusline actually names a model: a
+            // tap that fired without one says nothing, and must not mute this.
+            let tap_has_model = state
+                .statusline(&name)
+                .is_some_and(|sl| crate::sessions::LiveModel::from_statusline(&sl).is_some());
+            if state.set_transcript_model(&name, next.clone()) && !tap_has_model {
+                let _ = state.sse_tx.send(crate::state::SseEvent {
+                    event: "sessions".to_string(),
+                    company_id: None,
+                    payload: serde_json::json!({ "delta": [{ "name": name, "live_model": next }] }),
+                });
+            }
         }
         if store.publish_source(
             source,
@@ -2343,5 +2401,92 @@ mod tests {
         let (_core, pass) = blocking_pass(core, false);
         assert!(pass.subagent_appended, "a drained subagent line flags an append");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the model chip's transcript fallback ────────────────────────────────
+
+    fn parsed(lines: &[&str]) -> Vec<ChatEntry> {
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if let crate::sessions::chat::parser::ParsedLine::Entry(es) =
+                crate::sessions::chat::parser::parse_line(l, i as u64 * 1000)
+            {
+                out.extend(es);
+            }
+        }
+        out
+    }
+
+    /// Records shaped exactly as Claude Code 2.1.326 wrote them (trimmed).
+    const ASSISTANT_OPUS: &str = r#"{"type":"assistant","uuid":"a1","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"hi"}]}}"#;
+    const SIDECHAIN_HAIKU: &str = r#"{"type":"assistant","uuid":"a2","isSidechain":true,"message":{"role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    const SUBAGENT_FILE_SONNET: &str = r#"{"type":"assistant","uuid":"a3","agentId":"ag1","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    const SYNTHETIC: &str = r#"{"type":"assistant","uuid":"a4","isSidechain":false,"message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"API Error"}]}}"#;
+    const PICK_SESSION: &str = r#"{"type":"user","uuid":"u1","isSidechain":false,"message":{"role":"user","content":"<local-command-stdout>Set model to `Fable 5.2` for this session only</local-command-stdout>"}}"#;
+    const PICK_DEFAULT: &str = r#"{"type":"user","uuid":"u2","isSidechain":false,"message":{"role":"user","content":"<local-command-stdout>Set model to `Sonnet 5.5` and saved as your default for new sessions</local-command-stdout>"}}"#;
+    const KEPT: &str = r#"{"type":"system","subtype":"local_command","uuid":"s1","content":"<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>","level":"info"}"#;
+
+    /// The model half of [`main_model`], for the ordering tests.
+    fn mm(e: &[ChatEntry]) -> Option<&str> {
+        main_model(e).map(|(m, _)| m)
+    }
+
+    #[test]
+    fn a_signal_from_before_the_current_start_is_not_current() {
+        // Started at t=1000 s. A reply stamped 1000.5 s counts; one from the
+        // previous process (900 s) does not; 2 s of clock slack is allowed.
+        assert!(signal_is_current(1_000_500, 1_000));
+        assert!(signal_is_current(998_500, 1_000));
+        assert!(!signal_is_current(900_000, 1_000));
+        let stamped = r#"{"type":"assistant","uuid":"t1","timestamp":"2026-11-27T12:00:00Z","message":{"model":"claude-opus-5-5","content":[]}}"#;
+        let (_, ts) = main_model(&parsed(&[stamped])).unwrap();
+        assert!(ts > 0, "the line's own timestamp rides along");
+    }
+
+    #[test]
+    fn the_main_agents_last_reply_names_the_model() {
+        assert_eq!(mm(&parsed(&[ASSISTANT_OPUS])), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn a_subagents_reply_never_names_the_sessions_model() {
+        // Sidechain record in the main file, and a subagent file's record.
+        let e = parsed(&[ASSISTANT_OPUS, SIDECHAIN_HAIKU, SUBAGENT_FILE_SONNET]);
+        assert_eq!(mm(&e), Some("claude-opus-5-5"));
+        assert_eq!(mm(&parsed(&[SIDECHAIN_HAIKU, SUBAGENT_FILE_SONNET])), None);
+    }
+
+    #[test]
+    fn a_synthetic_message_is_not_a_model() {
+        assert_eq!(mm(&parsed(&[ASSISTANT_OPUS, SYNTHETIC])), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn a_model_pick_shows_before_the_next_turn_in_both_variants() {
+        assert_eq!(mm(&parsed(&[ASSISTANT_OPUS, PICK_SESSION])), Some("Fable 5.2"));
+        assert_eq!(mm(&parsed(&[ASSISTANT_OPUS, PICK_DEFAULT])), Some("Sonnet 5.5"));
+        // An Esc out of the picker changes nothing.
+        assert_eq!(mm(&parsed(&[PICK_SESSION, KEPT])), Some("Fable 5.2"));
+    }
+
+    #[test]
+    fn whichever_is_later_in_the_transcript_wins() {
+        // The reply after the pick confirms it (or corrects it).
+        assert_eq!(mm(&parsed(&[PICK_SESSION, ASSISTANT_OPUS])), Some("claude-opus-5-5"));
+        assert_eq!(mm(&parsed(&[PICK_DEFAULT, ASSISTANT_OPUS, PICK_SESSION])), Some("Fable 5.2"));
+    }
+
+    #[test]
+    fn the_signal_maps_to_the_chip_shape_both_ways() {
+        use crate::sessions::LiveModel;
+        assert_eq!(
+            LiveModel::from_transcript("claude-opus-5-5"),
+            Some(LiveModel { id: "claude-opus-5-5".into(), display_name: "Opus 5.5".into() })
+        );
+        assert_eq!(
+            LiveModel::from_transcript("Fable 5.2"),
+            Some(LiveModel { id: "claude-fable-5-2".into(), display_name: "Fable 5.2".into() })
+        );
+        assert_eq!(LiveModel::from_transcript("  "), None);
     }
 }

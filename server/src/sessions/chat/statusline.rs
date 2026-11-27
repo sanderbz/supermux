@@ -640,7 +640,19 @@ pub async fn ingest_handler(
         // lead/own session is an `/api/sessions` row, so only its change fans a
         // `sessions` delta out — a member key names no row to broadcast.
         if state.set_statusline(&key, next.clone()) && is_own {
-            let payload = json!({ "delta": [{ "name": q.session, "statusline": next }] });
+            // `live_model` rides the delta in its `SessionView` shape so the
+            // header chip moves the moment a `/model` pick lands (the statusline
+            // re-fires at once on a model change, live-verified on 2.1.326) —
+            // the client merges delta keys into the cached row and never reads
+            // the raw `statusline` object.
+            // Omitted, never `null`, when this payload names no model: a
+            // delta key overwrites the cached row, and a model-less tap fire
+            // must not wipe the transcript's answer off the chip.
+            let mut row = json!({ "name": q.session, "statusline": next });
+            if let Some(m) = crate::sessions::LiveModel::from_statusline(&next) {
+                row["live_model"] = json!(m);
+            }
+            let payload = json!({ "delta": [row] });
             let _ = state.sse_tx.send(crate::state::SseEvent {
                 event: "sessions".to_string(),
                 company_id: None,

@@ -241,6 +241,7 @@ fn entry(uuid: &str, textv: &str) -> ChatEntry {
         agent_id: None,
         is_meta: false,
         oversize: false,
+        model: None,
         body: json!({ "text": textv }),
     }
 }

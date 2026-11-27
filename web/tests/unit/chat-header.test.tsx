@@ -329,7 +329,10 @@ describe('the phone header gives its width to the name (QA #6)', () => {
     // the one row, `flex-none` keeping the cluster's intrinsic width so the name
     // gives first.
     const out = phone(session({ display_name: 'ipc', mode: 'bypass' }))
-    expect(out).not.toContain('flex-col')
+    // The NAME may stack its model subtitle under it (a column that costs no
+    // width); the TRAILING cluster may not.
+    const trailing = out.slice(out.indexOf('flex flex-none items-center justify-end'))
+    expect(trailing).not.toContain('flex-col')
     expect(out).toContain('flex-none')
     expect(text(out)).toContain('ipc')
   })
@@ -535,5 +538,56 @@ describe('the header name as the details door', () => {
       'utf8',
     )
     expect(panel).toContain('onTitleClick={onTitleClick}')
+  })
+})
+
+/**
+ * The model chip — the main agent's live model beside the name, and the door to
+ * the picker. The words are `live_model` (the statusline when tapped, else the
+ * transcript's last main-agent signal); unknown reads "Model", never a guess
+ * from the launch-line `model`.
+ */
+describe('the chat-header model chip', () => {
+  const FABLE = { id: 'claude-fable-5-2', display_name: 'Fable 5.2' }
+  const chipOf = (html: string) =>
+    html.match(/<span[^>]*data-testid="chat-header-model"[^>]*>.*?<\/span>/)?.[0]
+
+  test('names the live model in its short form beside the name', () => {
+    const chip = chipOf(pill(session({ live_model: FABLE })))
+    expect(chip).toBeDefined()
+    expect(text(chip!)).toBe('Fable 5.2')
+    expect(chip).toContain('aria-label="Model: Fable 5.2"')
+  })
+
+  test('drops the parenthetical, keeps the version', () => {
+    const chip = chipOf(
+      pill(session({ live_model: { id: 'claude-opus-5[1m]', display_name: 'Opus 5 (1M context)' } })),
+    )
+    expect(text(chip!)).toBe('Opus 5')
+  })
+
+  test('the phone shows the family alone, under the name', () => {
+    const out = renderToStaticMarkup(
+      <SessionHeaderPill name={FOCUS} session={session({ live_model: FABLE })} surface="phone" />,
+    )
+    expect(text(chipOf(out)!)).toBe('Fable')
+    expect(out).toContain('flex min-w-0 flex-1 flex-col justify-center')
+  })
+
+  test('display only — nothing on it acts', () => {
+    const chip = chipOf(pill(session({ live_model: FABLE })))!
+    expect(chip).not.toContain('<button')
+    expect(chip).not.toContain('aria-haspopup')
+  })
+
+  test('unknown model → no chip, and the launch-line model is never used instead', () => {
+    expect(chipOf(pill(session()))).toBeUndefined()
+    expect(chipOf(pill(session({ live_model: null })))).toBeUndefined()
+    expect(chipOf(pill(session({ model: 'opus' } as Partial<TileSession>)))).toBeUndefined()
+  })
+
+  test('only for a running Claude session', () => {
+    expect(chipOf(pill(session({ provider: 'codex', live_model: FABLE })))).toBeUndefined()
+    expect(chipOf(pill(session({ status: 'stopped', live_model: FABLE })))).toBeUndefined()
   })
 })
