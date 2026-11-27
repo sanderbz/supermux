@@ -37,6 +37,7 @@ import {
   MoreHorizontal,
   Plus,
   Search,
+  Settings,
   SlidersHorizontal,
   Sparkles,
   Terminal,
@@ -1495,8 +1496,8 @@ export default function GrokRoster() {
             feedback: redundant), so the two things it carried that still have a
             home live HERE, in the title bar. ARCHIVE moved up as a clean ghost
             icon button (its duplicate settings gear was dropped — Settings already
-            lives in the floating nav). The SB avatar is the account affordance,
-            top-right per the modern app-bar pattern: a tap opens Settings. */}
+            lives in the floating nav). Top-right is the Settings gear (the
+            owner's doorway); an invited colleague gets their own avatar there. */}
         <span className="gr-head-actions">
           <button
             type="button"
@@ -1517,23 +1518,23 @@ export default function GrokRoster() {
           ) : (
             <button
               type="button"
-              className="gr-me"
-              aria-label={
-                updateBadge !== 'none'
-                  ? 'Sander — settings (update available)'
-                  : 'Sander — settings'
-              }
+              // A gear, not initials. This slot used to draw a hard-coded "SB"
+              // monogram and name its owner in the label, so every OTHER owner
+              // saw somebody else's initials on their own Settings button. The
+              // owner has no profile to show here — the button only ever opened
+              // Settings — so it wears the same ghost icon button as Archive
+              // beside it. `relative` anchors the update dot.
+              className="gr-icon-btn relative"
+              aria-label={updateBadge !== 'none' ? 'Settings (update available)' : 'Settings'}
               title="Settings"
               onClick={() => navigate('/settings')}
             >
-              <span className="av" aria-hidden>
-                SB
-              </span>
+              <Settings size={18} aria-hidden />
               {/* Re-homed update-available dot. It used to hang off the Settings
-                  nav item, which grok drops (`grokHidden`); the avatar is the grok
+                  nav item, which grok drops (`grokHidden`); this button is the grok
                   Settings doorway, so the "update available" tell rides here now.
-                  Absolutely pinned to the avatar's top-right corner. */}
-              <span className="pointer-events-none absolute -right-0.5 -top-0.5">
+                  Absolutely pinned to the button's top-right corner. */}
+              <span className="pointer-events-none absolute right-0.5 top-0.5">
                 <NavBadgeDot state={updateBadge} />
               </span>
             </button>

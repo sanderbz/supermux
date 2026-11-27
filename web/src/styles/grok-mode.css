@@ -2353,8 +2353,9 @@
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--sm-accent) 45%, transparent);
 }
-/* The account button — the SB avatar, top-right (the modern app-bar identity
-   slot). A tap opens Settings; the round chip carries the initials. */
+/* The account button — an invited colleague's avatar, top-right (the modern
+   app-bar identity slot; `member-avatar.tsx`). The owner's slot is the Settings
+   gear, a plain `.gr-icon-btn`. */
 [data-grok] .grok-roster .gr-me {
   appearance: none;
   border: 0;
