@@ -46,9 +46,22 @@ const MarkdownViewer = React.lazy(() =>
 export interface FileViewerProps {
   path: string
   name: string
-  /** Mobile drill-down back affordance (hidden on desktop). */
-  onBack: () => void
-  onRequestDelete: (path: string) => void
+  /** Mobile drill-down back affordance (hidden on desktop). Omitted → none. */
+  onBack?: () => void
+  /** Omitted → the actions menu offers no Delete. */
+  onRequestDelete?: (path: string) => void
+  /**
+   * Hosted inside a dialog or sheet rather than as a route pane (the chat's
+   * file quick look). The header then owns no safe-area inset — the sheet
+   * already sits below the notch, and `pt-safe` here would stack a second one
+   * inside it — and the actions menu is dropped: the quick look's contract is
+   * Close, Save and "Go to file", and the full Files view is one tap away for
+   * everything else.
+   */
+  embedded?: boolean
+  /** Trailing header controls, after the viewer's own (the quick look's
+   *  "Go to file" and Close). */
+  actions?: React.ReactNode
   /** Report the unsaved-draft flag UP. Files' liveness needs it: a `files` SSE
    *  frame for this path must NEVER refetch over a dirty buffer, and the route
    *  is where that decision is made. */
@@ -68,6 +81,8 @@ export function FileViewer({
   onRequestDelete,
   onDirtyChange,
   changedOnDisk,
+  embedded = false,
+  actions,
 }: FileViewerProps) {
   const { data, isLoading, isError, error, refetch } = useFileContent(path)
   const save = useSaveFile()
@@ -146,15 +161,22 @@ export function FileViewer({
           rather than eating into a fixed 56px — otherwise the back button, filename
           and actions are squished under the Dynamic Island in the iOS standalone
           PWA. Desktop resets pt-safe (sm:pt-0), where min-h-14 == h-14. */}
-      <header className="glass safe-header flex shrink-0 items-center gap-1 border-b border-hairline px-2 sm:pt-0">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="Back to files"
-          className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
-        >
-          <ChevronLeft className="size-5" />
-        </button>
+      <header
+        className={cn(
+          'glass flex shrink-0 items-center gap-1 border-b border-hairline px-2 sm:pt-0',
+          embedded ? 'min-h-[var(--sm-toolbar-min-h)]' : 'safe-header',
+        )}
+      >
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back to files"
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+          >
+            <ChevronLeft className="size-5" />
+          </button>
+        )}
         <div className="flex min-w-0 flex-1 flex-col px-1">
           <span className="truncate text-sm font-medium" title={path}>
             {name}
@@ -262,32 +284,37 @@ export function FileViewer({
           </button>
         )}
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              aria-label="File actions"
-              className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <EllipsisVertical className="size-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onClick={() => window.open(filesApi.rawUrl(path), '_blank')}
-            >
-              <Download className="size-4" />
-              Open raw
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => onRequestDelete(path)}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="size-4" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {!embedded && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="File actions"
+                className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <EllipsisVertical className="size-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => window.open(filesApi.rawUrl(path), '_blank')}
+              >
+                <Download className="size-4" />
+                Open raw
+              </DropdownMenuItem>
+              {onRequestDelete && (
+                <DropdownMenuItem
+                  onClick={() => onRequestDelete(path)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="size-4" />
+                  Delete
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        {actions}
       </header>
 
       {/* CONFLICT / CHANGED-ON-DISK — the honest half of the lost-update guard.
@@ -330,7 +357,10 @@ export function FileViewer({
           <Centered>
             <LoaderCircle className="size-6 animate-spin text-muted-foreground" />
           </Centered>
-        ) : isError ? (
+        ) : isError && !data ? (
+          // A failed BACKGROUND refetch keeps the last good payload: showing
+          // the error card then would unmount the editor out from under a
+          // draft. Only a read with nothing in hand is an error screen.
           <ErrorCard message={(error as Error)?.message ?? 'Failed to open file.'} />
         ) : data ? (
           <motion.div

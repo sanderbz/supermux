@@ -134,10 +134,10 @@ const DECLARED_FENCE = /^ {0,3}(?:```|~~~)[ \t]*[A-Za-z][\w+#.-]*\s*$/m
 const REMARK_PLUGINS = [remarkGfm, remarkHardBreaks]
 
 export function ChatMarkdown({ text, ...ctx }: ChatMarkdownProps) {
-  const { self, mentions, pinFor, surface, rawUrl, onOpenSession } = ctx
+  const { self, mentions, pinFor, surface, rawUrl, onOpenSession, onOpenPath, cwd } = ctx
   const components = React.useMemo(
-    () => chatComponents({ self, mentions, pinFor, surface, rawUrl, onOpenSession }),
-    [self, mentions, pinFor, surface, rawUrl, onOpenSession],
+    () => chatComponents({ self, mentions, pinFor, surface, rawUrl, onOpenSession, onOpenPath, cwd }),
+    [self, mentions, pinFor, surface, rawUrl, onOpenSession, onOpenPath, cwd],
   )
   return (
     <div className="min-w-0 break-words">
