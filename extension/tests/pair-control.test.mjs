@@ -117,3 +117,26 @@ test('a closed originating tab, a hand-opened settings page, or Connect without 
   assert.equal(fromPage.ok,false);assert.deepEqual(f.attached,[]);
  }
 });
+
+test('All websites: the scope is requested only on demand, checked on every step, and stored with its expiry',async()=>{
+ const f=await fixture();const bodies=[];const expires=Math.floor(Date.now()/1000)+86400;
+ globalThis.fetch=async(url,init)=>{
+  if(url.endsWith('/pairings')){const body=JSON.parse(init.body);bodies.push(body);return {ok:true,json:async()=>({ok:true,data:{id:'pair-all',code:'4321',poll_token:'private-poll-all',scope:body.scope==='all'?'all':'origin'}})};}
+  if(url.includes('/pairings/'))return {ok:true,json:async()=>({ok:true,data:{status:'paired',binding:{id:'binding-all',origin:site,session:'agent-all',company_id:1,scope:'all',expires_at:expires,token:'private-binding-all'}}})};
+  throw new Error('unexpected '+url);
+ };
+ // A single-website pairing never sends a scope (old servers reject unknown fields).
+ assert.equal((await f.rpc('pair.start',{site})).ok,true);assert.equal(Object.hasOwn(bodies[0],'scope'),false);
+ // ...and a binding that comes back wider than requested is refused.
+ const mismatch=await f.rpc('pair.poll',{site});assert.equal(mismatch.ok,false);assert.match(mismatch.error,/scope does not match/);
+ const started=await f.rpc('pair.start',{site,scope:'all',from:f.from});assert.equal(started.ok,true);assert.equal(started.data.scope,'all');
+ assert.deepEqual(bodies[1],{origin:site,scope:'all'});
+ const proposal=(await f.rpc('pair.poll',{site,from:f.from})).data;
+ assert.equal(proposal.binding.scope,'all');assert.equal(proposal.binding.expires_at,expires);
+ const confirmed=await f.rpc('pair.confirm',{site,id:proposal.id,binding_id:proposal.binding.id,server_origin:server});
+ assert.equal(confirmed.ok,true,confirmed.error);assert.equal(confirmed.data.scope,'all');assert.equal(confirmed.data.expires_at,expires);
+ assert.equal(f.local.connection.bindings[site].scope,'all');
+ // A server without scope support answers an All websites request plainly.
+ globalThis.fetch=async()=>new Response(JSON.stringify({ok:false,error:'unknown field `scope`'}),{status:422,headers:{'Content-Type':'application/json'}});
+ const old=await f.rpc('pair.start',{site,scope:'all'});assert.equal(old.ok,false);assert.match(old.error,/does not support All websites/);
+});

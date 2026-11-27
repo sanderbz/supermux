@@ -1,18 +1,25 @@
 import {endpointOrigin,permissionFor} from './shared.js';
 const $=id=>document.getElementById(id);
-let timer,flow=0,confirmation=null,renewals=0;
+let timer,flow=0,confirmation=null,renewals=0,scope='origin';
 const params=new URL(location.href).searchParams,site=params.get('site'),from=params.get('from');
 if(site){const context=document.createElement('p');context.className='hint';context.textContent='Pairing website: '+site;$('connect').prepend(context);}
 else $('connect-button').textContent='Save server';
 async function request(type,extra={}){const r=await chrome.runtime.sendMessage({type,site,...(from?{from}:{}),...extra});if(!r?.ok)throw Object.assign(new Error(r?.error||'Extension unavailable.'),{status:r?.status});return r.data;}
 const status=message=>$('status').textContent=message;
 const agentLabel=c=>c.session_label&&c.session_label!==c.session?`${c.session_label} (${c.session})`:c.session;
+const until=seconds=>new Date(seconds*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'});
+// "This website" is the default. "All websites" first shows the red warning;
+// only its own button sends an All websites pairing request.
+function showScope(choice,warning=false){
+ $('scope-site').setAttribute('aria-pressed',String(choice==='origin'&&!warning));$('scope-all').setAttribute('aria-pressed',String(choice==='all'||warning));
+ $('all-sites-warning').hidden=!warning;$('code-step').hidden=warning;
+}
 function connected(c){
  clearTimeout(timer);confirmation=null;$('confirmation').hidden=true;$('pairing').hidden=true;$('connect').hidden=true;$('connected').hidden=false;
  $('session').textContent=agentLabel(c);$('connected-company').textContent=c.company_label||'';
  $('connected-site').textContent=site?`Feedback from ${site} goes to this agent.`:'Open a website and click the Supermux extension icon to start.';
  $('change-agent').hidden=!site;$('endpoint').value=c.origin||$('endpoint').value;status('');
- if(c.control?.state==='active')$('connected-site').textContent=`${agentLabel(c)} now controls the tab you started from on ${site}. Press Stop on that page to end control.`;
+ if(c.control?.state==='active')$('connected-site').textContent=c.scope==='all'?`${agentLabel(c)} now controls the tab you started from and may use other websites until ${c.expires_at?until(c.expires_at):'the pairing expires'}. Press Stop on that page to end control.`:`${agentLabel(c)} now controls the tab you started from on ${site}. Press Stop on that page to end control.`;
  else if(c.control?.message)status(c.control.message);
 }
 function proposed(p){
@@ -25,8 +32,19 @@ function proposed(p){
  $('confirm').textContent=control?'Connect and allow control':'Connect this website';
  $('confirm-control').hidden=!control;$('confirm-only').hidden=!control;
  $('confirm-control').textContent=control?`This agent can then read and act in the tab you started from on ${p.binding.origin}, until you press Stop. Chrome shows that Supermux is debugging that tab.`:'';
+ const all=p.binding.scope==='all';
+ $('confirm-scope').hidden=!all;$('confirm').classList.toggle('danger-button',all);
+ if(all){
+  $('confirm-scope').textContent=`All websites${p.binding.expires_at?' · until '+until(p.binding.expires_at):''}. The agent can open and act on any website with your logged-in accounts, except blocked sites.`;
+  $('confirm-title').textContent=control?'Connect and allow control of all websites?':'Connect for all websites?';
+  if(control){$('confirm').textContent='Connect and allow control on all websites';$('confirm-control').textContent=`Control starts in the tab you started from on ${p.binding.origin} and may move to other websites, until you press Stop or it expires. Chrome shows that Supermux is debugging that tab.`;}
+ }
 }
-function pairing(p){confirmation=null;$('confirmation').hidden=true;$('connected').hidden=true;$('connect').hidden=true;$('pairing').hidden=false;$('code').textContent=p.code;void poll(flow);}
+function pairing(p){
+ confirmation=null;scope=p.scope==='all'?'all':'origin';$('confirmation').hidden=true;$('connected').hidden=true;$('connect').hidden=true;$('pairing').hidden=false;showScope(scope);$('code').textContent=p.code;
+ $('code-scope').textContent=scope==='all'?'All websites code. Only the Supermux owner can approve it, and control ends after at most 24 hours.':'';
+ void poll(flow);
+}
 async function poll(version){
  try{const p=await request('pair.poll');if(version!==flow)return;
   if(p.status==='awaiting-confirmation'){proposed(p);return;}
@@ -37,8 +55,12 @@ async function poll(version){
 async function refreshExpired(){if(renewals++<1){await newCode(true);}else{status('This pairing code is no longer available. Create a new one.');$('retry-pairing').hidden=false;}}
 async function newCode(automatic=false){
  if(!automatic)renewals=0;const version=++flow;clearTimeout(timer);$('retry-pairing').hidden=true;status('');
- try{const p=await request('pair.start');if(version!==flow)return;pairing(p);}catch(e){if(version===flow){status(e.message);$('retry-pairing').hidden=false;$('connect').hidden=false;}}
+ try{const p=await request('pair.start',scope==='all'?{scope:'all'}:{});if(version!==flow)return;pairing(p);}catch(e){if(version===flow){status(e.message);$('retry-pairing').hidden=false;$('connect').hidden=false;}}
 }
+$('scope-site').addEventListener('click',()=>{if(scope==='all'){scope='origin';void newCode();}else showScope('origin');});
+$('scope-all').addEventListener('click',()=>{if(scope!=='all')showScope(scope,true);});
+$('cancel-all').addEventListener('click',()=>showScope(scope));
+$('confirm-all').addEventListener('click',()=>{if($('all-sites-warning').hidden)return;scope='all';showScope('all');void newCode();});
 $('connect').addEventListener('submit',async event=>{
  event.preventDefault();const version=++flow;clearTimeout(timer);status('');
  let origin;try{origin=endpointOrigin($('endpoint').value.trim());}catch(e){status(e.message);return;}
@@ -56,7 +78,7 @@ $('confirm').addEventListener('click',()=>void confirm(!!confirmation?.control_t
 $('confirm-only').addEventListener('click',()=>void confirm(false));
 $('retry-pairing').addEventListener('click',()=>void newCode());
 $('change-server').addEventListener('click',()=>{$('connect').hidden=false;$('endpoint').focus();});
-$('change-agent').addEventListener('click',()=>void newCode());
+$('change-agent').addEventListener('click',()=>{scope='origin';void newCode();});
 $('new-code').addEventListener('click',()=>void newCode());
 $('copy').addEventListener('click',async()=>{await navigator.clipboard.writeText($('code').textContent);$('copy').textContent='Copied';setTimeout(()=>$('copy').textContent='Copy code',1500);});
 $('disconnect').addEventListener('click',async()=>{

@@ -137,6 +137,39 @@ async function run() {
     w._SUPERMUX_BASE_URL = 'https://server.example/supermux'
     await React.act(async () => { root.render(<BrowserFeedbackCard session="codex-demo" />) })
     checks++; assert.equal(container.querySelector('[data-testid="browser-extension-download"]')?.getAttribute('href'), 'https://server.example/supermux/downloads/supermux-browser-extension.zip')
+    // An "All websites" code is claimed only after the red approval; the
+    // first claim creates nothing and the scope is shown before and after.
+    w._SUPERMUX_BASE_URL = ''
+    w._SUPERMUX_AUTH_TOKEN = 'owner-secret'
+    await React.act(async () => { useViewer.setState({ viewer: { kind: 'owner' } }) })
+    const claims: unknown[] = []
+    const expires = Math.floor(Date.now() / 1000) + 86_400
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(JSON.stringify({ ok: true, data: [] }), { status: 200 })
+      const body = JSON.parse(String(init.body)); claims.push(body)
+      const data = body.scope === 'all'
+        ? { id: 'all', origin: 'https://start.example', session: 'codex-demo', scope: 'all', expires_at: expires }
+        : { approval_required: 'all', origin: 'https://start.example', ttl_secs: 86_400 }
+      return new Response(JSON.stringify({ ok: true, data }), { status: 200 })
+    }) as typeof fetch
+    await React.act(async () => { root.render(<BrowserFeedbackCard session="codex-demo" label="Codex" />) })
+    const allInput = container.querySelector<HTMLInputElement>('[data-testid="browser-pair-code"]')!
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value')!.set!.call(allInput, '4242')
+      allInput.dispatchEvent(new w.Event('input', { bubbles: true }))
+    })
+    await React.act(async () => { allInput.closest('form')!.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })) })
+    checks++; assert.deepEqual(claims, [{ code: '4242' }])
+    const approvalBox = container.querySelector('[data-testid="browser-all-sites-approval"]')
+    checks++; assert.ok(approvalBox?.textContent?.includes('any website'))
+    checks++; assert.ok(approvalBox?.textContent?.includes('24 hours'))
+    checks++; assert.equal(container.querySelector('[data-testid="browser-all-sites-badge"]'), null)
+    await React.act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="browser-all-sites-approve"]')!.click() })
+    checks++; assert.deepEqual(claims.at(-1), { code: '4242', scope: 'all' })
+    checks++; assert.equal(container.querySelector('[data-testid="browser-all-sites-approval"]'), null)
+    checks++; assert.ok(container.querySelector('[data-testid="browser-all-sites-paired"]')?.textContent?.includes('All websites until'))
+    checks++; assert.ok(container.querySelector('[data-testid="browser-all-sites-badge"]')?.textContent?.startsWith('All websites · until'))
+    checks++; assert.notEqual(container.querySelector('[aria-label="Disconnect https://start.example"]'), null)
     checks++; assert.equal(supportsBrowserFeedback('claude'), true)
     checks++; assert.equal(supportsBrowserFeedback('codex'), true)
     checks++; assert.equal(supportsBrowserFeedback('shell'), false)

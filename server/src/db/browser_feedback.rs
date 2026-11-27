@@ -9,6 +9,8 @@ pub struct Pairing {
     pub origin: String,
     pub expires_at: i64,
     pub binding_id: Option<String>,
+    /// `origin` (exact website) or `all` (owner-only, 24 h, blocklisted).
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -21,6 +23,16 @@ pub struct Binding {
     pub company_id: Option<i64>,
     pub paired_by_user_id: Option<i64>,
     pub paired_by_company_id: Option<i64>,
+    /// `origin` (exact website) or `all` (owner-only, 24 h, blocklisted).
+    pub scope: String,
+    /// Hard expiry (Unix seconds) of an `all` binding; `None` for `origin`.
+    pub expires_at: Option<i64>,
+}
+
+impl Binding {
+    pub fn all_sites(&self) -> bool {
+        self.scope == "all"
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
@@ -54,21 +66,21 @@ pub async fn admit(
 }
 
 pub async fn pairing(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Pairing>> {
-    sqlx::query_as("SELECT id,token_hash,origin,expires_at,binding_id FROM browser_feedback_pairings WHERE id=?").bind(id).fetch_optional(pool).await
+    sqlx::query_as("SELECT id,token_hash,origin,expires_at,binding_id,scope FROM browser_feedback_pairings WHERE id=?").bind(id).fetch_optional(pool).await
 }
 pub async fn binding(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Binding>> {
     sqlx::query_as(
-        "SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id FROM browser_feedback_bindings WHERE id=?",
+        "SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id,scope,expires_at FROM browser_feedback_bindings WHERE id=?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
 }
 pub async fn binding_for_token(pool: &SqlitePool, hash: &str) -> sqlx::Result<Option<Binding>> {
-    sqlx::query_as("SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id FROM browser_feedback_bindings WHERE token_hash=? AND revoked_at IS NULL").bind(hash).fetch_optional(pool).await
+    sqlx::query_as("SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id,scope,expires_at FROM browser_feedback_bindings WHERE token_hash=? AND revoked_at IS NULL").bind(hash).fetch_optional(pool).await
 }
 pub async fn bindings(pool: &SqlitePool, session: &str) -> sqlx::Result<Vec<Binding>> {
-    sqlx::query_as("SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id FROM browser_feedback_bindings WHERE session=? AND revoked_at IS NULL ORDER BY created_at DESC").bind(session).fetch_all(pool).await
+    sqlx::query_as("SELECT id,origin,session,token_hash,revoked_at,company_id,paired_by_user_id,paired_by_company_id,scope,expires_at FROM browser_feedback_bindings WHERE session=? AND revoked_at IS NULL ORDER BY created_at DESC").bind(session).fetch_all(pool).await
 }
 pub async fn by_client(
     pool: &SqlitePool,

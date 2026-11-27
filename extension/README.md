@@ -51,7 +51,7 @@ The showcase command opens a local example website, annotates it with the built 
 
 ## Browser control
 
-Chrome 125 or newer is required. Right after pairing, **Connect and allow control** does this for the tab you paired from. Later, on a paired website, click **Allow control** to attach Chrome’s debugger to that tab. The connected agent can inspect the page and run trusted clicks, typing, keys, scrolling, same-site navigation and page JavaScript. Screenshots are taken only when requested. **Stop** detaches control; changing the website, connected agent or server also ends the grant. An interrupted batch is not replayed automatically.
+Chrome 125 or newer is required. Right after pairing, **Connect and allow control** does this for the tab you paired from. Later, on a paired website, click **Allow control** to attach Chrome’s debugger to that tab. The connected agent can inspect the page and run trusted clicks, typing, keys, scrolling, same-site navigation and page JavaScript. Screenshots are taken only when requested. **Stop** detaches control; changing the website, connected agent or server also ends the grant. The owner can instead pair **All websites** (red confirmation, 24-hour hard expiry, blocklist of account, payment, bank, government and password-manager sites plus the Supermux server itself); see `docs/BROWSER_FEEDBACK.md`. An interrupted batch is not replayed automatically.
 
 The existing website/company/agent binding supplies authority. Each activation gets a new target, so a previous tab grant cannot silently move to another tab. Control includes page JavaScript; it is not a network sandbox. Pairing and bearer tokens remain in the extension worker.
 
