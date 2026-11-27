@@ -17,8 +17,12 @@ JSON.
   it turns into "Copied" on success.
 - Desktop: a small copy button in the block's top-right corner; the block itself
   stays selectable and horizontally scrollable.
-- Clear confirmation: a short "Copied" with a check, plus a haptic tick where
-  the device supports `navigator.vibrate`.
+- Clear confirmation: a short "Copied" with a check, the block's border in
+  the check's ink for the copy window, plus a haptic tick where the device
+  supports `navigator.vibrate`.
+- Touch, tall blocks: while the block's top corner is scrolled away, a twin of
+  the hint rides the block's visible bottom-right edge, clear of the floating
+  composer.
 
 ## Non-goals
 
