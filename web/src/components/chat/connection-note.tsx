@@ -21,6 +21,7 @@ import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
 import { claimConnectionVoice } from '../../lib/live-region-owner'
 import { cn } from '../../lib/utils'
 
+import { HEADER_CHIP_BASE } from './header-chip'
 import type { ChatGone } from './chat-socket'
 import { CHAT_GONE, type ChatPresentation } from './connection'
 
@@ -102,7 +103,7 @@ export function ConnectionNote({ state, onRetry, gone = null, compact = false }:
       // dot honour its own width/height wherever the wrapper sits.
       cn('inline-block size-2 shrink-0 rounded-full align-middle', alarming ? 'bg-status-error' : 'bg-ink-2')
     : cn(
-        'flex-none rounded-full border-[0.5px] px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px]',
+        HEADER_CHIP_BASE,
         alarming
           ? 'border-status-error/30 bg-status-error/10 text-status-error-ink'
           : 'border-hairline-soft bg-fill-soft text-ink-2',
