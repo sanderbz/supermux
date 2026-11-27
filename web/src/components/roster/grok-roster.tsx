@@ -43,7 +43,7 @@ import {
   Trash2,
 } from 'lucide-react'
 
-import { useSessions } from '@/hooks/use-sessions'
+import { SESSIONS_KEY, useSessions } from '@/hooks/use-sessions'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import { restSessionInput } from '@/lib/session-input'
 import { useLongPress } from '@/hooks/use-long-press'
@@ -114,7 +114,7 @@ import { MemberAvatar } from '@/components/roster/member-avatar'
 import { useIsMember } from '@/stores/viewer-store'
 import { useUpdateBadge } from '@/hooks/use-update-badge'
 import { agentHueVars } from '@/lib/grok-agent-hue'
-import { resolveAgentDeepLink } from '@/lib/agent-href'
+import { agentHref, resolveAgentDeepLink } from '@/lib/agent-href'
 import { TOAST } from '@/brand/copy'
 import { characterFromSeed } from '@/brand/marks'
 import { useTheme } from '@/components/theme-provider'
@@ -751,6 +751,7 @@ export default function GrokRoster() {
   const [density, setDensity] = React.useState<Density>(readDensity)
   const [selected, setSelected] = React.useState<Sel>(null)
   const [sheetOpen, setSheetOpen] = React.useState(false)
+  const qc = useQueryClient()
 
   // ── "OPEN WHERE I LEFT OFF" — the REMEMBER half ─────────────────────────────
   // Two halves live in this file: REMEMBER (here) and RESTORE (below, once per
@@ -1841,7 +1842,25 @@ export default function GrokRoster() {
         botVoiced
         // A new bot defaults into the ACTIVE company (HQ = null = a main bot).
         companyId={activeCompany}
-        onCreated={(name) => navigate(`/focus/${encodeURIComponent(name)}`)}
+        // LAND WHERE YOU HIRED. A hire used to go to `/focus/<name>` — the
+        // terminal route, which has no company scope and lists EVERY bot from
+        // EVERY company in its side rail, so you ended up outside the company
+        // you were hiring into with no way back but Home. `/agent/<name>` is
+        // the bot's address on home (`lib/agent-href.ts`): the roster keeps (or
+        // switches to) the bot's company, selects it and opens its thread —
+        // the phone still hops to focus from there, as a row tap does.
+        //
+        // REFETCH FIRST. The new row reaches the cached list only through an
+        // SSE delta, which is not ordered against this callback; the doorway
+        // resolves the name against the list exactly once, and a list that
+        // does not hold the bot yet answers "no such bot". A failed refetch
+        // still navigates — the doorway then reports what it can see.
+        onCreated={(name) => {
+          void qc
+            .refetchQueries({ queryKey: SESSIONS_KEY })
+            .catch(() => {})
+            .then(() => navigate(agentHref(name)))
+        }}
       />
 
     </div>
