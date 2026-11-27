@@ -12,7 +12,9 @@ JSON.
 ## Goals
 
 - One action copies a fenced code block's exact source text.
-- Touch (phone, tablet): tapping the block copies it.
+- Touch (phone, tablet): tapping the block copies it. A small, quiet "Tap to copy"
+  label sits in the block's top-right corner so the gesture is discoverable;
+  it turns into "Copied" on success.
 - Desktop: a small copy button in the block's top-right corner; the block itself
   stays selectable and horizontally scrollable.
 - Clear confirmation: a short "Copied" with a check, plus a haptic tick where

@@ -97,6 +97,7 @@ Behaviour:
 - Wrapper `div` (`relative`, takes over the `mt-[11px]`) around the existing `<pre>`.
 - Desktop button: top-right, `aria-label="Copy code"`, `Copy` icon (lucide) → `Check` + visible text `Copied` for 1500 ms; hidden under `[@media(pointer:coarse)]:hidden`; shown always (not hover-only — hover doesn't exist on hybrid devices and discoverability matters).
 - Touch: `<pre onClick>` acts only when `window.matchMedia('(pointer: coarse)').matches` AND `window.getSelection()` has no non-collapsed range inside the block. Cursor/`role` unchanged on desktop.
+- Touch hint: a quiet, decorative label `Tap to copy` (small, `text-ink-3`, top-right, `aria-hidden`), shown only under a coarse pointer (`hidden [@media(pointer:coarse)]:inline-flex`) and swapped for the `Copied` pill while copied.
 - On success only: set copied state (timer reset on repeat, cleared on unmount), `navigator.vibrate?.(10)`, and render a small `Copied` pill top-right that is visible on every pointer type (`aria-live="polite"`).
 - Grok skin: check `grok-mode.css` rules targeting `pre` in bubbles still apply to the inner `<pre>`; adjust selector only if one targets the wrapper position.
 
@@ -108,6 +109,11 @@ test('a fence renders a copy button', () => {
 })
 test('the button hides under a coarse pointer', () => {
   expect(fence('desktop')).toContain('[@media(pointer:coarse)]:hidden')
+})
+test('a fence shows a tap hint only under a coarse pointer', () => {
+  const out = fence('phone')
+  expect(out).toContain('Tap to copy')
+  expect(out).toContain('[@media(pointer:coarse)]:inline-flex')
 })
 test('BubbleCode without copyText renders no button', () => {
   const out = renderToStaticMarkup(<BubbleCode>x</BubbleCode>)
@@ -147,7 +153,7 @@ Expected: all PASS, no new lint errors.
 
 - [ ] **Step 1: Write the spec** with `permissions: ['clipboard-read', 'clipboard-write']`:
   - desktop (fine pointer): click `Copy code` → `navigator.clipboard.readText()` equals the fence source (no trailing newline); `Copied` visible.
-  - tablet (`hasTouch: true`, `isMobile: true`, 1024×768 → desktop surface): button not visible; tap the `<pre>` → clipboard equals source.
+  - tablet (`hasTouch: true`, `isMobile: true`, 1024×768 → desktop surface): button not visible, `Tap to copy` visible; tap the `<pre>` → clipboard equals source.
   - desktop: click inside the `<pre>` (not the button) → clipboard unchanged.
 
 - [ ] **Step 2: Run** — `cd web && npx playwright test tests/e2e/smoke/chat-code-copy.spec.ts` → PASS.
