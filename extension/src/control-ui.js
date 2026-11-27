@@ -9,9 +9,9 @@
   let state=null,message='',captureStyle=null;
   const rpc=async type=>{const reply=await chrome.runtime.sendMessage({type});if(!reply?.ok)throw new Error(reply?.error||'Reopen Supermux from the extension icon.');return reply.data;};
   function render(){
-    const focus=root.activeElement?.dataset.action,active=['active','starting','stopping'].includes(state?.state);
+    const focus=root.activeElement?.dataset.action,active=['active','starting','stopping'].includes(state?.state),notice=message||(!active&&state?.error)||'';
     host.hidden=!state?.paired;
-    root.innerHTML=`<style>${style}</style><div class="pill"><span class="brand" aria-label="Supermux">${brandSvg}</span><button class="target" data-action="settings" aria-label="Change connected chat"><strong>${escape(state?.session_label||state?.session||'Your agent')}</strong><small>${escape(state?.company_label||state?.site||'')}</small></button><button class="${active?'stop':'allow'}" data-action="${active?'stop':'allow'}">${active?'Stop':'Allow control'}</button></div>${message?`<div class="message" role="alert">${escape(message)}</div>`:''}`;
+    root.innerHTML=`<style>${style}</style><div class="pill"><span class="brand" aria-label="Supermux">${brandSvg}</span><button class="target" data-action="settings" aria-label="Change connected chat"><strong>${escape(state?.session_label||state?.session||'Your agent')}</strong><small>${escape(state?.company_label||state?.site||'')}${state?.state==='active'&&state.lease_expires_at?` · until ${escape(new Date(state.lease_expires_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}))}`:''}</small></button><button class="${active?'stop':'allow'}" data-action="${active?'stop':'allow'}">${active?'Stop':'Allow control'}</button></div>${notice?`<div class="message" role="alert">${escape(notice)}</div>`:''}`;
     if(focus)root.querySelector(`[data-action="${focus}"]`)?.focus();
   }
   async function refresh(){try{state=await rpc('control.status');render();}catch{host.hidden=true;}}
