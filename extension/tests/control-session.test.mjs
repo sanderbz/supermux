@@ -5,7 +5,7 @@ import {createControlService} from '../src/control-session.js';
 const event=()=>({listeners:[],addListener(fn){this.listeners.push(fn);},emit(...args){for(const fn of this.listeners)fn(...args);}});
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 const until=async check=>{for(let i=0;i<200;i++){if(check())return;await new Promise(resolve=>setTimeout(resolve,2));}assert.fail('Expected control lifecycle event');};
-function fixture() {
+function fixture(options={}) {
   const site='https://example.test',tab={id:7,url:site+'/page',title:'Fixture'};
   let config={origin:'https://server.test',epoch:'one',bindings:{[site]:{id:'binding-a',token:'private-a',session:'agent-a',company_label:'Company A'}}};
   const records=[],sockets=[],commands=[],detaches=[],saved={},messages=[];
@@ -24,7 +24,7 @@ function fixture() {
     scripting:{async executeScript(){}},
     debugger:{onEvent:event(),onDetach:event(),async attach(){},async detach(target){detaches.push(target);},async sendCommand(target,method,params){commands.push({target,method,params});return command(method,params);}},
   };
-  const service=createControlService({chrome,getConfig:async()=>config,WebSocketClass:Socket});
+  const service=createControlService({chrome,getConfig:async()=>config,WebSocketClass:Socket,...options});
   const sender={frameId:0,url:tab.url};
   return {service,chrome,tab,records,sockets,commands,detaches,saved,messages,
     setConfig(value){config=value;},getConfig(){return config;},setCommand(fn){command=fn;},
@@ -79,8 +79,8 @@ test('cross-origin or unavailable tab URL fails closed before input dispatch',as
   }
 });
 
-test('a timed out lease detaches, and a fresh activation is usable after old CDP completion',async()=>{
-  const f=fixture(),held=deferred(),entered=deferred();try{
+test('a batch stuck past its timeout grace detaches, and a fresh activation is usable after old CDP completion',async()=>{
+  const f=fixture({runGraceMs:30}),held=deferred(),entered=deferred();try{
     await f.start();f.setCommand(async method=>{if(method==='Runtime.evaluate'){entered.resolve();await held.promise;return {result:{value:'late'}};}return {};});
     f.sockets[0].receive({type:'command',id:'timeout',steps:[{action:'evaluate',expression:'1'}],timeout_ms:15});await entered.promise;await until(()=>f.detaches.length===1);
     held.resolve();f.setCommand(async method=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'main',url:f.tab.url}}}:method==='Runtime.evaluate'?{result:{value:'fresh'}}:{});
@@ -144,4 +144,80 @@ test('native Stop detaches immediately and refreshes SPA URL before returning th
     const stopping=f.stop();await entered.promise;assert.equal(f.detaches.length,1,'command stream already detached');assert.equal(f.messages.at(-1).state.state,'active','idle UI waits for URL cache');
     held.resolve();await stopping;assert.equal(f.saved.annotationTabs[7],f.tab.url);assert.equal(f.messages.at(-1).state.state,'idle');await f.start();assert.equal(f.sockets.length,2,'initial sender document URL remains valid within the paired origin');
   }finally{held.resolve();await f.stop();}
+});
+
+const slowEvaluate=(ms,value='slow')=>async method=>{if(method==='Runtime.evaluate'){await new Promise(r=>setTimeout(r,ms));return {result:{value}};}return method==='Page.getFrameTree'?{frameTree:{frame:{id:'main',url:'https://example.test/page'}}}:{};};
+
+test('a batch timeout ends only that batch and control stays connected',async()=>{
+  const f=fixture();try{
+    await f.start();f.setCommand(slowEvaluate(60));
+    const timedOut=await f.batch([{action:'evaluate',expression:'1'},{action:'evaluate',expression:'2'}],'slow',15);
+    assert.equal(timedOut.ok,false);assert.equal(timedOut.error.code,'timeout');assert.equal(timedOut.completed,0);
+    assert.equal(f.detaches.length,0);assert.equal(f.sockets[0].readyState,1);assert.equal((await f.service.status(7)).state,'active');
+    assert.equal(f.records.some(r=>r.type==='stop'),false);assert.equal(f.commands.filter(c=>c.method==='Runtime.evaluate').length,1,'later steps never run');
+    f.setCommand(slowEvaluate(0,'next'));const next=await f.batch([{action:'evaluate',expression:'3'}],'next');assert.equal(next.ok,true);assert.equal(next.results[0],'next');
+  }finally{await f.stop();}
+});
+
+test('a cancelled batch ends only that batch and control stays connected',async()=>{
+  const f=fixture(),entered=deferred();try{
+    await f.start();f.setCommand(async method=>{if(method==='Runtime.evaluate'){entered.resolve();await new Promise(r=>setTimeout(r,30));return {result:{value:'late'}};}return {};});
+    f.sockets[0].receive({type:'command',id:'cancel-me',steps:[{action:'evaluate',expression:'1'},{action:'evaluate',expression:'2'}],timeout_ms:1000});
+    await entered.promise;f.sockets[0].receive({type:'cancel',id:'cancel-me'});
+    await until(()=>f.records.some(r=>r.type==='result'&&r.id==='cancel-me'));
+    assert.equal(f.records.find(r=>r.type==='result'&&r.id==='cancel-me').error.code,'cancelled');
+    assert.equal(f.detaches.length,0);assert.equal((await f.service.status(7)).state,'active');assert.equal(f.commands.filter(c=>c.method==='Runtime.evaluate').length,1);
+  }finally{await f.stop();}
+});
+
+test('server lease expiry ends control and the pill shows why and until when',async()=>{
+  const f=fixture();try{
+    const expires=Date.now()+3600000;await f.start();
+    assert.equal((await f.service.status(7)).lease_expires_at,null);
+    f.sockets[0].receive({type:'command',id:'lease',steps:[{action:'evaluate',expression:'1'}],timeout_ms:1000,lease_expires_at:expires});
+    await until(()=>f.records.some(r=>r.type==='result'&&r.id==='lease'));assert.equal((await f.service.status(7)).lease_expires_at,expires);
+    f.sockets[0].receive({type:'stop',reason:'lease_expired'});await until(()=>f.detaches.length===1);
+    const state=await f.service.status(7);assert.equal(state.state,'idle');assert.match(state.error,/1 hour without agent activity/);
+    assert.equal(f.records.find(r=>r.type==='stop').reason,state.error,'the reason is reported back to the server');
+    await f.start();assert.equal((await f.service.status(7)).error,null);
+  }finally{await f.stop();}
+});
+
+function frameFixture(){
+  const f=fixture();let mainNode=11;const resolved=[];
+  f.setCommand(async(method,params)=>{
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main',url:f.tab.url,loaderId:'doc1'},childFrames:[{frame:{id:'child',parentId:'main',url:'https://ads.test/'}}]}};
+    if(method==='DOM.getDocument')return {root:{backendNodeId:1}};
+    if(method==='Accessibility.getFullAXTree')return {nodes:params.frameId==='main'?[{role:{value:'textbox'},name:{value:'App name'},backendDOMNodeId:mainNode},{role:{value:'button'},name:{value:'Save'},backendDOMNodeId:31}]:[{role:{value:'button'},name:{value:'Ad'},backendDOMNodeId:21}]};
+    if(method==='Runtime.evaluate')return {result:{value:{url:f.tab.url,title:'Fixture'}}};
+    if(method==='DOM.resolveNode'){resolved.push(params.backendNodeId);if(params.backendNodeId!==mainNode&&params.backendNodeId<30&&params.backendNodeId!==21)throw new Error('No node with given id found');return {object:{objectId:'node-'+params.backendNodeId}};}
+    if(method==='Runtime.callFunctionOn')return {result:{value:{connected:true,editable:true,hit:true,rect:{x:1,y:1,width:10,height:10}}}};
+    return {};
+  });
+  return Object.assign(f,{resolved,rerender(){mainNode++;},event:(method,params,sessionId)=>f.chrome.debugger.onEvent.emit({tabId:7,...(sessionId?{sessionId}:{})},method,params)});
+}
+
+test('navigation in an unrelated frame does not invalidate main-frame refs',async()=>{
+  const f=frameFixture();try{
+    await f.start();const snapshot=(await f.batch([{action:'snapshot'}],'snap')).results[0];
+    const input=snapshot.nodes.find(n=>n.name==='App name').ref,ad=snapshot.nodes.find(n=>n.name==='Ad').ref;
+    f.event('Page.frameNavigated',{frame:{id:'child',parentId:'main',loaderId:'ad-2',url:'https://ads.test/next'}});
+    f.event('Page.frameDetached',{frameId:'lazy-frame'});
+    f.event('Target.detachedFromTarget',{sessionId:'unrelated-session'});
+    f.event('DOM.documentUpdated',{},'unrelated-session');
+    const fill=await f.batch([{action:'fill',ref:input,text:'Supermux'}],'fill');assert.equal(fill.ok,true,JSON.stringify(fill.error));
+    assert.ok(f.commands.some(c=>c.method==='Input.insertText'&&c.params.text==='Supermux'));
+    const stale=await f.batch([{action:'click',ref:ad}],'ad');assert.equal(stale.error.code,'stale_ref','the navigated frame keeps its own refs stale');
+    f.event('Page.frameNavigated',{frame:{id:'main',loaderId:'doc2',url:f.tab.url}});
+    const gone=await f.batch([{action:'fill',ref:input,text:'x'}],'gone');assert.equal(gone.error.code,'stale_ref','a main-frame navigation still invalidates everything');
+  }finally{await f.stop();}
+});
+
+test('a re-rendered element is found again once by role and name',async()=>{
+  const f=frameFixture();try{
+    await f.start();const snapshot=(await f.batch([{action:'snapshot'}],'snap')).results[0];
+    const input=snapshot.nodes.find(n=>n.name==='App name').ref;f.rerender();
+    const fill=await f.batch([{action:'fill',ref:input,text:'again'}],'fill');assert.equal(fill.ok,true,JSON.stringify(fill.error));
+    assert.deepEqual(f.resolved.slice(-2),[11,12]);
+  }finally{await f.stop();}
 });
