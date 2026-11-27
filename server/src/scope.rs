@@ -205,7 +205,7 @@ pub fn member_may_reach(method: &Method, path: &str) -> bool {
     // `authorize_connector_target`; the definition CRUD / `.mcpb` import is
     // `require_admin` INSIDE (404s a member), so the router is member-reachable
     // while its admin bits are not.
-    if under(path, "/api/connectors") {
+    if under(path, "/api/connectors") || under(path, "/api/agent-skills") {
         return true;
     }
     // Company-jailed file browser (`company_jail` confines every resolve). The

@@ -988,3 +988,20 @@ async fn no_human_world_backstop_is_a_passthrough() {
     // …and an allowlisted route is reachable too (sanity: nothing over-blocks).
     assert_ne!(get_bearer(&app, "/api/sessions").await.0, nf, "no-human owner reaches /api/sessions");
 }
+
+#[tokio::test]
+async fn member_grants_managed_skills_only_in_own_company() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let f = fixture().await;
+    let (member, csrf) = login(&f.app, HOST_A, "alice-code").await;
+    let uri = "/api/agent-skills/triage";
+    let package = serde_json::json!({"files":{"SKILL.md":STANDARD.encode("---\nname: triage\ndescription: Triage tickets\n---\n")}});
+    assert_eq!(send_bearer(&f.app, "PUT", uri, package.clone()).await, StatusCode::OK);
+    assert_eq!(send_bearer(&f.app, "PUT", uri, package.clone()).await, StatusCode::CONFLICT);
+    assert_eq!(send_cookie(&f.app, "PUT", uri, &member, &csrf, package).await, StatusCode::NOT_FOUND);
+    assert_eq!(get_cookie(&f.app, uri, &member).await, StatusCode::NOT_FOUND);
+    for (target, status) in [("@company:1", StatusCode::OK), ("@company:2", StatusCode::NOT_FOUND), ("*", StatusCode::NOT_FOUND)] {
+        assert_eq!(send_cookie(&f.app, "PUT", &format!("{uri}/grant?target={target}"), &member, &csrf, serde_json::json!({"enabled":true})).await, status);
+        assert_eq!(get_cookie(&f.app, &format!("/api/agent-skills?target={target}"), &member).await, status);
+    }
+}
