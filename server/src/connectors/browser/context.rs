@@ -660,6 +660,41 @@ pub fn capture_mismatch(metadata: Option<&Value>, want: (u32, u32)) -> bool {
     (w, h) != want
 }
 
+/// **A frame's box in the CSS pixels the page is laid out at — never physical.**
+///
+/// Our own `Page.captureScreenshot` (seed, resync, the post-input still, the
+/// repair's still) is not a passive read under a device-scale override: chrome
+/// resizes the view to `css × deviceScaleFactor` for the capture and puts it
+/// back afterwards (`PageHandler::CaptureScreenshot`). A screencast frame
+/// composited inside that window reports that PHYSICAL box as its
+/// `deviceWidth/deviceHeight` — 804×1332 for a 402×666 page at 2×, measured
+/// against Chrome for Testing 159. Taken at face value it is poison twice over:
+/// the client maps taps through it (every tap lands at double the coordinates)
+/// and [`capture_mismatch`] reads it as the dropped capture, so the takeover
+/// fires [`AgentContext::repair_capture`], whose CLEAR lands while the view is
+/// still physical — and the page itself lays out at 804×1332 until the set.
+///
+/// The picture in such a frame is the same page at the same size, so the box is
+/// the only thing wrong with it: rewrite it to the CSS box. Pure; anything that
+/// is not exactly `css × scale` (the real window after a navigation drop, a
+/// seed with no box) passes through untouched.
+pub fn css_frame_metadata(mut metadata: Value, css: (u32, u32), scale: f64) -> Value {
+    if !(scale.is_finite() && scale > 1.0) {
+        return metadata;
+    }
+    let px = |key: &str| metadata.get(key).and_then(Value::as_f64);
+    let (Some(w), Some(h)) = (px("deviceWidth"), px("deviceHeight")) else {
+        return metadata;
+    };
+    // chrome floors `css × scale`; allow either rounding.
+    let physical = |got: f64, css: u32| (got - f64::from(css) * scale).abs() < 1.0;
+    if physical(w, css.0) && physical(h, css.1) {
+        metadata["deviceWidth"] = json!(css.0);
+        metadata["deviceHeight"] = json!(css.1);
+    }
+    metadata
+}
+
 /// **Is this `Page.frameNavigated` a MAIN-frame commit?**
 ///
 /// Pure, and split out so the address bar's "is this my url" rule is one
@@ -769,13 +804,18 @@ impl DeviceMetrics {
         )
     }
 
+    /// The emulated device scale factor.
+    fn scale(&self) -> f64 {
+        f64::from_bits(self.scale.load(Ordering::Relaxed))
+    }
+
     /// The payload that re-asserts this override, verbatim.
     fn cdp_params(&self) -> Value {
         let (width, height) = self.css();
         device_metrics_params(
             width,
             height,
-            f64::from_bits(self.scale.load(Ordering::Relaxed)),
+            self.scale(),
             self.mobile.load(Ordering::Relaxed),
         )
     }
@@ -1660,6 +1700,7 @@ impl AgentContext {
             let want = self.cdp_session_id.clone();
             let tx = tx.clone();
             let policy = options.ack;
+            let metrics = self.metrics.clone();
             tokio::spawn(async move {
                 loop {
                     let ev = match events.recv().await {
@@ -1683,7 +1724,14 @@ impl AgentContext {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
-                        metadata: ev.params.get("metadata").cloned().unwrap_or(json!({})),
+                        // The CSS box, never the physical one a concurrent
+                        // screenshot leaks into the frame — see
+                        // [`css_frame_metadata`].
+                        metadata: css_frame_metadata(
+                            ev.params.get("metadata").cloned().unwrap_or(json!({})),
+                            metrics.css(),
+                            metrics.scale(),
+                        ),
                         // Under `Viewer` the consumer owns the ack, so it needs
                         // the token; under `Immediate` we ack below and hand it
                         // `None` so a consumer cannot double-ack.
@@ -2500,6 +2548,41 @@ mod tests {
             Some(&json!({ "deviceWidth": 0, "deviceHeight": 0 })),
             want
         ));
+    }
+
+    /// **Physical pixels never pass as the CSS box.** A frame composited during
+    /// our own screenshot reports `css × dpr`; it is rewritten to the CSS box,
+    /// and nothing else is touched — above all not the real-window frame the
+    /// capture repair runs off.
+    #[test]
+    fn a_physical_frame_box_is_rewritten_to_the_css_box() {
+        let css = (402, 666);
+        let box_of = |m: &Value| (m["deviceWidth"].as_f64(), m["deviceHeight"].as_f64());
+        let phys = css_frame_metadata(
+            json!({ "deviceWidth": 804.0, "deviceHeight": 1332.0, "pageScaleFactor": 1 }),
+            css,
+            2.0,
+        );
+        assert_eq!(box_of(&phys), (Some(402.0), Some(666.0)));
+        assert_eq!(phys["pageScaleFactor"], json!(1), "the rest is kept");
+        assert!(!capture_mismatch(Some(&phys), css));
+        // A fractional ratio: chrome floors 401×1.5 = 601.5.
+        let frac = css_frame_metadata(
+            json!({ "deviceWidth": 601, "deviceHeight": 999 }),
+            (401, 666),
+            1.5,
+        );
+        assert_eq!(box_of(&frac), (Some(401.0), Some(666.0)));
+        // Untouched: the CSS box itself, the real window after a navigation
+        // drop, a seed with no box, and anything at 1×.
+        for (m, scale) in [
+            (json!({ "deviceWidth": 402, "deviceHeight": 666 }), 2.0),
+            (json!({ "deviceWidth": 1366, "deviceHeight": 757 }), 2.0),
+            (json!({}), 2.0),
+            (json!({ "deviceWidth": 804, "deviceHeight": 1332 }), 1.0),
+        ] {
+            assert_eq!(css_frame_metadata(m.clone(), css, scale), m);
+        }
     }
 
     /// Only the MAIN frame's commit moves the address bar; a subframe's url is
