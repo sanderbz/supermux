@@ -85,7 +85,15 @@ const DIST = join(DIST_ROOT, 'assets')
 // state rides the hero path), #205 alone 163.98 (+0.01). Combined ≈ 164.05: no
 // single PR is the regression, the gate was at 99.98% before either. Same policy
 // as the two entries above: ceil(measured) = 165, measurement attached.
-const BUDGET_ENTRY_JS = 165 * KB
+// RATCHETED 165 -> 166 after Jan's #296-#299 landed together (owner point
+// 01a21dbb-3933). Measured in CI on main: after #295 (7397f41e) 164.81 KB; after
+// #296-#299 (4998a1a2) 165.04 KB, so main itself crossed 165 although each of the
+// four passed alone (the same combined-wave pattern as the 164 and 165 entries).
+// #292 (code-block copy) measured 165.04 with main merged in (its own hero cost is
+// ~0.01, the copy UI is lazy) and #258 (agent skills) about 165.24. Same policy as
+// the entries above: ceil(measured) with the measurement attached, not clawing
+// unrelated bytes off the hero path. Still the tightest gate in this file.
+const BUDGET_ENTRY_JS = 166 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set

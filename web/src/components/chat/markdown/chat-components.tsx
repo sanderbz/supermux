@@ -14,7 +14,7 @@
  *   ul/ol      18px indent, 3px between items, markers in tertiary ink
  *   code       the `InlineCode` chip B0 already ships (JetBrainsMono 13.2 on
  *              `--sm-fill-soft`, radius 8) — one chip, one definition
- *   pre        `BubbleCode` — the fenced read of the approved Patch board
+ *   pre        `CopyableCode` (`BubbleCode` + copy) — the fenced read of the approved Patch board
  *   a          the speaker's own pigment via `.sm-ink-accent`, underlined on
  *              hover only (a link is quiet until it is aimed at)
  *   file path  an inline code span or a link href that names a FILE
@@ -47,11 +47,14 @@ import type { MarkPin } from '../../../brand/marks'
 import { basename } from '../../../lib/path'
 import { cn } from '../../../lib/utils'
 import { mentionSegments } from '../grouping'
+import { diffLines, fenceCopyText } from './fence-copy'
+// Direct, NOT through the `../ui` barrel: the barrel is entry-chunk code, and the
+// copy affordance belongs in this lazy chunk only (see `copyable-code.tsx`).
+import { CopyableCode } from '../ui/copyable-code'
 import { resolveFilePath } from './file-path'
 import {
   ACCENT_INK_CLASS,
   accentInkVarsForSeed,
-  BubbleCode,
   CapturedFrameCard,
   CAPTURED_FRAME,
   CodeAdd,
@@ -157,32 +160,6 @@ function plainText(node: React.ReactNode): string {
     return plainText((node.props as { children?: React.ReactNode }).children)
   }
   return ''
-}
-
-/**
- * Is this fence a DIFF?
- *
- * `board-patch-focused.png` gives the one fenced block the approved design
- * contains, and it is a diff drawn in exactly two inks: the removed line in
- * tertiary, the added line at full strength — B0's `CodeDel` / `CodeAdd`. That
- * read is worth more than syntax colour here (it is the shape of the change, and
- * the surface's rule is quiet chrome, loud content), so a fence that IS a diff
- * gets it.
- *
- * The test is deliberately strict: at least two non-empty lines, every one of
- * them opening with `+`, `-` or a space, and at least one of each sign. Rust
- * that happens to start a line with a minus does not qualify, because the rest
- * of the block will not.
- */
-function diffLines(text: string): string[] | null {
-  const lines = text.replace(/\n$/, '').split('\n')
-  const meaningful = lines.filter((l) => l.trim() !== '')
-  if (meaningful.length < 2) return null
-  if (!meaningful.every((l) => /^[-+ ]/.test(l))) return null
-  if (!meaningful.some((l) => l.startsWith('+')) || !meaningful.some((l) => l.startsWith('-'))) {
-    return null
-  }
-  return lines
 }
 
 /** The diff, in the boards' two inks. A function, not a component: this module
@@ -475,9 +452,11 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       // the author labelled the fence with — `rehype-highlight`'s spans are
       // discarded for it, because two inks say more about a change than six
       // token colours do.
-      const diff = diffLines(plainText(children))
+      const raw = plainText(children)
+      const diff = diffLines(raw)
       return (
-        <BubbleCode
+        <CopyableCode
+          copyText={fenceCopyText(raw)}
           className={cn(
             // ON THE PHONE THE FENCE WRAPS (daily-driver QA #18).
             //
@@ -505,7 +484,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
           )}
         >
           {diff ? diffNodes(diff) : children}
-        </BubbleCode>
+        </CopyableCode>
       )
     },
     table: ({ node: _node, className, ...rest }) => (

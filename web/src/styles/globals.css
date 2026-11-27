@@ -1815,3 +1815,33 @@
     opacity: 0.4;
   }
 }
+
+/* ══ CODE-BLOCK COPY — the confirmation's motion (APPENDED) ══════════════════
+   `CopyableCode`'s copy affordance. The well's border takes the check's ink for
+   the copy window (a Tailwind transition, no keyframe); here only the corner:
+   the check lands (scale from 0.6 on the app's curve) and the label unrolls
+   beside it. Reduce Motion: both simply fade. */
+@keyframes sm-code-copied-check {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-12deg);
+  }
+}
+.sm-code-copied-check {
+  animation: sm-code-copied-check 0.26s cubic-bezier(0.2, 0, 0, 1) both;
+}
+@keyframes sm-code-copied-label {
+  from {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+  }
+}
+.sm-code-copied-label {
+  animation: sm-code-copied-label 0.22s cubic-bezier(0.2, 0, 0, 1) 0.04s both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sm-code-copied-check,
+  .sm-code-copied-label {
+    animation-name: sm-mount-fade;
+  }
+}
