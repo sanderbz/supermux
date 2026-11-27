@@ -234,7 +234,7 @@ export function BubbleCode({
       onClick={textToCopy === undefined ? undefined : onTap}
       className={cn(
         'overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
-        textToCopy === undefined ? 'mt-[11px]' : 'pr-[72px] [@media(pointer:coarse)]:pr-[96px]',
+        textToCopy === undefined ? 'mt-[11px]' : 'pt-8',
         className,
       )}
     >
@@ -243,40 +243,49 @@ export function BubbleCode({
   )
   if (textToCopy === undefined) return pre
 
-  const chip = 'absolute right-1.5 top-1.5 items-center gap-1 rounded-md text-[11px] leading-none'
+  const chip = 'absolute right-1.5 top-1.5 items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] leading-none'
   return (
     <div className="relative mt-[11px]">
       {pre}
-      {copied ? (
-        <span
-          aria-live="polite"
-          className={cn(chip, 'inline-flex bg-muted px-1.5 py-1 text-ink')}
-        >
-          <Check className="size-3" aria-hidden />
-          Copied
-        </span>
-      ) : (
-        <>
-          <button
-            type="button"
-            aria-label="Copy code"
-            onClick={doCopy}
-            className={cn(
-              chip,
-              'inline-flex bg-code-bg px-1.5 py-1 text-ink-3 transition-colors hover:bg-muted hover:text-ink [@media(pointer:coarse)]:hidden',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            )}
-          >
-            <Copy className="size-3.5" aria-hidden />
-          </button>
-          <span
-            aria-hidden
-            className={cn(chip, 'pointer-events-none hidden px-1.5 py-1 text-ink-3 [@media(pointer:coarse)]:inline-flex')}
-          >
-            Tap to copy
-          </span>
-        </>
-      )}
+      {/* The button stays mounted through the copy (focus survives); only its
+          content and label swap. Hidden under a coarse pointer, where the whole
+          block is the target and the hint below takes its place. */}
+      <button
+        type="button"
+        aria-label={copied ? 'Copied' : 'Copy code'}
+        title={copied ? 'Copied' : 'Copy'}
+        onClick={doCopy}
+        className={cn(
+          chip,
+          'inline-flex bg-code-bg text-ink-3 transition-colors hover:bg-muted/60 hover:text-ink [@media(pointer:coarse)]:hidden',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        )}
+      >
+        {copied ? (
+          <>
+            <Check className="size-3.5 text-status-active-ink" aria-hidden />
+            Copied
+          </>
+        ) : (
+          <Copy className="size-3.5" aria-hidden />
+        )}
+      </button>
+      <span
+        aria-hidden
+        className={cn(chip, 'pointer-events-none hidden text-ink-3 [@media(pointer:coarse)]:inline-flex')}
+      >
+        {copied ? (
+          <>
+            <Check className="size-3 text-status-active-ink" aria-hidden />
+            Copied
+          </>
+        ) : (
+          'Tap to copy'
+        )}
+      </span>
+      <span className="sr-only" aria-live="polite">
+        {copied ? 'Copied' : ''}
+      </span>
     </div>
   )
 }

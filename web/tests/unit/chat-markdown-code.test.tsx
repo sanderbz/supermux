@@ -77,6 +77,14 @@ describe('copy affordance', () => {
     expect(out).toContain('Tap to copy')
     expect(out).toContain('[@media(pointer:coarse)]:inline-flex')
   })
+  test('no blanket right padding on the pre (wrapped phone fences keep full width)', () => {
+    for (const surface of ['phone', 'desktop'] as const) {
+      expect(fence(surface)).not.toMatch(/\bpr-/)
+    }
+  })
+  test('an always-mounted sr-only live region exists', () => {
+    expect(fence('desktop')).toContain('class="sr-only" aria-live="polite"')
+  })
   test('BubbleCode without copyText renders no button', () => {
     const out = renderToStaticMarkup(<BubbleCode>x</BubbleCode>)
     expect(out).not.toContain('Copy code')
