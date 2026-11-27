@@ -85,7 +85,20 @@ const DIST = join(DIST_ROOT, 'assets')
 // state rides the hero path), #205 alone 163.98 (+0.01). Combined ≈ 164.05: no
 // single PR is the regression, the gate was at 99.98% before either. Same policy
 // as the two entries above: ceil(measured) = 165, measurement attached.
-const BUDGET_ENTRY_JS = 165 * KB
+// RATCHETED 165 -> 166 after #296-#299 merged together. Measured on each merge
+// commit (local bun 1.4.4; CI's older bun has read ~0.2 KB larger, so CI sits
+// higher still):
+//   before the wave, 7397f41e (#295)   164.82
+//   #296 pill heights, 50935760        164.82   (+0.00)
+//   #297 composer cap, d9b320dc        164.97   (+0.15 — the cap math lives in
+//                                                composer-draft.ts, entry code)
+//   #298 hire lands, f47aabce          164.96   (-0.01)
+//   #299 file quick look, 4998a1a2     165.03   (+0.07 — chunk-hash churn plus
+//                                                the chat-markdown import map)
+// No single PR is the regression — the gate was at 99.9% before any of them, and
+// main itself now fails it. Same policy as the entries above: ceil(measured) =
+// 166, measurement attached; the next entry-path addition still has under 1 KB.
+const BUDGET_ENTRY_JS = 166 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
 //
 // RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
