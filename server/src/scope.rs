@@ -235,6 +235,12 @@ pub fn member_may_reach(method: &Method, path: &str) -> bool {
     if path == "/api/events" {
         return true;
     }
+    // The capabilities probe: build identity, capability strings and limits —
+    // nothing company-specific, and every client needs it before it can tell
+    // which features this server has. GET only, exact path.
+    if *method == Method::GET && path == "/api/capabilities" {
+        return true;
+    }
     // Delegate WITHIN the member's company (`delegate` refuses a spoofed/foreign
     // `from` and a cross-company `to`), and long-poll `wait` on a session (the
     // wait handler runs it through `authorize_session_for_human`). NOT
@@ -478,6 +484,9 @@ mod tests {
 
         // ── ALLOWED (company-safe, each self-scoping) ──
         assert!(member_may_reach(&get, "/api/sessions"));
+        assert!(member_may_reach(&get, "/api/capabilities"));
+        assert!(!member_may_reach(&post, "/api/capabilities"));
+        assert!(!member_may_reach(&get, "/api/capabilities/x"));
         assert!(member_may_reach(&get, "/api/sessions/archived"));
         assert!(member_may_reach(&post, "/api/sessions"));
         assert!(member_may_reach(&post, "/api/sessions/bot/send"));

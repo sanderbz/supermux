@@ -35,6 +35,12 @@ pub enum BrowserError {
     #[error("page evaluation threw: {0}")]
     Evaluate(String),
 
+    /// The page is showing a JS `alert` / `confirm` / `prompt` / `beforeunload`
+    /// and Chrome answers nothing that needs the renderer until it is answered.
+    /// Refused at once instead of waiting out the CDP deadline.
+    #[error("the page is showing a JavaScript dialog; it must be answered before the page can do anything else")]
+    DialogOpen,
+
     /// The agent tried to drive a page a human has taken over.
     /// **This is the lock refusal** — expected, not exceptional.
     ///

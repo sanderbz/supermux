@@ -1,0 +1,69 @@
+{
+ "case": "case5-edit-escape",
+ "session": "spike-cca",
+ "at": "2026-11-25T17:25:37.372Z",
+ "scenario": "scenario:edit:7",
+ "livePin": "2.1.326",
+ "pinUsed": "2.1.326",
+ "pinOverridden": false,
+ "entryId": "permission.edit",
+ "target": "escape",
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Escape"
+  ],
+  "committed": true,
+  "effect": "feedback"
+ },
+ "looks": [
+  {
+   "tag": "case5-edit-escape-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "edit",
+    "caret": 0,
+    "key": "permission/edit/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "edit",
+    "caret": 0,
+    "key": "permission/edit/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case5-edit-escape-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "edit",
+    "caret": 0,
+    "key": "permission/edit/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "edit",
+    "caret": 0,
+    "key": "permission/edit/Yes|Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)|No"
+   }
+  },
+  {
+   "tag": "case5-edit-escape-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "edit",
+    "question": "Do you want to make this edit to edit7.txt?",
+    "options": [
+     "Yes",
+     "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}

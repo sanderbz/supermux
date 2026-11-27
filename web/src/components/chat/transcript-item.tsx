@@ -139,6 +139,15 @@ export interface TranscriptItemProps {
    */
   onOpenSchedule?: (ref: ScheduleRef) => void
   /**
+   * Open a file Claude named in its prose in the quick look (chat file
+   * quick-look). Read by the assistant's OWN bubbles only: a colleague's
+   * relative path is relative to a directory this row does not know. Omit and
+   * every path stays plain code.
+   */
+  onOpenPath?: (path: string) => void
+  /** The session's working directory — the base a relative path resolves on. */
+  cwd?: string
+  /**
    * Show the per-message action bar (Copy · Share · More) under assistant
    * bubbles. Bot/Grok-mode only — the panel passes it `true`; every other caller
    * (the base app never renders this surface, plus the benches and unit tests)
@@ -323,7 +332,9 @@ function areTranscriptPropsEqual(a: TranscriptItemProps, b: TranscriptItemProps)
     a.showActions !== b.showActions ||
     a.onOpenSession !== b.onOpenSession ||
     a.onOpenSchedule !== b.onOpenSchedule ||
-    a.onOpenTerminal !== b.onOpenTerminal
+    a.onOpenTerminal !== b.onOpenTerminal ||
+    a.onOpenPath !== b.onOpenPath ||
+    a.cwd !== b.cwd
   ) {
     return false
   }
@@ -479,6 +490,8 @@ function AgentRow({
           surface={rest.surface}
           rawUrl={rest.rawUrl}
           onOpenSession={rest.onOpenSession}
+          onOpenPath={rest.onOpenPath}
+          cwd={rest.cwd}
         />
         {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </div>
@@ -1257,6 +1270,8 @@ interface ProseProps {
    *  mention is still `mentionSegments`' decision — the index, never a regex
    *  over arbitrary words; this only decides what a click does. */
   onOpenSession?: (slug: string) => void
+  onOpenPath?: (path: string) => void
+  cwd?: string
 }
 
 /**
@@ -1280,6 +1295,8 @@ function Prose(props: ProseProps) {
         surface={props.surface}
         rawUrl={props.rawUrl}
         onOpenSession={props.onOpenSession}
+        onOpenPath={props.onOpenPath}
+        cwd={props.cwd}
       />
     </React.Suspense>
   )

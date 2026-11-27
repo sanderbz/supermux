@@ -39,6 +39,17 @@ pub enum AppError {
     /// 90 %, and the sentence names both numbers so the person can act.
     #[error("insufficient storage: {0}")]
     InsufficientStorage(String),
+    /// Something the request depends on is missing or not answering — the
+    /// request itself is fine. Carries a stable machine `code` (e.g.
+    /// `browser_unavailable`) next to the readable sentence, so a client can
+    /// branch on it instead of string-matching, and it is never a 500: a 500
+    /// says "supermux broke", which is not what happened.
+    #[error("{message}")]
+    Unavailable {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+    },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -54,6 +65,7 @@ impl AppError {
             AppError::Gone(_) => StatusCode::GONE,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::InsufficientStorage(_) => StatusCode::INSUFFICIENT_STORAGE,
+            AppError::Unavailable { status, .. } => *status,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -70,7 +82,12 @@ impl IntoResponse for AppError {
             }
             other => other.to_string(),
         };
-        let body = Json(json!({ "ok": false, "error": message }));
+        let body = match &self {
+            AppError::Unavailable { code, .. } => {
+                Json(json!({ "ok": false, "error": message, "code": code, "detail": message }))
+            }
+            _ => Json(json!({ "ok": false, "error": message })),
+        };
         (status, body).into_response()
     }
 }
@@ -82,5 +99,27 @@ impl From<sqlx::Error> for AppError {
             sqlx::Error::RowNotFound => AppError::NotFound("row not found".to_string()),
             other => AppError::Internal(other.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unavailable_carries_its_status_code_and_detail() {
+        let resp = AppError::Unavailable {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "browser_unavailable",
+            message: "no browser".into(),
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["code"], "browser_unavailable");
+        assert_eq!(v["error"], "no browser");
+        assert_eq!(v["detail"], "no browser");
     }
 }

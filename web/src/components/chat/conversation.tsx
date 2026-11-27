@@ -97,8 +97,8 @@ const STAT_ROW = 30
  * How much floor the track reserves for the composer — MEASURED (QA #12).
  *
  * It used to be a constant, and the composer is not: it grows with the draft up
- * to 136px (`use-composer`'s cap), and it grows again when the refusal banner
- * appears under it. With a 92px reserve under a 136px composer, streaming text
+ * to 15 lines (`COMPOSER_MAX_LINES`, viewport-bounded), and it grows again when
+ * the refusal banner appears under it. With a 92px reserve under a tall composer, streaming text
  * and the newest bubble slid under the glass exactly while they were being
  * written — measured on the live instance in `33-long-draft.png`,
  * `25-reload-t3.7s.png`, `27-back-online.png`, `11-scrolled-top.png`.
@@ -177,6 +177,9 @@ export interface ChatConversationProps {
   /** Open this session's Schedules sheet — the destination of a `⏱` chip
    *  (fase B4 T3/T8). Omit and the chip stays plain emphasis. */
   onOpenSchedule?: (ref: ScheduleRef) => void
+  /** Open a file Claude named in the quick look. Relative paths resolve on
+   *  `session.dir`. Omit and paths stay plain code. */
+  onOpenPath?: (path: string) => void
   /**
    * A hand-off this client dispatched and the ledger has not confirmed yet
    * (fase B4 T5) — the ONLY thing that draws the handoff pill. The pill
@@ -355,6 +358,7 @@ export function ChatConversation({
   showActions = false,
   onOpenSession,
   onOpenSchedule,
+  onOpenPath,
   workflow = null,
   handoff,
   nowMs,
@@ -704,6 +708,8 @@ export function ChatConversation({
                 onOpenSession={onOpenSession}
                 onOpenSchedule={onOpenSchedule}
                 onOpenTerminal={onOpenTerminal}
+                onOpenPath={onOpenPath}
+                cwd={session?.dir}
               />
               </div>
             ))

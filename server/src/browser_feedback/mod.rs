@@ -1,6 +1,7 @@
 //! Website-scoped browser-extension pairing and durable feedback outbox.
 pub mod control;
 pub mod payload;
+pub mod sites;
 
 use crate::{auth_human::AuthContext, db, error::AppError, state::AppState};
 use axum::{
@@ -80,11 +81,40 @@ pub fn public_router_for(state: AppState) -> Router {
 #[serde(deny_unknown_fields)]
 struct PairBody {
     origin: String,
+    /// `origin` (default) or `all`. Old extensions never send it.
+    #[serde(default)]
+    scope: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClaimBody {
     code: String,
+    /// The scope the claiming person saw and approved. An `all` pairing is
+    /// only claimed when this says `all`; otherwise the claim answers with
+    /// `approval_required` and creates nothing.
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+fn parse_scope(scope: Option<&str>) -> Result<&'static str, AppError> {
+    match scope {
+        None | Some("origin") => Ok("origin"),
+        Some("all") => Ok("all"),
+        Some(_) => Err(AppError::BadRequest(
+            "scope must be \"origin\" or \"all\"".into(),
+        )),
+    }
+}
+
+/// Only the owner (bearer, or the company-unscoped human with role `owner`)
+/// may obtain an "All websites" binding. Admins and company members may not.
+pub(crate) fn is_owner(ctx: &AuthContext) -> bool {
+    match ctx {
+        AuthContext::Owner => true,
+        AuthContext::Human {
+            company_id, role, ..
+        } => company_id.is_none() && role == "owner",
+    }
 }
 
 async fn create_pairing(
@@ -92,6 +122,7 @@ async fn create_pairing(
     Json(body): Json<PairBody>,
 ) -> Result<Json<Value>, AppError> {
     let origin = payload::origin(&body.origin)?;
+    let scope = parse_scope(body.scope.as_deref())?;
     if body.origin.trim_end_matches('/') != origin {
         return Err(AppError::BadRequest(
             "pairing requires an exact website origin".into(),
@@ -131,11 +162,11 @@ async fn create_pairing(
     };
     let pairing_id = id("bp");
     let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
-    sqlx::query("INSERT INTO browser_feedback_pairings(id,code_hash,token_hash,origin,created_at,expires_at) VALUES(?,?,?,?,?,?)")
-        .bind(&pairing_id).bind(hash(&code)).bind(hash(&token)).bind(&origin).bind(at).bind(at+300).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO browser_feedback_pairings(id,code_hash,token_hash,origin,created_at,expires_at,scope) VALUES(?,?,?,?,?,?,?)")
+        .bind(&pairing_id).bind(hash(&code)).bind(hash(&token)).bind(&origin).bind(at).bind(at+300).bind(scope).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(success(
-        json!({"id":pairing_id,"code":code,"poll_token":token,"expires_at":at+300}),
+        json!({"id":pairing_id,"code":code,"poll_token":token,"expires_at":at+300,"scope":scope}),
     ))
 }
 
@@ -156,7 +187,8 @@ async fn binding_summary(state: &AppState, b: &store::Binding) -> Result<Value, 
     };
     Ok(
         json!({"id":b.id,"origin":b.origin,"session":b.session,"session_label":label,
-        "company_id":b.company_id,"company_label":company_label,"control_connected":state.browser_control.connected(&b.id)}),
+        "company_id":b.company_id,"company_label":company_label,"control_connected":state.browser_control.connected(&b.id),
+        "scope":b.scope,"expires_at":b.expires_at}),
     )
 }
 async fn poll_pairing(
@@ -206,6 +238,20 @@ pub(crate) async fn binding_is_current(
     };
     if session.archived != 0 || session.company_id != b.company_id {
         return Ok(false);
+    }
+    if b.all_sites() {
+        // Hard 24 h expiry, and only ever the owner's capability.
+        if b.expires_at.is_none_or(|at| at <= now()) {
+            return Ok(false);
+        }
+        if let Some(user_id) = b.paired_by_user_id {
+            let owner = db::human_users::get(&state.pool, user_id)
+                .await?
+                .is_some_and(|u| u.company_id.is_none() && u.role == "owner");
+            if !owner || b.paired_by_company_id.is_some() {
+                return Ok(false);
+            }
+        }
     }
     if let Some(user_id) = b.paired_by_user_id {
         let Some(user) = db::human_users::get(&state.pool, user_id).await? else {
@@ -402,7 +448,7 @@ async fn claim(
             return Err(AppError::NotFound(format!("session '{name}'")));
         }
     }
-    let p:Option<store::Pairing> = sqlx::query_as("SELECT id,token_hash,origin,expires_at,binding_id FROM browser_feedback_pairings WHERE code_hash=? AND expires_at>? AND claimed_at IS NULL")
+    let p:Option<store::Pairing> = sqlx::query_as("SELECT id,token_hash,origin,expires_at,binding_id,scope FROM browser_feedback_pairings WHERE code_hash=? AND expires_at>? AND claimed_at IS NULL")
         .bind(hash(&body.code)).bind(at).fetch_optional(&mut *tx).await?;
     let Some(p) = p else {
         tx.commit().await?;
@@ -410,8 +456,33 @@ async fn claim(
             "code expired, was already used, or does not exist".into(),
         ));
     };
+    let approved = parse_scope(body.scope.as_deref())?;
+    let expires_at = if p.scope == "all" {
+        if !is_owner(&ctx) {
+            tx.commit().await?;
+            return Err(AppError::Forbidden(
+                "only the owner can approve an \"All websites\" browser pairing".into(),
+            ));
+        }
+        if approved != "all" {
+            // Nothing is claimed: the person must first see and approve the
+            // wider scope, then claim again with scope "all".
+            tx.commit().await?;
+            return Ok(success(json!({"approval_required":"all","origin":p.origin,
+                "ttl_secs":sites::ALL_SITES_TTL_SECS})));
+        }
+        Some(at + state.browser_control.all_sites_ttl_secs())
+    } else {
+        if approved != "origin" {
+            tx.commit().await?;
+            return Err(AppError::Conflict(
+                "this code is for one website only; pair again to choose All websites".into(),
+            ));
+        }
+        None
+    };
     let binding_id = id("bb");
-    sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at,company_id,paired_by_user_id,paired_by_company_id) VALUES(?,?,?,?,?,?,?,?)").bind(&binding_id).bind(&p.origin).bind(&name).bind(&p.token_hash).bind(at).bind(company_id).bind(paired_by_user_id).bind(paired_by_company_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO browser_feedback_bindings(id,origin,session,token_hash,created_at,company_id,paired_by_user_id,paired_by_company_id,scope,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(&binding_id).bind(&p.origin).bind(&name).bind(&p.token_hash).bind(at).bind(company_id).bind(paired_by_user_id).bind(paired_by_company_id).bind(&p.scope).bind(expires_at).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE browser_feedback_pairings SET binding_id=?,claimed_at=?,code_hash=NULL WHERE id=?",
     )
@@ -427,7 +498,7 @@ async fn claim(
         "user",
         "browser_feedback.pair",
         &name,
-        json!({"binding":binding_id,"origin":b.origin}),
+        json!({"binding":binding_id,"origin":b.origin,"scope":b.scope,"expires_at":b.expires_at}),
     )
     .await?;
     Ok(success(binding_summary(&state, &b).await?))
@@ -2572,6 +2643,137 @@ mod tests {
             .unwrap()
             .last_send_text
             .is_empty());
+        cleanup(state, dir).await;
+    }
+
+    async fn start_pairing(app: &Router, body: Value) -> Value {
+        let (status, p) = request(app, Method::POST, "/api/browser/pairings", None, Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{p}");
+        p["data"].clone()
+    }
+    async fn unscoped_human(state: &AppState, email: &str, role: &str) -> AuthContext {
+        let user = sqlx::query("INSERT INTO human_users(email,display_name,company_id,role,created_at) VALUES(?,?,NULL,?,?)")
+            .bind(email).bind(email).bind(role).bind(now()).execute(&state.pool).await.unwrap().last_insert_rowid();
+        AuthContext::Human {
+            user_id: user,
+            company_id: None,
+            role: role.into(),
+        }
+    }
+    async fn binding_count(state: &AppState) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM browser_feedback_bindings")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_old_extension_without_scope_pairs_a_single_website() {
+        let (state, app, dir) = setup().await;
+        let p = start_pairing(&app, json!({"origin":"https://example.test"})).await;
+        assert_eq!(p["scope"], "origin");
+        let (status, b) = request(&app, Method::POST, "/api/sessions/agent/browser-pairings", Some(TOKEN),
+            Some(json!({"code":p["code"]}))).await;
+        assert_eq!(status, StatusCode::OK, "{b}");
+        assert_eq!(b["data"]["scope"], "origin");
+        assert_eq!(b["data"]["expires_at"], Value::Null);
+        // A single-website code is never claimed as all websites.
+        let p = start_pairing(&app, json!({"origin":"https://example.test"})).await;
+        let (status, _) = request(&app, Method::POST, "/api/sessions/agent/browser-pairings", Some(TOKEN),
+            Some(json!({"code":p["code"],"scope":"all"}))).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = request(&app, Method::POST, "/api/browser/pairings", None,
+            Some(json!({"origin":"https://example.test","scope":"everything"}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_obtains_an_all_websites_binding_after_explicit_approval() {
+        let (state, app, dir) = setup().await;
+        let p = start_pairing(&app, json!({"origin":"https://example.test","scope":"all"})).await;
+        assert_eq!(p["scope"], "all");
+        // An unscoped admin is not the owner.
+        let admin = unscoped_human(&state, "admin@example.test", "admin").await;
+        let (status, body) = scoped_request(&state, &admin, Method::POST, "/api/sessions/agent/browser-pairings",
+            Some(json!({"code":p["code"],"scope":"all"}))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(binding_count(&state).await, 0);
+        // The owner first gets an approval step, and nothing is claimed.
+        let (status, body) = request(&app, Method::POST, "/api/sessions/agent/browser-pairings", Some(TOKEN),
+            Some(json!({"code":p["code"]}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["approval_required"], "all");
+        assert_eq!(binding_count(&state).await, 0);
+        // Approved explicitly: a 24 h all-websites binding.
+        let (status, body) = request(&app, Method::POST, "/api/sessions/agent/browser-pairings", Some(TOKEN),
+            Some(json!({"code":p["code"],"scope":"all"}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["scope"], "all");
+        let expires = body["data"]["expires_at"].as_i64().unwrap();
+        assert!((expires - now() - sites::ALL_SITES_TTL_SECS).abs() <= 5, "{expires}");
+        let (_, polled) = request(&app, Method::GET, &format!("/api/browser/pairings/{}", p["id"].as_str().unwrap()),
+            Some(p["poll_token"].as_str().unwrap()), None).await;
+        assert_eq!(polled["data"]["binding"]["scope"], "all");
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn company_members_cannot_obtain_all_websites() {
+        let (state, app, dir) = setup().await;
+        let (member, _, _) = company_member(&state, &dir).await;
+        let p = start_pairing(&app, json!({"origin":"https://example.test","scope":"all"})).await;
+        for scope in [json!("all"), Value::Null] {
+            let mut body = json!({"code":p["code"]});
+            if !scope.is_null() { body["scope"] = scope; }
+            let (status, body) = scoped_request(&state, &member, Method::POST,
+                "/api/sessions/agent/browser-pairings", Some(body)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        }
+        assert_eq!(binding_count(&state).await, 0);
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn an_all_websites_binding_expires_and_follows_the_owner_role() {
+        let (state, app, dir) = setup().await;
+        let owner = unscoped_human(&state, "second-owner@example.test", "owner").await;
+        let p = start_pairing(&app, json!({"origin":"https://example.test","scope":"all"})).await;
+        let (status, body) = scoped_request(&state, &owner, Method::POST, "/api/sessions/agent/browser-pairings",
+            Some(json!({"code":p["code"],"scope":"all"}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = body["data"]["id"].as_str().unwrap().to_owned();
+        let b = store::binding(&state.pool, &id).await.unwrap().unwrap();
+        assert!(binding_is_current(&state, &b).await.unwrap());
+        // Past the hard expiry the binding authorizes nothing.
+        sqlx::query("UPDATE browser_feedback_bindings SET expires_at=? WHERE id=?")
+            .bind(now() - 1).bind(&id).execute(&state.pool).await.unwrap();
+        let b = store::binding(&state.pool, &id).await.unwrap().unwrap();
+        assert!(!binding_is_current(&state, &b).await.unwrap());
+        let (status, _) = request(&app, Method::GET, &format!("/api/browser/pairings/{}", p["id"].as_str().unwrap()),
+            Some(p["poll_token"].as_str().unwrap()), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Demoting the claiming owner to admin revokes it permanently.
+        sqlx::query("UPDATE browser_feedback_bindings SET expires_at=? WHERE id=?")
+            .bind(now() + 600).bind(&id).execute(&state.pool).await.unwrap();
+        let AuthContext::Human { user_id, .. } = owner else { unreachable!() };
+        sqlx::query("UPDATE human_users SET role='admin' WHERE id=?").bind(user_id).execute(&state.pool).await.unwrap();
+        let b = store::binding(&state.pool, &id).await.unwrap().unwrap();
+        assert!(b.revoked_at.is_some());
+        assert!(!binding_is_current(&state, &b).await.unwrap());
+        cleanup(state, dir).await;
+    }
+
+    #[tokio::test]
+    async fn injected_ttl_creates_an_already_expired_binding() {
+        let (state, app, dir) = setup().await;
+        state.browser_control.set_all_sites_ttl_for_test(-1);
+        let p = start_pairing(&app, json!({"origin":"https://example.test","scope":"all"})).await;
+        let (status, body) = request(&app, Method::POST, "/api/sessions/agent/browser-pairings", Some(TOKEN),
+            Some(json!({"code":p["code"],"scope":"all"}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let b = store::binding(&state.pool, body["data"]["id"].as_str().unwrap()).await.unwrap().unwrap();
+        assert!(!binding_is_current(&state, &b).await.unwrap());
         cleanup(state, dir).await;
     }
 }

@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { readLens, type DialogSighting } from '../../src/components/chat/peek-lens'
 import {
+  CC_VERIFIED_CURRENT,
   ENTRIES,
   entryById,
   entryFor,
@@ -58,6 +59,22 @@ const FIXTURES: Record<RegistryId, () => ReturnType<typeof readLens>> = {
  *  the state a real session presents it in. */
 const pinned = (entry: RegistryEntry) =>
   entry.pinExempt ? null : entry.verifiedVersions[0]
+
+/** The 2.1.32x corpus — provenance in `../fixtures/tui/cc321/README.md`. */
+const cc321Of = (name: string) => readLens(readFileSync(join(DIR, 'cc321', name), 'utf8'))
+const CC32X: readonly string[] = CC_VERIFIED_CURRENT
+/** An entry pinned ONLY to 2.1.32x describes a shape the older captures do not
+ *  have (four Bash rows, the reworded Write/Edit row 2), so its fixture is the
+ *  2.1.32x capture of that shape. */
+const CC32X_FIXTURES: Partial<Record<RegistryId, () => ReturnType<typeof readLens>>> = {
+  'permission.bash': () => cc321Of('01-bash-access-caret1.txt'),
+  'permission.edit': () => cc321Of('30-edit-caret1.txt'),
+  'permission.write': () => cc321Of('20-write-caret1.txt'),
+}
+const only32x = (entry: RegistryEntry) =>
+  entry.verifiedVersions.length > 0 && entry.verifiedVersions.every((v) => CC32X.includes(v))
+const fixtureFor = (entry: RegistryEntry) =>
+  only32x(entry) ? CC32X_FIXTURES[entry.id]!() : FIXTURES[entry.id]()
 
 describe('registry — what may be acted on, and what may not', () => {
   test('bash option 2 is rendered but never actionable', () => {
@@ -131,7 +148,7 @@ describe('registry — what may be acted on, and what may not', () => {
     // The meta-rule from the plan: no option is enabled without a fixture. This
     // is that rule, executable — an entry whose rows drifted cannot stay green.
     for (const entry of ENTRIES) {
-      const lens = FIXTURES[entry.id]()
+      const lens = fixtureFor(entry)
       const match = entryFor(lens, pinned(entry))
       expect(match.degraded).toBe(false)
       for (const o of match.entry!.options.filter((x) => x.actOn)) {
@@ -152,12 +169,24 @@ describe('registry — what may be acted on, and what may not', () => {
 
 describe('registry — the version pin', () => {
   test('an unpinned version hard-disables every option', () => {
-    const r = entryFor(lensOf('perm-bash.txt'), '2.2.0')
+    // An unknown version OLDER than the newest capture never gets a structural
+    // match (`STRUCTURE_BASE`), so this is still the plain pin refusal.
+    const r = entryFor(lensOf('perm-bash.txt'), '2.1.300')
     expect(r.degraded).toBe(true)
     expect(r.attention).toBe('registry-version-mismatch')
     expect(r.entry!.options.every((o) => !o.actOn)).toBe(true)
     expect(r.entry!.escape.actOn).toBe(false)
-    expect(r.entry!.options[0].disabledReason).toContain('2.2.0')
+    expect(r.entry!.options[0].disabledReason).toContain('2.1.300')
+  })
+
+  test('a NEWER unpinned version on an exact screen gets the one-off rows only', () => {
+    // perm-bash.txt is the three-row Bash dialog, exactly as 2.1.331 still draws
+    // it with auto mode off, so 2.2.0 gets Yes / No / Esc and nothing more
+    // (`chat-registry-structure.test.ts` covers the refusals).
+    const r = entryFor(lensOf('perm-bash.txt'), '2.2.0')
+    expect(r.degraded).toBe(false)
+    expect(r.basis).toBe('structure')
+    expect(r.entry!.options.map((o) => o.actOn)).toEqual([true, false, true])
   })
 
   test('an unreadable banner is a mismatch, not a pass', () => {
@@ -186,11 +215,14 @@ describe('registry — the version pin', () => {
     // `tests/fixtures/tui/cc233/` — and that run needed no `PIN=` substitution,
     // the sequencer read 2.1.233 off the live boot banner itself. The older
     // numbers are a0's, and each variant still carries what its own bytes prove.
+    // 2.1.32x is on the THREE-row Bash list because `cc321/noauto/` captured and
+    // drove that shape on those versions (auto mode disabled).
     expect(entryById('permission.bash')!.verifiedVersions).toEqual([
       '2.1.227',
       '2.1.231',
       '2.1.232',
       '2.1.233',
+      ...CC32X,
     ])
     expect(entryById('permission.edit')!.verifiedVersions).toEqual([
       '2.1.231',
@@ -206,7 +238,12 @@ describe('registry — the version pin', () => {
       '2.1.231',
       '2.1.232',
       '2.1.233',
+      ...CC32X,
     ])
+    // The 2.1.32x-only shapes: the four-row Bash card and the reworded Write/Edit.
+    const only = ENTRIES.filter(only32x)
+    expect(only.map((e) => e.id).sort()).toEqual(['permission.bash', 'permission.edit', 'permission.write'])
+    for (const e of only) expect([...e.verifiedVersions]).toEqual(CC32X)
   })
 
   test('the live 2.1.232 captures are ACT-ON, not merely rendered', () => {
@@ -250,7 +287,8 @@ describe('registry — the version pin', () => {
     // Pin-exempt entries are excluded, and only they: a startup gate draws
     // before the banner exists, so naming a version it was checked against would
     // be a claim about a string that is not on the screen (`pinExempt`).
-    for (const entry of ENTRIES.filter((e) => !e.pinExempt)) {
+    // …except the 2.1.32x-only shapes, which 2.1.233 never drew (`only32x`).
+    for (const entry of ENTRIES.filter((e) => !e.pinExempt && !only32x(e))) {
       expect(entry.verifiedVersions).toContain(pin!)
     }
   })

@@ -24,6 +24,7 @@ pub mod hosts;
 pub mod human_sessions;
 pub mod human_users;
 pub mod prefs;
+pub mod apns;
 pub mod push;
 pub mod runtime_state;
 pub mod sessions;
@@ -125,8 +126,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 47,
-            "expected forty-seven applied migrations (0001-0005, 0007-0048)"
+            applied, 49,
+            "expected forty-nine applied migrations (0001-0005, 0007-0050)"
         );
 
         // 0037 applied cleanly: the new nullable company_id column exists and a

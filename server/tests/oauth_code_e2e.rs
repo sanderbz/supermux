@@ -597,6 +597,64 @@ async fn callback_stashes_only_and_complete_seals_grants_and_probes() {
 }
 
 #[tokio::test]
+async fn the_app_return_closes_the_sheet_and_complete_can_be_polled() {
+    let h = harness().await;
+    let (st, v) = start(&h, "bot", "supermux://oauth/return", BOX_HOST).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let flow_state = v["state"].as_str().unwrap().to_string();
+
+    // Before the provider callback: `pending`, and polling does not consume it.
+    for _ in 0..3 {
+        let (st, out) = complete(&h, &flow_state).await;
+        assert_eq!(st, StatusCode::OK, "{out}");
+        assert_eq!(out, json!({ "ok": true, "status": "pending" }));
+    }
+    assert!(h.state.oauth_code_flows.contains_key(&flow_state), "a pending poll keeps the flow");
+    assert_eq!(counts(&h.state).await, (0, 0, 0));
+
+    // The callback redirects to the app with `ok=1` only — no state, no token.
+    let cb = follow_authorize(v["authorize_url"].as_str().unwrap()).await;
+    let (st, headers) = callback(&h, &cb).await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(location(&headers), "supermux://oauth/return?ok=1");
+    assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+
+    let (st, out) = complete(&h, &flow_state).await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    assert_eq!(out["status"], json!("connected"));
+    assert_eq!(out["label"], json!("owner@test"));
+    assert_eq!(out["health"]["status"], json!("ok"));
+    // Single use once it has finished.
+    let (st, _) = complete(&h, &flow_state).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // A pending flow polled by ANOTHER identity is still burned (as before).
+    let (_, v) = start(&h, "bot", "supermux://oauth/return", BOX_HOST).await;
+    let other_state = v["state"].as_str().unwrap().to_string();
+    let other = OptCtx(Some(AuthContext::Human { user_id: 9, company_id: None, role: "admin".into() }));
+    let r = oauth_code::complete(
+        axum::extract::State(h.state.clone()),
+        other,
+        axum::extract::Path(ID.to_string()),
+        Json(oauth_code::CompleteBody { state: other_state.clone() }),
+    )
+    .await;
+    assert!(matches!(r, Err(supermux_server::error::AppError::NotFound(_))), "{r:?}");
+    assert!(!h.state.oauth_code_flows.contains_key(&other_state), "burned");
+
+    // A failure goes back to the app as `ok=0&error=<code>`.
+    let (_, v) = start(&h, "bot", "supermux://oauth/return", BOX_HOST).await;
+    let cb = follow_authorize(v["authorize_url"].as_str().unwrap()).await;
+    let no_iss: String = cb.split('&').filter(|p| !p.starts_with("iss=")).collect::<Vec<_>>().join("&");
+    let (st, headers) = callback(&h, &no_iss).await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(location(&headers), "supermux://oauth/return?ok=0&error=issuer");
+    let (st, _) = complete(&h, v["state"].as_str().unwrap()).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "the flow died at the callback");
+    std::fs::remove_dir_all(&h.data_dir).ok();
+}
+
+#[tokio::test]
 async fn complete_by_another_identity_is_refused_and_a_missing_iss_never_reaches_it() {
     let h = harness().await;
     let (st, v) = start(&h, "bot", "/store", BOX_HOST).await;

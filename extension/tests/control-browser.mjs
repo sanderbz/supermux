@@ -64,6 +64,11 @@ try {
   const oldRef=snapshot.nodes.find(n=>n.name==='Approve release'&&n.role==='button').ref;
   const [freshSnapshot]=await okay([{action:'snapshot'}]);const freshRef=freshSnapshot.nodes.find(n=>n.name==='Approve release'&&n.role==='button').ref;await okay([{action:'click',ref:freshRef}]);const stale=await call([{action:'click',ref:oldRef}]);assert.equal(stale.ok,false);assert.equal(stale.error.code,'stale_ref');assert.equal(stale.outcome_unknown,false);
   await okay([{action:'fill',selector:'#editable',text:'Updated release notes'},{action:'key',selector:'#channel',key:'s'},{action:'key',key:'Enter'}]);
+  stage('unrelated frame changes keep main-frame references');
+  const [refSnapshot]=await okay([{action:'snapshot'}]);const nameRef=refSnapshot.nodes.find(n=>n.name==='Release name'&&n.role==='textbox').ref;
+  await page.evaluate(()=>new Promise(resolve=>{const lazy=document.createElement('iframe');lazy.onload=()=>{lazy.onload=()=>{lazy.remove();resolve();};lazy.src='/next?second';};lazy.src='/next?first';document.body.append(lazy);}));
+  await new Promise(r=>setTimeout(r,200));
+  const kept=await okay([{action:'fill',ref:nameRef,text:'Kept reference'},{action:'evaluate',expression:'document.querySelector("#name").value'}]);assert.equal(kept[1],'Kept reference','a lazy iframe navigating and detaching leaves main-frame refs usable');
   assert.equal(await page.locator('#editable').innerText(),'Updated release notes');assert.equal(await page.locator('#channel').inputValue(),'Stable');
   const canvas=await page.locator('#canvas').boundingBox();await okay([{action:'click',x:canvas.x+30,y:canvas.y+20,click_count:2}]);assert.equal(await page.evaluate(()=>window.canvasDouble&&window.canvasTrusted),true);
   const duplicate=await call([{action:'click',selector:'input,select'}]);assert.equal(duplicate.ok,false);assert.equal(duplicate.error.code,'invalid_selector');

@@ -1,0 +1,70 @@
+{
+ "case": "case2-bash-allow",
+ "session": "spike-cca",
+ "at": "2026-11-25T17:22:40.939Z",
+ "scenario": "scenario:bashaccess:12",
+ "livePin": "2.1.322",
+ "pinUsed": "2.1.322",
+ "pinOverridden": false,
+ "entryId": "permission.bash",
+ "target": 0,
+ "cardDegraded": false,
+ "outcome": {
+  "ok": true,
+  "sent": [
+   "Enter"
+  ],
+  "committed": true,
+  "effect": "accept"
+ },
+ "looks": [
+  {
+   "tag": "case2-bash-allow-01-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case2-bash-allow-02-strict",
+   "anchor": null,
+   "strict": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   },
+   "returned": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "key": "permission/bash/Yes|Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project|Yes, and switch to auto mode · auto mode handles these prompts for you|No"
+   }
+  },
+  {
+   "tag": "case2-bash-allow-03-continuity",
+   "anchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+     "Yes",
+     "Yes, and always allow access to /private/tmp/claude-501/sr6/work from this project",
+     "Yes, and switch to auto mode · auto mode handles these prompts for you",
+     "No"
+    ]
+   },
+   "strict": null,
+   "returned": null
+  }
+ ]
+}

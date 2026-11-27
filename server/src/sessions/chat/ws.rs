@@ -21,10 +21,13 @@
 //! - `resync` — the client must drop what it has; a fresh `seed`/`seed_done`
 //!   follows immediately. Raised by a `Lagged` broadcast receiver and by the
 //!   tailer bumping its resync epoch (pointer change / file rotation).
+//! - `live` — OPT-IN only: what the pane shows now, on change (see
+//!   [`super::live`]).
 //!
-//! client→server: `{"type":"auth","token":…}` and nothing else. A2 is a
-//! read-only data plane, so any other frame is ignored (it only refreshes the
-//! liveness timer) rather than being an error.
+//! client→server: `{"type":"auth","token":…}` and the opt-in
+//! `{"type":"live","enabled":true|false,"lines"?:N}`. Still a read-only data
+//! plane: any other frame is ignored (it only refreshes the liveness timer)
+//! rather than being an error.
 //!
 //! ## No gap, no overlap
 //!
@@ -944,6 +947,9 @@ async fn chat_socket(
     };
     let mut epoch = status.resync_epoch;
 
+    // Opt-in live pane frames. `None` = off (the default, and the web's case).
+    let mut live_sub: Option<super::live::LiveSubscription> = None;
+
     let mut last_inbound = Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -954,11 +960,35 @@ async fn chat_socket(
             inbound = socket.recv() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    // The one control frame: live opt-in/out. It reads nothing
+                    // this socket could not already read (the same pane `/peek`
+                    // serves, for the session this socket was authorised for).
+                    Some(Ok(Message::Text(t))) => {
+                        last_inbound = Instant::now();
+                        match super::live::parse_client_frame(&t) {
+                            Some(Some(lines)) if live_sub.as_ref().map(|s| s.lines()) != Some(lines) => {
+                                // Join first, then drop the old subscription, so
+                                // a `lines` change never retires the producer.
+                                let state = state.clone();
+                                let session = name.clone();
+                                live_sub = Some(super::live::hub().join(&name, lines, move || {
+                                    std::sync::Arc::new(super::live::PaneSource::new(state, session))
+                                }));
+                            }
+                            Some(None) => live_sub = None,
+                            _ => {}
+                        }
+                    }
                     // A2 has NO input path: every other frame only refreshes the
                     // liveness timer. Ignoring beats erroring — an older client
                     // batching `[auth, resize]` (the terminal socket's habit)
                     // must not kill its chat socket.
                     Some(Ok(_)) => last_inbound = Instant::now(),
+                }
+            }
+            frame = next_live(&mut live_sub) => {
+                if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
+                    break;
                 }
             }
             live = rx.recv() => {
@@ -1030,6 +1060,14 @@ async fn chat_socket(
                 }
             }
         }
+    }
+}
+
+/// The next live frame, or never when the socket has not opted in.
+async fn next_live(sub: &mut Option<super::live::LiveSubscription>) -> std::sync::Arc<str> {
+    match sub {
+        Some(sub) => sub.next().await,
+        None => std::future::pending().await,
     }
 }
 

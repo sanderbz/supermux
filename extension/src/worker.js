@@ -8,9 +8,39 @@ let connectionQueue=Promise.resolve();
 function trusted(fn){const next=connectionQueue.then(fn);connectionQueue=next.catch(()=>{});return next;}
 function mutateConnection(fn){return trusted(async()=>{const result=await fn(await config());if(result===null)await storage.remove('connection');else await storage.set({connection:result});await controls.connectionChanged();return result;});}
 const extensionPage = sender => sender.id===chrome.runtime.id && sender.url?.split('?')[0]===chrome.runtime.getURL('options.html');
-const publicBinding=b=>b?{id:b.id,origin:b.origin,session:b.session,session_label:b.session_label,company_id:b.company_id,company_label:b.company_label}:null;
-const publicConnection=(c,site)=>c?{origin:c.origin,site,control_enabled:controls.supported,paired:!!c.bindings?.[site],session:c.bindings?.[site]?.session,session_label:c.bindings?.[site]?.session_label,company_id:c.bindings?.[site]?.company_id,company_label:c.bindings?.[site]?.company_label}:null;
+const scopeOf=b=>b?.scope==='all'?'all':'origin';
+const publicBinding=b=>b?{id:b.id,origin:b.origin,session:b.session,session_label:b.session_label,company_id:b.company_id,company_label:b.company_label,scope:scopeOf(b),expires_at:scopeOf(b)==='all'?b.expires_at??null:null}:null;
+const publicConnection=(c,site)=>c?{origin:c.origin,site,control_enabled:controls.supported,paired:!!c.bindings?.[site],session:c.bindings?.[site]?.session,session_label:c.bindings?.[site]?.session_label,company_id:c.bindings?.[site]?.company_id,company_label:c.bindings?.[site]?.company_label,scope:scopeOf(c.bindings?.[site]),expires_at:c.bindings?.[site]?.expires_at??null}:null;
 const websiteOrigin=value=>{const url=new URL(value);if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.origin!==value)throw new Error('Choose a regular website to pair.');return url.origin;};
+// The tab that opened pairing is remembered only in the worker, keyed by a
+// one-time nonce carried in that settings page's URL. A settings page opened by
+// hand has no nonce, so it can never arm a tab it did not come from.
+async function rememberPairingTab(tab){
+ const from=crypto.randomUUID(),site=new URL(tab.url).origin;
+ const {pairingTabs={}}=await chrome.storage.session.get('pairingTabs');
+ const kept=Object.entries(pairingTabs).filter(([,v])=>Date.now()-(v.at||0)<3600000).sort((a,b)=>b[1].at-a[1].at).slice(0,19);
+ await chrome.storage.session.set({pairingTabs:{...Object.fromEntries(kept),[from]:{tabId:tab.id,site,at:Date.now()}}});
+ return from;
+}
+async function pairingTab(from,site,consume=false){
+ if(typeof from!=='string'||!from)return null;
+ const {pairingTabs={}}=await chrome.storage.session.get('pairingTabs'),saved=pairingTabs[from];
+ if(consume&&saved){delete pairingTabs[from];await chrome.storage.session.set({pairingTabs});}
+ if(!controls.supported||saved?.site!==site)return null;
+ // Only arm the original tab while it still shows the exact website being paired.
+ const tab=await chrome.tabs.get(saved.tabId).catch(()=>null);
+ try{return tab?.url&&new URL(tab.url).origin===site?tab:null;}catch{return null;}
+}
+async function allowControl(from,site){
+ const tab=await pairingTab(from,site,true);
+ if(!tab)return {state:'idle',message:`The tab you started from is no longer on ${site}. Open it and click Allow control.`};
+ try{
+  await controls.show(tab);
+  const state=await controls.handle('control.start',tab,{frameId:0,url:tab.url});
+  await chrome.tabs.update(tab.id,{active:true}).catch(()=>{});
+  return {state:state.state};
+ }catch(e){return {state:'idle',message:`Connected, but control did not start: ${e.message||'Browser control failed.'} Use Allow control on the page to try again.`};}
+}
 async function api(origin,path,token,body){
  const granted=await chrome.permissions.contains({origins:[permissionFor(origin)]});
  if(!granted) throw new Error('Server access is missing. Open connection settings to reconnect.');
@@ -118,14 +148,20 @@ async function handle(message,sender){
  const {type}=message||{};
  if(type?.startsWith('connection.')||type==='pair.start'||type==='pair.poll'||type==='pair.confirm'){
   if(!extensionPage(sender)) throw new Error('This action is only available in extension settings.');
-  if(type==='connection.get'){const c=await config(),p=c?.pending?.[message.site];return {...publicConnection(c,message.site),pending:p?{id:p.id,code:p.code,expires_at:p.expires_at,candidate:publicBinding(p.candidate)}:null};}
+  if(type==='connection.get'){const c=await config(),p=c?.pending?.[message.site];return {...publicConnection(c,message.site),control_tab:!!p?.candidate&&!!await pairingTab(message.from,message.site),pending:p?{id:p.id,code:p.code,expires_at:p.expires_at,scope:scopeOf(p),candidate:publicBinding(p.candidate)}:null};}
   if(type==='connection.configure'){const origin=endpointOrigin(message.origin);if(!await chrome.permissions.contains({origins:[permissionFor(origin)]}))throw new Error('Grant server access first.');await mutateConnection(c=>c?.origin===origin?c:{origin,epoch:crypto.randomUUID(),bindings:{},pending:{}});return publicConnection(await config(),message.site);}
   if(type==='connection.clear'){await mutateConnection(()=>null);return true;}
   if(type==='pair.start'){
    const c=await config();if(!c?.origin)throw new Error('Connect your server first.');const site=websiteOrigin(message.site);
-   const p=await api(c.origin,'/api/browser/pairings',null,{origin:site});
-   await mutateConnection(latest=>{if(latest?.origin!==c.origin||(latest?.epoch||'')!==(c.epoch||''))throw new Error('The server connection changed. Try again.');return {...latest,pending:{...latest.pending,[site]:p}};});
-   return {id:p.id,code:p.code,expires_at:p.expires_at};
+   if(message.scope!==undefined&&message.scope!=='origin'&&message.scope!=='all')throw new Error('Unknown pairing scope.');
+   // Only an All websites request carries a scope, so pairing one website
+   // keeps working with servers that predate scopes.
+   const all=message.scope==='all';let p;
+   try{p=await api(c.origin,'/api/browser/pairings',null,all?{origin:site,scope:'all'}:{origin:site});}
+   catch(e){if(all&&[400,422].includes(e.status))throw new Error('This Supermux server does not support All websites yet. Update Supermux, or pair this website only.');throw e;}
+   if(scopeOf(p)!==(all?'all':'origin'))throw new Error(all?'This Supermux server does not support All websites yet. Update Supermux, or pair this website only.':'The server returned an unexpected pairing scope.');
+   await mutateConnection(latest=>{if(latest?.origin!==c.origin||(latest?.epoch||'')!==(c.epoch||''))throw new Error('The server connection changed. Try again.');return {...latest,pending:{...latest.pending,[site]:{...p,scope:scopeOf(p)}}};});
+   return {id:p.id,code:p.code,expires_at:p.expires_at,scope:scopeOf(p)};
   }
   const c=await config(),site=websiteOrigin(message.site),pending=c?.pending?.[site];if(!pending) throw new Error('Create a new pairing code.');
   if(type==='pair.confirm'){
@@ -134,23 +170,28 @@ async function handle(message,sender){
    // promotes it. Recheck local state after the network await as well.
    const verified=await api(c.origin,`/api/browser/pairings/${encodeURIComponent(pending.id)}`,pending.poll_token);
    const b=verified.binding;
-   if(verified.status!=='paired'||b?.id!==pending.candidate.id||b.origin!==site||b.session!==pending.candidate.session||b.company_id!==pending.candidate.company_id)throw new Error('This pairing is no longer available. Create a new code.');
+   if(verified.status!=='paired'||b?.id!==pending.candidate.id||b.origin!==site||b.session!==pending.candidate.session||b.company_id!==pending.candidate.company_id||scopeOf(b)!==scopeOf(pending)||scopeOf(b)!==scopeOf(pending.candidate))throw new Error('This pairing is no longer available. Create a new code.');
+   if(scopeOf(b)==='all'&&!(Number.isFinite(b.expires_at)&&b.expires_at*1000>Date.now()))throw new Error('This All websites pairing has expired. Create a new code.');
    await mutateConnection(latest=>{
     const current=latest?.pending?.[site];
     if(latest?.origin!==c.origin||(latest?.epoch||'')!==(c.epoch||'')||current?.id!==pending.id||current.candidate?.id!==pending.candidate.id)throw new Error('The pairing changed. Review a new code before connecting.');
     const nextPending={...latest.pending};delete nextPending[site];
     return {...latest,pending:nextPending,bindings:{...latest.bindings,[site]:{...b,token:b.token||current.candidate.token}}};
    });
-   return publicConnection(await config(),site);
+   // The same click that confirmed the displayed agent and origin may also
+   // allow control, but only on the tab this pairing was started from.
+   const control=message.allow_control===true?await allowControl(message.from,site):(await pairingTab(message.from,site,true),null);
+   return {...publicConnection(await config(),site),...(control?{control}:{})};
   }
 
   const p=await api(c.origin,`/api/browser/pairings/${encodeURIComponent(pending.id)}`,pending.poll_token);
   if(p.status==='paired'){
    if(p.binding?.origin!==site)throw new Error('The pairing does not match this website.');
+   if(scopeOf(p.binding)!==scopeOf(pending))throw new Error('The pairing scope does not match what you chose. Create a new code.');
    if(!p.binding?.session) throw new Error('The pairing response is incomplete.');
    await mutateConnection(latest=>{if(latest?.origin!==c.origin||(latest?.epoch||'')!==(c.epoch||'')||latest.pending?.[site]?.id!==pending.id)throw new Error('The pairing changed. Create a new code.');return {...latest,pending:{...latest.pending,[site]:{...latest.pending[site],candidate:{...p.binding,token:p.binding.token||pending.poll_token}}}};});
   }
-  return p.status==='paired'?{status:'awaiting-confirmation',id:pending.id,server_origin:c.origin,binding:publicBinding(p.binding)}:{status:p.status};
+  return p.status==='paired'?{status:'awaiting-confirmation',id:pending.id,server_origin:c.origin,binding:publicBinding(p.binding),control_tab:!!await pairingTab(message.from,site)}:{status:p.status};
  }
  // Stop only removes this tab's grant, including during navigation/revocation.
  if(type==='control.stop'&&sender.tab?.id)return controls.handle(type,sender.tab,sender);
@@ -161,7 +202,7 @@ async function handle(message,sender){
   const key=await draftKey(tab.url);return drafts(()=>saveDraft(key,message.draft));
  }
  if(type==='draft.clear'){const key=await draftKey(tab.url);await drafts(()=>storage.remove(key));return true;}
- if(type==='settings.open'){await chrome.tabs.create({url:chrome.runtime.getURL('options.html')+'?site='+encodeURIComponent(new URL(tab.url).origin)});return true;}
+ if(type==='settings.open'){await chrome.tabs.create({url:chrome.runtime.getURL('options.html')+'?site='+encodeURIComponent(new URL(tab.url).origin)+'&from='+encodeURIComponent(await rememberPairingTab(tab))});return true;}
  if(type==='capture') return await capture(tab);
  if(type==='feedback.submit'){
   const payload=validateFeedback(message.payload);

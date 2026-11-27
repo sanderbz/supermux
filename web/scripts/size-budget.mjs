@@ -1430,7 +1430,40 @@ const BUDGET_ENTRY_JS = 165 * KB
 // whose hooks predate the decision hook, so nothing was removable yet.
 //
 // Policy: 478.94 x 1.02 = 488.5 -> 488.
-const BUDGET_APP_JS = 488 * KB
+//
+// RATCHETED 488 -> 499 by the chat file quick look (`feat/chat-file-quicklook`).
+// Measured the same way on the same box, both halves built in one worktree:
+//
+//   origin/main (b09d0bff)   entry 164.27   app 483.51   files 18.75
+//   this branch              entry 164.33   app 489.23   files 14.50
+//                            ─────────────  ───────────  ───────────
+//                                   +0.06        +5.72        -4.25
+//
+// (Re-measured after review fixes: nested-control guard, bare-name denylists.)
+//
+// Where the +5.72 KB lands, every piece of it LAZY:
+//   +2.39 KB  `file-quicklook` — the new chunk: dialog / phone-sheet fork, the
+//             dirty-close guard, the "file not found" / refused states, the
+//             company-lens check on "Go to file". Loaded on the first click.
+//   +1.30 KB  `file-viewer` split out of `files` (5.55 new, files -4.25): the
+//             viewer is now shared by two lazy chunks, so it is its own chunk
+//             and pays its own gzip dictionary and import preamble. Moving it
+//             into the files route chunk would make the chat load the whole
+//             Files route on a click; this is the cheaper honest cost.
+//   +1.53 KB  `chat-markdown` (2.25 -> 3.78): `file-path.ts` (what counts as a
+//             file — the extension allowlist and the receiver / product /
+//             lockfile lists are most of it) and the link rendering. Already a lazy chunk, off the hero path.
+//   +0.44 KB  `chat-panel` (54.39 -> 54.83): the quick-look state, "Go to
+//             file" navigation and the `React.lazy` edge.
+// The entry gate moved +0.06 KB — import-map/hash churn; grep finds no
+// quick-look or file-path symbol in `index-*.js`.
+//
+// What it buys: a path Claude writes in chat opens the file over the chat —
+// preview, edit, save — and closing it leaves the reader exactly where they
+// were, instead of a walk through the Files tree and back via Home.
+//
+// Policy: 489.23 x 1.02 = 499.0 -> 499.
+const BUDGET_APP_JS = 499 * KB
 // RATCHETED 441 → 442 by "Keep me signed in" (the shared browser's per-tab// keep-alive). The branch parent measured 440.40 — 0.60 KB of headroom — and
 // this feature measures 441.41, so the +1.01 KB is attributed here rather than
 // guessed at. It lands in ONE lazy chunk and the hero path did not move:
@@ -1507,7 +1540,14 @@ const BUDGET_APP_JS = 488 * KB
 // row (both new markup carrying existing utility classes, plus the index.css hash
 // re-roll). ceil + headroom = 37, the same rule the ratchets above use, and the
 // measurement is recorded here so the crawl is visible rather than silent.
-const BUDGET_CSS = 37 * KB
+//
+// RATCHETED 37 -> 38 by the resizable roster rail (#262): the divider's grip and
+// the narrow-rail fold (two `@container gr-rail` blocks in grok-mode.css) plus
+// the header pill's `@container pill` variants. Measured 37.07 in CI (37.03
+// local) against 37.00; all of it under `[data-grok]` or a named container, so
+// nothing off the skin matches it. ceil + headroom = 38, same rule as above.
+// ENTRY gate unmoved.
+const BUDGET_CSS = 38 * KB
 
 function gzipSize(path) {
   return gzipSync(readFileSync(path), { level: 9 }).length

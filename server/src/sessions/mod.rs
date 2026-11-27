@@ -1163,6 +1163,13 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         // Raced with another purge/unarchive between the guard and the DELETE.
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
+    // The same grant sweep as `delete`: the row is gone, so its own grants must
+    // not wait for a later session with this name.
+    if let Err(e) =
+        db::connectors::delete_grants_for_sessions(&state.pool, &[name.to_string()]).await
+    {
+        tracing::warn!(session = %name, error = %e, "purge: could not drop connector grants");
+    }
 
     crate::agents::library::cleanup(&state.config.data_dir, name).await;
 
@@ -1304,6 +1311,12 @@ pub struct CreateInput {
     /// Default [`GUARD_QUIET_SECS`].
     #[serde(default)]
     pub max_quiet_secs: Option<i64>,
+    /// Connector ids to grant to the new session (plain session-level grants,
+    /// exactly what `POST /api/connectors/{id}/grant` writes). Every id is
+    /// checked BEFORE the row is created: an invalid or unknown id is a 400 and
+    /// nothing is created. Consumed by the HTTP handler, not by [`create`].
+    #[serde(default)]
+    pub connectors: Option<Vec<String>>,
 }
 
 /// Default quiet bound for `unless_live_prefix`, seconds: 120 minutes,
@@ -1609,6 +1622,15 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     crate::asks::close_for_session_removed(state, name).await;
     crate::agents::library::cleanup(&state.config.data_dir, name).await;
     db::sessions::delete(&state.pool, name).await?;
+    // `session_connectors` has no FK on `session_name`, so the session's OWN
+    // grants would outlive it and silently re-attach to a later session that
+    // reuses the name. Only rows keyed on this slug: the `*` and `@company:`
+    // tiers are never a session name. Best-effort, the row is already gone.
+    if let Err(e) =
+        db::connectors::delete_grants_for_sessions(&state.pool, &[name.to_string()]).await
+    {
+        tracing::warn!(session = %name, error = %e, "delete: could not drop connector grants");
+    }
 
     // Audit row — every destructive HTTP call records an entry. `delete` is
     // harder-destructive than `archive` (the row is gone, not just
@@ -2224,11 +2246,32 @@ async fn create_handler(
         }
     }
     let prompt = input.prompt.take().filter(|p| !p.trim().is_empty());
+    // Validate every requested connector BEFORE the row exists, so a bad id
+    // creates nothing.
+    let connector_ids = match input.connectors.take() {
+        Some(ids) => crate::connectors::api::check_grantable(&state, &ids).await?,
+        None => Vec::new(),
+    };
     let v = create(&state, input).await?;
+    // Grant before the boot below, so the first launch line already carries
+    // them. A grant that still fails (e.g. the catalog card vanished between
+    // the check and here) deletes the just-created session: no half state.
+    for id in &connector_ids {
+        if let Err(e) =
+            crate::connectors::api::grant_to_session(&state, ctx.0.as_ref(), id, &v.name).await
+        {
+            if let Err(de) = delete(&state, &v.name).await {
+                tracing::warn!(session = %v.name, error = %de, "create rollback: delete failed");
+            }
+            return Err(e);
+        }
+    }
     if let Some(p) = prompt {
         lifecycle::start(&state, &v.name, Some(&p)).await?;
     }
-    Ok((StatusCode::CREATED, ok(v)))
+    let mut data = serde_json::to_value(&v).map_err(|e| AppError::Internal(e.into()))?;
+    data["connectors"] = json!(connector_ids);
+    Ok((StatusCode::CREATED, ok(data)))
 }
 
 async fn delete_handler(
@@ -3921,6 +3964,110 @@ mod tests {
         .await
         .expect("known session");
         assert!(out.0.data.events.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── POST /api/sessions {connectors} ──────────────────────────────────────
+
+    async fn seed_connector(state: &AppState, id: &str) {
+        db::connectors::upsert(&state.pool, id, "mcp_catalog", id, "", "", "[]", "[]", "{}", "{}")
+            .await
+            .unwrap();
+    }
+
+    async fn own_grants(state: &AppState, session: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT connector_id FROM session_connectors WHERE session_name = ? ORDER BY connector_id",
+        )
+        .bind(session)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_with_connectors_grants_them_and_lists_them() {
+        let (state, dir) = test_state().await;
+        seed_connector(&state, "conn-a").await;
+        seed_connector(&state, "conn-b").await;
+        let mut inp = input("granted-bot");
+        inp.runtime = Some("native".into());
+        inp.connectors = Some(vec!["conn-b".into(), "conn-a".into(), "conn-b".into()]);
+
+        let resp = create_handler(State(state.clone()), crate::scope::OptCtx(None), Json(inp))
+            .await
+            .expect("create")
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["data"]["name"], "granted-bot");
+        assert_eq!(body["data"]["connectors"], json!(["conn-b", "conn-a"]));
+
+        assert_eq!(own_grants(&state, "granted-bot").await, vec!["conn-a", "conn-b"]);
+        let audited: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'connector.grant'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(audited, 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn create_without_connectors_reports_an_empty_list() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("plain-bot");
+        inp.runtime = Some("native".into());
+        let resp = create_handler(State(state.clone()), crate::scope::OptCtx(None), Json(inp))
+            .await
+            .expect("create")
+            .into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["data"]["connectors"], json!([]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn create_with_an_unknown_or_invalid_connector_is_400_and_creates_nothing() {
+        let (state, dir) = test_state().await;
+        seed_connector(&state, "conn-a").await;
+        for bad in ["no-such-connector", "bad id/../x"] {
+            let mut inp = input("never-bot");
+            inp.runtime = Some("native".into());
+            inp.connectors = Some(vec!["conn-a".into(), bad.into()]);
+            let err = create_handler(State(state.clone()), crate::scope::OptCtx(None), Json(inp))
+                .await
+                .err()
+                .expect("must refuse");
+            assert!(matches!(err, AppError::BadRequest(_)), "{bad}: {err:?}");
+            assert!(!db::sessions::exists(&state.pool, "never-bot").await.unwrap());
+            assert!(own_grants(&state, "never-bot").await.is_empty());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `session_connectors` has no FK, so a hard delete must drop the session's
+    /// own grants itself, and only those: the all-agents tier stays.
+    #[tokio::test]
+    async fn delete_drops_own_connector_grants_but_not_the_all_agents_tier() {
+        let (state, dir) = test_state().await;
+        seed_connector(&state, "conn-a").await;
+        let mut inp = input("doomed-bot");
+        inp.runtime = Some("native".into());
+        create(&state, inp).await.expect("create");
+        db::connectors::grant(&state.pool, "doomed-bot", "conn-a", None, true).await.unwrap();
+        db::connectors::grant(&state.pool, db::connectors::ALL_AGENTS, "conn-a", None, true)
+            .await
+            .unwrap();
+        db::connectors::grant(&state.pool, "other-bot", "conn-a", None, true).await.unwrap();
+
+        delete(&state, "doomed-bot").await.expect("delete");
+        assert!(own_grants(&state, "doomed-bot").await.is_empty());
+        assert_eq!(own_grants(&state, db::connectors::ALL_AGENTS).await, vec!["conn-a"]);
+        assert_eq!(own_grants(&state, "other-bot").await, vec!["conn-a"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

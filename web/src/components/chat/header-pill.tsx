@@ -55,6 +55,7 @@ import type { TileSession } from '../session-tile/types'
 
 import { errorBadgeLabel, statesSameBlock } from './agent-error'
 import { sessionAccentVarsFor } from './session-accent'
+import { HEADER_CHIP_BASE } from './header-chip'
 import { MARK_SIZE, PHONE } from './ui'
 
 /**
@@ -148,9 +149,10 @@ function ModeChip({
   label?: string
 }) {
   const cls = cn(
-    'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
+    HEADER_CHIP_BASE,
+    'border-hairline-soft bg-fill-soft text-ink-2',
     onOpen &&
-      'inline-flex items-center gap-1 cursor-pointer transition-colors hover:bg-fill-soft-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      'gap-1 cursor-pointer transition-colors hover:bg-fill-soft-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
     className,
   )
   if (onOpen) {
@@ -406,7 +408,9 @@ export function SessionHeaderPill({
       // the two writes cannot drift into two different "session colours".
       style={sessionAccentVarsFor({ name }, pin)}
       className={cn(
-        'shrink-0 bg-surface',
+        // A size container: the desktop bar condenses on its OWN width (a 440px
+        // pane beside the roster rail), not the viewport's — see the row below.
+        'shrink-0 bg-surface @container/pill',
         // The boards' glass: the transcript scrolls UNDER this bar (already on
         // the phone; on the desktop once A5 makes the header an overlay), and
         // the blur is what keeps a captured frame from smearing across it.
@@ -469,7 +473,10 @@ export function SessionHeaderPill({
                 // stack it is free (19 + 3 + 26 + 12 = 60, exactly the floor),
                 // and with three it buys the chips their margin instead of
                 // letting them touch the border.
-                phone ? 'gap-2.5 py-1.5 pl-3 pr-3' : 'gap-3 px-6',
+                // A narrow desktop bar (a tablet's pane beside the roster) gives
+                // its gutters to the name. It condenses rather than wraps: the
+                // transcript reserves one bar's height above the first message.
+                phone ? 'gap-2.5 py-1.5 pl-3 pr-3' : 'gap-3 px-6 @max-[36rem]/pill:gap-2 @max-[36rem]/pill:px-3',
               )}
             >
               {leading}

@@ -1781,9 +1781,14 @@
   display: flex;
   flex-direction: column;
   flex: none;
-  width: 372px;
+  /* User-sized: `--gr-rail-w` is set by the drag handle (rail-resize-handle.tsx,
+     bounds in rail-width-store.ts). Whatever is chosen, the pane keeps 440px —
+     the chat header and composer need that — so on a 768px tablet the rail
+     yields first instead of pushing the pane (and the page) sideways. */
+  width: clamp(72px, var(--gr-rail-w, 372px), calc(100% - 440px));
   min-height: 0;
   position: relative;
+  container: gr-rail / inline-size;
 }
 /* when nothing is selected (or on phone) the rail is the whole width */
 [data-grok] .grok-roster[data-detail='0'] .gr-rail,
@@ -1802,6 +1807,56 @@
 }
 [data-grok] .grok-roster[data-detail='0'] .gr-rail::after {
   display: none;
+}
+
+/* ── the divider, draggable ─────────────────────────────────────────────────────
+   A 20px strip straddling the hairline (`::after` above), above the pane's edge.
+   On the line sits a small grip: a pill with a 2×4 dot pattern, the familiar
+   "you can pull this" mark. Always shown, quiet at rest; it takes the accent
+   while hovered, focused or dragged. */
+[data-grok] .grok-roster .gr-rail-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -10px;
+  width: 20px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+  --gr-grip-dot: var(--sm-text-tertiary);
+}
+[data-grok] .grok-roster .gr-rail-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* 3px + 2 dot columns of 4px + 3px; 8px + 4 rows of 4px + 8px */
+  width: 14px;
+  height: 32px;
+  padding: 8px 3px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  transform: translate(-50%, -50%);
+  background:
+    radial-gradient(circle, var(--gr-grip-dot) 0.9px, transparent 1.3px) content-box 0 0 / 4px 4px,
+    var(--gr-surf2) padding-box;
+  box-shadow: 0 0 0 0.5px var(--sm-sidebar-separator);
+  transition: box-shadow 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-grok] .grok-roster .gr-rail-handle:hover,
+[data-grok] .grok-roster .gr-rail-handle:focus-visible,
+[data-grok] .grok-roster .gr-rail-handle[data-dragging] {
+  --gr-grip-dot: var(--sm-accent);
+}
+[data-grok] .grok-roster .gr-rail-handle:focus-visible::before,
+[data-grok] .grok-roster .gr-rail-handle[data-dragging]::before {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sm-accent) 55%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grok] .grok-roster .gr-rail-handle::before {
+    transition: none;
+  }
 }
 
 /* the scrolling list, with mask-gradient edge fades (no shadows on glass) */
@@ -1871,6 +1926,11 @@
   flex: 1;
   height: 0.5px;
   background: var(--sm-sidebar-separator);
+}
+/* The section's icon: shown only in a narrow rail, where it replaces the label. */
+[data-grok] .grok-roster .gr-grp .ic {
+  display: none;
+  flex: none;
 }
 
 /* ── ROW A — inbox rows (the recommended default) ──────────────────────────── */
@@ -2634,11 +2694,95 @@
   display: contents;
 }
 
+/* ── a narrow rail: the rows fold as the divider comes in ───────────────────────
+   One line per bot (face + name, ellipsised) once the preview has no room left,
+   then the faces alone. The ⋯ kebab folds too — long-press and right-click still
+   open the same menu, and the name is in each row's accessible label. The extra
+   `.gr-rail` lets these win over the Compact density's row padding. */
+@container gr-rail (max-width: 220px) {
+  [data-grok] .grok-roster .gr-rail .gr-rowA {
+    gap: 10px;
+    padding: 9px 12px;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA .l2,
+  [data-grok] .grok-roster .gr-rail .gr-rowA .l3,
+  [data-grok] .grok-roster .gr-rail .gr-rowA .cprev,
+  [data-grok] .grok-roster .gr-rail .gr-rowA .gr-tile-kebab {
+    display: none;
+  }
+  /* The section header becomes icon + count, both in the section's status
+     colour. The label is kept for screen readers, only visually hidden. */
+  [data-grok] .grok-roster .gr-rail .gr-grp {
+    position: relative; /* contains the hidden label — it must not escape the list's scroller */
+    gap: 5px;
+    padding-left: 12px;
+    padding-right: 12px;
+    --gr-grp-tone: var(--sm-text-secondary);
+  }
+  [data-grok] .grok-roster .gr-rail .gr-grp[data-group='needs'] { --gr-grp-tone: var(--gr-need); }
+  [data-grok] .grok-roster .gr-rail .gr-grp[data-group='active'] { --gr-grp-tone: var(--gr-work); }
+  [data-grok] .grok-roster .gr-rail .gr-grp[data-group='done'] { --gr-grp-tone: var(--gr-done); }
+  [data-grok] .grok-roster .gr-rail .gr-grp .ic {
+    display: block;
+    color: var(--gr-grp-tone);
+  }
+  [data-grok] .grok-roster .gr-rail .gr-grp .ct {
+    color: var(--gr-grp-tone);
+  }
+  [data-grok] .grok-roster .gr-rail .gr-grp .lbl {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+@container gr-rail (max-width: 120px) {
+  /* The face, with the name under it — still telling the bots apart. */
+  [data-grok] .grok-roster .gr-rail .gr-rowA {
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 4px;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA .col {
+    width: 100%;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA .l1 {
+    justify-content: center;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA .nm {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--sm-text-secondary);
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA[data-active] .nm {
+    color: inherit;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-rowA .tm {
+    display: none;
+  }
+  /* Icon + count, centred over the faces; no room left for the hairline. */
+  [data-grok] .grok-roster .gr-rail .gr-grp {
+    justify-content: center;
+    gap: 3px;
+    padding: 12px 0 2px;
+  }
+  [data-grok] .grok-roster .gr-rail .gr-grp .ln {
+    display: none;
+  }
+}
+
 /* ── phone: one column, no detail pane (row tap → thread) ───────────────────── */
 @media (max-width: 767px) {
   [data-grok] .grok-roster .gr-rail {
     width: auto;
     flex: 1;
+  }
+  [data-grok] .grok-roster .gr-rail-handle {
+    display: none;
   }
   [data-grok] .grok-roster .gr-rail::after {
     display: none;

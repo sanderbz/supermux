@@ -24,7 +24,10 @@ const nodeDescription = `function(){
     hit:!!hit&&(element===hit||element.contains(hit)||hit.contains(element))};
 }`;
 
-export function createCdpController({send, origin, check, onMainNavigation, hideUi}) {
+// `navigable(url)` returns null when the binding may go there, or the refusal
+// code ('origin_changed' / 'blocked_site'). Without it: exact `origin` only.
+export function createCdpController({send, origin, navigable=url=>new URL(url).origin===origin?null:'origin_changed', check, onMainNavigation, hideUi}) {
+  const refuse=(why,message)=>error(why,why==='blocked_site'?'Agents may not open this website (accounts, payments, banks, government, password managers or Supermux itself).':message);
   let generation = 0, mainFrame = null, refs = new Map(), serial = 0;
   const childSessions = new Map(), contexts = new Map(), initialization = new Set();
   const frameDocuments = new Map(), frameParents = new Map();
@@ -35,6 +38,18 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
     await send('DOM.enable', {}, sessionId);
     await send('Target.setAutoAttach', {autoAttach:true,waitForDebuggerOnStart:false,flatten:true,filter:[{type:'iframe',exclude:false},{exclude:true}]}, sessionId);
   }
+  // True when `frame` is `root` or nested inside it.
+  function within(frame, root) {
+    for(let current=frame,depth=0;current&&depth<64;current=frameParents.get(current),depth++)if(current===root)return true;
+    return false;
+  }
+  // Only refs in a frame whose document changed (or inside such a frame) go
+  // stale; a lazy or navigating iframe elsewhere leaves other refs usable.
+  function invalidate(root) {
+    if(!root||root===mainFrame){refs.clear();generation++;return;}
+    for(const entry of refs.values())if(within(entry.frame,root))entry.stale=true;
+  }
+  const sessionFrames = sessionId => sessionId ? [...childSessions].filter(([,id])=>id===sessionId).map(([frame])=>frame) : [mainFrame];
   async function initialize() {
     await initSession();
     mainFrame = (await send('Page.getFrameTree')).frameTree.frame.id;
@@ -53,15 +68,16 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
       initialization.add(pending);pending.finally(()=>initialization.delete(pending));
     }
     if (method === 'Target.detachedFromTarget') {
-      for(const [frame,id] of childSessions) if(id===params.sessionId) {childSessions.delete(frame);contexts.delete(frame);frameDocuments.delete(frame);}
-      refs.clear();generation++;
+      for(const frame of sessionFrames(params.sessionId)) {invalidate(frame);childSessions.delete(frame);contexts.delete(frame);frameDocuments.delete(frame);}
     }
     if (method === 'Page.frameNavigated') {
       const frame=params.frame;frameDocuments.set(frame.id,frame.loaderId);if(frame.parentId)frameParents.set(frame.id,frame.parentId);
-      refs.clear();generation++;
-      if(!sessionId&&!frame.parentId){mainFrame=frame.id;onMainNavigation(frame.url);}
+      if(!sessionId&&!frame.parentId){refs.clear();generation++;mainFrame=frame.id;onMainNavigation(frame.url);}
+      else invalidate(frame.id);
     }
-    if (method === 'DOM.documentUpdated') {refs.clear();generation++;}
+    if (method === 'Page.frameDetached') invalidate(params.frameId);
+    // A session's DOM reset replaces the document of that session's root frame.
+    if (method === 'DOM.documentUpdated') for(const frame of sessionFrames(sessionId)) invalidate(frame);
   }
   async function evaluate(expression, frame, timeout) {
     const target=frame||mainFrame,{sessionId,contextId}=scope(target);
@@ -74,10 +90,31 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
   }
   async function resolve(ref, inspect=true) {
     const entry=refs.get(ref);
-    if(!entry||entry.generation!==generation||entry.document!==frameDocuments.get(entry.frame))throw error('stale_ref','This element reference is stale. Take a fresh snapshot.');
+    if(!entry||entry.stale||entry.generation!==generation||entry.document!==frameDocuments.get(entry.frame))throw error('stale_ref','This element reference is stale. Take a fresh snapshot.');
     if(entry.frame!==mainFrame&&!contexts.has(entry.frame))throw error('stale_frame','This frame changed. Take a fresh snapshot.');
+    try{return await resolveEntry(entry,inspect);}
+    catch(e){
+      // Same document, but a re-render replaced the node: look it up once more.
+      if(e.code!=='stale_ref'||!await refind(entry))throw e;
+      return resolveEntry(entry,inspect);
+    }
+  }
+  // Re-finds a ref's element by its snapshot role and name, only within the
+  // same frame document and only when exactly one element matches.
+  async function refind(entry) {
+    if(!entry.role||!entry.name||entry.stale||entry.document!==frameDocuments.get(entry.frame))return false;
+    if(entry.frame!==mainFrame&&!contexts.has(entry.frame))return false;
+    let nodes;
+    try{nodes=(await send('Accessibility.getFullAXTree',{frameId:entry.frame},scope(entry.frame).sessionId)).nodes;}catch(e){check();if(e.code)throw e;return false;}
+    const matches=(nodes||[]).filter(node=>!node.ignored&&node.backendDOMNodeId&&roleOf(node)===entry.role&&textOf(node.name?.value).slice(0,1500)===entry.name);
+    if(matches.length!==1)return false;
+    entry.backendNodeId=matches[0].backendDOMNodeId;return true;
+  }
+  async function resolveEntry(entry, inspect) {
     const {sessionId,contextId}=scope(entry.frame);
-    const result=await send('DOM.resolveNode',{backendNodeId:entry.backendNodeId,...(contextId?{executionContextId:contextId}:{})},sessionId);
+    let result;
+    try{result=await send('DOM.resolveNode',{backendNodeId:entry.backendNodeId,...(contextId?{executionContextId:contextId}:{})},sessionId);}
+    catch(e){check();if(e.code)throw e;throw error('stale_ref','This element is no longer available. Take a fresh snapshot.');}
     const objectId=result.object?.objectId;
     if(!objectId)throw error('stale_ref','This element is no longer available. Take a fresh snapshot.');
     let info;
@@ -157,7 +194,7 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
         if(node.ignored||!node.backendDOMNodeId||excluded.has(node.backendDOMNodeId)||['none','generic','InlineTextBox'].includes(role)||(!name&&!node.value))continue;
         if(nodes.length>=1200){truncated=true;break;}
         const ref=`p${generation}-f${index}-e${++serial}`;
-        const entry={generation,frame:frame.id,document:frameDocuments.get(frame.id),backendNodeId:node.backendDOMNodeId};
+        const entry={generation,frame:frame.id,document:frameDocuments.get(frame.id),backendNodeId:node.backendDOMNodeId,role,name};
         refs.set(ref,entry);const item={ref,frame:frame.id,role,name};
         if(!passwords.has(node.backendDOMNodeId)&&node.value?.value!==undefined)item.value=textOf(node.value.value).slice(0,1500);
         if(node.properties?.some(p=>p.name==='disabled'&&p.value?.value))item.disabled=true;
@@ -260,13 +297,14 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
       let expectedLoader,expectedUrl;
       if(step.action==='navigate'){
         const url=new URL(boundedText(step.url,8192,'URL'));
-        if(url.origin!==origin||url.username||url.password)throw error('origin_changed','Navigation must stay on this paired website.');
+        if(url.username||url.password)throw error('origin_changed','Navigation must stay on this paired website.');
+        const why=navigable(url.href);if(why)throw refuse(why,'Navigation must stay on this paired website.');
         const result=await send('Page.navigate',{url:url.href});if(result.errorText)throw error('navigation_failed',result.errorText);
         expectedLoader=result.loaderId;expectedUrl=url.href;
       }else if(step.action==='back'){
         const history=await send('Page.getNavigationHistory'),previous=history.entries[history.currentIndex-1];
         if(!previous)throw error('no_history','There is no previous page.');
-        if(new URL(previous.url).origin!==origin)throw error('origin_changed','The previous page belongs to another website.');
+        const why=navigable(previous.url);if(why)throw refuse(why,'The previous page belongs to another website.');
         expectedUrl=previous.url;
         await send('Page.navigateToHistoryEntry',{entryId:previous.id});
       }else await send('Page.reload');

@@ -102,10 +102,11 @@ pub async fn get(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<Host>> {
     .await
 }
 
-/// Fetch one host by its user-facing `name`. Returns soft-deleted rows too —
-/// this is intentional so the historical-session lookup path doesn't lose its
-/// label after a delete. Callers that only want live hosts must filter on
-/// `deleted_at.is_none()` themselves (or use [`list`]).
+/// Fetch one host by its user-facing `name`. Can return a soft-deleted row
+/// only for a tombstone written before [`soft_delete`] began renaming them
+/// (a current tombstone is named `<name>~deleted-<id>`). Historical views
+/// resolve a host by `host_id` via [`get`]. Callers that only want live hosts
+/// must filter on `deleted_at.is_none()` themselves (or use [`list`]).
 pub async fn get_by_name(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Host>> {
     sqlx::query_as::<_, Host>(
         "SELECT id, name, ssh_target, ssh_key_path, status, last_seen, created_at, deleted_at \
@@ -178,12 +179,41 @@ pub async fn update_status(
 /// so any session referencing this host via `host_id` can still resolve its
 /// label and ssh_target for archived/historical views; [`list`] filters
 /// tombstones out so the FE picker never offers them.
+///
+/// **It also gives the name back.** `name` is `UNIQUE`, so a tombstone that
+/// kept it made the name unusable forever — re-adding a removed host answered
+/// 409. The tombstone is renamed to `<name>~deleted-<id>` ([`tombstone_name`]):
+/// unique by its id, still recognisable in a historical view (which resolves
+/// the host by `host_id`, never by name), and never a valid live name, because
+/// `~` is outside the name alphabet.
 pub async fn soft_delete(pool: &SqlitePool, id: i64) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE hosts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE hosts SET deleted_at = ?, name = name || '~deleted-' || id \
+         WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
+}
+
+/// The name a tombstoned host carries (see [`soft_delete`]).
+pub fn tombstone_name(name: &str, id: i64) -> String {
+    format!("{name}~deleted-{id}")
+}
+
+/// Free `name` from tombstones that still hold it — rows deleted before
+/// [`soft_delete`] renamed them. Live rows are never touched. Returns how many
+/// were renamed (0 on any database written since the rename landed).
+pub async fn release_tombstoned_name(pool: &SqlitePool, name: &str) -> sqlx::Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE hosts SET name = name || '~deleted-' || id \
+         WHERE name = ? AND deleted_at IS NOT NULL",
+    )
+    .bind(name)
+    .execute(pool)
+    .await?
+    .rows_affected())
 }

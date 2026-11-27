@@ -14,6 +14,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   PENDING_KEY,
+  PENDING_NOT_FINISHED_COPY,
   connectErrorCopy,
   handleOauthReturn,
   isOauthReturn,
@@ -68,6 +69,15 @@ function deps(store: MemoryStorage, result: CompleteResult | Error) {
 }
 
 describe('handleOauthReturn', () => {
+  test('a `pending` answer is never toasted as connected', async () => {
+    const store = pendingStore()
+    const d = deps(store, { status: 'pending' } as CompleteResult)
+    const out = await handleOauthReturn('?oauth_pending=1', d.deps)
+    expect(out).toEqual({ kind: 'connect_failed', id: 'pmcp-inhouseseo' })
+    expect(d.toasts).toEqual([{ message: PENDING_NOT_FINISHED_COPY, tone: 'error' }])
+    expect(d.invalidated).toEqual(['folderwijzer'])
+  })
+
   test('oauth_pending + pending key → complete with the stored state, key cleared, toast, invalidate', async () => {
     const store = pendingStore()
     const d = deps(store, { account_ref: 'a1', label: 'owner@test', health: { status: 'ok' }, target: 'folderwijzer' })

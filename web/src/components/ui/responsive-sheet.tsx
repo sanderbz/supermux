@@ -64,6 +64,18 @@ export interface ResponsiveSheetProps {
    *  wrapper), so a multi-theme review page can otherwise only show the sheet in one
    *  global theme. Undefined in production, where the global theme already matches. */
   contentTheme?: 'light' | 'dark'
+  /** Mobile only: `false` refuses drag-away, backdrop-tap and Escape, so the
+   *  consumer's own close path is the only one — for a sheet holding an
+   *  unsaved edit (the chat's file quick look). Default `true`. */
+  dismissible?: boolean
+  /** Where focus goes when the sheet closes. Radix returns it to a
+   *  `Dialog.Trigger`, and a sheet opened from anything else (a link in chat
+   *  prose) has none — so without this, focus falls to `<body>`. Call
+   *  `preventDefault()` and focus the opener yourself. */
+  onCloseAutoFocus?: (event: Event) => void
+  /** Mobile only: veto an Escape (call `preventDefault()`) — e.g. one meant
+   *  for an editor's own search panel inside the sheet. */
+  onEscapeKeyDown?: (event: KeyboardEvent) => void
 }
 
 export function ResponsiveSheet(props: ResponsiveSheetProps) {
@@ -87,6 +99,9 @@ function MobileBody({
   footer,
   children,
   contentTheme,
+  dismissible = true,
+  onCloseAutoFocus,
+  onEscapeKeyDown,
 }: ResponsiveSheetProps) {
   return (
     <Drawer.Root
@@ -97,13 +112,15 @@ function MobileBody({
       // matches the modal references (specials-sheet / session-picker-sheet),
       // which deliberately omit snapPoints. backdrop scrim + scroll-lock +
       // drag-away / backdrop-tap dismiss come from the modal Drawer.
-      dismissible
+      dismissible={dismissible}
     >
       <Drawer.Portal>
         {/* Backdrop — tap to dismiss (Vaul wires the tap handler to the overlay). */}
         <Drawer.Overlay className="fixed inset-0 z-[60] bg-black/40" />
         <Drawer.Content
           data-testid="responsive-sheet"
+          onCloseAutoFocus={onCloseAutoFocus}
+          onEscapeKeyDown={onEscapeKeyDown}
           {...(contentTheme ? { 'data-theme': contentTheme } : {})}
           // Unlike the focus-mode composer (which lives inside MobileSheet — a
           // box already sized to visualViewport.height and pinned flush to the
@@ -197,11 +214,13 @@ function DesktopBody({
   children,
   className,
   contentTheme,
+  onCloseAutoFocus,
 }: ResponsiveSheetProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
+        onCloseAutoFocus={onCloseAutoFocus}
         {...(contentTheme ? { 'data-theme': contentTheme } : {})}
         className={cn('flex w-full flex-col gap-0 p-0 sm:max-w-md', contentTheme === 'dark' && 'dark', className)}
       >

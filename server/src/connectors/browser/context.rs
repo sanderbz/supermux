@@ -52,7 +52,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use super::cdp::{CdpClient, CdpEvent};
+use super::cdp::{CdpClient, CdpEvent, DEFAULT_CALL_TIMEOUT};
 use super::error::{BrowserError, Result};
 use super::lock::{Actor, DriveLock, DriveMode};
 
@@ -78,6 +78,20 @@ pub const MAX_DEVICE_SCALE: f64 = 2.0;
 /// quality budget on motion, and it is the same trade the 512-cap made in the
 /// other direction.
 const DRIVE_EVERY_NTH: u32 = 4;
+
+/// How long after the last input event the **post-input still** is taken.
+///
+/// [`DRIVE_EVERY_NTH`] has a cost the drive profile cannot see: a click whose
+/// handler repaints ONCE (a toggled button, a checked box, a menu opening)
+/// produces one or two compositor frames, and unless one of them lands on the
+/// 4th, chrome emits nothing — and a page that then sits still never paints
+/// again, so the human never sees what their click did (measured on the pinned
+/// Chrome 149: 4 of 5 single clicks on a repaint-once button gave no frame). So
+/// input under a throttled cast is followed by one `Page.captureScreenshot`
+/// fanned out as a frame. Trailing: a burst of input (typing, a drag) yields one
+/// still after it settles, not one per event. Long enough for the handler's
+/// repaint to land, short enough to read as the click's own feedback.
+const REPAINT_AFTER_INPUT: Duration = Duration::from_millis(150);
 
 /// How long after the last navigation signal a page counts as **settled** and
 /// the expensive reads (history, title, favicon) are worth issuing. Short enough
@@ -524,6 +538,17 @@ pub struct PageDialog {
     pub default_prompt: String,
 }
 
+impl PageDialog {
+    /// From a `Page.javascriptDialogOpening` payload.
+    fn from_cdp(params: &Value) -> Self {
+        Self {
+            kind: str_of(params.get("type")),
+            message: str_of(params.get("message")),
+            default_prompt: str_of(params.get("defaultPrompt")),
+        }
+    }
+}
+
 /// **What the address bar shows** — the live nav state of one page.
 ///
 /// Produced by [`AgentContext::watch_nav`] and consumed twice: pushed to the
@@ -648,26 +673,41 @@ fn main_frame_committed(params: &Value) -> bool {
     }
 }
 
+/// One of the watcher's settle reads on a flat-mode session, or `None`.
+///
+/// Bounded by [`NAV_READ_BUDGET`], never sent while a JS dialog is open, and
+/// given up the moment one opens: a dialog raised mid-settle used to hold the
+/// pump in its reads — and so hold back the very `nav_state` announcing the
+/// dialog — for up to a budget per read.
+async fn read_on(client: &CdpClient, session: &str, method: &str, params: Value) -> Option<Value> {
+    if client.dialog(session).is_some() {
+        return None;
+    }
+    client
+        .call_unless_dialog(session, method, params, NAV_READ_BUDGET)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// `Runtime.evaluate` on a flat-mode session, value or [`Value::Null`].
 ///
 /// A free function because the pump owns no `&self`: it holds the client and the
 /// session id directly so it can outlive nothing and borrow nothing.
 async fn eval_on(client: &CdpClient, session: &str, expression: &str) -> Value {
-    client
-        .call_with_timeout(
-            Some(session),
-            "Runtime.evaluate",
-            json!({
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": true,
-            }),
-            NAV_READ_BUDGET,
-        )
-        .await
-        .ok()
-        .and_then(|v| v.get("result").and_then(|r| r.get("value")).cloned())
-        .unwrap_or(Value::Null)
+    read_on(
+        client,
+        session,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": true,
+        }),
+    )
+    .await
+    .and_then(|v| v.get("result").and_then(|r| r.get("value")).cloned())
+    .unwrap_or(Value::Null)
 }
 
 /// The `Emulation.setDeviceMetricsOverride` payload — **one builder**, shared by
@@ -678,54 +718,6 @@ fn device_metrics_params(width: u32, height: u32, scale: f64, mobile: bool) -> V
         "width": width, "height": height,
         "deviceScaleFactor": scale, "mobile": mobile,
     })
-}
-
-/// The `userAgentMetadata` (UA Client Hints) that MUST ride alongside a
-/// `setUserAgentOverride` — a UA string with no metadata leaves the high-entropy
-/// hints (`Sec-CH-UA-Platform`, `-Mobile`) saying something the string
-/// contradicts, and that mismatch is exactly the detection the module docs warn
-/// about. Both variants keep the SAME Chromium brand + major as the pinned
-/// binary ([`PINNED_CHROME_MAJOR`]); only the platform/model/`mobile` differ. The
-/// GREASE `Not.A/Brand` entry mirrors stock Chrome's own low-entropy filler.
-fn user_agent_metadata(mobile: bool) -> Value {
-    let major = super::launch::PINNED_CHROME_MAJOR;
-    let v = major.to_string();
-    let fv = format!("{major}.0.0.0");
-    let brands = json!([
-        { "brand": "Chromium", "version": v },
-        { "brand": "Google Chrome", "version": v },
-        { "brand": "Not.A/Brand", "version": "24" },
-    ]);
-    let full_version_list = json!([
-        { "brand": "Chromium", "version": fv },
-        { "brand": "Google Chrome", "version": fv },
-        { "brand": "Not.A/Brand", "version": "24.0.0.0" },
-    ]);
-    if mobile {
-        json!({
-            "brands": brands,
-            "fullVersionList": full_version_list,
-            "platform": "Android",
-            "platformVersion": "13.0.0",
-            "architecture": "",
-            "model": "Pixel 7",
-            "mobile": true,
-            "bitness": "",
-            "wow64": false,
-        })
-    } else {
-        json!({
-            "brands": brands,
-            "fullVersionList": full_version_list,
-            "platform": "Linux",
-            "platformVersion": "",
-            "architecture": "x86",
-            "model": "",
-            "mobile": false,
-            "bitness": "64",
-            "wow64": false,
-        })
-    }
 }
 
 /// **The override this target is running with, and the reason it is shared.**
@@ -811,6 +803,10 @@ pub struct AgentContext {
     metrics: Arc<DeviceMetrics>,
     /// Live screencast pump, if one is running.
     screencast: Mutex<Option<Screencast>>,
+    /// When the post-input still is due — see [`REPAINT_AFTER_INPUT`]. `None`
+    /// when none is pending; `Some` while its task sleeps, and moved forward by
+    /// every further input so a burst ends in exactly one still.
+    repaint_due: Arc<std::sync::Mutex<Option<Instant>>>,
     /// Live nav-state watcher, if one is running (P1-5).
     nav: Mutex<Option<NavWatcher>>,
     /// Which User-Agent override is currently applied: `-1` never touched (the
@@ -973,6 +969,7 @@ impl AgentContext {
             lock: DriveLock::new(session),
             metrics: Arc::new(DeviceMetrics::new(width, height, 1.0, false)),
             screencast: Mutex::new(None),
+            repaint_due: Arc::default(),
             nav: Mutex::new(None),
             ua_applied: AtomicI8::new(-1),
         };
@@ -1101,6 +1098,41 @@ impl AgentContext {
         self.client
             .call_on(Some(&self.cdp_session_id), method, params)
             .await
+    }
+
+    /// Is a JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`) open on
+    /// this page right now? Free: the CDP reader keeps it per session.
+    pub fn dialog_open(&self) -> bool {
+        self.client.dialog(&self.cdp_session_id).is_some()
+    }
+
+    /// **A read that needs the renderer** (`Runtime.evaluate`,
+    /// `Page.captureScreenshot`). A blocked renderer answers it only once the
+    /// dialog is closed, so it is refused with [`BrowserError::DialogOpen`] while
+    /// one is open — never sent, so a parked read cannot run late — and given up
+    /// on the moment one opens mid-call, instead of waiting out the 30 s CDP
+    /// deadline.
+    async fn render_read(&self, method: &str, params: Value) -> Result<Value> {
+        if self.dialog_open() {
+            return Err(BrowserError::DialogOpen);
+        }
+        self.client
+            .call_unless_dialog(&self.cdp_session_id, method, params, DEFAULT_CALL_TIMEOUT)
+            .await?
+            .ok_or(BrowserError::DialogOpen)
+    }
+
+    /// **A write that must not wait behind a dialog** — an input event or a
+    /// viewport override. Sent either way; while a dialog is open Chrome parks it
+    /// and applies it once the dialog is answered, so this returns as soon as a
+    /// dialog is (or becomes) open. That is the click whose handler calls
+    /// `alert()`: its `mouseReleased` is only answered when the alert closes, and
+    /// awaiting it froze the takeover socket for 30 s.
+    async fn page_write(&self, method: &str, params: Value) -> Result<()> {
+        self.client
+            .call_unless_dialog(&self.cdp_session_id, method, params, DEFAULT_CALL_TIMEOUT)
+            .await
+            .map(|_| ())
     }
 
     // ── navigation + reading (reads are ungated) ────────────────────────────
@@ -1253,7 +1285,7 @@ impl AgentContext {
     /// takeover UI needs to read page state while the human drives.
     pub async fn evaluate(&self, expression: &str) -> Result<Value> {
         let out = self
-            .session_call(
+            .render_read(
                 "Runtime.evaluate",
                 json!({
                     "expression": expression,
@@ -1316,7 +1348,7 @@ impl AgentContext {
     pub async fn click(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
         for kind in ["mousePressed", "mouseReleased"] {
-            self.session_call(
+            self.page_write(
                 "Input.dispatchMouseEvent",
                 json!({
                     "type": kind, "x": x, "y": y,
@@ -1331,18 +1363,17 @@ impl AgentContext {
     /// Move the pointer (hover) without clicking.
     pub async fn move_mouse(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchMouseEvent",
             json!({ "type": "mouseMoved", "x": x, "y": y, "buttons": 0 }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Scroll by a wheel delta at a point.
     pub async fn scroll(&self, actor: Actor, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchMouseEvent",
             json!({
                 "type": "mouseWheel", "x": x, "y": y,
@@ -1350,16 +1381,14 @@ impl AgentContext {
             }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Insert text as if pasted / committed by an IME. Handles non-ASCII and
     /// emoji, which per-key events do not.
     pub async fn insert_text(&self, actor: Actor, text: &str) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call("Input.insertText", json!({ "text": text }))
+        self.page_write("Input.insertText", json!({ "text": text }))
             .await
-            .map(|_| ())
     }
 
     /// Press and release a named key with the full CDP payload.
@@ -1383,7 +1412,7 @@ impl AgentContext {
                     params["unmodifiedText"] = json!(text);
                 }
             }
-            self.session_call("Input.dispatchKeyEvent", params).await?;
+            self.page_write("Input.dispatchKeyEvent", params).await?;
         }
         Ok(())
     }
@@ -1393,7 +1422,7 @@ impl AgentContext {
     /// binds mouse handlers — Chrome then synthesises the compatibility click.
     pub async fn tap(&self, actor: Actor, x: f64, y: f64) -> Result<()> {
         self.lock.gate(actor)?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchTouchEvent",
             json!({
                 "type": "touchStart",
@@ -1401,12 +1430,11 @@ impl AgentContext {
             }),
         )
         .await?;
-        self.session_call(
+        self.page_write(
             "Input.dispatchTouchEvent",
             json!({ "type": "touchEnd", "touchPoints": [] }),
         )
         .await
-        .map(|_| ())
     }
 
     /// Toggle touch emulation for this target.
@@ -1467,7 +1495,10 @@ impl AgentContext {
         } else {
             1.0
         };
-        self.session_call(
+        // `page_write`: behind an open dialog this is parked, not refused, and
+        // chrome lays the page out at it once the dialog is answered — so the
+        // box below is still the truth.
+        self.page_write(
             "Emulation.setDeviceMetricsOverride",
             device_metrics_params(width, height, scale, mobile),
         )
@@ -1510,18 +1541,20 @@ impl AgentContext {
             self.ua_applied.store(0, Ordering::Relaxed);
             return Ok(());
         }
-        let ua = if mobile {
-            super::launch::CHROME_USER_AGENT_MOBILE
-        } else {
-            super::launch::CHROME_USER_AGENT
+        // The binary's own identity (version + host platform); without it there
+        // is nothing honest to override with, so the native UA stays.
+        let Some(id) = super::launch::identity() else {
+            tracing::warn!("browser: no binary identity; leaving the native user agent");
+            self.ua_applied.store(want, Ordering::Relaxed);
+            return Ok(());
         };
-        self.session_call(
+        let ua = if mobile { id.mobile_user_agent() } else { id.user_agent() };
+        self.page_write(
             "Emulation.setUserAgentOverride",
             json!({
                 "userAgent": ua,
-                "acceptLanguage": "en-US,en;q=0.9",
-                "platform": if mobile { "Android" } else { "Linux" },
-                "userAgentMetadata": user_agent_metadata(mobile),
+                "platform": id.navigator_platform(mobile),
+                "userAgentMetadata": id.ua_metadata(mobile),
             }),
         )
         .await?;
@@ -1560,11 +1593,10 @@ impl AgentContext {
     /// Ungated: this is a restoration of an override an actor already passed
     /// the lock to set, not a new claim on the page.
     pub async fn repair_capture(&self) -> Result<()> {
-        self.session_call("Emulation.clearDeviceMetricsOverride", json!({}))
+        self.page_write("Emulation.clearDeviceMetricsOverride", json!({}))
             .await?;
-        self.session_call("Emulation.setDeviceMetricsOverride", self.metrics.cdp_params())
-            .await?;
-        Ok(())
+        self.page_write("Emulation.setDeviceMetricsOverride", self.metrics.cdp_params())
+            .await
     }
 
     // ── screencast (phase 2 consumes this) ──────────────────────────────────
@@ -1731,13 +1763,90 @@ impl AgentContext {
     /// method — plus the [`INPUT_METHODS`](Self::INPUT_METHODS) allowlist.
     pub async fn dispatch_input(&self, actor: Actor, method: &str, params: Value) -> Result<()> {
         self.lock.gate(actor)?;
+        // Scheduled BEFORE the dispatch is awaited: the still is taken
+        // `REPAINT_AFTER_INPUT` from now either way, and an input whose answer
+        // is slow must not cost the human the picture of what it did.
+        self.repaint_after_input();
         if !Self::INPUT_METHODS.contains(&method) {
             return Err(BrowserError::Protocol {
                 method: method.to_string(),
                 message: "not an allowed input method".to_string(),
             });
         }
-        self.session_call(method, params).await.map(|_| ())
+        self.page_write(method, params).await
+    }
+
+    /// **Make sure the repaint that follows an input reaches the viewer** — see
+    /// [`REPAINT_AFTER_INPUT`] for why a throttled cast loses it.
+    ///
+    /// Only under a throttled cast (`everyNthFrame > 1`, the drive profile):
+    /// with no cast there is nobody to show, and the watch profile streams every
+    /// frame already. The throttle itself stays — motion still arrives at every
+    /// 4th frame; this adds one still per input burst, fanned out on the cast's
+    /// own channel with the live box as its metadata (like the seed still), so
+    /// every consumer maps it exactly like a frame.
+    fn repaint_after_input(&self) {
+        let tx = match self.screencast.try_lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(sc) if sc.options.every_nth_frame > 1 => sc.tx.clone(),
+                _ => return,
+            },
+            // A start/stop holds the slot for a round trip; the next input
+            // schedules again.
+            Err(_) => return,
+        };
+        let idle = {
+            let mut due = self.repaint_due.lock().unwrap_or_else(|p| p.into_inner());
+            let idle = due.is_none();
+            *due = Some(Instant::now() + REPAINT_AFTER_INPUT);
+            idle
+        };
+        if !idle {
+            // The pending task re-reads the deadline when it wakes.
+            return;
+        }
+        let due = self.repaint_due.clone();
+        let client = self.client.clone();
+        let session = self.cdp_session_id.clone();
+        let metrics = self.metrics.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(at) = *due.lock().unwrap_or_else(|p| p.into_inner()) else {
+                    return;
+                };
+                tokio::time::sleep_until(at).await;
+                let mut slot = due.lock().unwrap_or_else(|p| p.into_inner());
+                if *slot == Some(at) {
+                    *slot = None;
+                    break;
+                }
+            }
+            if tx.receiver_count() == 0 {
+                return;
+            }
+            let shot = client
+                .call_on(
+                    Some(&session),
+                    "Page.captureScreenshot",
+                    json!({ "format": "jpeg", "quality": 70 }),
+                )
+                .await;
+            match shot {
+                Ok(v) => {
+                    let data = v.get("data").and_then(Value::as_str).unwrap_or_default();
+                    if data.is_empty() {
+                        return;
+                    }
+                    let (w, h) = metrics.css();
+                    let _ = tx.send(ScreencastFrame {
+                        data: data.to_string(),
+                        metadata: super::takeover::seed_metadata(w, h),
+                        ack: None,
+                    });
+                }
+                Err(e) => debug!(error = %e, "browser: post-input still"),
+            }
+        });
     }
 
     /// One-shot JPEG of the current page, base64. Needed because a static page
@@ -1745,7 +1854,7 @@ impl AgentContext {
     /// would otherwise see a blank canvas.
     pub async fn screenshot(&self) -> Result<String> {
         let out = self
-            .session_call(
+            .render_read(
                 "Page.captureScreenshot",
                 json!({ "format": "jpeg", "quality": 70 }),
             )
@@ -1839,6 +1948,7 @@ impl AgentContext {
         {
             debug!(session = %self.session, error = %e, "browser: closeTarget");
         }
+        self.client.forget_dialog(&self.cdp_session_id);
         // **Only a scratch context is disposed.** Disposing the DEFAULT context
         // would be a protocol error at best and would nuke every other workspace
         // tab — and the profile's cookies with them — at worst (v1 §2.3 R5). A
@@ -1894,6 +2004,18 @@ async fn nav_pump(
     // `Some(deadline)` ⇒ a settle is pending. Seeded to "now" so the first thing
     // the pump does is read the page it attached to.
     let mut settle_at: Option<Instant> = Some(Instant::now());
+    // A pump started on a page that is ALREADY blocked (a takeover attaching to
+    // a scratch context whose agent clicked an `alert()` button) never sees the
+    // opening event, and chrome does not repeat it. The CDP reader kept it.
+    if let Some(params) = client.dialog(&want) {
+        state.dialog = Some(PageDialog::from_cdp(&params));
+        // The opening event names the page it blocks — the only url a blocked
+        // renderer will give us until the dialog is answered.
+        state.url = str_of(params.get("url"));
+        state.secure = secure_scheme(&state.url);
+        settle_at = None;
+        publish_nav(&tx, &state);
+    }
 
     loop {
         let settle = async {
@@ -1970,11 +2092,7 @@ async fn nav_pump(
                         settle_at = Some(Instant::now() + NAV_SETTLE);
                     }
                     "Page.javascriptDialogOpening" if ours => {
-                        state.dialog = Some(PageDialog {
-                            kind: str_of(ev.params.get("type")),
-                            message: str_of(ev.params.get("message")),
-                            default_prompt: str_of(ev.params.get("defaultPrompt")),
-                        });
+                        state.dialog = Some(PageDialog::from_cdp(&ev.params));
                         // Publish IMMEDIATELY and cancel any pending settle: the
                         // renderer is blocked from this instant, and this frame
                         // is the human's only way to learn it.
@@ -2014,13 +2132,8 @@ async fn nav_pump(
                 settle_at = None;
                 // See the doc comment: a blocked renderer answers no reads.
                 if state.dialog.is_none() {
-                    let read = client.call_with_timeout(
-                        Some(&want),
-                        "Page.getNavigationHistory",
-                        json!({}),
-                        NAV_READ_BUDGET,
-                    );
-                    if let Ok(v) = read.await {
+                    let read = read_on(&client, &want, "Page.getNavigationHistory", json!({}));
+                    if let Some(v) = read.await {
                         let history = NavHistory::from_cdp(&v);
                         state.can_go_back = history.can_go_back();
                         state.can_go_forward = history.can_go_forward();
@@ -2036,13 +2149,8 @@ async fn nav_pump(
                     if main_frame.is_none() {
                         // Seed the main frame id so a subframe cannot spin the
                         // spinner for the rest of this page's life.
-                        let read = client.call_with_timeout(
-                            Some(&want),
-                            "Page.getFrameTree",
-                            json!({}),
-                            NAV_READ_BUDGET,
-                        );
-                        if let Ok(v) = read.await {
+                        let read = read_on(&client, &want, "Page.getFrameTree", json!({}));
+                        if let Some(v) = read.await {
                             main_frame = v
                                 .pointer("/frameTree/frame/id")
                                 .and_then(Value::as_str)
@@ -2354,29 +2462,6 @@ mod tests {
         assert_eq!(p["deviceScaleFactor"], json!(2.0));
         assert_eq!(p["mobile"], json!(true));
         assert_eq!(p, device_metrics_params(390, 700, 2.0, true));
-    }
-
-    /// **The UA-CH must AGREE with the UA string**, or the high-entropy hints
-    /// betray the spoof (the module docs' detection, not cosmetics). Both variants
-    /// carry the pinned binary's Chromium major; only platform/`mobile` differ.
-    #[test]
-    fn the_user_agent_metadata_matches_the_pinned_major_and_the_viewport() {
-        let major = super::super::launch::PINNED_CHROME_MAJOR.to_string();
-
-        let mob = user_agent_metadata(true);
-        assert_eq!(mob["mobile"], json!(true));
-        assert_eq!(mob["platform"], json!("Android"));
-        assert_eq!(mob["brands"][0]["version"], json!(major));
-        assert_eq!(
-            mob["fullVersionList"][1]["version"],
-            json!(format!("{major}.0.0.0"))
-        );
-
-        let desk = user_agent_metadata(false);
-        assert_eq!(desk["mobile"], json!(false));
-        assert_eq!(desk["platform"], json!("Linux"));
-        // Same brand major on both — only the platform/mobile flip.
-        assert_eq!(desk["brands"][0]["version"], mob["brands"][0]["version"]);
     }
 
     /// **The signal the repair runs off.** A frame captured at a box that is

@@ -1674,10 +1674,19 @@ fn at_resume_picker(capture: &str) -> bool {
 /// this folder" (see [`keys_to_accept_trust`] — the option order is not fixed),
 /// which also records the dir as trusted so it never reappears for that path.
 fn at_trust_dialog(capture: &str) -> bool {
-    let c = capture.to_lowercase();
+    // The dialog is open only while its words are near the bottom of the screen. Once answered, Claude draws
+    // its own UI below it and the words scroll up into the history, where they must not refuse a send for good.
+    let mut rows: Vec<&str> = capture.lines().collect();
+    while rows.last().is_some_and(|l| l.trim().is_empty()) {
+        rows.pop();
+    }
+    let c = rows[rows.len().saturating_sub(TRUST_DIALOG_ROWS)..].join("\n").to_lowercase();
     (c.contains("trust the files") || c.contains("trust this folder") || c.contains("do you trust"))
         || (c.contains("safety check") && c.contains("trust"))
 }
+
+/// Rows from the bottom that hold a trust dialog (it is about ten tall, with its choices last).
+const TRUST_DIALOG_ROWS: usize = 16;
 
 /// The key sequence that lands on "Yes, I trust this folder" and confirms it —
 /// for whatever ORDER the trust dialog draws its options in.
@@ -1899,6 +1908,72 @@ fn classify_ready_tick(
     ReadyTick::Wait
 }
 
+/// A `Ready` read off the screen is only believed while the pty's foreground
+/// process is no longer the login shell. The `❯` glyph `agent_ui_visible` keys
+/// on is also the last character of a powerlevel10k prompt, so a launch that
+/// never started an agent (a bare shell, or zsh waiting at `quote>` after a
+/// mangled line) used to read "ready" one tick after Enter. While the shell
+/// still owns the terminal no agent can be at the wheel; `None` (the runtime can
+/// not tell) keeps the screen's verdict, as before.
+fn believe_ready(tick: ReadyTick, shell_foreground: Option<bool>) -> ReadyTick {
+    match (tick, shell_foreground) {
+        (ReadyTick::Ready, Some(true)) => ReadyTick::Wait,
+        (tick, _) => tick,
+    }
+}
+
+/// Longest launch line typed into the pane as-is. A local pty in canonical
+/// mode (the state a fresh shell is in until its line editor starts) keeps at
+/// most `MAX_CANON` bytes of a line, 1024 on macOS: the rest is dropped. A
+/// longer launch typed into a shell still sourcing its rc files therefore lost
+/// its tail, often a closing quote, and zsh sat at `quote>` swallowing every
+/// later launch (2026-11-23, session max: 1193 bytes, cut at 1024).
+const MAX_TYPED_LAUNCH: usize = 900;
+
+/// The line actually typed to launch the agent: `cmd` itself when it is short,
+/// else `. '<session-config>/<name>/launch.sh'` with `cmd` written to that file
+/// (0600, the same session-private dir as the settings overlay), so what is
+/// typed stays far below `MAX_CANON`. A remote session keeps the full line: the
+/// file would not exist on the other host. Any write problem falls back to the
+/// full line, i.e. the old behaviour.
+fn launch_line(data_dir: &Path, s: &Session, cmd: &str) -> String {
+    if cmd.len() <= MAX_TYPED_LAUNCH || s.host_id.is_some() {
+        return cmd.to_string();
+    }
+    let dir = crate::sessions::connector_config::settings_dir(data_dir, &s.name);
+    let path = dir.join("launch.sh");
+    let shown = path.display().to_string();
+    if shown.contains('\'') {
+        return cmd.to_string();
+    }
+    match write_private(&dir, &path, cmd) {
+        Ok(()) => format!(". '{shown}'"),
+        Err(e) => {
+            tracing::warn!(name = %s.name, error = %e, "start: could not write launch.sh; typing the full launch line");
+            cmd.to_string()
+        }
+    }
+}
+
+/// Write `body` to `path` with mode 0600, via a temp file and a rename so a
+/// launch never sources a half-written file.
+fn write_private(dir: &Path, path: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension("sh.tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(body.as_bytes())?;
+    f.write_all(b"\n")?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Confirm the pane shell is live (and let it print a prompt).
 async fn settle_shell(rt: &dyn SessionRuntime) -> bool {
     for _ in 0..10 {
@@ -1951,8 +2026,9 @@ async fn wait_for_agent_ready(
             // ready arm keys on `agent_at_the_wheel`, so a picker left open on an
             // INTENDED resume (which we deliberately do not escape) reads Wait, not
             // Ready — a heal that only reaches the picker is a FAILED heal.
-            match classify_ready_tick(&cap, resume_intended, escaped, trusted, resume_ids, bg_stop_tried)
-            {
+            let tick =
+                classify_ready_tick(&cap, resume_intended, escaped, trusted, resume_ids, bg_stop_tried);
+            match believe_ready(tick, rt.shell_is_foreground().await) {
                 ReadyTick::AcceptTrust => {
                     // NEVER a bare Enter: a newer Claude Code lists "No, exit" first
                     // and selects it by default, so Enter alone quits the session.
@@ -3311,9 +3387,11 @@ async fn start_locked_inner(
     // paths and secrets from this machine's vault; shipping them to a host would
     // copy credentials there, and `env` would carry decrypted secrets to the
     // remote pane. Until connectors can run on a host, a remote session starts
-    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`).
+    // without them and says so in its pane (`REMOTE_NO_CONNECTORS_NOTE`). That
+    // holds for Codex too: its `-c mcp_servers.*` overrides point at this
+    // machine's paths, so a remote Codex session takes the same branch.
     let remote_skips_connectors = s.host_id.is_some()
-        && launches_claude(&s.provider)
+        && (launches_claude(&s.provider) || s.provider == "codex")
         && !crate::db::connectors::grants_for_session(&state.pool, name)
             .await
             .unwrap_or_default()
@@ -3333,11 +3411,33 @@ async fn start_locked_inner(
                 tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
             }
         }
-    } else if s.provider == "codex"
-        && crate::browser_feedback::control::has_binding(state, name).await
-    {
-        if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
-            connector_flags = crate::connectors::browser::mcp::codex_flags(&path);
+    } else if s.provider == "codex" {
+        // The company connectors reach Codex as per-launch `-c mcp_servers.<id>=...` overrides; secrets
+        // stay in the launch env and are inherited by name.
+        match crate::sessions::connector_config::assemble(state, name).await {
+            Ok(Some(cfg)) => {
+                let flags = cfg.codex_flags();
+                if !flags.is_empty() {
+                    env.extend(cfg.env);
+                    connector_flags = flags;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(name = %name, error = %e, "connector launch injection failed; starting without connectors");
+            }
+        }
+        // A live browser binding adds the control-only server, unless the Shared
+        // Browser grant already brought the full one (the same rule `assemble`
+        // applies for Claude). `codex_mcp_flags` leaves the control server out, so
+        // it arrives here once, with its `enabled_tools` limit.
+        let full_browser = format!("mcp_servers.{}=", crate::connectors::browser::mcp::SERVER_KEY);
+        if !connector_flags.iter().any(|f| f.starts_with(&full_browser))
+            && crate::browser_feedback::control::has_binding(state, name).await
+        {
+            if let Some(path) = crate::connectors::browser::mcp::ensure(&state.config.data_dir).await {
+                connector_flags.extend(crate::connectors::browser::mcp::codex_flags(&path));
+            }
         }
     }
 
@@ -3545,6 +3645,7 @@ async fn start_locked_inner(
             } else {
                 cmd
             };
+            let cmd = launch_line(&state.config.data_dir, &s, &cmd);
             rt.send_text(&cmd).await?;
             submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
@@ -5086,6 +5187,19 @@ mod agent_ready_heuristics_tests {
         );
     }
 
+    /// The title of an answered dialog stays in the scrollback; with Claude's own UI below it, a send is not refused.
+    #[test]
+    fn an_answered_trust_dialog_in_the_history_does_not_refuse_a_send() {
+        let answered = format!(
+            "Accessing workspace:\n /opt/projects/x\n Quick safety check: Is this a project you created or one you trust?\n \
+             ❯ 1. Yes, I trust this folder\n   2. No, exit\n{}",
+            "output of the agent\n".repeat(20)
+        );
+        assert!(!at_trust_dialog(&answered), "a dialog far above the bottom is history, not a gate");
+        let open = format!("{}Accessing workspace:\n Quick safety check: do you trust this folder?\n ❯ Yes, I trust this folder\n   No, exit", "earlier output\n".repeat(20));
+        assert!(at_trust_dialog(&open), "a dialog at the bottom still is one");
+    }
+
     #[test]
     fn accept_trust_navigates_to_yes_when_no_exit_is_the_default() {
         // THE reported bug: a newer Claude Code lists "No, exit" FIRST and selects
@@ -6083,7 +6197,7 @@ mod company_confinement_gate_tests {
         }
     }
 
-    fn session(name: &str, dir: &str, company_id: Option<i64>) -> Session {
+    pub(super) fn session(name: &str, dir: &str, company_id: Option<i64>) -> Session {
         Session {
             name: name.into(),
             display_name: name.into(),
@@ -9490,5 +9604,55 @@ mod pane_shell_tests {
         assert_eq!(remote, REMOTE_PANE_SHELL);
         assert!(remote.contains("${SHELL"), "resolved on the host, not here: {remote}");
         assert_ne!(pane_shell(None), REMOTE_PANE_SHELL, "a local pane keeps the local shell");
+    }
+}
+
+#[cfg(test)]
+mod launch_ready_tests {
+    use super::*;
+
+    /// The 2026-11-23 screen: a powerlevel10k prompt (ending in `❯`) with zsh
+    /// stuck at `quote>` after a launch line lost its tail. The glyph alone reads
+    /// as an agent; the foreground process says it is still the shell.
+    const P10K_QUOTE: &str = "  ~/projects/MaxMax on \u{e0a0} main \u{276f} ource ~/.zprofile 2>/dev/null; claude --resume 'abc' --append-system-prompt 'Je bent Max\nquote> ";
+
+    #[test]
+    fn a_prompt_glyph_is_not_ready_while_the_shell_is_in_the_foreground() {
+        let tick = classify_ready_tick(P10K_QUOTE, true, false, false, &[], false);
+        assert_eq!(tick, ReadyTick::Ready, "precondition: the screen alone reads as ready");
+        assert_eq!(believe_ready(tick, Some(true)), ReadyTick::Wait);
+    }
+
+    #[test]
+    fn believe_ready_only_vetoes_ready_when_the_shell_owns_the_terminal() {
+        assert_eq!(believe_ready(ReadyTick::Ready, Some(false)), ReadyTick::Ready, "agent in front");
+        assert_eq!(believe_ready(ReadyTick::Ready, None), ReadyTick::Ready, "can not tell: screen decides");
+        assert_eq!(believe_ready(ReadyTick::Wait, Some(true)), ReadyTick::Wait);
+        assert_eq!(believe_ready(ReadyTick::AcceptTrust, Some(true)), ReadyTick::AcceptTrust);
+    }
+
+    #[test]
+    fn a_long_local_launch_is_typed_as_a_short_source_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = std::env::temp_dir().join(format!("supermux-launch-{}", uuid::Uuid::new_v4()));
+        let s = super::company_confinement_gate_tests::session("longbot", "/tmp", None);
+
+        let short = "claude --resume 'abc'";
+        assert_eq!(launch_line(&data, &s, short), short, "a short line is typed as-is");
+        assert!(!data.exists(), "and writes nothing");
+
+        let long = format!("export A=1; claude --append-system-prompt '{}'", "x".repeat(1200));
+        let typed = launch_line(&data, &s, &long);
+        let file = data.join("session-config").join("longbot").join("launch.sh");
+        assert_eq!(typed, format!(". '{}'", file.display()));
+        assert!(typed.len() < 1024, "far below MAX_CANON: {}", typed.len());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{long}\n"));
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "session-private");
+
+        let mut remote = s.clone();
+        remote.host_id = Some(7);
+        assert_eq!(launch_line(&data, &remote, &long), long, "a remote host has no such file");
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

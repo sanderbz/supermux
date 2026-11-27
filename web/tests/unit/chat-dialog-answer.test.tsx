@@ -26,6 +26,7 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatConversation } from '../../src/components/chat/conversation'
+import { CC_VERIFIED_CURRENT } from '../../src/components/chat/registry/verified'
 import {
   answerDialog,
   answerNotice,
@@ -355,14 +356,14 @@ describe('answering, when it must refuse', () => {
   })
 
   test('a version the fingerprint was never captured against sends nothing', async () => {
-    const r = rig([PERM], { pin: '2.2.0' })
+    const r = rig([PERM], { pin: '2.1.300' })
     const out = await answerDialog(r.deps, req(0))
     expect(out.failure).toBe('not-actionable')
     expect(out.attention).toBe('registry-version-mismatch')
     expect(r.sent).toEqual([])
     // Naming BOTH versions — the one this session booted and the ones the
     // fingerprint was checked against. "Could not confirm" is not the reason.
-    expect(answerNotice(out)).toMatch(/2\.2\.0/)
+    expect(answerNotice(out)).toMatch(/2\.1\.300/)
     expect(answerNotice(out)).toMatch(/2\.1\.227/)
   })
 
@@ -405,14 +406,31 @@ describe('the card the surface draws', () => {
     expect(view.escape?.actOn).toBe(false)
   })
 
-  test('an unpinned version renders every option, and presses none', () => {
+  // An unknown version OLDER than the newest capture: a NEWER one on an exact
+  // screen gets its one-off rows by structure instead (see the next test, and
+  // `chat-registry-structure.test.ts`).
+  test('a newer version on an exact screen gets the one-off rows, nothing more', () => {
     const view = dialogCardView(PERM, '2.2.0')!
+    expect(view.disabled).toBe(false)
+    expect(view.options.map((o) => o.actOn)).toEqual([true, false, true])
+    expect(view.escape?.actOn).toBe(true)
+  })
+
+  test('an unpinned version renders every option, and presses none', () => {
+    const view = dialogCardView(PERM, '2.1.300')!
     expect(view.disabled).toBe(true)
     expect(view.options.every((o) => !o.actOn)).toBe(true)
     expect(view.escape?.actOn).toBe(false)
     expect(view.note).toBe(DIALOG_TERMINAL_NOTE)
     expect(view.attention).toBe('registry-version-mismatch')
-    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232', '2.1.233'])
+    expect(view.verifiedVersions).toEqual([
+      '2.1.227',
+      '2.1.231',
+      '2.1.232',
+      '2.1.233',
+      // the three-row Bash shape, re-verified with auto mode off (`cc321/noauto/`)
+      ...CC_VERIFIED_CURRENT,
+    ])
   })
 
   // AskUserQuestion is `pinExempt`: its rows are the MODEL'S, so a Claude Code
@@ -524,7 +542,7 @@ describe('the card the surface draws', () => {
     // card, the latched card, and no card at all.
     expect(chooseable(live, null, 1)).toBe(false)
     expect(chooseable(live, 0, 2)).toBe(false)
-    expect(chooseable(dialogCardView(PERM, '2.2.0'), null, 0)).toBe(false)
+    expect(chooseable(dialogCardView(PERM, '2.1.300'), null, 0)).toBe(false)
     expect(chooseable(hardDisable(live, 'the caret moved'), null, 0)).toBe(false)
     expect(chooseable(null, null, 0)).toBe(false)
     // An index nobody drew.
@@ -613,7 +631,7 @@ describe('the card, rendered', () => {
 
   test('a degraded card shows the dialog-terminal copy and no live control', () => {
     const html = renderToStaticMarkup(
-      <DialogCard view={dialogCardView(PERM, '2.2.0')!} onChoose={() => {}} />,
+      <DialogCard view={dialogCardView(PERM, '2.1.300')!} onChoose={() => {}} />,
     )
     expect(html).toContain('data-state="degraded"')
     expect(html).toContain(DIALOG_TERMINAL_NOTE)

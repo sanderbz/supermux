@@ -121,3 +121,69 @@ describe('a navigation step waits out a repaint, and nothing else', () => {
     expect(d.sent).toEqual(['Down'])
   })
 })
+
+/**
+ * Found live on the Mac mini, 2026-11-25 (Claude Code 2.1.321, 30 sessions on
+ * the host): a plan card's "Yes, manually approve edits" sent `Down`, the
+ * terminal's caret DID move — a peek seconds later showed it on row 2 — but all
+ * three settle looks (~240 ms) still read row 1, so the card stopped with "the
+ * keypress did not move it". Every registry answer that needs an arrow failed
+ * that way on the live server; Enter-only answers worked.
+ *
+ * The budget is TIME, not a number of looks: the same fresh peek, every look,
+ * until the repaint lands or the budget is out. These tests run on a virtual
+ * clock so they cost nothing.
+ */
+describe('the settle budget covers a slow repaint on a busy host', () => {
+  /** A driver whose caret moves only once `lagMs` of virtual time has passed
+   *  since each key. */
+  function slowDriver(lagMs: number) {
+    const sent: string[] = []
+    let now = 0
+    let keyAt = 0
+    let caret = 0
+    let pending: number | null = null
+    return {
+      sent,
+      elapsed: () => now,
+      deps: {
+        refresh: async (): Promise<PeekLens | null> => {
+          if (sent.includes('Enter')) return readLens('❯ \n  ⏵⏵ auto mode on')
+          if (pending != null && now - keyAt >= lagMs) {
+            caret = pending
+            pending = null
+          }
+          return readLens(capture(caret))
+        },
+        sendKey: async (k: string) => {
+          sent.push(k)
+          keyAt = now
+          if (k === 'Down') pending = caret + 1
+          if (k === 'Up') pending = caret - 1
+        },
+        pin: PIN,
+        wait: async (ms: number) => {
+          now += ms
+        },
+      },
+    }
+  }
+
+  test('a repaint that lands 1 s after the key is still followed to the answer', async () => {
+    const d = slowDriver(1000)
+    const out = await answerDialog(d.deps, REQ)
+    expect(out.ok).toBe(true)
+    expect(d.sent).toEqual(['Down', 'Down', 'Enter'])
+  })
+
+  test('a caret that never moves still stops, within the budget, with what was sent', async () => {
+    const d = slowDriver(Number.POSITIVE_INFINITY)
+    const out = await answerDialog(d.deps, REQ)
+    expect(out.ok).toBe(false)
+    expect(out.failure).toBe('caret-drift')
+    expect(out.detail).toContain('did not move it')
+    expect(d.sent).toEqual(['Down'])
+    // Bounded: the user is never kept waiting more than a few seconds.
+    expect(d.elapsed()).toBeLessThanOrEqual(3000)
+  })
+})

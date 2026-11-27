@@ -98,7 +98,7 @@ export interface ComposerProps {
 /** The field's typography, shared by both hosts so the swap is invisible: the
  *  pill's own metrics, and the 16px iOS no-zoom floor on the phone. */
 const FIELD =
-  'min-w-0 flex-1 bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none max-h-[120px] overflow-y-auto'
+  'min-w-0 flex-1 bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none max-h-[max(120px,calc(var(--vvh,100dvh)*0.4))] [@media(pointer:coarse)]:max-h-[max(120px,calc(var(--vvh,100dvh)*0.3))] overflow-y-auto'
 
 export function Composer({
   placeholder,

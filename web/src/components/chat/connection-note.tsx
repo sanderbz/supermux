@@ -21,6 +21,7 @@ import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
 import { claimConnectionVoice } from '../../lib/live-region-owner'
 import { cn } from '../../lib/utils'
 
+import { HEADER_CHIP_BASE } from './header-chip'
 import type { ChatGone } from './chat-socket'
 import { CHAT_GONE, type ChatPresentation } from './connection'
 
@@ -102,7 +103,7 @@ export function ConnectionNote({ state, onRetry, gone = null, compact = false }:
       // dot honour its own width/height wherever the wrapper sits.
       cn('inline-block size-2 shrink-0 rounded-full align-middle', alarming ? 'bg-status-error' : 'bg-ink-2')
     : cn(
-        'flex-none rounded-full border-[0.5px] px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px]',
+        HEADER_CHIP_BASE,
         alarming
           ? 'border-status-error/30 bg-status-error/10 text-status-error-ink'
           : 'border-hairline-soft bg-fill-soft text-ink-2',
@@ -127,7 +128,9 @@ export function ConnectionNote({ state, onRetry, gone = null, compact = false }:
   )
 
   return (
-    <span role="status" aria-live="polite" aria-label={detail}>
+    // `inline-flex items-center`: as a plain inline span the wrapper's own line
+    // box sat the chip 0.5px below the mode chip's centre (measured 42.5 vs 42.0).
+    <span role="status" aria-live="polite" aria-label={detail} className="inline-flex items-center">
       {retryable ? (
         // `data-state` rides BOTH branches. It is how the VR rig, the
         // `/dev/chat-live?conn=` bench and the T3 reconnect specs read the
