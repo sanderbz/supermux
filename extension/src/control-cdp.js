@@ -24,7 +24,10 @@ const nodeDescription = `function(){
     hit:!!hit&&(element===hit||element.contains(hit)||hit.contains(element))};
 }`;
 
-export function createCdpController({send, origin, check, onMainNavigation, hideUi}) {
+// `navigable(url)` returns null when the binding may go there, or the refusal
+// code ('origin_changed' / 'blocked_site'). Without it: exact `origin` only.
+export function createCdpController({send, origin, navigable=url=>new URL(url).origin===origin?null:'origin_changed', check, onMainNavigation, hideUi}) {
+  const refuse=(why,message)=>error(why,why==='blocked_site'?'Agents may not open this website (accounts, payments, banks, government, password managers or Supermux itself).':message);
   let generation = 0, mainFrame = null, refs = new Map(), serial = 0;
   const childSessions = new Map(), contexts = new Map(), initialization = new Set();
   const frameDocuments = new Map(), frameParents = new Map();
@@ -294,13 +297,14 @@ export function createCdpController({send, origin, check, onMainNavigation, hide
       let expectedLoader,expectedUrl;
       if(step.action==='navigate'){
         const url=new URL(boundedText(step.url,8192,'URL'));
-        if(url.origin!==origin||url.username||url.password)throw error('origin_changed','Navigation must stay on this paired website.');
+        if(url.username||url.password)throw error('origin_changed','Navigation must stay on this paired website.');
+        const why=navigable(url.href);if(why)throw refuse(why,'Navigation must stay on this paired website.');
         const result=await send('Page.navigate',{url:url.href});if(result.errorText)throw error('navigation_failed',result.errorText);
         expectedLoader=result.loaderId;expectedUrl=url.href;
       }else if(step.action==='back'){
         const history=await send('Page.getNavigationHistory'),previous=history.entries[history.currentIndex-1];
         if(!previous)throw error('no_history','There is no previous page.');
-        if(new URL(previous.url).origin!==origin)throw error('origin_changed','The previous page belongs to another website.');
+        const why=navigable(previous.url);if(why)throw refuse(why,'The previous page belongs to another website.');
         expectedUrl=previous.url;
         await send('Page.navigateToHistoryEntry',{entryId:previous.id});
       }else await send('Page.reload');

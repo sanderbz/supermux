@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, ChevronDown, Copy, Download, Globe2, Loader2, MonitorUp, RefreshCw, Unplug } from 'lucide-react'
+import { Check, ChevronDown, Copy, Download, Globe2, Loader2, MonitorUp, RefreshCw, ShieldAlert, Unplug } from 'lucide-react'
 import { apiUrl, settingsRequest } from '../../lib/api/client'
 import { csrfCookie } from '../../lib/api/auth'
 import { useViewerIdentity } from '../../stores/viewer-store'
@@ -12,15 +12,31 @@ export interface BrowserBinding {
   session_label?: string
   created_at?: number
   control_connected?: boolean
+  /** `all` = the owner-only "All websites" scope (24 h, blocklisted). */
+  scope?: 'origin' | 'all'
+  /** Unix seconds; set only for `all`. */
+  expires_at?: number | null
 }
+
+/** The server refuses to claim an "All websites" code until it is approved explicitly. */
+export interface BrowserScopeApproval {
+  approval_required: 'all'
+  origin: string
+  ttl_secs: number
+}
+const needsApproval = (value: BrowserBinding | BrowserScopeApproval): value is BrowserScopeApproval =>
+  (value as BrowserScopeApproval).approval_required === 'all'
+const allSitesUntil = (seconds?: number | null) => seconds
+  ? new Date(seconds * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+  : ''
 
 export const supportsBrowserFeedback = (provider: string | undefined) => provider === 'claude' || provider === 'codex'
 
 export const BROWSER_EXTENSION_DOWNLOAD = '/downloads/supermux-browser-extension.zip'
 export const browserFeedbackApi = {
-  pair: (session: string, code: string) => settingsRequest<BrowserBinding>(
+  pair: (session: string, code: string, scope?: 'all') => settingsRequest<BrowserBinding | BrowserScopeApproval>(
     `/api/sessions/${encodeURIComponent(session)}/browser-pairings`,
-    { method: 'POST', credentials: 'same-origin', headers: { 'x-supermux-csrf': csrfCookie() }, body: JSON.stringify({ code }) },
+    { method: 'POST', credentials: 'same-origin', headers: { 'x-supermux-csrf': csrfCookie() }, body: JSON.stringify(scope ? { code, scope } : { code }) },
   ),
   list: (session: string) => settingsRequest<BrowserBinding[] | { bindings: BrowserBinding[] }>(
     `/api/sessions/${encodeURIComponent(session)}/browser-bindings`,
@@ -63,6 +79,8 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
   const [revoking, setRevoking] = React.useState<string | null>(null)
   const [error, setError] = React.useState('')
   const [pairedOrigin, setPairedOrigin] = React.useState('')
+  const [pairedAll, setPairedAll] = React.useState<BrowserBinding | null>(null)
+  const [approval, setApproval] = React.useState<(BrowserScopeApproval & { code: string }) | null>(null)
   const [copied, setCopied] = React.useState<'server' | 'chrome' | ''>('')
   const mounted = React.useRef(true)
   const copyTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -83,7 +101,7 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
 
   React.useEffect(() => {
     mounted.current = true; epoch.current++
-    setBindings([]); setCode(''); setPairedOrigin(''); setError(''); setPairing(false); setRevoking(null); setCopied('')
+    setBindings([]); setCode(''); setPairedOrigin(''); setPairedAll(null); setApproval(null); setError(''); setPairing(false); setRevoking(null); setCopied('')
     if (allowed) void load()
     else setLoading(false)
     const refresh = (event: Event) => {
@@ -106,14 +124,26 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
 
   async function pair(event: React.FormEvent) {
     event.preventDefault()
-    if (!allowed || remote || !/^\d{4}$/.test(code) || pairing) return
+    if (!/^\d{4}$/.test(code)) return
+    await claim(code)
+  }
+
+  // An "All websites" code is claimed only after the red approval below; the
+  // server answers the first attempt with approval_required and claims nothing.
+  async function claim(claimCode: string, scope?: 'all') {
+    if (!allowed || remote || pairing) return
     const version = epoch.current
-    setPairing(true); setError(''); setPairedOrigin('')
+    setPairing(true); setError(''); setPairedOrigin(''); setPairedAll(null)
     try {
-      const binding = await browserFeedbackApi.pair(session, code)
+      const result = await browserFeedbackApi.pair(session, claimCode, scope)
       if (!mounted.current || epoch.current !== version) return
+      if (needsApproval(result)) { setApproval({ ...result, code: claimCode }); return }
+      const binding = result
+      setApproval(null)
       setBindings(current => [...current.filter(item => item.id !== binding.id), binding])
-      setPairedOrigin(binding.origin); setCode(''); notify()
+      if (binding.scope === 'all') setPairedAll(binding)
+      else setPairedOrigin(binding.origin)
+      setCode(''); notify()
     } catch (e) {
       if (mounted.current && epoch.current === version) setError(browserFeedbackError(e, 'Pairing failed. Check the code and try again.'))
     } finally { if (mounted.current && epoch.current === version) setPairing(false) }
@@ -128,6 +158,7 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
       if (mounted.current && epoch.current === version) {
         setBindings(current => current.filter(item => item.id !== binding.id))
         if (pairedOrigin === binding.origin) setPairedOrigin('')
+        if (pairedAll?.id === binding.id) setPairedAll(null)
         notify()
       }
     } catch (e) {
@@ -179,12 +210,22 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
         </div>
       </form> : <p className="text-[11px] leading-relaxed text-muted-foreground">{viewer.kind === 'pending' ? 'Checking your access…' : 'Sign in to pair a website with this agent.'}</p>}
       {error && <div className="rounded-lg border border-status-error/20 bg-status-error/5 p-3"><p role="alert" className="text-[11px] leading-relaxed text-status-error">{error}</p>{allowed && <button type="button" onClick={() => { setError(''); void load() }} className="mt-1 flex min-h-11 items-center gap-1.5 text-[11px] text-muted-foreground"><RefreshCw aria-hidden className="size-3" />Refresh connections</button>}</div>}
+      {approval && <div role="alertdialog" aria-labelledby={`${inputId}-all`} data-testid="browser-all-sites-approval" className="space-y-2 rounded-xl border border-status-error/30 bg-status-error/5 p-3.5">
+        <p id={`${inputId}-all`} className="flex items-center gap-2 text-[12px] font-semibold text-status-error"><ShieldAlert aria-hidden className="size-4 shrink-0" />This code asks for All websites</p>
+        <p className="text-[11px] leading-relaxed text-foreground">{label || 'This agent'} could open and act on <strong>any website</strong> with the logged-in accounts in that browser, for at most <strong>{Math.round(approval.ttl_secs / 3600)} hours</strong>, except blocked sites (accounts, payments, banks, government, password managers and Supermux itself). Pairing started on <span className="break-all">{approval.origin}</span>.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" data-testid="browser-all-sites-approve" disabled={pairing} onClick={() => void claim(approval.code, 'all')} className="flex min-h-11 items-center gap-1.5 rounded-xl bg-status-error px-3.5 text-[12px] font-medium text-white disabled:opacity-40">{pairing && <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />}Approve all websites for {Math.round(approval.ttl_secs / 3600)} hours</button>
+          <button type="button" disabled={pairing} onClick={() => { setApproval(null); setCode('') }} className="min-h-11 rounded-xl px-3 text-[12px] text-muted-foreground hover:bg-fill-soft">Cancel</button>
+        </div>
+      </div>}
+      {pairedAll && <p role="status" data-testid="browser-all-sites-paired" className="flex gap-2 rounded-lg bg-status-error/5 p-3 text-[11px] leading-relaxed text-status-error"><ShieldAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0 break-all">Code accepted for All websites until {allSitesUntil(pairedAll.expires_at)} (started on {pairedAll.origin}). Return to the extension to confirm. Disconnect below ends it at any time.</span></p>}
       {pairedOrigin && <p role="status" className="flex gap-2 rounded-lg bg-status-ready/10 p-3 text-[11px] leading-relaxed text-status-ready-ink"><Check aria-hidden className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0 break-all">Code accepted for {pairedOrigin}. Return to the extension to confirm this website and agent and allow control in one click.</span></p>}
     </div>
     {allowed && <div className="border-t border-border bg-fill-soft/20 px-4 py-3">
       <div className="mb-2 flex items-center justify-between gap-2"><h4 className="text-[9px] font-medium uppercase tracking-[.12em] text-muted-foreground">Paired websites</h4><span className="text-[10px] tabular-nums text-muted-foreground">{bindings.length}</span></div>
       {loading ? <p className="flex items-center gap-2 py-2 text-[11px] text-muted-foreground"><Loader2 aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />Loading connections…</p> : bindings.length ? <ul className="max-h-48 divide-y divide-border overflow-y-auto">{bindings.map(binding => <li key={binding.id} className="flex min-h-11 items-center gap-2 py-1">
         <Globe2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-[11px] text-foreground" title={binding.origin}>{binding.origin}</span>
+        {binding.scope === 'all' && <span data-testid="browser-all-sites-badge" title="This agent may control any website except blocked sites" className="shrink-0 rounded-full bg-status-error/10 px-2 py-1 text-[10px] text-status-error">All websites · until {allSitesUntil(binding.expires_at)}</span>}
         {binding.control_connected && <span data-testid="browser-control-active" className="shrink-0 rounded-full bg-status-ready/10 px-2 py-1 text-[10px] text-status-ready-ink">Control on</span>}
         <button type="button" disabled={revoking !== null} onClick={() => void revoke(binding)} title={`Disconnect ${binding.origin}`} aria-label={`Disconnect ${binding.origin}`} className="grid size-11 shrink-0 place-items-center rounded-xl text-muted-foreground transition-colors hover:bg-fill-soft hover:text-status-error focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">{revoking === binding.id ? <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Unplug aria-hidden className="size-3.5" />}</button>
       </li>)}</ul> : <p className="py-1 text-[11px] leading-relaxed text-muted-foreground">Pair a website to connect it to this agent.</p>}

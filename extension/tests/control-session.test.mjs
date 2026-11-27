@@ -13,7 +13,7 @@ function fixture(options={}) {
   class Socket {
     readyState=0;
     constructor(url){this.url=url;sockets.push(this);queueMicrotask(()=>{this.readyState=1;this.onopen?.();});}
-    send(payload){const frame=JSON.parse(payload);records.push(frame);if(frame.type==='auth')queueMicrotask(()=>this.receive({type:'ready',lease_id:frame.lease_id,connection_id:'connection-'+sockets.length}));}
+    send(payload){const frame=JSON.parse(payload);records.push(frame);if(frame.type==='auth')queueMicrotask(()=>this.receive(options.ready?.(frame)??{type:'ready',lease_id:frame.lease_id,connection_id:'connection-'+sockets.length}));}
     receive(frame){this.onmessage?.({data:JSON.stringify(frame)});}
     close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
   }
@@ -219,5 +219,82 @@ test('a re-rendered element is found again once by role and name',async()=>{
     const input=snapshot.nodes.find(n=>n.name==='App name').ref;f.rerender();
     const fill=await f.batch([{action:'fill',ref:input,text:'again'}],'fill');assert.equal(fill.ok,true,JSON.stringify(fill.error));
     assert.deepEqual(f.resolved.slice(-2),[11,12]);
+  }finally{await f.stop();}
+});
+
+// ── All websites scope ─────────────────────────────────────────────────────
+function allSites(options={},expiresIn=3600){
+  const ready=frame=>({type:'ready',lease_id:frame.lease_id,connection_id:'connection-all',scope:'all',expires_at:(Math.floor(Date.now()/1000)+expiresIn)*1000,blocked_sites:['paypal.com','bunq.com'],blocked_hosts:['server.test']});
+  const f=fixture({ready,...options}),site='https://example.test',c=f.getConfig();
+  f.setConfig({...c,bindings:{[site]:{...c.bindings[site],scope:'all',expires_at:Math.floor(Date.now()/1000)+expiresIn}}});
+  f.navigate=url=>{f.tab.url=url;f.chrome.debugger.onEvent.emit({tabId:7},'Page.frameNavigated',{frame:{id:'main',url,loaderId:'doc-'+url}});};
+  return f;
+}
+
+test('All websites: leaving the paired origin keeps control and reports the new origin',async()=>{
+  const f=allSites();try{
+    const state=await f.start();assert.equal(state.state,'active');
+    const status=await f.service.status(7);assert.equal(status.scope,'all');assert.ok(status.expires_at>Date.now());
+    f.navigate('https://other.test/next');await new Promise(r=>setTimeout(r,10));
+    assert.deepEqual(f.records.filter(r=>r.type==='navigated'),[{type:'navigated',origin:'https://other.test'}]);
+    const result=await f.batch([{action:'evaluate',expression:'1'}]);assert.equal(result.ok,true);assert.equal(result.origin,'https://other.test');
+    assert.equal((await f.service.status(7)).state,'active');
+  }finally{await f.stop();}
+});
+
+test('All websites: landing on a blocked site ends control with blocked_site and sends no CDP command there',async()=>{
+  for(const url of ['https://paypal.com/','https://www.paypal.com/x','https://SERVER.test/dashboard']){
+    const f=allSites();try{
+      await f.start();await new Promise(r=>setTimeout(r,10));
+      const before=f.commands.length;f.navigate(url);
+      f.sockets[0].receive({type:'command',id:'after',steps:[{action:'evaluate',expression:'document.cookie'}],timeout_ms:1000});
+      await until(()=>f.detaches.length===1);await new Promise(r=>setTimeout(r,10));
+      const stop=f.records.find(r=>r.type==='stop');assert.equal(stop?.code,'blocked_site',url);
+      assert.deepEqual(f.commands.slice(before).map(c=>c.method),[],'no command after landing on '+url);
+      assert.equal(f.records.some(r=>r.type==='navigated'),false);
+    }finally{await f.stop();}
+  }
+});
+
+test('All websites: navigate to a blocked domain or subdomain is refused before Page.navigate; lookalikes go through',async()=>{
+  const f=allSites();try{
+    await f.start();
+    for(const [i,url] of ['https://paypal.com/','https://login.paypal.com/','https://bunq.com/app'].entries()){
+      const result=await f.batch([{action:'navigate',url}],'nav-'+i);
+      assert.equal(result.ok,false);assert.equal(result.error.code,'blocked_site',url);
+    }
+    assert.equal(f.commands.some(c=>c.method==='Page.navigate'),false);
+    await f.batch([{action:'navigate',url:'https://notpaypal.com/'}],'lookalike',200);
+    assert.deepEqual(f.commands.filter(c=>c.method==='Page.navigate').map(c=>c.params.url),['https://notpaypal.com/']);
+  }finally{await f.stop();}
+});
+
+test('All websites: the page pill lives in an isolated world and its Stop ends control',async()=>{
+  const f=allSites();try{
+    await f.start();await until(()=>f.commands.some(c=>c.method==='Runtime.evaluate'&&String(c.params.expression).includes('All websites')));
+    const binding=f.commands.find(c=>c.method==='Runtime.addBinding');assert.equal(binding.params.executionContextName,'supermux-control');
+    assert.equal(f.commands.find(c=>c.method==='Page.addScriptToEvaluateOnNewDocument').params.worldName,'supermux-control');
+    f.chrome.debugger.onEvent.emit({tabId:7},'Runtime.bindingCalled',{name:binding.params.name,payload:'stop'});
+    await until(()=>f.detaches.length===1);await until(()=>f.saved.controlSessions.length===0);assert.equal((await f.service.status(7)).state,'idle');
+  }finally{await f.stop();}
+});
+
+test('All websites: an expired binding or a server without scope support never controls',async()=>{
+  const expired=allSites({},-5);try{await assert.rejects(expired.start(),e=>e.code==='all_sites_expired');assert.equal(expired.sockets.length,0);}finally{await expired.stop();}
+  const old=allSites({ready:frame=>({type:'ready',lease_id:frame.lease_id,connection_id:'c'})});try{await assert.rejects(old.start());assert.equal(old.detaches.length,1);}finally{await old.stop();}
+});
+
+test('All websites: the hard expiry ends active control with all_sites_expired',async()=>{
+  const f=allSites({ready:frame=>({type:'ready',lease_id:frame.lease_id,connection_id:'c',scope:'all',expires_at:Date.now()+80})});try{
+    await f.start();await until(()=>f.detaches.length===1);
+    assert.equal(f.records.find(r=>r.type==='stop')?.code,'all_sites_expired');
+  }finally{await f.stop();}
+});
+
+test('a single-website binding still ends control when the tab leaves its origin',async()=>{
+  const f=fixture();try{
+    await f.start();f.tab.url='https://other.test/';f.chrome.debugger.onEvent.emit({tabId:7},'Page.frameNavigated',{frame:{id:'main',url:'https://other.test/',loaderId:'x'}});
+    await until(()=>f.detaches.length===1);assert.equal(f.records.some(r=>r.type==='navigated'),false);
+    const result=await f.service.status(7);assert.equal(result.scope,'origin');
   }finally{await f.stop();}
 });
