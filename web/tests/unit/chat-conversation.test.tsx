@@ -228,7 +228,8 @@ describe('trackBottom (QA #12)', () => {
   })
 
   test('a composer that grew is followed, not ignored', () => {
-    // 136px is `use-composer`'s cap — the state measured in `33-long-draft.png`.
+    // An illustrative grown composer (the cap is now 15 lines / viewport-bound,
+    // see `composerMaxHeight`); the reserve just has to follow what was measured.
     expect(trackBottom(150, true, false)).toBe(176)
     expect(trackBottom(150, true, false)).toBeGreaterThan(trackBottom(66, true, false))
   })
