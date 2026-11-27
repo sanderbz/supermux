@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
+import { BubbleCode } from '../../src/components/chat/ui/bubble'
 import { chatComponents } from '../../src/components/chat/markdown/chat-components'
 
 const LONG = 'wget -c https://example.com/a/very/long/path/that/does/not/fit-in-a-bubble.tar.gz'
@@ -61,5 +62,35 @@ describe('a diff is still a diff, on either surface', () => {
       expect(out).toContain('old line')
       expect(out).toContain('new line')
     }
+  })
+})
+
+describe('copy affordance', () => {
+  test('a fence renders a copy button', () => {
+    expect(fence('desktop')).toContain('aria-label="Copy code"')
+  })
+  test('the button goes sr-only under a coarse pointer, not hidden', () => {
+    const out = fence('desktop')
+    expect(out).toContain('[@media(pointer:coarse)]:sr-only')
+    expect(out).toContain('[@media(pointer:coarse)]:focus-visible:not-sr-only')
+    expect(out).not.toContain('[@media(pointer:coarse)]:hidden')
+  })
+  test('a fence shows a tap hint only under a coarse pointer', () => {
+    const out = fence('phone')
+    expect(out).toContain('Tap to copy')
+    expect(out).toContain('[@media(pointer:coarse)]:inline-flex')
+  })
+  test('no blanket right padding on the pre (wrapped phone fences keep full width)', () => {
+    for (const surface of ['phone', 'desktop'] as const) {
+      expect(fence(surface)).not.toMatch(/\bpr-/)
+    }
+  })
+  test('an always-mounted sr-only live region exists', () => {
+    expect(fence('desktop')).toContain('class="sr-only" aria-live="polite"')
+  })
+  test('BubbleCode without copyText renders no button', () => {
+    const out = renderToStaticMarkup(<BubbleCode>x</BubbleCode>)
+    expect(out).not.toContain('Copy code')
+    expect(out).not.toContain('Tap to copy')
   })
 })

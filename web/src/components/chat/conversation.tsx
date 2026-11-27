@@ -647,6 +647,10 @@ export function ChatConversation({
         className={`flex min-h-full flex-col ${phone ? 'px-[14px]' : 'px-6 pt-[80px]'}`}
         style={{
           paddingBottom: reserve,
+          // The same floor, readable by what is IN the track: a code block's
+          // sticky "Tap to copy" (`CopyableCode`) rides the scroller's bottom
+          // edge, which sits UNDER the floating composer — this lifts it clear.
+          ['--sm-chat-reserve' as string]: `${reserve}px`,
           // Phone: clear the FLOATING header card, which is notch-aware now.
           // The card floats at `safe-top + 6` and is ~62px tall, so its bottom
           // sits at ~`safe-top + 68`; the pad tracks `--safe-top` and adds a
