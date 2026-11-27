@@ -128,7 +128,9 @@ export function ConnectionNote({ state, onRetry, gone = null, compact = false }:
   )
 
   return (
-    <span role="status" aria-live="polite" aria-label={detail}>
+    // `inline-flex items-center`: as a plain inline span the wrapper's own line
+    // box sat the chip 0.5px below the mode chip's centre (measured 42.5 vs 42.0).
+    <span role="status" aria-live="polite" aria-label={detail} className="inline-flex items-center">
       {retryable ? (
         // `data-state` rides BOTH branches. It is how the VR rig, the
         // `/dev/chat-live?conn=` bench and the T3 reconnect specs read the
