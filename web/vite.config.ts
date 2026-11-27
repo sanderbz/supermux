@@ -103,6 +103,9 @@ export default defineConfig({
         'icon-192.png',
         'icon-512.png',
         'apple-touch-icon.png',
+        // The push notification's status-bar badge (push-sw.js): precached so
+        // a notification shown while offline still gets its glyph.
+        'badge-96.png',
         'splash/*.png',
         // Branded offline shell, precached so the SW can serve it on the
         // cold-start-with-no-server path (first visit while offline). See

@@ -31,6 +31,7 @@ interface PushSwInternals {
   notificationOptions: (payload: unknown) => {
     body: string
     icon: string
+    badge: string
     tag: string
     renotify: boolean
     data: { url: string; tier: string; session: string | null }
@@ -243,6 +244,23 @@ describe('notificationOptions', () => {
     )
     expect(unread.renotify).toBe(false)
     expect(unread.tag).toBe('session:deploy-fix')
+  })
+
+  test('the status-bar badge is the alpha-only mark, not the app tile', () => {
+    // Android paints a notification's `badge` from its ALPHA channel and tints
+    // it; the app icon (a full-bleed tile) became a solid white square there.
+    const { sw } = loadServiceWorker()
+    const o = sw.notificationOptions(payload())
+    expect(o.badge).toBe('/badge-96.png')
+    expect(o.badge).not.toBe(o.icon)
+
+    // …and the file it names is a 96×96 PNG with an alpha channel (IHDR colour
+    // type 6 = RGBA), so the mark has a shape to mask.
+    const png = readFileSync(join(import.meta.dir, '../../public/badge-96.png'))
+    expect(png.subarray(1, 4).toString('latin1')).toBe('PNG')
+    expect(png.readUInt32BE(16)).toBe(96)
+    expect(png.readUInt32BE(20)).toBe(96)
+    expect(png[25]).toBe(6)
   })
 
   test('an empty payload still produces a sane notification', () => {
