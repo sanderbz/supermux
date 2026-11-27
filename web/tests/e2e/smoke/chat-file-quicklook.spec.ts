@@ -68,8 +68,8 @@ test.describe('chat: a file path opens a quick look over the chat', () => {
     await page.goto(`${backend.baseUrl}/focus/${fx.name}`)
     await expect(page.getByTestId('chat-panel')).toBeVisible()
 
-    const planLink = page.getByRole('button', { name: 'Open PLAN.md' })
-    const envLink = page.getByRole('button', { name: 'Open .env' })
+    const planLink = page.getByRole('button', { name: 'PLAN.md', exact: true })
+    const envLink = page.getByRole('button', { name: 'config/.env', exact: true })
     await expect(envLink).toBeVisible({ timeout: 20_000 })
     // Relative paths resolved on the session's working dir.
     await expect(envLink).toHaveAttribute('data-file-link', /\/config\/\.env$/)
@@ -122,7 +122,7 @@ test.describe('chat: a file path opens a quick look over the chat', () => {
     expect(Math.abs((await readingPosition(page)) - before)).toBeLessThan(2)
 
     // ── a path with nothing at it says so ───────────────────────────────────
-    await page.getByRole('button', { name: 'Open notes.md' }).click()
+    await page.getByRole('button', { name: 'missing/notes.md', exact: true }).click()
     const missing = page.getByRole('dialog', { name: 'notes.md' })
     await expect(missing.getByText('File not found')).toBeVisible()
     await page.keyboard.press('Escape')
@@ -163,7 +163,7 @@ test.describe('chat: the quick look on a phone is the bottom sheet', () => {
     await expect(page.getByTestId('chat-panel')).toBeVisible()
 
     const url = page.url()
-    await page.getByRole('button', { name: 'Open PLAN.md' }).click()
+    await page.getByRole('button', { name: 'PLAN.md', exact: true }).click()
     const sheet = page.getByTestId('responsive-sheet')
     await expect(sheet).toBeVisible()
     await expect(sheet.getByRole('heading', { name: 'Launch plan' })).toBeVisible()

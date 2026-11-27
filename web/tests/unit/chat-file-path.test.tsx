@@ -31,6 +31,10 @@ describe('filePathCandidate — true positives', () => {
     ['README.md', 'README.md'],
     ['.env', '.env'],
     ['.env.local', '.env.local'],
+    ['.env.example', '.env.example'],
+    ['Cargo.lock', 'Cargo.lock'],
+    ['yarn.lock', 'yarn.lock'],
+    ['config.toml', 'config.toml'],
     ['Makefile', 'Makefile'],
     ['infra/Dockerfile', 'infra/Dockerfile'],
     ['assets/logo@2x.png', 'assets/logo@2x.png'],
@@ -61,6 +65,27 @@ describe('filePathCandidate — false positives it refuses', () => {
     'console.log',
     'React.lazy',
     'example.com',
+    // property access and method calls that look like `name.ext`
+    'process.env',
+    'import.meta.env',
+    'res.json',
+    'req.json',
+    'event.key',
+    'e.key',
+    'mutex.lock',
+    'self.cfg',
+    'df.sample',
+    'schema.properties',
+    'this.json',
+    // products, not files
+    'Next.js',
+    'Node.js',
+    'Vue.js',
+    'Three.js',
+    'Chart.js',
+    'D3.js',
+    'Express.js',
+    'Nuxt.js',
     'v1.2.3',
     'e.g.',
     'src/**/*.ts',
@@ -127,7 +152,8 @@ describe('the chat markdown map', () => {
   test('an inline code path is a named button that keeps its chip', () => {
     const out = render('code', { children: '/abs/path/plan.md' })
     expect(out).toContain('role="button"')
-    expect(out).toContain('aria-label="Open plan.md"')
+    // The accessible name is the visible text (WCAG 2.5.3).
+    expect(out).not.toContain('aria-label=')
     expect(out).toContain('data-file-link="/abs/path/plan.md"')
     expect(out).toContain('tabindex="0"')
     // The chip is still the chip: same element, same wash.
@@ -163,6 +189,30 @@ describe('the chat markdown map', () => {
     expect(out).toContain('role="button"')
     expect(out).toContain('data-file-link="/home/jan/projects/app/docs/plan v2.md"')
     expect(out).not.toContain('href=')
+  })
+
+  test('file://localhost/ is the same file as file:///', () => {
+    expect(render('a', { href: 'file://localhost/tmp/x.md', children: 'x' })).toContain(
+      'data-file-link="/tmp/x.md"',
+    )
+  })
+
+  test('code inside a web link stays the link — no control inside a control', () => {
+    const Code = chatComponents({ cwd: CWD, onOpenPath: () => {} }).code as AnyComponent
+    const out = render('a', {
+      href: 'https://github.com/o/r/blob/main/src/a.ts',
+      children: <Code>src/a.ts</Code>,
+    })
+    expect(out).toContain('href="https://github.com/o/r/blob/main/src/a.ts"')
+    expect(out).not.toContain('role="button"')
+  })
+
+  test('code inside a file link is not a second, nested file button', () => {
+    const Code = chatComponents({ cwd: CWD, onOpenPath: () => {} }).code as AnyComponent
+    const out = render('a', { href: 'docs/b.md', children: <Code>other.md</Code> })
+    expect(out.match(/role="button"/g)?.length).toBe(1)
+    expect(out).toContain('data-file-link="/home/jan/projects/app/docs/b.md"')
+    expect(out).not.toContain('other.md"')
   })
 
   test('a web link stays a web link', () => {

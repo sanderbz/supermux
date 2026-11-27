@@ -357,7 +357,10 @@ export function FileViewer({
           <Centered>
             <LoaderCircle className="size-6 animate-spin text-muted-foreground" />
           </Centered>
-        ) : isError ? (
+        ) : isError && !data ? (
+          // A failed BACKGROUND refetch keeps the last good payload: showing
+          // the error card then would unmount the editor out from under a
+          // draft. Only a read with nothing in hand is an error screen.
           <ErrorCard message={(error as Error)?.message ?? 'Failed to open file.'} />
         ) : data ? (
           <motion.div

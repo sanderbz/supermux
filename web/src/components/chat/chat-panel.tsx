@@ -252,6 +252,13 @@ export default function ChatPanel({
     () => setQuickLook((q) => (q ? { ...q, open: false } : q)),
     [],
   )
+  // Once the exit has finished, unmount it: a closed quick look left mounted
+  // would keep its file query alive and refetch on every window focus. Guarded
+  // on `!open` so a re-open during the exit animation is not undone.
+  const quickLookClosed = React.useCallback(
+    () => setQuickLook((q) => (q && !q.open ? null : q)),
+    [],
+  )
   // "Go to file" — the one exit that does leave the chat, into the Files view
   // at that file (`?path=` the folder, `?select=` the name: the route's own
   // deep link, so the company-root clamp applies there as it does everywhere).
@@ -984,6 +991,7 @@ export default function ChatPanel({
           path={quickLook.path}
           open={quickLook.open}
           onClose={closeQuickLook}
+          onClosed={quickLookClosed}
           onGoToFile={goToFile}
         />
       </React.Suspense>

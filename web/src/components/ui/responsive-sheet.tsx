@@ -73,6 +73,9 @@ export interface ResponsiveSheetProps {
    *  prose) has none — so without this, focus falls to `<body>`. Call
    *  `preventDefault()` and focus the opener yourself. */
   onCloseAutoFocus?: (event: Event) => void
+  /** Mobile only: veto an Escape (call `preventDefault()`) — e.g. one meant
+   *  for an editor's own search panel inside the sheet. */
+  onEscapeKeyDown?: (event: KeyboardEvent) => void
 }
 
 export function ResponsiveSheet(props: ResponsiveSheetProps) {
@@ -98,6 +101,7 @@ function MobileBody({
   contentTheme,
   dismissible = true,
   onCloseAutoFocus,
+  onEscapeKeyDown,
 }: ResponsiveSheetProps) {
   return (
     <Drawer.Root
@@ -116,6 +120,7 @@ function MobileBody({
         <Drawer.Content
           data-testid="responsive-sheet"
           onCloseAutoFocus={onCloseAutoFocus}
+          onEscapeKeyDown={onEscapeKeyDown}
           {...(contentTheme ? { 'data-theme': contentTheme } : {})}
           // Unlike the focus-mode composer (which lives inside MobileSheet — a
           // box already sized to visualViewport.height and pinned flush to the

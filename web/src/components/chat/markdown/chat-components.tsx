@@ -213,8 +213,10 @@ function diffNodes(lines: readonly string[]): React.ReactNode {
  * non-input element on its own — without this, Safari would hand focus back to
  * the page body and the reader would lose their place in the transcript.
  *
- * The accessible name is the verb and the file ("Open plan.md"); the full path
- * is the tooltip, because a 90-character path read aloud is noise.
+ * The accessible name is the VISIBLE text (WCAG 2.5.3 — a voice user says
+ * what they see), announced as a button; the full resolved path is the
+ * tooltip. No `aria-description` verb: jsx-a11y does not know the attribute
+ * yet, and an sr-only suffix would leak into the message's copied text.
  */
 function fileLink(
   path: string,
@@ -233,7 +235,6 @@ function fileLink(
       role="button"
       tabIndex={0}
       data-file-link={path}
-      aria-label={`Open ${basename(path)}`}
       title={path}
       onClick={open}
       onKeyDown={(event) => {
@@ -257,7 +258,10 @@ function fileLink(
  *  citation is the file, not the line). `null` for anything with a scheme. */
 function hrefAsPath(href: string | undefined): string | null {
   if (!href) return null
-  let raw = href.startsWith('file://') ? href.slice('file://'.length) : href
+  // `file:///x.md` and `file://localhost/x.md` are the same file (RFC 8089).
+  let raw = href.startsWith('file://')
+    ? href.slice('file://'.length).replace(/^localhost(?=\/)/i, '')
+    : href
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw) || raw.startsWith('#')) return null
   raw = raw.split(/[?#]/, 1)[0]
   try {
@@ -265,6 +269,32 @@ function hrefAsPath(href: string | undefined): string | null {
   } catch {
     return raw
   }
+}
+
+/**
+ * Is this element inside a markdown link? A code span inside one —
+ * `` [`src/a.ts`](https://github.com/…) `` — belongs to the LINK: a file button
+ * nested in it would be a control inside a control, and its click would win
+ * over the link the author actually wrote.
+ */
+const InsideLink = React.createContext(false)
+
+/** Inline code, made a file link when it names a file and is not already
+ *  inside a link. A component (not a helper) because it reads context. */
+function CodeChip({
+  children,
+  ctx,
+  ink,
+}: {
+  children: React.ReactNode
+  ctx: ChatMarkdownContext
+  ink: { className?: string; style?: React.CSSProperties }
+}) {
+  const inLink = React.useContext(InsideLink)
+  const filePath =
+    ctx.onOpenPath && !inLink ? resolveFilePath(plainText(children), ctx.cwd) : null
+  if (!filePath || !ctx.onOpenPath) return <InlineCode>{children}</InlineCode>
+  return <>{fileLink(filePath, ctx.onOpenPath, <InlineCode>{children}</InlineCode>, ink)}</>
 }
 
 /* ── the map ─────────────────────────────────────────────────────────────── */
@@ -286,12 +316,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
 
   // Inline code is the shape Claude writes a path in. When it names a file the
   // chip keeps its wash and its type and takes the link's pigment — the same
-  // object, now aimed at something.
-  const inlineCode = (children: React.ReactNode) => {
-    const filePath = ctx.onOpenPath ? resolveFilePath(plainText(children), ctx.cwd) : null
-    if (!filePath || !ctx.onOpenPath) return <InlineCode>{children}</InlineCode>
-    return fileLink(filePath, ctx.onOpenPath, <InlineCode>{children}</InlineCode>, linkInk)
-  }
+  // object, now aimed at something (`CodeChip`).
 
   return {
     // Every level renders at ONE size — the sentence that leads. The tag is
@@ -343,8 +368,10 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
         !external && ctx.onOpenPath
           ? resolveFilePath(hrefAsPath(href) ?? '', ctx.cwd, { href: true })
           : null
+      // Both branches mark their children as inside a link — see `InsideLink`.
+      const inner = <InsideLink.Provider value>{withMentions(children, ctx)}</InsideLink.Provider>
       if (filePath && ctx.onOpenPath) {
-        return fileLink(filePath, ctx.onOpenPath, withMentions(children, ctx), linkInk)
+        return fileLink(filePath, ctx.onOpenPath, inner, linkInk)
       }
       return (
         <a
@@ -360,7 +387,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
             className,
           )}
         >
-          {withMentions(children, ctx)}
+          {inner}
         </a>
       )
     },
@@ -439,7 +466,9 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
           {children}
         </code>
       ) : (
-        inlineCode(children)
+        <CodeChip ctx={ctx} ink={linkInk}>
+          {children}
+        </CodeChip>
       ),
     pre: ({ node: _node, className, children }) => {
       // A diff is drawn as a diff (the approved Patch board), whatever language

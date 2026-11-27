@@ -60,21 +60,43 @@ const BARE_NAMES = new Set([
 /**
  * Extensions a BARE file name (no slash) must carry to be a link. Deliberately
  * excludes the ones that are mostly something else in prose: TLDs (`.com`,
- * `.io`, `.dev`, `.ai`, `.app`) and `.log` (`console.log` is a method call).
+ * `.io`, `.dev`, `.ai`, `.app`), `.log` (`console.log` is a method call), and
+ * the ones a property access ends in (`e.key`, `self.cfg`, `df.sample`,
+ * `schema.properties`). `.env` / `.env.local` / `.env.example` are dotfiles
+ * and pass on that rule instead; `process.env` does not. `.lock` is gated on
+ * {@link LOCKFILE_STEMS} — `mutex.lock` is a method call.
  */
 const BARE_EXTS = new Set([
   'md', 'mdx', 'markdown', 'txt', 'rst', 'adoc',
-  'json', 'jsonc', 'json5', 'jsonl', 'ndjson', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
-  'env', 'example', 'local', 'sample', 'properties', 'plist', 'xml', 'csv', 'tsv',
+  'json', 'jsonc', 'json5', 'jsonl', 'ndjson', 'yaml', 'yml', 'toml', 'ini', 'conf',
+  'plist', 'xml', 'csv', 'tsv',
   'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'svelte', 'astro',
   'css', 'scss', 'sass', 'less', 'html', 'htm',
   'rs', 'go', 'py', 'rb', 'php', 'java', 'kt', 'kts', 'swift', 'c', 'h', 'cc', 'cpp', 'hpp',
   'cs', 'scala', 'lua', 'ex', 'exs', 'erl', 'zig', 'nim', 'dart', 'r', 'jl', 'pl',
   'sh', 'bash', 'zsh', 'fish', 'ps1', 'sql', 'graphql', 'gql', 'proto', 'prisma',
-  'lock', 'patch', 'diff', 'pem', 'crt', 'key', 'pub',
+  'patch', 'diff', 'pem', 'crt', 'pub',
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'pdf',
   'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'm4a',
   'zip', 'tar', 'gz', 'tgz',
+])
+
+/** Stems of the lockfiles worth a link (`package-lock` is `.json`). */
+const LOCKFILE_STEMS = new Set([
+  'cargo', 'yarn', 'bun', 'gemfile', 'poetry', 'flake', 'composer',
+  'pipfile', 'uv', 'deno', 'mix', 'podfile',
+])
+
+/** Receivers: `res.json`, `event.key`, `import.meta.env` — code, not files. */
+const RECEIVER_STEMS = new Set([
+  'process', 'import.meta', 'res', 'req', 'request', 'response', 'e', 'evt', 'event',
+  'self', 'this', 'window', 'document', 'console', 'module', 'exports',
+])
+
+/** `Next.js` and friends are products, not files in the working dir. */
+const PRODUCT_STEMS = new Set([
+  'next', 'node', 'vue', 'three', 'chart', 'd3', 'express', 'nuxt', 'nest', 'deno',
+  'react', 'angular', 'ember', 'backbone', 'socket.io', 'p5', 'anime', 'moment',
 ])
 
 /** Characters that make a run code or a pattern rather than a path. */
@@ -133,7 +155,12 @@ function candidate(text: string): string | null {
     // A bare name — the riskiest shape, so it has to earn it: a dotfile, a
     // well-known name, or an allowlisted extension.
     if (BARE_NAMES.has(name) || name.startsWith('.')) return path
-    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+    const dot = name.lastIndexOf('.')
+    const stem = name.slice(0, dot).toLowerCase()
+    const ext = name.slice(dot + 1).toLowerCase()
+    if (RECEIVER_STEMS.has(stem)) return null
+    if (ext === 'js' && PRODUCT_STEMS.has(stem)) return null
+    if (ext === 'lock') return LOCKFILE_STEMS.has(stem) ? path : null
     return BARE_EXTS.has(ext) ? path : null
   }
 

@@ -58,6 +58,9 @@ export interface FileQuickLookProps {
   path: string
   open: boolean
   onClose: () => void
+  /** The close has finished (exit animation done, focus restored): the
+   *  caller can unmount, so a closed quick look stops refetching on focus. */
+  onClosed?: () => void
   /** Leave the chat for the full Files view. `isDir` when the path turned out
    *  to be a folder, so the caller opens the folder instead of selecting in it. */
   onGoToFile: (path: string, isDir: boolean) => void
@@ -68,7 +71,7 @@ export interface FileQuickLookProps {
 const ICON_BUTTON =
   'flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40'
 
-export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLookProps) {
+export function FileQuickLook({ path, open, onClose, onClosed, onGoToFile }: FileQuickLookProps) {
   const coarse = useMediaQuery('(pointer: coarse)')
   const name = basename(path)
 
@@ -79,9 +82,16 @@ export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLook
   // look explains in its own words.
   const file = useFileContent(path)
   const resolved = file.data?.path ?? path
+  // Only a failure with NOTHING in hand is the quick look's to explain. A
+  // background refetch that fails (focus regained on a flaky phone network —
+  // `retry: false`) keeps the last good payload, and swapping the viewer out
+  // for an error card then would unmount the editor and throw the draft away.
+  const failed = file.isError && !file.data
   const isDir =
+    failed &&
     file.error instanceof FsError &&
     file.error.status === 400 &&
+    // Coupled to the server's wording: `get_file`'s "path is a directory".
     /directory/i.test(file.error.message)
 
   // The company lens — see the module comment. `resolved` is absolute once the
@@ -174,7 +184,7 @@ export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLook
         </div>
       )}
       <div className="min-h-0 flex-1">
-        {file.isError ? (
+        {failed ? (
           <QuickLookError path={path} name={name} error={file.error} actions={actions} isDir={isDir} />
         ) : (
           <FileViewer
@@ -201,9 +211,17 @@ export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLook
     if (open && document.activeElement instanceof HTMLElement) opener.current = document.activeElement
   }, [open, path])
   const onCloseAutoFocus = (event: Event) => {
-    if (!opener.current?.isConnected) return
-    event.preventDefault()
-    opener.current.focus({ preventScroll: true })
+    if (opener.current?.isConnected) {
+      event.preventDefault()
+      opener.current.focus({ preventScroll: true })
+    }
+    onClosed?.()
+  }
+  // Escape inside CodeMirror's search panel closes the PANEL. Radix listens in
+  // the capture phase, so without this the first Escape after a find would
+  // close the whole quick look instead. Both shells get it.
+  const onEscapeKeyDown = (event: KeyboardEvent) => {
+    if ((event.target as HTMLElement | null)?.closest?.('.cm-panels')) event.preventDefault()
   }
 
   const onOpenChange = (next: boolean) => {
@@ -223,6 +241,7 @@ export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLook
         hideHeader
         dismissible={!dirty}
         onCloseAutoFocus={onCloseAutoFocus}
+        onEscapeKeyDown={onEscapeKeyDown}
       >
         {/* An editor wants the whole sheet, not a cap: the sheet's own
             ceiling (visible height less the notch) less its grab handle
@@ -246,12 +265,7 @@ export function FileQuickLook({ path, open, onClose, onGoToFile }: FileQuickLook
         <DialogPrimitive.Content
           aria-describedby={undefined}
           onCloseAutoFocus={onCloseAutoFocus}
-          onEscapeKeyDown={(event) => {
-            // Escape inside CodeMirror's search panel closes the PANEL. Radix
-            // listens in the capture phase, so without this the first Escape
-            // after a find would close the whole quick look instead.
-            if ((event.target as HTMLElement | null)?.closest?.('.cm-panels')) event.preventDefault()
-          }}
+          onEscapeKeyDown={onEscapeKeyDown}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 flex -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden',
             'h-[min(720px,calc(100dvh-96px))] w-[min(920px,calc(100vw-48px))]',
