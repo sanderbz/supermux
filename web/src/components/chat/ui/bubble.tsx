@@ -18,10 +18,13 @@
  * its own `variant="chat"` component map, which is a later slice; this primitive
  * takes `children` so the renderer can hand it whatever it has.
  */
-import type { ReactNode } from 'react'
+import { Check, Copy } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
+import { shouldTapCopy } from '../markdown/fence-copy'
+import { copyText } from '../message-export'
 import { BUBBLE_MAX } from './metrics'
 
 export interface MessageRowProps {
@@ -176,16 +179,105 @@ export function PathRef({ children, className }: { children: ReactNode; classNam
  * reason this is not a red/green block (P8's full diff palette is a later
  * slice — this is the inline case).
  */
-export function BubbleCode({ children, className }: { children: ReactNode; className?: string }) {
-  return (
+export function BubbleCode({
+  children,
+  className,
+  copyText: textToCopy,
+}: {
+  children: ReactNode
+  className?: string
+  /** When set, the block can be copied: a corner button on a fine pointer, a tap
+   *  anywhere on it on a coarse one. Without it the block renders as before. */
+  copyText?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const preRef = useRef<HTMLPreElement>(null)
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    [],
+  )
+
+  const doCopy = useCallback(() => {
+    if (textToCopy === undefined) return
+    void copyText(textToCopy).then((ok) => {
+      if (!ok) return // never a false ✓ / buzz on a denied or insecure clipboard
+      setCopied(true)
+      navigator.vibrate?.(10)
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 1500)
+    })
+  }, [textToCopy])
+
+  const onTap = useCallback(() => {
+    const coarse = window.matchMedia('(pointer: coarse)').matches
+    const sel = window.getSelection()
+    const pre = preRef.current
+    const selectionInside = !!(
+      sel &&
+      pre &&
+      !sel.isCollapsed &&
+      sel.rangeCount > 0 &&
+      pre.contains(sel.getRangeAt(0).commonAncestorContainer)
+    )
+    if (shouldTapCopy(coarse, selectionInside)) doCopy()
+  }, [doCopy])
+
+  // Touch-only convenience; keyboard and pointer users have the real button.
+  const pre = (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <pre
+      ref={preRef}
+      onClick={textToCopy === undefined ? undefined : onTap}
       className={cn(
-        'mt-[11px] overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
+        'overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
+        textToCopy === undefined ? 'mt-[11px]' : 'pr-[72px] [@media(pointer:coarse)]:pr-[96px]',
         className,
       )}
     >
       {children}
     </pre>
+  )
+  if (textToCopy === undefined) return pre
+
+  const chip = 'absolute right-1.5 top-1.5 items-center gap-1 rounded-md text-[11px] leading-none'
+  return (
+    <div className="relative mt-[11px]">
+      {pre}
+      {copied ? (
+        <span
+          aria-live="polite"
+          className={cn(chip, 'inline-flex bg-muted px-1.5 py-1 text-ink')}
+        >
+          <Check className="size-3" aria-hidden />
+          Copied
+        </span>
+      ) : (
+        <>
+          <button
+            type="button"
+            aria-label="Copy code"
+            onClick={doCopy}
+            className={cn(
+              chip,
+              'inline-flex bg-code-bg px-1.5 py-1 text-ink-3 transition-colors hover:bg-muted hover:text-ink [@media(pointer:coarse)]:hidden',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            )}
+          >
+            <Copy className="size-3.5" aria-hidden />
+          </button>
+          <span
+            aria-hidden
+            className={cn(chip, 'pointer-events-none hidden px-1.5 py-1 text-ink-3 [@media(pointer:coarse)]:inline-flex')}
+          >
+            Tap to copy
+          </span>
+        </>
+      )}
+    </div>
   )
 }
 

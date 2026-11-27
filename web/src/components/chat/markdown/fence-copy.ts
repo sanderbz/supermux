@@ -36,3 +36,9 @@ export function fenceCopyText(raw: string): string {
     .map((l) => l.slice(1))
     .join('\n')
 }
+
+/** Tap-to-copy guard: only on a coarse pointer, and never when the tap is
+ *  really the end of a text selection inside the block. */
+export function shouldTapCopy(coarse: boolean, selectionInside: boolean): boolean {
+  return coarse && !selectionInside
+}

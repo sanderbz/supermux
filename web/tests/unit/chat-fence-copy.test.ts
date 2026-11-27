@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { fenceCopyText } from '../../src/components/chat/markdown/fence-copy'
+import { fenceCopyText, shouldTapCopy } from '../../src/components/chat/markdown/fence-copy'
 
 describe('fenceCopyText', () => {
   test('plain fence: verbatim, one trailing newline trimmed', () => {
@@ -17,5 +17,13 @@ describe('fenceCopyText', () => {
   })
   test('empty fence copies empty string', () => {
     expect(fenceCopyText('')).toBe('')
+  })
+})
+
+describe('shouldTapCopy', () => {
+  test('tap copies only on coarse pointer with no selection inside', () => {
+    expect(shouldTapCopy(true, false)).toBe(true)
+    expect(shouldTapCopy(false, false)).toBe(false)
+    expect(shouldTapCopy(true, true)).toBe(false)
   })
 })

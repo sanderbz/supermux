@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
+import { BubbleCode } from '../../src/components/chat/ui/bubble'
 import { chatComponents } from '../../src/components/chat/markdown/chat-components'
 
 const LONG = 'wget -c https://example.com/a/very/long/path/that/does/not/fit-in-a-bubble.tar.gz'
@@ -61,5 +62,24 @@ describe('a diff is still a diff, on either surface', () => {
       expect(out).toContain('old line')
       expect(out).toContain('new line')
     }
+  })
+})
+
+describe('copy affordance', () => {
+  test('a fence renders a copy button', () => {
+    expect(fence('desktop')).toContain('aria-label="Copy code"')
+  })
+  test('the button hides under a coarse pointer', () => {
+    expect(fence('desktop')).toContain('[@media(pointer:coarse)]:hidden')
+  })
+  test('a fence shows a tap hint only under a coarse pointer', () => {
+    const out = fence('phone')
+    expect(out).toContain('Tap to copy')
+    expect(out).toContain('[@media(pointer:coarse)]:inline-flex')
+  })
+  test('BubbleCode without copyText renders no button', () => {
+    const out = renderToStaticMarkup(<BubbleCode>x</BubbleCode>)
+    expect(out).not.toContain('Copy code')
+    expect(out).not.toContain('Tap to copy')
   })
 })

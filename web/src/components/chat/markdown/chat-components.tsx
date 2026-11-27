@@ -44,7 +44,7 @@ import type { MarkPin } from '../../../brand/marks'
 import { basename } from '../../../lib/path'
 import { cn } from '../../../lib/utils'
 import { mentionSegments } from '../grouping'
-import { diffLines } from './fence-copy'
+import { diffLines, fenceCopyText } from './fence-copy'
 import {
   ACCENT_INK_CLASS,
   accentInkVarsForSeed,
@@ -325,6 +325,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       const diff = diffLines(plainText(children))
       return (
         <BubbleCode
+          copyText={fenceCopyText(plainText(children))}
           className={cn(
             // ON THE PHONE THE FENCE WRAPS (daily-driver QA #18).
             //
