@@ -71,9 +71,18 @@ fn is_known_pref_key(key: &str) -> bool {
     // field inside `overview_layout`: both are whole-value PUTs, and folding
     // them together would make a renderer tap on the phone clobber the sort and
     // groups set on the desktop (and vice-versa).
+    // `model.pick_scope` — where a pick from the chat header's model picker
+    // lands: `session` (this session only; absent reads the same) or `default`
+    // (Claude Code's own save-as-default). The client reads it and passes the
+    // scope to `POST /api/sessions/{name}/model`; account-wide so the choice
+    // follows the user phone↔desktop.
     matches!(
         key,
-        "overview_layout" | "quick_keys" | "session_renderer" | db::prefs::AUTO_HEAL_PREF_KEY
+        "overview_layout"
+            | "quick_keys"
+            | "session_renderer"
+            | "model.pick_scope"
+            | db::prefs::AUTO_HEAL_PREF_KEY
     )
 }
 
@@ -87,6 +96,7 @@ mod known_key_tests {
             "overview_layout",
             "quick_keys",
             "session_renderer",
+            "model.pick_scope",
             crate::db::prefs::AUTO_HEAL_PREF_KEY,
         ] {
             assert!(is_known_pref_key(key), "{key} must be allowlisted");

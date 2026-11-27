@@ -5128,6 +5128,291 @@ fn broadcast_mode(state: &AppState, name: &str, mode: Mode) {
 }
 
 
+// ── model pick: switch the main agent's model from the chat header ───────────
+
+/// Outcome of [`set_model`]. `confirmed` is true when Claude Code's own NEW
+/// answer line named the family and scope that were asked for. `false` only
+/// when the keys went in, the picker closed, and no new answer could be read
+/// at all — every answer that says something else is an error, not this.
+#[derive(Debug, Serialize)]
+pub struct SetModelResult {
+    pub model: &'static str,
+    pub scope: &'static str,
+    pub confirmed: bool,
+}
+
+/// Who asked, for the audit ledger: `None` is the owner (bearer), `Some` a
+/// human colleague (`user_id`, `company_id`) — the same split `send_handler`
+/// makes.
+pub type ModelPickAuthor = Option<(i64, Option<i64>)>;
+
+/// How long to wait for the `/model` picker to draw, and for the answer line
+/// after a pick. Measured on 2.1.326: both land within ~150 ms on an idle agent.
+const MODEL_PICK_POLLS: usize = 30;
+const MODEL_PICK_POLL: Duration = Duration::from_millis(100);
+/// Per-key budget for the cursor to be SEEN where the key should have put it.
+const MODEL_STEP_POLLS: usize = 20;
+const MODEL_STEP_POLL: Duration = Duration::from_millis(50);
+/// How much scrollback the answer count reads. Only our own few lines can be
+/// appended while the agent is idle, so a window this deep cannot lose a
+/// line off its top during one pick.
+const MODEL_ANSWER_LINES: usize = 400;
+
+/// One fresh, plain read of the visible screen.
+async fn plain_screen(rt: &dyn SessionRuntime) -> Option<String> {
+    rt.capture_screen_ansi().await.ok().map(|raw| status::prepare_capture(&raw))
+}
+
+/// The `⎿` answers in the deep capture (see [`MODEL_ANSWER_LINES`]).
+async fn answer_lines(rt: &dyn SessionRuntime) -> Option<Vec<String>> {
+    rt.capture_plain(MODEL_ANSWER_LINES).await.ok().map(|c| super::model_pick::answers(&c))
+}
+
+/// Switch the session's MAIN agent to `alias`, for this session only or as the
+/// new default — the chat header's model picker.
+///
+/// Only from a positively IDLE composer: the same refusals `send_feedback_text`
+/// applies (a dialog, a busy turn, a half-typed draft, a bare shell, a login in
+/// flight), because every key below means something else anywhere but an empty
+/// composer. See [`super::model_pick`] for the live-verified CLI behaviour the
+/// two sequences are built on.
+///
+///   * `Default` — `/model <alias>`, the argument form. No picker opens.
+///   * `Session` — `/model `, then read the picker, move ONE key at a time to
+///     the target row (found by family in its label column), seeing the cursor
+///     land after every key, require two identical reads on the target, and
+///     press `s`. Any read that does not add up presses `Esc` (`Kept model as
+///     …`, nothing changed) and answers 409 — never a silent fall back to the
+///     default-saving form.
+///
+/// Both then require a NEW `⎿` answer that names the asked family and scope;
+/// another model, the other scope, `Kept model as …` or an error line is an
+/// error carrying Claude Code's own words.
+///
+/// The session lock serialises this against every other server writer. A
+/// person typing through the terminal WebSocket at the same moment is not
+/// under it — the same as `set_mode`.
+pub async fn set_model(
+    state: &AppState,
+    name: &str,
+    alias: super::model_pick::Alias,
+    scope: super::model_pick::Scope,
+    author: ModelPickAuthor,
+) -> Result<SetModelResult, AppError> {
+    let mut keys_sent = false;
+    let result = drive_model_pick(state, name, alias, scope, &mut keys_sent).await;
+    // The ledger records every pick that put keys on the pty — the refusals
+    // after that point too, since the picker was opened and closed.
+    if keys_sent {
+        let detail = match &result {
+            Ok(r) => json!({ "model": r.model, "scope": r.scope, "confirmed": r.confirmed }),
+            Err(e) => json!({ "model": alias.as_str(), "scope": scope.as_str(), "error": e.to_string() }),
+        };
+        let logged = match author {
+            Some((user_id, company_id)) => db::audit::log_authored(
+                &state.pool, "user", "session.model", name, detail, user_id, company_id,
+            )
+            .await
+            .map(|_| ()),
+            None => db::audit::log(&state.pool, "user", "session.model", name, detail).await,
+        };
+        if let Err(e) = logged {
+            tracing::warn!(session = %name, error = %e, "session.model audit write failed");
+        }
+    }
+    result
+}
+
+async fn drive_model_pick(
+    state: &AppState,
+    name: &str,
+    alias: super::model_pick::Alias,
+    scope: super::model_pick::Scope,
+    keys_sent: &mut bool,
+) -> Result<SetModelResult, AppError> {
+    use super::model_pick::{
+        classify_answer, parse_picker, picker_visible, step, stray_completion, Answer, Scope,
+    };
+
+    let s = require_session(state, name).await?;
+    if s.provider != "claude" {
+        return Err(AppError::BadRequest(
+            "model switching is only available for Claude sessions".into(),
+        ));
+    }
+    if super::login::is_frozen(name) {
+        return Err(super::login::frozen_error(name));
+    }
+    let lock = state.lock_for(name);
+    let _guard = lock.lock().await;
+
+    let rt = state.runtime_for(name).await?;
+    if !rt.alive().await || !rt.capture_is_authoritative().await {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is not running — start it before switching model"
+        )));
+    }
+    if rt.shell_is_foreground().await == Some(true) {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is at a bare shell, not at Claude — nothing was changed"
+        )));
+    }
+    let raw = rt.capture_screen_ansi().await?;
+    let screen = status::prepare_capture(&raw);
+    if let Some(block) = send_block(&screen) {
+        return Err(AppError::Conflict(block.sentence(name)));
+    }
+    if agent_busy(&screen) {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is mid-turn — switch the model once it is idle"
+        )));
+    }
+    if composer_text(&raw, &s.provider).as_deref() != Some("") {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' has text in its composer — send or clear it, then switch the model"
+        )));
+    }
+
+    let family = alias.label();
+    let refuse = |why: String| AppError::Conflict(format!("{why} — nothing was changed"));
+    // Counted BEFORE anything is typed: only an answer past this count is ours.
+    let before = answer_lines(rt.as_ref()).await.map(|a| a.len()).unwrap_or(0);
+
+    // The trailing space matters for the session form: live on 2.1.326 it
+    // closes the slash-completion menu (`/model  [model]`) while Enter still
+    // opens the picker, so no other command can be the highlighted row.
+    let command = match scope {
+        Scope::Default => format!("/model {}", alias.as_str()),
+        Scope::Session => "/model ".to_string(),
+    };
+    *keys_sent = true;
+    rt.paste(&command, true).await?;
+    submit_gap(rt.as_ref()).await;
+    if let Some(stray) = plain_screen(rt.as_ref()).await.as_deref().and_then(stray_completion) {
+        // Esc closes the menu; Ctrl-U clears our text from the composer.
+        rt.send_key("Escape").await?;
+        rt.send_key("C-u").await?;
+        return Err(refuse(format!(
+            "the command menu highlighted `{stray}` instead of /model"
+        )));
+    }
+    rt.send_key("Enter").await?;
+
+    if scope == Scope::Session {
+        // 1. The picker has to be ON SCREEN and readable before any key moves.
+        let mut picker = None;
+        let mut last = None;
+        for _ in 0..MODEL_PICK_POLLS {
+            tokio::time::sleep(MODEL_PICK_POLL).await;
+            last = plain_screen(rt.as_ref()).await;
+            if let Some(p) = last.as_deref().and_then(parse_picker) {
+                picker = Some(p);
+                break;
+            }
+        }
+        let Some(mut p) = picker else {
+            // Our own `/model` opened something we could not read. Close it when
+            // any of the picker is recognisable — its title, or the legend of a
+            // picker whose top a short pane clipped — never otherwise.
+            if last.as_deref().is_some_and(picker_visible) {
+                rt.send_key("Escape").await?;
+            }
+            return Err(refuse(format!(
+                "could not read Claude Code's model picker in session '{name}'"
+            )));
+        };
+        if !p.session_only {
+            rt.send_key("Escape").await?;
+            return Err(refuse(
+                "this Claude Code's model picker has no \"this session only\" key".into(),
+            ));
+        }
+        let Some(target) = p.row_of(family) else {
+            rt.send_key("Escape").await?;
+            return Err(refuse(format!("the model picker has no {family} row")));
+        };
+        // 2. One key at a time, and SEE it land before the next. A key whose
+        //    effect is not seen within the budget ends the pick: a blind
+        //    second batch is how `s` lands on the wrong row.
+        while let Some(key) = step(p.cursor, target) {
+            let expected = if key == "Down" { p.cursor + 1 } else { p.cursor - 1 };
+            rt.send_key(key).await?;
+            let mut landed = None;
+            for _ in 0..MODEL_STEP_POLLS {
+                tokio::time::sleep(MODEL_STEP_POLL).await;
+                if let Some(next) = plain_screen(rt.as_ref()).await.as_deref().and_then(parse_picker) {
+                    if next.cursor == expected {
+                        landed = Some(next);
+                        break;
+                    }
+                }
+            }
+            let Some(next) = landed else {
+                rt.send_key("Escape").await?;
+                return Err(refuse(format!(
+                    "the picker's cursor did not move as expected on the way to {family}"
+                )));
+            };
+            p = next;
+        }
+        // 3. Two identical, stable reads on the target before the one key that
+        //    commits.
+        let mut prev = None;
+        let mut stable = None;
+        for _ in 0..MODEL_STEP_POLLS {
+            tokio::time::sleep(MODEL_STEP_POLL).await;
+            let cur = plain_screen(rt.as_ref()).await.as_deref().and_then(parse_picker);
+            if cur.is_some() && cur == prev {
+                stable = cur;
+                break;
+            }
+            prev = cur;
+        }
+        let on_target = stable
+            .as_ref()
+            .is_some_and(|p| p.cursor == target && p.row_of(family) == Some(target));
+        if !on_target {
+            rt.send_key("Escape").await?;
+            return Err(refuse(format!("could not hold the picker's cursor on {family}")));
+        }
+        // 4. The verified row, session only.
+        rt.send_key("s").await?;
+    }
+
+    // Claude Code's answer: a NEW `⎿` line, read against what was asked.
+    for _ in 0..MODEL_PICK_POLLS {
+        tokio::time::sleep(MODEL_PICK_POLL).await;
+        let Some(now) = answer_lines(rt.as_ref()).await else {
+            continue;
+        };
+        if now.len() <= before {
+            continue;
+        }
+        let newest = now.last().expect("len > before >= 0");
+        return match classify_answer(newest, family, scope) {
+            Answer::Confirmed => Ok(SetModelResult {
+                model: alias.as_str(),
+                scope: scope.as_str(),
+                confirmed: true,
+            }),
+            Answer::Kept(text) => Err(AppError::Conflict(format!(
+                "Claude Code answered \"{text}\" — nothing was changed"
+            ))),
+            Answer::Other(text) => Err(AppError::Conflict(format!(
+                "Claude Code answered \"{text}\" instead of switching to {family}"
+            ))),
+        };
+    }
+    // No new answer. A picker still on screen is a pick that did not happen.
+    if plain_screen(rt.as_ref()).await.as_deref().is_some_and(picker_visible) {
+        rt.send_key("Escape").await?;
+        return Err(refuse(format!("the model picker did not close on {family}")));
+    }
+    // Keys went in, the picker is gone, and nothing readable came back: the
+    // only honest "we don't know". The chip, fed by the agent itself, decides.
+    Ok(SetModelResult { model: alias.as_str(), scope: scope.as_str(), confirmed: false })
+}
+
 // ── REST send_keys allowlist ─────────────────────────────────────────────────
 
 static KEY_ALLOWLIST: Lazy<HashSet<&'static str>> = Lazy::new(|| {

@@ -30,6 +30,7 @@ pub mod lifecycle;
 pub mod login;
 pub mod memory;
 pub mod model_name;
+pub mod model_pick;
 pub mod move_company;
 pub mod pty;
 pub mod pty_state;
@@ -213,6 +214,8 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         // ── switch the Claude permission mode from the ⋯ menu ──
         .route("/api/sessions/{name}/mode", post(mode_handler))
+        // ── switch the main agent's model from the chat header ──
+        .route("/api/sessions/{name}/model", post(model_handler))
         // ── store→chat CONNECT handoff ──
         // Push the SAME per-session live-state a bot's own `connect()` tool sets,
         // so the existing `ConnectCard` renders it untouched. No secret on this
@@ -2834,6 +2837,61 @@ async fn mode_handler(
         ))
     })?;
     let result = lifecycle::set_mode(&state, &name, target).await?;
+    Ok(Json(json!({ "ok": true, "data": result })))
+}
+
+// ── model pick ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ModelInput {
+    /// `opus` | `fable` | `sonnet` | `haiku` — a closed set, because it is typed
+    /// into the agent's composer.
+    model: String,
+    /// `session` (this session only, the picker's `s`) | `default` (Claude
+    /// Code's `/model <alias>`, which also saves it for new sessions).
+    scope: String,
+}
+
+/// `POST /api/sessions/{name}/model {model, scope}` — switch the MAIN agent's
+/// model. Refused (409, with the reason) unless the agent is idle at an empty
+/// composer, and unless Claude Code's own answer names the asked model and
+/// scope; see [`lifecycle::set_model`] for the key sequences and the
+/// live-verified CLI behaviour behind them. The new model reaches every client
+/// through the `live_model` delta (statusline when tapped, else the
+/// transcript's `Set model to …` record), not through this response.
+///
+/// `scope: default` writes the account's SHARED `settings.json` (`model`), so
+/// it is owner/admin only — a member gets a 403 that says so. `scope: session`
+/// touches only this session. Picks are audited per person, like `send`.
+async fn model_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::Extension(ctx): axum::Extension<crate::auth_human::AuthContext>,
+    Json(input): Json<ModelInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let alias = model_pick::Alias::from_token(&input.model).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "invalid model '{}' (expected opus|fable|sonnet|haiku)",
+            input.model
+        ))
+    })?;
+    let scope = model_pick::Scope::from_token(&input.scope).ok_or_else(|| {
+        AppError::BadRequest(format!("invalid scope '{}' (expected session|default)", input.scope))
+    })?;
+    if scope == model_pick::Scope::Default && !ctx.is_admin_or_owner() {
+        return Err(AppError::Forbidden(
+            "only the owner or an admin can change the default model for new sessions — \
+             pick for this session only"
+                .into(),
+        ));
+    }
+    let author = match ctx {
+        crate::auth_human::AuthContext::Human { user_id, company_id, .. } => {
+            Some((user_id, company_id))
+        }
+        crate::auth_human::AuthContext::Owner => None,
+    };
+    let result = lifecycle::set_model(&state, &name, alias, scope, author).await?;
     Ok(Json(json!({ "ok": true, "data": result })))
 }
 
