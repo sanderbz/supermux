@@ -419,6 +419,11 @@ export interface ApiSession {
   /** Usage headroom from the opt-in statusline tap (server `RateLimits`).
    *  Absent on every host without the tap, which is every host by default. */
   rate_limits?: RateLimits | null
+  /** The model the MAIN agent is on right now (server `LiveModel`): the
+   *  statusline when tapped, else the transcript's last main-agent signal since
+   *  the current start. Not `model`, which is only the launch-line flag. Absent
+   *  until either has said something. */
+  live_model?: LiveModel | null
   /** A live, undecided permission dialog is on screen for this tool call.
    *  In-memory server-side; rides the `sessions` SSE delta (`null` clears —
    *  mergeRow passes null through, so always optional-chain). Fase A1
@@ -719,6 +724,13 @@ export interface MoveCompanyResult {
   dead_tab_grants: MoveDeadTabGrant[]
   /** Honest, ordered breakage lines — server-authored, shown verbatim. */
   warnings: string[]
+}
+
+/** Claude Code's statusline `model` object, e.g. `{id: 'claude-fable-5-2',
+ *  display_name: 'Fable 5.2'}`. */
+export interface LiveModel {
+  id: string
+  display_name: string
 }
 
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode

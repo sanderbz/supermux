@@ -110,6 +110,9 @@ export interface TileSession extends SessionSummary {
   /** Usage headroom from the opt-in statusline tap. Absent on every host without
    *  it, which is every host by default. */
   rate_limits?: RateLimits | null
+  /** The main agent's current model: the statusline when tapped, else the
+   *  transcript's last main-agent signal. */
+  live_model?: { id: string; display_name: string } | null
   /** Chat one-liner pair (last prompt + last assistant line) from the session's
    *  chat ring — fase A2, carried on the `sessions` SSE delta. Absent means
    *  UNCHANGED, never "empty": a delta without the key must leave whatever the

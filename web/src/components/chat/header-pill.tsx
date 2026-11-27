@@ -50,6 +50,7 @@ import { modeChipLabel } from '../focus-mode/mode-labels'
 // and it is where the permission-mode switcher lives (relocated in 6905fe0).
 import { useAgentToolsSheet } from '../../stores/claude-tools-store'
 import { usageTitle, worstWindow } from '../../lib/rate-limits'
+import { modelFamilyLabel, shortModelName } from '../../lib/model-name'
 import { StatusDot } from '../session-tile/status-dot'
 import type { TileSession } from '../session-tile/types'
 
@@ -386,6 +387,9 @@ export function SessionHeaderPill({
   // in the shell's agent-tools sheet). Scoped to this session so bypass relaunches
   // the right pty.
   const openTools = useAgentToolsSheet((s) => s.openSheet)
+  // The phone stacks the model UNDER the name (see the column below), and only
+  // when the chip renders at all — otherwise the row is exactly as it was.
+  const phoneModel = phone && modelChipShows(session)
 
   // The presence dot — green "ready" / the busy spinner / the grey offline disc.
   // It doubles as the ACTIVITY spinner (busy states spin it), so there is one
@@ -491,6 +495,17 @@ export function SessionHeaderPill({
                 // The name is right there; a second announcement is noise.
                 label={null}
               />
+              {/* On the phone the name and the model are one COLUMN — name over
+                  model, the iOS title/subtitle — because the row has no width
+                  left: measured at 390, a model chip in the row pushed the
+                  renderer switch's `>_` cell past the card's edge. The column
+                  costs no width and fits the 60px card (24 + 16). On the
+                  desktop the wrapper is `display: contents`, so the row is
+                  byte-for-byte the row it was. */}
+              <div
+                className={phoneModel ? 'flex min-w-0 flex-1 flex-col justify-center' : 'contents'}
+                style={phoneModel ? { minWidth: `${NAME_MIN}px` } : undefined}
+              >
               {onTitleClick ? (
                 // The name is the way into the bot's details on the phone (the
                 // terminal chrome has had it since feat-session-info; chat had
@@ -533,6 +548,10 @@ export function SessionHeaderPill({
                   {label}
                 </span>
               )}
+              {phoneModel && (
+                <ModelChip session={session} phone />
+              )}
+              </div>
               {/* The app's status affordance, not a lookalike — which is how the
                   busy states keep the spinner the boot window needs. It carries
                   the `--status-*` family and never the accent (contract C7).
@@ -543,6 +562,12 @@ export function SessionHeaderPill({
               {/* On the phone the presence dot moves into the grouped status
                   cluster below; on the desktop it stays on the name row. */}
               {!phone && presence}
+              {/* THE MAIN AGENT'S MODEL, beside the name — the one session
+                  fact the user changes per task, and the one Claude Code hides
+                  until a statusline is drawn. See `ModelChip`. */}
+              {!phone && (
+                <ModelChip session={session} phone={false} />
+              )}
               {/* THE UNRECOVERED AGENT ERROR, AS A LEGIBLE CHIP — not a bare dot.
                   `session.error` is the durable `StopFailure` field the roster,
                   the list row and the focus header all render as an amber badge;
@@ -634,6 +659,45 @@ export function SessionHeaderPill({
 }
 
 export default SessionHeaderPill
+
+/** Does the model chip render? Only for a Claude session whose main agent's
+ *  model is KNOWN: the statusline when tapped, else the transcript's last
+ *  main-agent signal (`live_model`). Never guessed from the launch-line
+ *  `--model`, which goes stale the moment anyone runs `/model`. */
+function modelChipShows(session: TileSession | null): boolean {
+  return (
+    session?.provider === 'claude' &&
+    session.status !== 'stopped' &&
+    shortModelName(session.live_model) != null
+  )
+}
+
+/**
+ * The model chip — `Opus 5.5` on the desktop, `Opus` on the phone. Display
+ * only: it says which model the MAIN agent is on, and nothing on it acts.
+ */
+function ModelChip({ session, phone }: { session: TileSession | null; phone: boolean }) {
+  if (!modelChipShows(session)) return null
+  const live = session?.live_model ?? null
+  const full = shortModelName(live)
+  const shown = phone ? modelFamilyLabel(live) : full
+  return (
+    <span
+      data-testid="chat-header-model"
+      title={live?.display_name}
+      aria-label={`Model: ${full}`}
+      className={cn(
+        'inline-flex flex-none items-center whitespace-nowrap text-[11.5px] font-medium leading-[16px] tracking-[0.1px] text-ink-2',
+        phone
+          // The subtitle under the name: no pill.
+          ? 'self-start'
+          : 'rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px]',
+      )}
+    >
+      {shown}
+    </span>
+  )
+}
 
 /**
  * The header's blocked chip — one word, and the terminal's own sentence on hover.
