@@ -8,6 +8,7 @@
 pub mod briefing;
 pub mod delegate;
 pub mod hook;
+pub mod library;
 pub mod skills;
 pub mod wait;
 

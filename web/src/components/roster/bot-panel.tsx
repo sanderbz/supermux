@@ -67,6 +67,7 @@ import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { modelOptions } from '@/lib/model-options'
 import { SessionFace } from '@/components/roster/session-face'
+import { BotSkills } from '@/components/skills/bot-skills'
 import { GrantedConnectors, RestartToApply } from '@/components/roster/granted-connectors'
 import { LearnedNotes } from '@/components/roster/learned-notes'
 import {
@@ -1113,6 +1114,7 @@ export function ToolsTab({ name, session }: { name: string; session: ApiSession 
       {/* Connectors are the HERO — the real, per-bot action surface — so they
           lead; the launch internals fold behind Advanced below. */}
       <GrantedConnectors name={name} />
+      <BotSkills name={name} session={session} />
       <LaunchInternals session={session} />
     </div>
   )
@@ -1173,6 +1175,7 @@ function SetupTab({
             a second copy of the word above them — four lines of chrome for one
             section, and the tab's worst spacing moment at 390px. */}
         <GrantedConnectors name={name} />
+        <BotSkills name={name} session={session} />
       </Group>
 
       <Group>

@@ -123,6 +123,7 @@ supermux fits if you want all of it on your own server under an open-source lice
 - Bots with a name, avatar, role and folder; companies with a group chat, a shared drive and shared connectors.
 - Bots can message each other within a company, notify you, report on their issue and schedule their own follow-ups.
 - Connector store with per-bot grants, a credential vault, OAuth sign-in for remote connectors and a health check.
+- **Store → Agent skills** lets an owner import a folder, copy a provider-installed skill, or create a package. Edit `SKILL.md` and supporting Markdown in place. Grant packages to individual bots, a company or all agents. Company members can manage grants within their own company. Local Claude sessions discover granted packages through `--add-dir`. Local Codex sessions read the same files through a session-specific stdio MCP server that requires Python 3. Restart the agent to apply changes. Existing provider-installed skills keep their original scope.
 - Workflows with schedules and completion actions.
 - Shared Chrome per company with Watch and Drive, and an option to keep sites signed in.
 - Invite colleagues through an in-app wizard: your own domain on Cloudflare with Google sign-in, or a temporary link.

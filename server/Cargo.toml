@@ -80,6 +80,7 @@ constant_time_eq = "0.4"                                 # auth token compare
 # raw) + HMAC for the signed cookie & CSRF double-submit. Both already resolved
 # transitively (jwt-simple/openssl pull them) — promoting to direct deps adds 0
 # crates to the lockfile.
+serde_yaml_ng = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 
