@@ -18,7 +18,7 @@
  * its own `variant="chat"` component map, which is a later slice; this primitive
  * takes `children` so the renderer can hand it whatever it has.
  */
-import type { ReactNode } from 'react'
+import type { ComponentPropsWithRef, ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
@@ -175,10 +175,17 @@ export function PathRef({ children, className }: { children: ReactNode; classNam
  * "quiet chrome, loud content" rule the rest of the surface follows, and the
  * reason this is not a red/green block (P8's full diff palette is a later
  * slice — this is the inline case).
+ *
+ * Any other `<pre>` attribute passes through: the chat's copy affordance
+ * (`CopyableCode`) wraps this well and hangs its ref and tap handler on it. That
+ * component lives in its own module on purpose — this file ships in the entry
+ * chunk (every surface renders a bubble), and only the lazy chat-markdown chunk
+ * ever needs a copy button.
  */
-export function BubbleCode({ children, className }: { children: ReactNode; className?: string }) {
+export function BubbleCode({ children, className, ...pre }: ComponentPropsWithRef<'pre'>) {
   return (
     <pre
+      {...pre}
       className={cn(
         'mt-[11px] overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
         className,
