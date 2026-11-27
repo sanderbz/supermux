@@ -102,6 +102,13 @@ pub struct ChatEntry {
     /// (`isMeta: true`, no `promptSource`), and the renderer drew the second as
     /// the owner's own bubble, ending in `ARGUMENTS: …`.
     pub is_meta: bool,
+    /// What this LINE says about the model the agent that wrote it is on:
+    /// an assistant record's `message.model` id (`claude-opus-5-5`), or the
+    /// display name in a `/model` answer (`Set model to \`Fable 5.2\` …` →
+    /// `Fable 5.2`). See `parser::model_signal`. Server-internal: it feeds
+    /// `SessionView.live_model` when the statusline tap is off, and never
+    /// rides the wire (`WireEntry` does not copy it).
+    pub model: Option<String>,
     /// Kind-specific payload, pre-cap.
     pub body: Value,
 }
@@ -122,6 +129,7 @@ impl ChatEntry {
             is_sidechain: false,
             agent_id: None,
             is_meta: false,
+            model: None,
             oversize: false,
             body: serde_json::json!({ "text": text }),
         }
@@ -449,6 +457,7 @@ mod tests {
             is_sidechain: false,
             agent_id: Some(huge(500_000)),
             is_meta: false,
+            model: None,
             oversize: false,
             body: serde_json::json!({ "text": "hi" }),
         };
@@ -482,6 +491,7 @@ mod tests {
             is_sidechain: true,
             agent_id: Some("x1".to_string()),
             is_meta: false,
+            model: None,
             oversize: false,
             body: serde_json::json!({ "text": "ok" }),
         };

@@ -3574,6 +3574,17 @@ async fn start_locked_inner(
     // the status watch + SSE (so connected clients flip the dot inside ~16ms,
     // well before the 2s detector tick lands).
     db::sessions::set_last_status(&state.pool, name, "starting").await?;
+    // A new process boots on its own model (the default, or `--model`), so
+    // the transcript's last word about the OLD one is stale from here: the
+    // chip shows no model until this process names one (the tailer also
+    // ignores signals stamped before `last_started`).
+    if state.transcript_models.remove(name).is_some() {
+        let _ = state.sse_tx.send(SseEvent {
+            event: "sessions".to_string(),
+            company_id: None,
+            payload: json!({ "delta": [{ "name": name, "live_model": null }] }),
+        });
+    }
     let starting_version = {
         let tx = state.status_watch_for(name);
         let next = tx.borrow().1.wrapping_add(1);

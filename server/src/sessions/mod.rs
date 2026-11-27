@@ -29,6 +29,7 @@ pub mod host_pool;
 pub mod lifecycle;
 pub mod login;
 pub mod memory;
+pub mod model_name;
 pub mod move_company;
 pub mod pty;
 pub mod pty_state;
@@ -514,6 +515,19 @@ pub struct SessionView {
     /// behind it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limits: Option<RateLimits>,
+    /// The model the session's MAIN agent is on right now: the statusline when
+    /// the tap is on, else the transcript's last main-agent signal (its last
+    /// reply's `message.model`, or a later `/model` answer) written since the
+    /// current start. Not [`model`](Self::model), which is only the launch-line
+    /// `--model` and goes stale the moment someone runs `/model`.
+    ///
+    /// Main agent only by construction: the statusline is session-keyed (a
+    /// teammate's lands on a member key, `statusline_store_key`) and the
+    /// transcript plane skips sidechain and subagent-file lines. Absent until
+    /// one of the two has said something — and the transcript plane is only
+    /// read while a chat view holds the tailer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_model: Option<LiveModel>,
     /// The user's last sent prompt to this session (≤200 chars, control chars
     /// stripped), as captured by `db::sessions::set_last_send`. `None` when the
     /// session has never received a submission. Drives the last-prompt recall
@@ -540,6 +554,49 @@ pub struct ErrorInfo {
     pub error_type: String,
     /// The human-readable error message (may be empty).
     pub message: String,
+}
+
+/// The `SessionView.live_model` shape: Claude Code's own `model` object from
+/// the statusline payload, verbatim (`{"id":"claude-fable-5-2","display_name":
+/// "Fable 5.2"}`, live-captured on 2.1.326). The client shortens the display
+/// name for the header chip; the id is what it matches picker rows against.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LiveModel {
+    pub id: String,
+    /// `display_name`; derived from the id (`model_name::display_for_id`) when
+    /// a payload carries none, so it is always a display name.
+    pub display_name: String,
+}
+
+impl LiveModel {
+    /// `None` when the snapshot names no model id — an alien or clipped
+    /// payload says nothing, and a chip that guessed would be worse than none.
+    pub fn from_statusline(s: &chat::statusline::Statusline) -> Option<Self> {
+        let id = s.model_id.as_deref().map(str::trim).filter(|v| !v.is_empty())?;
+        let display_name = s
+            .model_display
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| model_name::display_for_id(id));
+        Some(Self { id: id.to_string(), display_name })
+    }
+
+    /// From a transcript model signal (`chat::parser::model_signal`): an id
+    /// off an assistant record, or the display name off a `/model` answer.
+    /// The other half is derived in `model_name`, the one naming place.
+    pub fn from_transcript(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        Some(if raw.starts_with("claude-") {
+            Self { id: raw.to_string(), display_name: model_name::display_for_id(raw) }
+        } else {
+            Self { id: model_name::id_for_display(raw), display_name: raw.to_string() }
+        })
+    }
 }
 
 /// The `SessionView.rate_limits` shape — the two buckets Claude Code's
@@ -644,6 +701,10 @@ fn view(
     // for this session. Threaded in rather than fetched here so `view` stays a
     // pure function of its arguments (every caller already holds the state).
     statusline: Option<chat::statusline::Statusline>,
+    // The main agent's model as its transcript last named it — the
+    // `live_model` fallback when there is no statusline. Threaded in for the
+    // same reason as `statusline`.
+    transcript_model: Option<LiveModel>,
 ) -> SessionView {
     let last_status = rt.map(|r| r.last_status.as_str()).unwrap_or("unknown");
     let last_capture = rt.map(|r| r.last_capture.as_str()).unwrap_or("");
@@ -746,6 +807,13 @@ fn view(
         blocked: pty.blocked,
         limit_warning: pty.warning,
         rate_limits: statusline.as_ref().and_then(RateLimits::from_statusline),
+        // The statusline when the tap is on (it re-fires the instant a pick
+        // lands, and it is the main pane's by construction), else the
+        // transcript's last word.
+        live_model: statusline
+            .as_ref()
+            .and_then(LiveModel::from_statusline)
+            .or(transcript_model),
         // Last user prompt + its epoch. Pair them: either both Some, or both
         // None (no submission yet). The DB stores empty string + 0 as the
         // "never sent" sentinel.
@@ -1092,6 +1160,7 @@ pub async fn list(state: &AppState) -> Result<Vec<SessionView>, AppError> {
                 state.subagents_live(&s.name),
                 state.agent_rows_now(&s.name),
                 state.statusline(&s.name),
+                state.transcript_model(&s.name),
             )
         })
         .collect())
@@ -1109,6 +1178,7 @@ pub async fn get(state: &AppState, name: &str) -> Result<SessionView, AppError> 
         state.subagents_live(name),
         state.agent_rows_now(name),
         state.statusline(name),
+        state.transcript_model(name),
     ))
 }
 
@@ -1133,6 +1203,7 @@ pub async fn list_archived(state: &AppState) -> Result<Vec<SessionView>, AppErro
                 state.subagents_live(&s.name),
                 state.agent_rows_now(&s.name),
                 state.statusline(&s.name),
+                state.transcript_model(&s.name),
             )
         })
         .collect())
@@ -3027,6 +3098,32 @@ mod tests {
     /// A statusline snapshot carrying `rate_limits`, as Claude Code sends it.
     fn statusline_with(raw: serde_json::Value) -> chat::statusline::Statusline {
         chat::statusline::Statusline::from_payload(&raw).expect("payload is an object")
+    }
+
+    #[test]
+    fn live_model_carries_the_statuslines_model_object() {
+        // Live-captured on Claude Code 2.1.326 right after a session-only
+        // `/model` pick: the statusline re-fires at once with the new object.
+        let s = statusline_with(json!({
+            "model": { "id": "claude-fable-5-2", "display_name": "Fable 5.2" }
+        }));
+        assert_eq!(
+            LiveModel::from_statusline(&s),
+            Some(LiveModel { id: "claude-fable-5-2".into(), display_name: "Fable 5.2".into() })
+        );
+    }
+
+    #[test]
+    fn live_model_is_absent_without_an_id_and_derives_a_name_from_the_id() {
+        assert_eq!(LiveModel::from_statusline(&statusline_with(json!({}))), None);
+        assert_eq!(
+            LiveModel::from_statusline(&statusline_with(json!({ "model": { "id": "  " } }))),
+            None
+        );
+        assert_eq!(
+            LiveModel::from_statusline(&statusline_with(json!({ "model": { "id": "claude-x" } }))),
+            Some(LiveModel { id: "claude-x".into(), display_name: "X".into() })
+        );
     }
 
     #[test]

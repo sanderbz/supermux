@@ -714,6 +714,13 @@ pub struct AppState {
     /// tap fires per turn, event-driven, and says nothing about whether the
     /// agent is working.
     pub statuslines: Arc<DashMap<String, crate::sessions::chat::statusline::Statusline>>,
+    /// Per-session model the MAIN agent is on, as its own transcript last said
+    /// it (`chat::parser::model_signal`): the fallback for
+    /// `SessionView.live_model` on a host without the statusline tap. Fed by
+    /// the chat tailer from lines it already drains, so it costs no read of
+    /// its own; known while a chat view holds the tailer (where the chip is).
+    /// In-memory only, like `statuslines`.
+    pub transcript_models: Arc<DashMap<String, crate::sessions::LiveModel>>,
     /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
     /// per-job broadcast registry the SSE progress endpoint subscribes to.
     /// Cheap `Arc` clone; created once in `new()` so every handler shares the
@@ -878,6 +885,7 @@ impl AppState {
             chat_stores: Arc::new(DashMap::new()),
             groupchat_channels: Arc::new(DashMap::new()),
             statuslines: Arc::new(DashMap::new()),
+            transcript_models: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
             // Cheap: a config struct. No process, no I/O — see the field docs.
@@ -1286,6 +1294,22 @@ impl AppState {
         name: &str,
     ) -> Option<crate::sessions::chat::statusline::Statusline> {
         self.statuslines.get(name).map(|s| s.clone())
+    }
+
+    /// Record the model `name`'s transcript last named for its main agent.
+    /// Returns whether it changed (the caller broadcasts only then).
+    pub fn set_transcript_model(&self, name: &str, next: crate::sessions::LiveModel) -> bool {
+        let changed = self.transcript_models.get(name).map(|p| *p != next).unwrap_or(true);
+        if changed {
+            self.transcript_models.insert(name.to_string(), next);
+        }
+        changed
+    }
+
+    /// The transcript's last word on `name`'s main model, if the tailer has
+    /// seen one.
+    pub fn transcript_model(&self, name: &str) -> Option<crate::sessions::LiveModel> {
+        self.transcript_models.get(name).map(|m| m.clone())
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -2152,6 +2176,7 @@ impl AppState {
         // Same reasoning for the statusline snapshot: it is this name's model /
         // cost / context state and must not survive the row.
         self.statuslines.remove(name);
+        self.transcript_models.remove(name);
         // The native module memoizes its own session handles (one holder
         // connection + one grid per name), so dropping only OUR cache entry
         // would leak that. A no-op for a tmux session.
@@ -2277,6 +2302,9 @@ impl AppState {
         // cost — a rename must not blank the tile's line until the next turn.
         if let Some((_, v)) = self.statuslines.remove(old) {
             self.statuslines.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.transcript_models.remove(old) {
+            self.transcript_models.insert(new.to_string(), v);
         }
         // The runtime handle is NAME-BOUND (a `TmuxRuntime` owns the bare name
         // it builds `supermux-<name>` from), so it can NOT be carried across a

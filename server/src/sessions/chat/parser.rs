@@ -293,6 +293,58 @@ fn entries_from_object(obj: &Map<String, Value>, offset: u64) -> Vec<ChatEntry> 
     entries
 }
 
+/// What one transcript LINE says about the model its agent is on, if anything.
+///
+/// Two shapes, both live-verified on Claude Code 2.1.326 (throwaway config dir):
+///
+///   * an `assistant` record's `message.model` — the id the reply was produced
+///     by (`claude-opus-5-5`). `<synthetic>` is Claude Code's own stand-in for
+///     a locally-made message (an API error banner, an interrupt), not a model,
+///     and is skipped;
+///   * the answer to `/model`, written the moment the pick lands — BEFORE any
+///     turn — as a `user` record whose string content is
+///     `<local-command-stdout>Set model to `Fable 5.2` for this session only</local-command-stdout>`
+///     (or `… and saved as your default for new sessions`), or, where the
+///     command logs as a `system` / `local_command` record, the same text in
+///     `content`. The display name between the backticks is returned.
+///     `Kept model as …` (an Esc) changes nothing and is ignored.
+///
+/// Whose agent it was (main vs a subagent) is the caller's question — the line
+/// header's `isSidechain` / `agentId` already answer it.
+pub(crate) fn model_signal(obj: &Map<String, Value>) -> Option<String> {
+    match str_at(obj, &["type"])? {
+        "assistant" => {
+            let m = obj.get("message")?.get("model")?.as_str()?.trim();
+            (!m.is_empty() && m != "<synthetic>").then(|| m.to_string())
+        }
+        "user" => set_model_display(obj.get("message")?.get("content")?.as_str()?),
+        "system" => set_model_display(str_at(obj, &["content"])?),
+        _ => None,
+    }
+}
+
+/// `<local-command-stdout>Set model to `Fable 5.2` for …` → `Fable 5.2`.
+fn set_model_display(text: &str) -> Option<String> {
+    let rest = text
+        .trim_start()
+        .strip_prefix("<local-command-stdout>")?
+        .trim_start()
+        .strip_prefix("Set model to ")?;
+    let name = match rest.strip_prefix('`') {
+        Some(r) => r.split('`').next()?,
+        // Unquoted (the on-screen form): up to the clause.
+        None => rest
+            .split(" for this session only")
+            .next()?
+            .split(" and saved as")
+            .next()?
+            .split("</local-command-stdout>")
+            .next()?,
+    };
+    let name = name.trim();
+    (!name.is_empty() && name.len() <= 64).then(|| name.to_string())
+}
+
 /// Only verified housekeeping envelopes are skipped. Hook failures can be
 /// nested and need not carry a top-level `level`; never hide their diagnostics.
 fn housekeeping(obj: &Map<String, Value>, ty: &str) -> bool {
@@ -374,6 +426,7 @@ struct Header {
     is_sidechain: bool,
     agent_id: Option<String>,
     is_meta: bool,
+    model: Option<String>,
 }
 
 impl Header {
@@ -392,6 +445,7 @@ impl Header {
             // A LINE-level flag, like `isSidechain`: the harness marks the whole
             // record, and every block of it inherits the mark.
             is_meta: bool_at(obj, &["isMeta", "is_meta"]).unwrap_or(false),
+            model: model_signal(obj),
         }
     }
 
@@ -416,6 +470,7 @@ impl Header {
             is_sidechain: self.is_sidechain,
             agent_id: self.agent_id.clone(),
             is_meta: self.is_meta,
+            model: self.model.clone(),
             oversize: false,
             body,
         }
@@ -1065,6 +1120,7 @@ fn oversize_entry(line: &str, offset: u64) -> ChatEntry {
                 is_sidechain: line.contains("\"isSidechain\":true"),
                 agent_id: scan_field(line, "agentId"),
                 is_meta: line.contains("\"isMeta\":true"),
+                model: None,
                 oversize: true,
                 body: oversize_agent_error_body(&text, &info),
             };
@@ -1087,6 +1143,7 @@ fn oversize_entry(line: &str, offset: u64) -> ChatEntry {
         // arrives with `isMeta` set, so guessing `false` here would put the one
         // entry the flag exists for back on screen.
         is_meta: line.contains("\"isMeta\":true"),
+        model: None,
         oversize: true,
         body: Value::Null,
     }
@@ -1139,6 +1196,7 @@ fn malformed_entry(text: &str, offset: u64) -> ChatEntry {
         is_sidechain: false,
         agent_id: None,
         is_meta: false,
+        model: None,
         oversize: false,
         body: serde_json::json!({ "unparseable": true, "preview": preview }),
     }
@@ -2034,4 +2092,33 @@ mod tests {
         assert!(speaks_for_somebody(&early));
     }
 
+    #[test]
+    fn model_signal_reads_replies_and_model_answers_and_nothing_else() {
+        let sig = |l: &str| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            model_signal(v.as_object().unwrap())
+        };
+        assert_eq!(
+            sig(r#"{"type":"assistant","message":{"model":"claude-fable-5-2","content":[]}}"#).as_deref(),
+            Some("claude-fable-5-2")
+        );
+        assert_eq!(sig(r#"{"type":"assistant","message":{"model":"<synthetic>"}}"#), None);
+        assert_eq!(
+            sig(r#"{"type":"user","message":{"content":"<local-command-stdout>Set model to `Fable 5.2` for this session only</local-command-stdout>"}}"#).as_deref(),
+            Some("Fable 5.2")
+        );
+        assert_eq!(
+            sig(r#"{"type":"system","subtype":"local_command","content":"<local-command-stdout>Set model to `Sonnet 5.5` and saved as your default for new sessions</local-command-stdout>"}"#).as_deref(),
+            Some("Sonnet 5.5")
+        );
+        // The on-screen spelling, without backticks.
+        assert_eq!(
+            sig(r#"{"type":"user","message":{"content":"<local-command-stdout>Set model to Haiku 5.5 for this session only</local-command-stdout>"}}"#).as_deref(),
+            Some("Haiku 5.5")
+        );
+        // Not answers to a pick: an Esc, an error, a prompt that quotes the phrase.
+        assert_eq!(sig(r#"{"type":"user","message":{"content":"<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>"}}"#), None);
+        assert_eq!(sig(r#"{"type":"user","message":{"content":"<local-command-stdout>Model 'x' not found</local-command-stdout>"}}"#), None);
+        assert_eq!(sig(r#"{"type":"user","message":{"content":"please Set model to `Opus 5.5`"}}"#), None);
+    }
 }
