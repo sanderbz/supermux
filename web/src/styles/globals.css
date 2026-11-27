@@ -1817,7 +1817,7 @@
 }
 
 /* ══ CODE-BLOCK COPY — the confirmation's motion (APPENDED) ══════════════════
-   `BubbleCode`'s copy affordance. The well's border takes the check's ink for
+   `CopyableCode`'s copy affordance. The well's border takes the check's ink for
    the copy window (a Tailwind transition, no keyframe); here only the corner:
    the check lands (scale from 0.6 on the app's curve) and the label unrolls
    beside it. Reduce Motion: both simply fade. */

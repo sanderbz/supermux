@@ -644,7 +644,7 @@ export function ChatConversation({
         style={{
           paddingBottom: reserve,
           // The same floor, readable by what is IN the track: a code block's
-          // sticky "Tap to copy" (`BubbleCode`) rides the scroller's bottom
+          // sticky "Tap to copy" (`CopyableCode`) rides the scroller's bottom
           // edge, which sits UNDER the floating composer — this lifts it clear.
           ['--sm-chat-reserve' as string]: `${reserve}px`,
           // Phone: clear the FLOATING header card, which is notch-aware now.

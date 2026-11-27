@@ -14,7 +14,7 @@
  *   ul/ol      18px indent, 3px between items, markers in tertiary ink
  *   code       the `InlineCode` chip B0 already ships (JetBrainsMono 13.2 on
  *              `--sm-fill-soft`, radius 8) — one chip, one definition
- *   pre        `BubbleCode` — the fenced read of the approved Patch board
+ *   pre        `CopyableCode` (`BubbleCode` + copy) — the fenced read of the approved Patch board
  *   a          the speaker's own pigment via `.sm-ink-accent`, underlined on
  *              hover only (a link is quiet until it is aimed at)
  *   table      a hairline grid that scrolls inside its own box, so a wide table
@@ -45,10 +45,12 @@ import { basename } from '../../../lib/path'
 import { cn } from '../../../lib/utils'
 import { mentionSegments } from '../grouping'
 import { diffLines, fenceCopyText } from './fence-copy'
+// Direct, NOT through the `../ui` barrel: the barrel is entry-chunk code, and the
+// copy affordance belongs in this lazy chunk only (see `copyable-code.tsx`).
+import { CopyableCode } from '../ui/copyable-code'
 import {
   ACCENT_INK_CLASS,
   accentInkVarsForSeed,
-  BubbleCode,
   CapturedFrameCard,
   CAPTURED_FRAME,
   CodeAdd,
@@ -325,7 +327,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       const raw = plainText(children)
       const diff = diffLines(raw)
       return (
-        <BubbleCode
+        <CopyableCode
           copyText={fenceCopyText(raw)}
           className={cn(
             // ON THE PHONE THE FENCE WRAPS (daily-driver QA #18).
@@ -354,7 +356,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
           )}
         >
           {diff ? diffNodes(diff) : children}
-        </BubbleCode>
+        </CopyableCode>
       )
     },
     table: ({ node: _node, className, ...rest }) => (

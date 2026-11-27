@@ -18,12 +18,10 @@
  * its own `variant="chat"` component map, which is a later slice; this primitive
  * takes `children` so the renderer can hand it whatever it has.
  */
-import { Check, Copy } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import type { ComponentPropsWithRef, ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
-import { copyText } from '../message-export'
 import { BUBBLE_MAX } from './metrics'
 
 export interface MessageRowProps {
@@ -177,166 +175,24 @@ export function PathRef({ children, className }: { children: ReactNode; classNam
  * "quiet chrome, loud content" rule the rest of the surface follows, and the
  * reason this is not a red/green block (P8's full diff palette is a later
  * slice — this is the inline case).
+ *
+ * Any other `<pre>` attribute passes through: the chat's copy affordance
+ * (`CopyableCode`) wraps this well and hangs its ref and tap handler on it. That
+ * component lives in its own module on purpose — this file ships in the entry
+ * chunk (every surface renders a bubble), and only the lazy chat-markdown chunk
+ * ever needs a copy button.
  */
-export function BubbleCode({
-  children,
-  className,
-  copyText: textToCopy,
-}: {
-  children: ReactNode
-  className?: string
-  /** When set, the block can be copied: a corner button on a fine pointer, a tap
-   *  anywhere on it on a coarse one. Without it the block renders as before. */
-  copyText?: string
-}) {
-  const [copied, setCopied] = useState(false)
-  // The corner hint has scrolled out above the viewport while the block is still
-  // on screen: a tall fence read from the middle. The hint then also rides the
-  // block's bottom-right edge, so "Tap to copy" is never only off screen.
-  const [topGone, setTopGone] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const preRef = useRef<HTMLPreElement>(null)
-  const topRef = useRef<HTMLSpanElement>(null)
-
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current)
-    },
-    [],
-  )
-
-  useEffect(() => {
-    const top = topRef.current
-    const block = top?.parentElement
-    if (!top || !block || typeof IntersectionObserver === 'undefined') return
-    // The sentinel sits at the block's very top, so "block on screen, sentinel
-    // not" can only mean the top is cut off ABOVE. Measured against whatever
-    // clips it (the transcript's own scroller, under the header), not the
-    // window: an IO with the default root intersects through every overflow
-    // ancestor.
-    const seen = new Map<Element, boolean>()
-    const io = new IntersectionObserver((entries) => {
-      for (const e of entries) seen.set(e.target, e.isIntersecting)
-      setTopGone(!!seen.get(block) && !seen.get(top))
-    })
-    io.observe(top)
-    io.observe(block)
-    return () => io.disconnect()
-  }, [textToCopy])
-
-  const doCopy = useCallback(() => {
-    if (textToCopy === undefined) return
-    void copyText(textToCopy).then((ok) => {
-      if (!ok) return // never a false ✓ / buzz on a denied or insecure clipboard
-      setCopied(true)
-      navigator.vibrate?.(10)
-      if (timer.current) clearTimeout(timer.current)
-      timer.current = setTimeout(() => setCopied(false), 1500)
-    })
-  }, [textToCopy])
-
-  const onTap = useCallback(() => {
-    if (!window.matchMedia('(pointer: coarse)').matches) return
-    // The tap that ends a text selection inside the block must not copy; a
-    // selection that only partly overlaps the block counts as inside.
-    const sel = window.getSelection()
-    const pre = preRef.current
-    if (sel && pre && !sel.isCollapsed && sel.containsNode(pre, true)) return
-    doCopy()
-  }, [doCopy])
-
-  // Touch-only convenience for pointer users; the button below stays in the a11y
-  // tree and the Tab order on touch devices, so it is the keyboard/screen-reader
-  // route (the pre itself has no role).
-  const pre = (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+export function BubbleCode({ children, className, ...pre }: ComponentPropsWithRef<'pre'>) {
+  return (
     <pre
-      ref={preRef}
-      onClick={textToCopy === undefined ? undefined : onTap}
+      {...pre}
       className={cn(
-        'overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
-        textToCopy === undefined
-          ? 'mt-[11px]'
-          : cn(
-              // The finger lands → the well answers before the clipboard does;
-              // a copy → the well's edge takes the check's ink for the window.
-              'pt-8 transition-[border-color] duration-200 [@media(pointer:coarse)]:active:border-hairline',
-              copied && 'border-status-active-ink',
-            ),
+        'mt-[11px] overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
         className,
       )}
     >
       {children}
     </pre>
-  )
-  if (textToCopy === undefined) return pre
-
-  const chip = 'items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] leading-none'
-  const corner = 'absolute right-1.5 top-1.5'
-  // The touch hint's face, shared by the corner and the trailing edge.
-  const hint = copied ? (
-    <>
-      <Check className="sm-code-copied-check size-3 text-status-active-ink" aria-hidden />
-      <span className="sm-code-copied-label">Copied</span>
-    </>
-  ) : (
-    'Tap to copy'
-  )
-  const coarseOnly = 'hidden [@media(pointer:coarse)]:inline-flex'
-  return (
-    <div data-code-block className="relative mt-[11px]">
-      <span ref={topRef} aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-8" />
-      {pre}
-      {/* The button stays mounted through the copy (focus survives); only its
-          content and label swap. Under a coarse pointer the whole block is the tap
-          target and the hint below takes the corner, so the button goes visually
-          away (sr-only: still announced, still tabbable) and returns on keyboard
-          focus, when the hint steps aside (peer). */}
-      <button
-        type="button"
-        aria-label={copied ? 'Copied' : 'Copy code'}
-        title={copied ? 'Copied' : 'Copy'}
-        onClick={doCopy}
-        className={cn(
-          'peer',
-          chip,
-          corner,
-          'inline-flex bg-code-bg text-ink-3 transition-colors hover:bg-muted/60 hover:text-ink [@media(pointer:coarse)]:sr-only [@media(pointer:coarse)]:focus-visible:not-sr-only [@media(pointer:coarse)]:focus-visible:absolute [@media(pointer:coarse)]:focus-visible:px-1.5 [@media(pointer:coarse)]:focus-visible:py-1',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        )}
-      >
-        {copied ? (
-          <>
-            <Check className="sm-code-copied-check size-3.5 text-status-active-ink" aria-hidden />
-            <span className="sm-code-copied-label">Copied</span>
-          </>
-        ) : (
-          <Copy className="size-3.5" aria-hidden />
-        )}
-      </button>
-      <span
-        aria-hidden
-        className={cn(chip, corner, coarseOnly, 'pointer-events-none text-ink-3 [@media(pointer:coarse)]:peer-focus-visible:hidden')}
-      >
-        {hint}
-      </span>
-      {/* The trailing twin: in flow after the pre, pulled up over its bottom-right
-          corner, and sticky to the scroller's bottom edge — so while the corner is
-          scrolled away it rides the visible bottom of the block, and it can never
-          leave the block it belongs to. Inert: a tap falls through to the pre. */}
-      <div
-        aria-hidden
-        className={cn(
-          'pointer-events-none sticky bottom-[calc(var(--sm-chat-reserve,0px)+6px)] -mt-[30px] flex h-[30px] items-end justify-end px-1.5 pb-1.5 transition-opacity duration-150',
-          topGone ? 'opacity-100' : 'opacity-0',
-        )}
-      >
-        <span className={cn(chip, coarseOnly, 'bg-code-bg text-ink-3')}>{hint}</span>
-      </div>
-      <span className="sr-only" aria-live="polite">
-        {copied ? 'Copied' : ''}
-      </span>
-    </div>
   )
 }
 
