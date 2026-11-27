@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, ChevronDown, Copy, Download, Globe2, Loader2, MonitorUp, RefreshCw, ShieldAlert, Unplug } from 'lucide-react'
+import { Check, ChevronDown, Copy, Download, Globe2, Loader2, MonitorUp, RefreshCw, Unplug } from 'lucide-react'
 import { apiUrl, settingsRequest } from '../../lib/api/client'
 import { csrfCookie } from '../../lib/api/auth'
 import { useViewerIdentity } from '../../stores/viewer-store'
@@ -29,6 +29,9 @@ const needsApproval = (value: BrowserBinding | BrowserScopeApproval): value is B
 const allSitesUntil = (seconds?: number | null) => seconds
   ? new Date(seconds * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
   : ''
+// Rare, owner-only UI: loaded on demand to keep it off the entry path.
+const AllSitesApproval = React.lazy(() => import('./all-sites-approval').then(m => ({ default: m.AllSitesApproval })))
+const AllSitesPaired = React.lazy(() => import('./all-sites-approval').then(m => ({ default: m.AllSitesPaired })))
 
 export const supportsBrowserFeedback = (provider: string | undefined) => provider === 'claude' || provider === 'codex'
 
@@ -210,15 +213,10 @@ export function BrowserFeedbackCard({ session, label, remote = false }: { sessio
         </div>
       </form> : <p className="text-[11px] leading-relaxed text-muted-foreground">{viewer.kind === 'pending' ? 'Checking your access…' : 'Sign in to pair a website with this agent.'}</p>}
       {error && <div className="rounded-lg border border-status-error/20 bg-status-error/5 p-3"><p role="alert" className="text-[11px] leading-relaxed text-status-error">{error}</p>{allowed && <button type="button" onClick={() => { setError(''); void load() }} className="mt-1 flex min-h-11 items-center gap-1.5 text-[11px] text-muted-foreground"><RefreshCw aria-hidden className="size-3" />Refresh connections</button>}</div>}
-      {approval && <div role="alertdialog" aria-labelledby={`${inputId}-all`} data-testid="browser-all-sites-approval" className="space-y-2 rounded-xl border border-status-error/30 bg-status-error/5 p-3.5">
-        <p id={`${inputId}-all`} className="flex items-center gap-2 text-[12px] font-semibold text-status-error"><ShieldAlert aria-hidden className="size-4 shrink-0" />This code asks for All websites</p>
-        <p className="text-[11px] leading-relaxed text-foreground">{label || 'This agent'} could open and act on <strong>any website</strong> with the logged-in accounts in that browser, for at most <strong>{Math.round(approval.ttl_secs / 3600)} hours</strong>, except blocked sites (accounts, payments, banks, government, password managers and Supermux itself). Pairing started on <span className="break-all">{approval.origin}</span>.</p>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" data-testid="browser-all-sites-approve" disabled={pairing} onClick={() => void claim(approval.code, 'all')} className="flex min-h-11 items-center gap-1.5 rounded-xl bg-status-error px-3.5 text-[12px] font-medium text-white disabled:opacity-40">{pairing && <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />}Approve all websites for {Math.round(approval.ttl_secs / 3600)} hours</button>
-          <button type="button" disabled={pairing} onClick={() => { setApproval(null); setCode('') }} className="min-h-11 rounded-xl px-3 text-[12px] text-muted-foreground hover:bg-fill-soft">Cancel</button>
-        </div>
-      </div>}
-      {pairedAll && <p role="status" data-testid="browser-all-sites-paired" className="flex gap-2 rounded-lg bg-status-error/5 p-3 text-[11px] leading-relaxed text-status-error"><ShieldAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0 break-all">Code accepted for All websites until {allSitesUntil(pairedAll.expires_at)} (started on {pairedAll.origin}). Return to the extension to confirm. Disconnect below ends it at any time.</span></p>}
+      {(approval || pairedAll) && <React.Suspense fallback={null}>
+        {approval && <AllSitesApproval id={`${inputId}-all`} label={label} approval={approval} pairing={pairing} onApprove={() => void claim(approval.code, 'all')} onCancel={() => { setApproval(null); setCode('') }} />}
+        {pairedAll && <AllSitesPaired binding={pairedAll} until={allSitesUntil(pairedAll.expires_at)} />}
+      </React.Suspense>}
       {pairedOrigin && <p role="status" className="flex gap-2 rounded-lg bg-status-ready/10 p-3 text-[11px] leading-relaxed text-status-ready-ink"><Check aria-hidden className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0 break-all">Code accepted for {pairedOrigin}. Return to the extension to confirm this website and agent and allow control in one click.</span></p>}
     </div>
     {allowed && <div className="border-t border-border bg-fill-soft/20 px-4 py-3">
