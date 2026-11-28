@@ -4,8 +4,9 @@
  * Fixtures in `tests/fixtures/task-notifications/`: the ten without a prefix are
  * real envelopes from a Claude Code session (usernames, home paths and a
  * personal name redacted). The `synthetic-*` ones are built from them for the
- * shapes that had no real capture: the `<system-reminder>` batch wrapper (its
- * preamble is the agreed marker; the boilerplate wording is invented), a
+ * shapes that had no real capture: the `<system-reminder>` batch wrapper (the
+ * preamble and boilerplate lines as Claude Code writes them; the batching and
+ * the `<note>` wording are assumed), a
  * monitor event line, a block clipped mid-way, and a human quoting a block.
  */
 import { describe, expect, test } from 'bun:test'
@@ -16,9 +17,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { toDisplayList } from '../../src/components/chat/entries'
 import { buildTranscript } from '../../src/components/chat/grouping'
 import {
-  durationWords,
   parseTaskNotifications,
-  usageWords,
   type TaskNotification,
 } from '../../src/components/chat/task-notification'
 import TaskNotificationCard from '../../src/components/chat/task-notification-card'
@@ -35,6 +34,13 @@ const one = (name: string) => {
   return notes![0]
 }
 
+/** The card's Details text for a note with this usage. */
+const usageWords = (usage: number[]) => {
+  const n: TaskNotification = { status: 'done', title: 't', line: '', summary: 's', details: [], usage, raw: '' }
+  const html = renderToStaticMarkup(<TaskNotificationCard note={n} />)
+  return /Usage: ([^<]*)/.exec(html)?.[1] ?? ''
+}
+
 const detail = (n: TaskNotification, label: string) => n.details.find(([k]) => k === label)?.[1]
 
 const HARNESS = [
@@ -42,7 +48,8 @@ const HARNESS = [
   'A task-notification fires each time',
   'This agent stopped with background work',
   'NOT USER INPUT',
-  'not from the user',
+  'NOT a message from the user',
+  'Do NOT interpret',
   'Several task notifications arrived',
 ]
 
@@ -67,11 +74,12 @@ describe('parseTaskNotifications over the real envelopes', () => {
     expect(n.line).toBe('Agent finished')
     expect(n.result).toStartWith('SupermuxKit is built and `scripts/test-kit.sh` passes')
     expect(n.event).toBeUndefined()
-    expect(n.details.map(([k]) => k)).toEqual(['Task', 'Tool use', 'Output', 'Usage'])
+    expect(n.details.map(([k]) => k)).toEqual(['Task', 'Tool use', 'Output'])
     expect(detail(n, 'Task')).toBe('a7e5d97476a6ac5de')
     expect(detail(n, 'Tool use')).toBe('toolu_01N197gW6BGSpeMfjt6T54u6')
     expect(detail(n, 'Output')).toEndWith('/tasks/a7e5d97476a6ac5de.output')
-    expect(detail(n, 'Usage')).toBe('421k tokens · 140 tool uses · 35m 37s')
+    expect(n.usage).toEqual([420831, 140, 2137440])
+    expect(usageWords(n.usage)).toBe('421k tokens · 140 tool uses · 35m 37s')
   })
 
   test('the worktree and branch ride along when the envelope has them', () => {
@@ -98,7 +106,7 @@ describe('parseTaskNotifications over the real envelopes', () => {
     expect(n.title).toBe('Run Kit tests and the full app and UI test suite on the merged main')
     expect(n.result).toBeUndefined()
     expect(n.event).toBeUndefined()
-    expect(detail(n, 'Usage')).toBeUndefined()
+    expect(usageWords(n.usage)).toBe('')
     expect(one('bash-2').status).toBe('done')
   })
 
@@ -193,16 +201,14 @@ describe('the message has to be notification blocks and nothing else', () => {
     const [n] = parseTaskNotifications(
       '<task-notification><status>completed</status><summary>Build finished</summary></task-notification>',
     )!
-    expect(n).toMatchObject({ status: 'done', title: 'Build finished', line: 'completed' })
+    expect(n).toMatchObject({ status: 'done', title: 'Build finished', line: '' })
   })
 
   test('the human-friendly numbers', () => {
-    expect(usageWords(812, NaN, NaN)).toBe('812 tokens')
-    expect(usageWords(1_234_567, NaN, NaN)).toBe('1235k tokens')
-    expect(durationWords(4711)).toBe('5s')
-    expect(durationWords(4704439)).toBe('1h 18m')
-    expect(usageWords(25232, 1, 4711)).toBe('25k tokens · 1 tool use · 5s')
-    expect(usageWords(NaN, NaN, 4711)).toBe('5s')
+    expect(usageWords([812, NaN, NaN])).toBe('812 tokens')
+    expect(usageWords([1_234_567, NaN, NaN])).toBe('1.2M tokens')
+    expect(usageWords([25232, 1, 4711])).toBe('25k tokens · 1 tool use · 4s')
+    expect(usageWords([NaN, NaN, 4704439])).toBe('78m 24s')
   })
 })
 
@@ -262,31 +268,29 @@ describe('the card', () => {
       <TaskNotificationCard note={n} markdown={<ProseText text={n.result!} />} />,
     )
     expect(html).toContain('data-testid="chat-task-notification"')
-    expect(html).toContain('data-status="done"')
     const t = text(html)
     expect(t).toContain('✓ M1 roster and bot lifecycle')
     expect(t).toContain('Agent finished')
     expect(t).toContain('I built the roster')
     // Long report → a preview with an expand control.
     expect(html).toContain('max-height')
-    expect(html).toContain('aria-expanded="false"')
     expect(t).toContain('Show more')
     // Plumbing behind the disclosure.
     expect(html).toContain('<details')
-    expect(t).toContain('Task a09871f84c71f2c71')
-    expect(t).toContain('Tool use toolu_01VCG72FsbwHfyNY1kgeyYJ5')
-    expect(t).toContain('Usage 414k tokens · 198 tool uses · 57m 16s')
-    expect(t).toContain('Branch worktree-agent-a09871f84c71f2c71')
+    expect(t).toContain('Task: a09871f84c71f2c71')
+    expect(t).toContain('Tool use: toolu_01VCG72FsbwHfyNY1kgeyYJ5')
+    expect(t).toContain('Usage: 414k tokens · 198 tool uses · 57m 15s')
+    expect(t).toContain('Branch: worktree-agent-a09871f84c71f2c71')
     for (const h of HARNESS) expect(t).not.toContain(h)
     expect(html).not.toContain('&lt;task-notification')
   })
 
   test('a failed command says so, with its exit code, and has no body to expand', () => {
     const html = renderToStaticMarkup(<TaskNotificationCard note={one('failed-1')} />)
-    expect(html).toContain('data-status="failed"')
+    expect(text(html)).toContain('✕ Tighten the agent rules')
     expect(text(html)).toContain('Background command failed with exit code 149')
     expect(html).not.toContain('leading-[1.45]')
-    expect(html).not.toContain('aria-expanded')
+    expect(html).not.toContain('Show more')
   })
 
   test('a monitor event is monospace, and the push sentence is not on the card', () => {

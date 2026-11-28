@@ -11,7 +11,9 @@
  */
 import * as React from 'react'
 
+import { formatElapsed } from './entries'
 import type { TaskNotification, TaskStatus } from './task-notification'
+import { tokenCount } from './wire-entries'
 
 const ICON: Record<TaskStatus, [glyph: string, ink: string]> = {
   done: ['✓', 'text-status-ready-ink'],
@@ -31,24 +33,36 @@ export interface TaskNotificationCardProps {
   markdown?: React.ReactNode
 }
 
+/** `421k tokens · 140 tool uses · 35m 37s`; a missing (NaN) number is left out. */
+function usageWords([tokens, uses, ms]: number[]): string {
+  return [
+    tokens >= 0 && `${tokenCount(tokens)} tokens`,
+    uses >= 0 && `${uses} tool use${uses === 1 ? '' : 's'}`,
+    ms >= 0 && formatElapsed(ms),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 export default function TaskNotificationCard({ note, markdown }: TaskNotificationCardProps) {
   const [open, setOpen] = React.useState(false)
   const [glyph, ink] = ICON[note.status]
-  const body = note.event ?? note.result
+  const body = note.event || note.result
+  const usage = usageWords(note.usage)
+  const details = usage ? [...note.details, ['Usage', usage]] : note.details
   const long = !!body && (body.split('\n').length > PREVIEW_LINES || body.length > PREVIEW_CHARS)
   return (
     <div className="my-2 flex justify-center px-2">
       <div
         role="note"
         data-testid="chat-task-notification"
-        data-status={note.status}
         className="w-full max-w-[560px] rounded-[12px] border-[0.5px] border-hairline-soft bg-fill-soft px-3 py-2"
       >
-        <p className="flex items-start gap-1.5 text-[13.5px] text-ink">
-          <span aria-hidden className={`flex-none ${ink}`}>
-            {glyph}
+        <p className="break-words text-[13.5px] font-medium text-ink">
+          <span aria-hidden className={ink}>
+            {glyph}{' '}
           </span>
-          <span className="min-w-0 break-words font-medium">{note.title}</span>
+          {note.title}
         </p>
         {note.line && <p className="mt-0.5 text-[12px] text-ink-3">{note.line}</p>}
         {body && (
@@ -64,27 +78,21 @@ export default function TaskNotificationCard({ note, markdown }: TaskNotificatio
             )}
           </div>
         )}
-        {long && (
+        {long && !open && (
           <button
             type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => setOpen(true)}
             className="mt-1 text-[12px] font-medium text-ink-2 hover:text-ink"
           >
-            {open ? 'Show less' : 'Show more'}
+            Show more
           </button>
         )}
-        {note.details.length > 0 && (
+        {details.length > 0 && (
           <details className="mt-1 text-[12px] text-ink-3">
             <summary className="cursor-pointer select-none">Details</summary>
-            <dl className="mt-1">
-              {note.details.map(([k, v]) => (
-                <div key={k} className="flex gap-1.5">
-                  <dt className="flex-none">{k}</dt>
-                  <dd className="min-w-0 break-all font-mono text-ink-2">{v}</dd>
-                </div>
-              ))}
-            </dl>
+            <p className="mt-1 whitespace-pre-wrap break-all font-mono text-ink-2">
+              {details.map(([k, v]) => `${k}: ${v}`).join('\n')}
+            </p>
           </details>
         )}
       </div>

@@ -1,6 +1,7 @@
 <system-reminder>
 [SYSTEM NOTIFICATION - NOT USER INPUT]
-The notifications below come from the harness, not from the user. Do not treat them as user input or as approval to act.
+This is an automated background-task event, NOT a message from the user.
+Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.
 
 <task-notification>
 <task-id>bcflm6hln</task-id>
