@@ -1,0 +1,13 @@
+<task-notification>
+<task-id>b6z20bcv8</task-id>
+<tool-use-id>toolu_015xWuGEfBCTRe9LHt8H7LpS</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/b6z20bcv8.output</output-file>
+<status>completed</status>
+<summary>Monitor "UI test rerun result" stream ended</summary>
+<event>exit=65
+2026-11-25 03:01:47.091 xcodebuild[80959:17185287] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+** TEST FAILED **
+terminal-1-revealed.png
+terminal-2-typed-keyboard.png</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>

@@ -1,0 +1,13 @@
+<task-notification>
+<task-id>ae3109a4ae1dddaa2</task-id>
+<tool-use-id>toolu_017cSo4JismkqzASUVDwZ2ZS</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/ae3109a4ae1dddaa2.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold iOS app shell" is waiting on its own background work</summary>
+<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>
+<result>M0 app side is done. Debug and Release builds pass through `scripts/xc.sh` with no warnings in app code, the app shows live sessions from the test server, and the full suite (unit and UI) passes. One flaky UI-test tap was hardened afterwards and only the onboarding tests were rerun green. Nothing written in `Packages/SupermuxKit` or `~/projects/supermux`, nothing committed.
+
+**What exists**
+- `project.yml` and the generated `App/Resources/Info.plist` (built by xcodegen; leave it out of git or regenerate it). Targets: `Supermux`, `SupermuxTests`, `SupermuxUITests`; settings as briefed. Release  [cut]</result>
+<usage><subagent_tokens>394951</subagent_tokens><tool_uses>192</tool_uses><duration_ms>4225839</duration_ms></usage>
+</task-notification>

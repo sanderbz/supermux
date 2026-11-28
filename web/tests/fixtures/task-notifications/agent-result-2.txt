@@ -1,0 +1,13 @@
+<task-notification>
+<task-id>a09871f84c71f2c71</task-id>
+<tool-use-id>toolu_01VCG72FsbwHfyNY1kgeyYJ5</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/a09871f84c71f2c71.output</output-file>
+<status>completed</status>
+<summary>Agent "M1 roster and bot lifecycle" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I built the roster, the New bot sheet, the Archived sheet and the Kit fixes, and fixed the attention mismatch. The roster UI test passes end to end, the Kit tests pass (140) and the Release build is green. Branch `worktree-agent-a09871f84c71f2c71`, commits `40980e8` (Kit) and `668032a` (App).
+
+**Attention mismatch.** For an idle bot that finished its turn, Claude sends a notification ("Claude is waiting for your input") about 60 s later. The server turns that into an open ask of kind `waiting` marked `answerable: true`, while the bot itself stays `idle`. iOS added answerable asks to the count; [cut]</result>
+<usage><subagent_tokens>413597</subagent_tokens><tool_uses>198</tool_uses><duration_ms>3435779</duration_ms></usage>
+<worktree><worktreePath>/Users/operator/projects/supermux-ios/.claude/worktrees/agent-a09871f84c71f2c71</worktreePath><worktreeBranch>worktree-agent-a09871f84c71f2c71</worktreeBranch></worktree>
+</task-notification>

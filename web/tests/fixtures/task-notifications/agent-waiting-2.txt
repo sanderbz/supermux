@@ -1,0 +1,15 @@
+<task-notification>
+<task-id>ac0a2c2157d599344</task-id>
+<tool-use-id>toolu_01JBc5hThtPuu9NgVyeHkidW</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/ac0a2c2157d599344.output</output-file>
+<status>completed</status>
+<summary>Agent "M1 bot chat screen" is waiting on its own background work</summary>
+<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>
+<result>I've built the bot chat screen and it works against the 18841 test server. The UI test (`AppUITests/ChatUITests.swift`) passed twice: open a bot, send, see the reply, allow a permission ask, answer a question. All 140 Kit tests pass and the Release build is green. Interactive gestures are not tested (see gaps).
+
+**What I built**
+- **`App/Features/Chat/`**
+  - `BotScreen`: title with a live status line (working + elapsed / idle / needs you / stopped / offline), Stop while a turn runs, More menu (Copy name, Mark unread, a marked spot for the renderer switch and bot panel). It marks the bot read  [cut]</result>
+<usage><subagent_tokens>521655</subagent_tokens><tool_uses>203</tool_uses><duration_ms>4704109</duration_ms></usage>
+<worktree><worktreePath>/Users/operator/projects/supermux-ios/.claude/worktrees/agent-ac0a2c2157d599344</worktreePath><worktreeBranch>worktree-agent-ac0a2c2157d599344</worktreeBranch></worktree>
+</task-notification>

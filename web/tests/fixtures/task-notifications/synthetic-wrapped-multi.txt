@@ -1,0 +1,19 @@
+<system-reminder>
+[SYSTEM NOTIFICATION - NOT USER INPUT]
+This is an automated background-task event, NOT a message from the user.
+Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.
+
+<task-notification>
+<task-id>bcflm6hln</task-id>
+<tool-use-id>toolu_01SXVmZdxV47hwrm3ndRwkgW</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/bcflm6hln.output</output-file>
+<status>completed</status>
+<summary>Background command "Run Kit tests and the full app and UI test suite on the merged main" completed (exit code 0)</summary>
+</task-notification><task-notification>
+<task-id>b498i0ur9</task-id>
+<tool-use-id>toolu_016Hv97oaTvNvUNNkyqnUCay</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/b498i0ur9.output</output-file>
+<status>failed</status>
+<summary>Background command "Tighten the agent rules, then run the full phone UI suite on main (Browser and iPad tests excluded for now)" failed with exit code 149</summary>
+</task-notification><note>Several task notifications arrived at once; each block is a separate event.</note>
+</system-reminder>

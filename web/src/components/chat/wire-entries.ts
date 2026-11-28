@@ -40,6 +40,7 @@ import {
 } from './agent-error'
 import { coordinationEvent, parseCoordination } from './coordination'
 import type { ChatEntry } from './entries'
+import { parseTaskNotifications, TASK_NOTIFICATION_BADGE } from './task-notification'
 import type { WireEntry } from './wire'
 
 /** `REPLY_MAX_CHARS` (recall.rs): a receipt's outcome is a preview, never the
@@ -556,6 +557,9 @@ export const SYSTEM_ROW_BADGES = [
   'background-agent',
   // Any other harness-injected user line (`promptSource: "system"`).
   'harness',
+  // A `<task-notification>` that parsed whole (`task-notification.ts`): drawn
+  // as a compact card rather than a line, but still nobody's speech.
+  'task-notification',
   // AN ENTRY THIS VIEW CANNOT DRAW. Only ever produced for a provider whose
   // dialect is mapped pragmatically rather than exhaustively (Codex): the row
   // says so and points at the terminal, instead of leaving a hole where
@@ -575,7 +579,7 @@ function bool(body: unknown, key: string): boolean {
 /** `999996` → `1.0M`, `16752` → `17k`. Two significant figures is all a "how
  *  much history went away" clause can support, and an exact token count would
  *  read as a precision the number does not have. */
-function tokenCount(n: number): string {
+export function tokenCount(n: number): string {
   const k = Math.round(n / 1_000)
   // The promotion is on the ROUNDED value, not on the raw one: 999,996 tokens
   // is "1.0M", never "1000k".
@@ -939,6 +943,33 @@ export function toChatEntries(
   for (const w of wire) {
     if (isSubagent(w)) continue
     if (w.label === 'token_usage_record' || w.label === 'token_count') continue
+    // ── A BACKGROUND TASK'S NOTIFICATION (`task-notification.ts`) ───────────
+    // A line that is nothing but `<task-notification>` blocks becomes one card
+    // row per block. The server names it `agent_notification` (or, wrapped in a
+    // system reminder, `harness_notice`) and keeps the envelope verbatim in
+    // `content`; without the harness flags it stays a prompt, which
+    // `classifyPrompt` would drop. Anything that does not parse whole keeps its
+    // old row, and a prompt that merely quotes a block is not matched. A fan-out
+    // shares one wire entry, so each row gets its own uuid (the render key), as
+    // coordination does; `text` is Claude Code's summary — what any plain-text
+    // consumer reads — and `reply` the block itself, which the card re-parses.
+    const notes = parseTaskNotifications(
+      (w.kind === 'prompt'
+        ? textOf(w.body)
+        : (w.label === 'agent_notification' || w.label === 'harness_notice') && str(w.body, 'content')) || '',
+    )
+    if (notes) {
+      notes.forEach((n, i) =>
+        out.push({
+          uuid: notes.length > 1 ? `${w.uuid}#t${i}` : w.uuid,
+          ts: toSeconds(w.ts_ms),
+          text: n.summary,
+          kind: TASK_NOTIFICATION_BADGE,
+          reply: n.raw,
+        }),
+      )
+      continue
+    }
     if (w.kind === 'subagent') {
       out.push({ uuid: w.uuid, ts: w.ts_ms / 1000, kind: 'coordination', tone: 'quiet', label: w.label, text: str(w.body, 'content') ?? str(w.body, 'text') ?? 'Agent activity', truncated: w.truncated })
       continue

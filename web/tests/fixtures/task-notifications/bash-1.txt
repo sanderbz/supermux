@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcflm6hln</task-id>
+<tool-use-id>toolu_01SXVmZdxV47hwrm3ndRwkgW</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/bcflm6hln.output</output-file>
+<status>completed</status>
+<summary>Background command "Run Kit tests and the full app and UI test suite on the merged main" completed (exit code 0)</summary>
+</task-notification>

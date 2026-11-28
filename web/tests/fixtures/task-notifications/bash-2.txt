@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjpria3z0</task-id>
+<tool-use-id>toolu_01VjMcGd7Si5aBdw665YRAMb</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/bjpria3z0.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the action like the roster, run Kit tests and the full app and UI suite" completed (exit code 0)</summary>
+</task-notification>
