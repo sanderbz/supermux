@@ -40,6 +40,11 @@ import {
 } from './agent-error'
 import { coordinationEvent, parseCoordination } from './coordination'
 import type { ChatEntry } from './entries'
+import {
+  parseTaskNotifications,
+  TASK_NOTIFICATION_BADGE,
+  type TaskNotification,
+} from './task-notification'
 import type { WireEntry } from './wire'
 
 /** `REPLY_MAX_CHARS` (recall.rs): a receipt's outcome is a preview, never the
@@ -556,6 +561,9 @@ export const SYSTEM_ROW_BADGES = [
   'background-agent',
   // Any other harness-injected user line (`promptSource: "system"`).
   'harness',
+  // A `<task-notification>` that parsed whole (`task-notification.ts`): drawn
+  // as a compact card rather than a line, but still nobody's speech.
+  'task-notification',
   // AN ENTRY THIS VIEW CANNOT DRAW. Only ever produced for a provider whose
   // dialect is mapped pragmatically rather than exhaustively (Codex): the row
   // says so and points at the terminal, instead of leaving a hole where
@@ -924,6 +932,22 @@ export function transcriptFreshMs(
 export const UNMAPPED_TEXT =
   "Codex did something the chat view can't show yet — open the terminal."
 
+/** One card row per notification block. A fan-out shares one wire entry, so
+ *  each row gets its own uuid (the render key), exactly as coordination does.
+ *  `text` is Claude Code's summary — what any plain-text consumer reads — and
+ *  `reply` the block itself, which the card re-parses. */
+function pushTaskNotes(out: ChatEntry[], w: WireEntry, notes: TaskNotification[]): void {
+  notes.forEach((n, i) => {
+    out.push({
+      uuid: notes.length > 1 ? `${w.uuid}#t${i}` : w.uuid,
+      ts: toSeconds(w.ts_ms),
+      text: n.summary,
+      kind: TASK_NOTIFICATION_BADGE,
+      reply: n.raw,
+    })
+  })
+}
+
 export function toChatEntries(
   wire: readonly WireEntry[],
   opts: { surfaceUnmapped?: boolean } = {},
@@ -1031,6 +1055,17 @@ export function toChatEntries(
           kind: tomb.badge,
         })
         continue
+      }
+      // A TASK NOTIFICATION THAT PARSES WHOLE becomes one card per block. The
+      // server names it `agent_notification` (or, wrapped in a system reminder,
+      // `harness_notice`) and keeps the envelope verbatim in `content`; anything
+      // that does not parse keeps the one-line row below, unchanged.
+      if (w.label === 'agent_notification' || w.label === 'harness_notice') {
+        const notes = parseTaskNotifications(str(w.body, 'content') ?? '')
+        if (notes) {
+          pushTaskNotes(out, w, notes)
+          continue
+        }
       }
       const row = systemRow(w)
       if (!row) continue
@@ -1161,6 +1196,15 @@ export function toChatEntries(
           const ev = coordinationEvent(block)
           out.push({ uuid, ts, text: ev.text, kind: 'coordination', label: ev.seed, tone: ev.tone })
         })
+        continue
+      }
+      // A user-role line that is NOTHING BUT notification blocks — the shape the
+      // server passes through as a prompt when the harness flags are absent (a
+      // `<system-reminder>`-wrapped batch). Checked before `classifyPrompt`,
+      // which would drop it; a prompt that merely quotes a block is not matched.
+      const notes = parseTaskNotifications(raw)
+      if (notes) {
+        pushTaskNotes(out, w, notes)
         continue
       }
       const c = classifyPrompt(raw)

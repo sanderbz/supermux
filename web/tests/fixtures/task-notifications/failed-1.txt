@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b498i0ur9</task-id>
+<tool-use-id>toolu_016Hv97oaTvNvUNNkyqnUCay</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/b498i0ur9.output</output-file>
+<status>failed</status>
+<summary>Background command "Tighten the agent rules, then run the full phone UI suite on main (Browser and iPad tests excluded for now)" failed with exit code 149</summary>
+</task-notification>

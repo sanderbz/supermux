@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>b6z20bcv8</task-id>
+<tool-use-id>toolu_015xWuGEfBCTRe9LHt8H7LpS</tool-use-id>
+<status>running</status>
+<summary>Monitor "UI test rerun result" event</summary>
+<event>** TEST SUCCEEDED ** (42 tests, 0 failures)</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>

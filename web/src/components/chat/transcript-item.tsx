@@ -48,6 +48,8 @@ import type { ChatAuthor, ChatItem } from './entries'
 import { harnessNotice } from './entries'
 import { framesIn } from './frames'
 import { mentionSegments, toReceiptRows, type TranscriptNode } from './grouping'
+import { parseTaskNotifications, TASK_NOTIFICATION_BADGE } from './task-notification'
+import TaskNotificationCard from './task-notification-card'
 import {
   clipStateFor,
   CLIP_RETRY_TITLE,
@@ -266,6 +268,10 @@ export const TranscriptItem = React.memo(function TranscriptItem(
   // before the generic system arm (which reads `item.type === 'user'`).
   if (item.type === 'coordination')
     return <CoordinationRow item={item} pinFor={props.pinFor} />
+  // A background task's notification — a compact card, before the generic
+  // system arm that would draw it as one line.
+  if (item.type === 'user' && item.badge === TASK_NOTIFICATION_BADGE)
+    return <TaskNotificationRow {...props} item={item} />
   if (speaker === 'system') return <SystemRow item={item} labels={props.labels} />
   if (speaker === 'me') return <UserRow {...props} item={item} grouped={grouped} />
   // A human colleague's message (P3c) — a circle mark + name chip + hue keyline,
@@ -1041,6 +1047,33 @@ function SystemRow({
  *  brackets are Claude Code's injection syntax, not something a reader needs. */
 function stripBrackets(s: string): string {
   return s.startsWith('[') && s.endsWith(']') ? s.slice(1, -1).trim() : s
+}
+
+/* ── a background task's notification ───────────────────────────────────── */
+
+/** `detail` is the block's own XML (`wire-entries.ts`); the one-line summary
+ *  stands in if it somehow no longer parses. */
+function TaskNotificationRow({
+  item,
+  surface,
+  rawUrl,
+  onOpenPath,
+  cwd,
+}: TranscriptItemProps & { item: ChatItem }) {
+  if (item.type !== 'user') return null
+  // Re-parsed per render: a few string scans, on a row the memo above holds.
+  const note = parseTaskNotifications(item.detail ?? '')?.[0]
+  if (!note) return <SystemLine>{item.text}</SystemLine>
+  return (
+    <TaskNotificationCard
+      note={note}
+      markdown={
+        note.result && (
+          <Prose text={note.result} surface={surface} rawUrl={rawUrl} onOpenPath={onOpenPath} cwd={cwd} />
+        )
+      }
+    />
+  )
 }
 
 /* ── the ledger ──────────────────────────────────────────────────────────── */

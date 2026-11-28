@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>br3x7h275</task-id>
+<tool-use-id>toolu_01Q988Kjh83YHQpsQaNYvGiz</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/br3x7h275.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for the owner's approval, then archive and upload build 4 and check it in App Store Connect" failed with exit code 1</summary>
+</task-notification>

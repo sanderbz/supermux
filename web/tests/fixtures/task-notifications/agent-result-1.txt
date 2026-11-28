@@ -1,0 +1,14 @@
+<task-notification>
+<task-id>a7e5d97476a6ac5de</task-id>
+<tool-use-id>toolu_01N197gW6BGSpeMfjt6T54u6</tool-use-id>
+<output-file>/private/tmp/claude-1000/-Users-operator-projects-supermux-ios/65b7a556-c9d0-4162-b709-b2c517a65b0a/tasks/a7e5d97476a6ac5de.output</output-file>
+<status>completed</status>
+<summary>Agent "Build SupermuxKit core" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>SupermuxKit is built and `scripts/test-kit.sh` passes: 106 tests in 21 suites (96 unit, 10 integration against 18840 and 18841), zero warnings on a clean build, unit runs stable over 3 repeats. Nothing committed; I only wrote inside `Packages/SupermuxKit/`.
+
+**What exists** (`Packages/SupermuxKit/Sources/SupermuxKit/`)
+- **API/**: `APIClient` exactly per contract, error type with machine tokens, and all endpoints from 6.1–6.4 plus login card, slash commands, snippets, companies, prefs, version, `/auth/me`, health.
+- **Models/**: lenient session row (null clears, unknown keys kept), every neste [cut]</result>
+<usage><subagent_tokens>420831</subagent_tokens><tool_uses>140</tool_uses><duration_ms>2137440</duration_ms></usage>
+</task-notification>
